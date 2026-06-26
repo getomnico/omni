@@ -3,7 +3,7 @@ import { relative, resolve } from 'node:path'
 import { json, error } from '@sveltejs/kit'
 import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
-import { chatRepository } from '$lib/server/db/chats.js'
+import { chatMessageRepository, chatRepository } from '$lib/server/db/chats.js'
 import { getAgent } from '$lib/server/db/agents.js'
 import { isProviderConfigured } from '$lib/server/oauth/connectorOAuth.js'
 import { getSourceDisplayName } from '$lib/utils/icons.js'
@@ -79,7 +79,14 @@ function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function replayStreamResponse(sampleStream: string): Response {
+function eventData(event: string): string | null {
+    for (const line of event.split('\n')) {
+        if (line.startsWith('data:')) return line.substring(5).trim()
+    }
+    return null
+}
+
+function replayStreamResponse(sampleStream: string, chatId: string): Response {
     const encoder = new TextEncoder()
     const runId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     let messageIdCounter = 0
@@ -93,11 +100,26 @@ function replayStreamResponse(sampleStream: string): Response {
                 .filter((event) => event.length > 0)
 
             try {
+                let parentMessageId = (
+                    await chatMessageRepository.getLastMessageInActivePath(chatId)
+                )?.id
+
                 for (const event of events) {
                     if (cancelled) return
-                    const eventToSend = event.startsWith('event: message_id')
-                        ? `event: message_id\ndata: sample-${runId}-${messageIdCounter++}`
-                        : event
+                    let eventToSend = event
+                    if (event.startsWith('event: message_id')) {
+                        eventToSend = `event: message_id\ndata: sample-${runId}-${messageIdCounter++}`
+                    } else if (event.startsWith('event: save_message')) {
+                        const data = eventData(event)
+                        if (!data) continue
+                        const savedMessage = await chatMessageRepository.create(
+                            chatId,
+                            JSON.parse(data),
+                            parentMessageId,
+                        )
+                        parentMessageId = savedMessage.id
+                        eventToSend = `event: message_id\ndata: ${savedMessage.id}`
+                    }
                     controller.enqueue(encoder.encode(`${eventToSend}\n\n`))
                     await sleep(10)
                 }
@@ -179,7 +201,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
     const replayPath = replayStreamFixturePath(cookies)
     if (replayPath) {
         const sampleStream = await readFile(replayPath, 'utf-8')
-        return replayStreamResponse(sampleStream)
+        return replayStreamResponse(sampleStream, params.chatId)
     }
 
     const logger = locals.logger.child('chat')

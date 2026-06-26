@@ -1,0 +1,214 @@
+event: message
+data: {"type": "message_start", "message": {"id": "msg_cancel_partial", "type": "message", "role": "assistant", "content": [], "model": "playwright-model", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 1, "output_tokens": 1}}}
+
+event: message
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+
+event: message
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Partial answer before stop."}}
+
+: keepalive 0
+
+: keepalive 1
+
+: keepalive 2
+
+: keepalive 3
+
+: keepalive 4
+
+: keepalive 5
+
+: keepalive 6
+
+: keepalive 7
+
+: keepalive 8
+
+: keepalive 9
+
+: keepalive 10
+
+: keepalive 11
+
+: keepalive 12
+
+: keepalive 13
+
+: keepalive 14
+
+: keepalive 15
+
+: keepalive 16
+
+: keepalive 17
+
+: keepalive 18
+
+: keepalive 19
+
+: keepalive 20
+
+: keepalive 21
+
+: keepalive 22
+
+: keepalive 23
+
+: keepalive 24
+
+: keepalive 25
+
+: keepalive 26
+
+: keepalive 27
+
+: keepalive 28
+
+: keepalive 29
+
+: keepalive 30
+
+: keepalive 31
+
+: keepalive 32
+
+: keepalive 33
+
+: keepalive 34
+
+: keepalive 35
+
+: keepalive 36
+
+: keepalive 37
+
+: keepalive 38
+
+: keepalive 39
+
+: keepalive 40
+
+: keepalive 41
+
+: keepalive 42
+
+: keepalive 43
+
+: keepalive 44
+
+: keepalive 45
+
+: keepalive 46
+
+: keepalive 47
+
+: keepalive 48
+
+: keepalive 49
+
+: keepalive 50
+
+: keepalive 51
+
+: keepalive 52
+
+: keepalive 53
+
+: keepalive 54
+
+: keepalive 55
+
+: keepalive 56
+
+: keepalive 57
+
+: keepalive 58
+
+: keepalive 59
+
+: keepalive 60
+
+: keepalive 61
+
+: keepalive 62
+
+: keepalive 63
+
+: keepalive 64
+
+: keepalive 65
+
+: keepalive 66
+
+: keepalive 67
+
+: keepalive 68
+
+: keepalive 69
+
+: keepalive 70
+
+: keepalive 71
+
+: keepalive 72
+
+: keepalive 73
+
+: keepalive 74
+
+: keepalive 75
+
+: keepalive 76
+
+: keepalive 77
+
+: keepalive 78
+
+: keepalive 79
+
+: keepalive 80
+
+: keepalive 81
+
+: keepalive 82
+
+: keepalive 83
+
+: keepalive 84
+
+: keepalive 85
+
+: keepalive 86
+
+: keepalive 87
+
+: keepalive 88
+
+: keepalive 89
+
+: keepalive 90
+
+: keepalive 91
+
+: keepalive 92
+
+: keepalive 93
+
+: keepalive 94
+
+: keepalive 95
+
+: keepalive 96
+
+: keepalive 97
+
+: keepalive 98
+
+: keepalive 99
+
+event: save_message
+data: {"role": "assistant", "content": [{"type": "text", "text": "Partial answer before stop."}]}
+
+event: end_of_stream
+data: Stream stopped

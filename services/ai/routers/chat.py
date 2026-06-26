@@ -168,6 +168,24 @@ def _sse_event_data(event_str: str) -> str:
     return ""
 
 
+def _partial_assistant_message(
+    content_blocks: list[TextBlockParam | ToolUseBlockParam],
+) -> MessageParam | None:
+    text_blocks: list[TextBlockParam] = []
+    for block in content_blocks:
+        if block["type"] != "text":
+            continue
+        text_block = cast(TextBlockParam, block)
+        if not text_block["text"].strip():
+            continue
+        text_blocks.append(cast(TextBlockParam, dict(text_block)))
+
+    if not text_blocks:
+        return None
+
+    return MessageParam(role="assistant", content=text_blocks)
+
+
 async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
     """Persist assistant/tool_result messages (single writer of the streaming
     path) and replace each internal `save_message` event with a client-facing
@@ -1341,6 +1359,7 @@ async def stream_chat(
             )
 
             usage_repo = UsageRepository()
+            assistant_message: MessageParam | None = None
 
             for iteration in range(AGENT_MAX_ITERATIONS):
                 # Stop only on an explicit user cancel (Stop button). The run is
@@ -1404,11 +1423,7 @@ async def stream_chat(
                     logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
 
-                    # Responsive Stop: poll the cancel flag periodically so an
-                    # explicit user Stop interrupts a long in-progress message.
-                    if event_index % 32 == 0 and await _is_run_cancelled(
-                        redis_client, chat_id
-                    ):
+                    if await _is_run_cancelled(redis_client, chat_id):
                         cancelled = True
                         break
 
@@ -1507,6 +1522,10 @@ async def stream_chat(
                         break
 
                 if cancelled:
+                    assistant_message = _partial_assistant_message(content_blocks)
+                    if assistant_message is not None:
+                        conversation_messages.append(assistant_message)
+                        yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
 
                 tracker.save()

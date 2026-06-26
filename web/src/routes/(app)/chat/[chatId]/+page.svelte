@@ -101,6 +101,7 @@
             clearReconnectState()
             activeStreamChatId = null
             isStreaming = false
+            stopInProgress = false
             error = null
             errorDetail = null
             stopThinkingText()
@@ -173,6 +174,7 @@
     let userInputRef: ReturnType<typeof UserInput>
 
     let isStreaming = $state(false)
+    let stopInProgress = $state(false)
     let error = $state<string | null>(null)
     let errorDetail = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
@@ -456,28 +458,29 @@
         }
     }
 
-    function handleStop() {
+    async function handleStop() {
+        if (stopInProgress) return
+
         // The run is decoupled from this connection, so closing the EventSource
         // is no longer enough — tell the server to actually stop generating.
+        // Keep the stream open until omni-ai emits message_id/end_of_stream for
+        // the partial assistant message it persisted on cancellation.
         const stopChatId = activeStreamChatId ?? data.chat.id
-        fetch(`/api/chat/${stopChatId}/stop`, { method: 'POST' }).catch((err) =>
-            console.error('Failed to stop stream:', err),
-        )
-        if (eventSource) {
-            eventSource.close()
-            eventSource = null
-            activeStreamChatId = null
-        }
-        clearReconnectState()
-        // Reset all stream state so the input is immediately ready for a new message.
-        isStreaming = false
+        stopInProgress = true
         error = null
         errorDetail = null
-        activeStreamingMessageId = null
         stopThinkingText()
-        refreshProcessedMessages()
-        requestAnimationFrame(() => recalcBottomPadding())
-        userInputRef?.focus()
+
+        try {
+            const response = await fetch(`/api/chat/${stopChatId}/stop`, { method: 'POST' })
+            if (!response.ok) {
+                console.error('Failed to stop stream')
+                stopInProgress = false
+            }
+        } catch (err) {
+            console.error('Failed to stop stream:', err)
+            stopInProgress = false
+        }
     }
 
     async function handleFeedback(messageId: string, feedbackType: 'upvote' | 'downvote') {
@@ -1405,9 +1408,7 @@
             }
             const base = `/api/chat/${chatId}/stream`
             eventSource = new EventSource(
-                resumeFromId
-                    ? `${base}?last_event_id=${encodeURIComponent(resumeFromId)}`
-                    : base,
+                resumeFromId ? `${base}?last_event_id=${encodeURIComponent(resumeFromId)}` : base,
                 { withCredentials: true },
             )
 
@@ -1423,6 +1424,7 @@
                 // persisted messages from the server and clear streaming state.
                 streamCompleted = true
                 isStreaming = false
+                stopInProgress = false
                 activeStreamingMessageId = null
                 refreshProcessedMessages()
                 stopThinkingText()
@@ -1433,241 +1435,245 @@
                 invalidateAll()
             })
 
-        eventSource.addEventListener('title', () => {
-            invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
-        })
+            eventSource.addEventListener('title', () => {
+                invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
+            })
 
-        eventSource.addEventListener('title_error', () => {
-            // Title generation is best-effort; answer streaming should not surface its failures.
-        })
+            eventSource.addEventListener('title_error', () => {
+                // Title generation is best-effort; answer streaming should not surface its failures.
+            })
 
-        eventSource.addEventListener('message', (event) => {
-            streamLastEventId = event.lastEventId || streamLastEventId
-            lastStreamEventAt = Date.now()
-            reconnectAttempts = 0
-            try {
-                const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
-                if (data.type === 'message_start') {
-                    // Find the last message in current display path to use as parent
-                    const displayPath = getDisplayPath(chatMessages)
-                    const streamParentId =
-                        displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-                    const startedMessage: ChatMessage = {
-                        id: nextTempMessageId(),
-                        chatId,
-                        parentId: streamParentId ?? null,
-                        message: {
-                            role: data.message.role,
-                            content: data.message.content,
-                        },
-                        contentText: null,
-                        messageSeqNum: nextMessageSeqNum(chatMessages),
-                        createdAt: new Date(),
-                    }
-                    chatMessages = [...chatMessages, startedMessage]
-                    activeStreamingMessageId = startedMessage.id
-                    selectBranch(startedMessage.parentId, startedMessage.id)
-                    trackTempMessage(startedMessage.id)
-                    markChatMessagesChanged()
-                } else if (data.type === 'content_block_start') {
-                    if (data.content_block.type === 'tool_use') {
-                        collectStreamingResponse(data.content_block, data.index)
-                        toolUseStateByIndex.set(data.index, {
-                            id: data.content_block.id,
-                            name: data.content_block.name,
-                            inputJson: '',
-                        })
-                        updateThinkingForTool(data.content_block.name)
-                    } else if (data.content_block.type === 'text') {
-                        collectStreamingResponse(data.content_block, data.index)
-                    }
-                } else if (data.type === 'content_block_delta') {
-                    if (data.delta.type === 'text_delta' && data.delta.text) {
-                        updateThinkingForText()
-                        collectStreamingResponse(data.delta, data.index)
-                    } else if (data.delta.type === 'citations_delta') {
-                        collectStreamingResponse(data.delta, data.index)
-                    } else if (data.delta.type === 'input_json_delta') {
-                        const toolUseState = toolUseStateByIndex.get(data.index)
-                        if (!toolUseState) {
-                            console.warn(
-                                `Received input JSON delta for unknown tool block index ${data.index}`,
-                            )
-                            return
+            eventSource.addEventListener('message', (event) => {
+                streamLastEventId = event.lastEventId || streamLastEventId
+                lastStreamEventAt = Date.now()
+                reconnectAttempts = 0
+                try {
+                    const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
+                    if (data.type === 'message_start') {
+                        // Find the last message in current display path to use as parent
+                        const displayPath = getDisplayPath(chatMessages)
+                        const streamParentId =
+                            displayPath.length > 0
+                                ? displayPath[displayPath.length - 1].id
+                                : undefined
+                        const startedMessage: ChatMessage = {
+                            id: nextTempMessageId(),
+                            chatId,
+                            parentId: streamParentId ?? null,
+                            message: {
+                                role: data.message.role,
+                                content: data.message.content,
+                            },
+                            contentText: null,
+                            messageSeqNum: nextMessageSeqNum(chatMessages),
+                            createdAt: new Date(),
                         }
-
-                        // Parse partial JSON to show search query if possible
-                        toolUseState.inputJson += data.delta.partial_json
-                        try {
-                            const parsedInput = JSON.parse(toolUseState.inputJson)
-                            collectStreamingResponse(
-                                {
-                                    type: 'tool_use',
-                                    id: toolUseState.id,
-                                    name: toolUseState.name,
-                                    input: parsedInput,
-                                },
-                                data.index,
-                            )
-                        } catch (err) {
-                            // Ignore JSON parse errors for partial input
-                        }
-                    }
-                } else if (data.type == 'tool_result') {
-                    collectStreamingResponse(data)
-                }
-
-                if (!userHasScrolled) scrollToBottom()
-            } catch (err) {
-                console.error('Failed to parse SSE data:', event.data, err)
-            } finally {
-                messageEventsReceived += 1
-            }
-        })
-
-        eventSource.addEventListener('approval_required', (event) => {
-            try {
-                const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
-                pendingApproval = approvalData
-                isStreaming = false
-                activeStreamingMessageId = null
-                refreshProcessedMessages()
-                stopThinkingText()
-                requestAnimationFrame(() => recalcBottomPadding())
-            } catch (err) {
-                console.error('Failed to parse approval_required event:', err)
-            }
-        })
-
-        eventSource.addEventListener('oauth_required', (event) => {
-            try {
-                const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
-                oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
-                isStreaming = false
-                activeStreamingMessageId = null
-                refreshProcessedMessages()
-                stopThinkingText()
-                requestAnimationFrame(() => recalcBottomPadding())
-            } catch (err) {
-                console.error('Failed to parse oauth_required event:', err)
-            }
-        })
-
-        eventSource.addEventListener('tool_result_replaced', (event) => {
-            try {
-                const data: ToolResultReplacedEvent = JSON.parse(event.data)
-                // Find the user-role chat message that holds the placeholder
-                // tool_result block and replace it with the real result. The
-                // envelope text is gone, so processMessages will stop
-                // producing the OAuth card on the next derivation tick.
-                for (const cm of chatMessages) {
-                    if (cm.message.role !== 'user') continue
-                    const content = cm.message.content
-                    if (!Array.isArray(content)) continue
-                    let replaced = false
-                    const next: ContentBlockParam[] = content.map((b) => {
-                        if (b.type === 'tool_result' && b.tool_use_id === data.tool_use_id) {
-                            replaced = true
-                            const replacement: ToolResultBlockParam = {
-                                type: 'tool_result',
-                                tool_use_id: data.tool_use_id,
-                                content: data.content as ToolResultBlockParam['content'],
-                                is_error: data.is_error,
-                            }
-                            return replacement
-                        }
-                        return b
-                    })
-                    if (replaced) {
-                        cm.message = { ...cm.message, content: next }
-                        delete oauthEventByToolCallId[data.tool_use_id]
-                        chatMessages = [...chatMessages]
+                        chatMessages = [...chatMessages, startedMessage]
+                        activeStreamingMessageId = startedMessage.id
+                        selectBranch(startedMessage.parentId, startedMessage.id)
+                        trackTempMessage(startedMessage.id)
                         markChatMessagesChanged()
-                        break
+                    } else if (data.type === 'content_block_start') {
+                        if (data.content_block.type === 'tool_use') {
+                            collectStreamingResponse(data.content_block, data.index)
+                            toolUseStateByIndex.set(data.index, {
+                                id: data.content_block.id,
+                                name: data.content_block.name,
+                                inputJson: '',
+                            })
+                            updateThinkingForTool(data.content_block.name)
+                        } else if (data.content_block.type === 'text') {
+                            collectStreamingResponse(data.content_block, data.index)
+                        }
+                    } else if (data.type === 'content_block_delta') {
+                        if (data.delta.type === 'text_delta' && data.delta.text) {
+                            updateThinkingForText()
+                            collectStreamingResponse(data.delta, data.index)
+                        } else if (data.delta.type === 'citations_delta') {
+                            collectStreamingResponse(data.delta, data.index)
+                        } else if (data.delta.type === 'input_json_delta') {
+                            const toolUseState = toolUseStateByIndex.get(data.index)
+                            if (!toolUseState) {
+                                console.warn(
+                                    `Received input JSON delta for unknown tool block index ${data.index}`,
+                                )
+                                return
+                            }
+
+                            // Parse partial JSON to show search query if possible
+                            toolUseState.inputJson += data.delta.partial_json
+                            try {
+                                const parsedInput = JSON.parse(toolUseState.inputJson)
+                                collectStreamingResponse(
+                                    {
+                                        type: 'tool_use',
+                                        id: toolUseState.id,
+                                        name: toolUseState.name,
+                                        input: parsedInput,
+                                    },
+                                    data.index,
+                                )
+                            } catch (err) {
+                                // Ignore JSON parse errors for partial input
+                            }
+                        }
+                    } else if (data.type == 'tool_result') {
+                        collectStreamingResponse(data)
                     }
+
+                    if (!userHasScrolled) scrollToBottom()
+                } catch (err) {
+                    console.error('Failed to parse SSE data:', event.data, err)
+                } finally {
+                    messageEventsReceived += 1
                 }
-            } catch (err) {
-                console.error('Failed to parse tool_result_replaced event:', err)
+            })
+
+            eventSource.addEventListener('approval_required', (event) => {
+                try {
+                    const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
+                    pendingApproval = approvalData
+                    isStreaming = false
+                    stopInProgress = false
+                    activeStreamingMessageId = null
+                    refreshProcessedMessages()
+                    stopThinkingText()
+                    requestAnimationFrame(() => recalcBottomPadding())
+                } catch (err) {
+                    console.error('Failed to parse approval_required event:', err)
+                }
+            })
+
+            eventSource.addEventListener('oauth_required', (event) => {
+                try {
+                    const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
+                    oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
+                    isStreaming = false
+                    stopInProgress = false
+                    activeStreamingMessageId = null
+                    refreshProcessedMessages()
+                    stopThinkingText()
+                    requestAnimationFrame(() => recalcBottomPadding())
+                } catch (err) {
+                    console.error('Failed to parse oauth_required event:', err)
+                }
+            })
+
+            eventSource.addEventListener('tool_result_replaced', (event) => {
+                try {
+                    const data: ToolResultReplacedEvent = JSON.parse(event.data)
+                    // Find the user-role chat message that holds the placeholder
+                    // tool_result block and replace it with the real result. The
+                    // envelope text is gone, so processMessages will stop
+                    // producing the OAuth card on the next derivation tick.
+                    for (const cm of chatMessages) {
+                        if (cm.message.role !== 'user') continue
+                        const content = cm.message.content
+                        if (!Array.isArray(content)) continue
+                        let replaced = false
+                        const next: ContentBlockParam[] = content.map((b) => {
+                            if (b.type === 'tool_result' && b.tool_use_id === data.tool_use_id) {
+                                replaced = true
+                                const replacement: ToolResultBlockParam = {
+                                    type: 'tool_result',
+                                    tool_use_id: data.tool_use_id,
+                                    content: data.content as ToolResultBlockParam['content'],
+                                    is_error: data.is_error,
+                                }
+                                return replacement
+                            }
+                            return b
+                        })
+                        if (replaced) {
+                            cm.message = { ...cm.message, content: next }
+                            delete oauthEventByToolCallId[data.tool_use_id]
+                            chatMessages = [...chatMessages]
+                            markChatMessagesChanged()
+                            break
+                        }
+                    }
+                } catch (err) {
+                    console.error('Failed to parse tool_result_replaced event:', err)
+                }
+            })
+
+            eventSource.addEventListener('end_of_stream', () => {
+                streamCompleted = true
+                isStreaming = false
+                stopInProgress = false
+                activeStreamingMessageId = null
+                refreshProcessedMessages()
+                stopThinkingText()
+                requestAnimationFrame(() => recalcBottomPadding())
+                userInputRef?.focus()
+                eventSource?.close()
+                eventSource = null
+                activeStreamChatId = null
+                clearReconnectState()
+
+                if (messageEventsReceived === 0 && !error) {
+                    error = 'Failed to generate response. Please try again.'
+                }
+            })
+
+            const handleStreamError = (event: Event) => {
+                streamCompleted = true
+                if (event instanceof MessageEvent) {
+                    const streamError = streamErrorMessage(event as MessageEvent<string>)
+                    error = streamError.message
+                    errorDetail = streamError.detail
+                } else {
+                    error = 'Failed to generate response. Please try again.'
+                    errorDetail = null
+                }
+                isStreaming = false
+                stopInProgress = false
+                activeStreamingMessageId = null
+                refreshProcessedMessages()
+                stopThinkingText()
+                requestAnimationFrame(() => recalcBottomPadding())
+                userInputRef?.focus()
+                eventSource?.close()
+                eventSource = null
+                activeStreamChatId = null
+                clearReconnectState()
             }
-        })
 
-        eventSource.addEventListener('end_of_stream', () => {
-            streamCompleted = true
-            isStreaming = false
-            activeStreamingMessageId = null
-            refreshProcessedMessages()
-            stopThinkingText()
-            requestAnimationFrame(() => recalcBottomPadding())
-            userInputRef?.focus()
-            eventSource?.close()
-            eventSource = null
-            activeStreamChatId = null
-            clearReconnectState()
+            const handleConnectionError = () => {
+                if (streamCompleted || !isStreaming) return
 
-            if (messageEventsReceived === 0 && !error) {
-                error = 'Failed to generate response. Please try again.'
-            }
-        })
+                // Transient drop (e.g. backgrounded tab): the server keeps the run
+                // alive and buffered, so reconnect from our last offset with backoff
+                // instead of failing. Only surface an error once the budget is spent.
+                eventSource?.close()
+                eventSource = null
+                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    reconnectAttempts += 1
+                    const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 15000)
+                    if (reconnectTimer) clearTimeout(reconnectTimer)
+                    reconnectTimer = setTimeout(() => {
+                        reconnectTimer = null
+                        if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
+                        reconnectStream?.()
+                    }, delay)
+                    return
+                }
 
-        const handleStreamError = (event: Event) => {
-            streamCompleted = true
-            if (event instanceof MessageEvent) {
-                const streamError = streamErrorMessage(event as MessageEvent<string>)
-                error = streamError.message
-                errorDetail = streamError.detail
-            } else {
-                error = 'Failed to generate response. Please try again.'
+                error =
+                    messageEventsReceived > 0
+                        ? 'Response stream disconnected before it finished. Please try again.'
+                        : 'Failed to connect to the response stream. Please try again.'
                 errorDetail = null
+                isStreaming = false
+                stopInProgress = false
+                activeStreamingMessageId = null
+                refreshProcessedMessages()
+                stopThinkingText()
+                requestAnimationFrame(() => recalcBottomPadding())
+                userInputRef?.focus()
+                activeStreamChatId = null
+                clearReconnectState()
             }
-            isStreaming = false
-            activeStreamingMessageId = null
-            refreshProcessedMessages()
-            stopThinkingText()
-            requestAnimationFrame(() => recalcBottomPadding())
-            userInputRef?.focus()
-            eventSource?.close()
-            eventSource = null
-            activeStreamChatId = null
-            clearReconnectState()
-        }
-
-        const handleConnectionError = () => {
-            // Guard against treating an intentional stop() as a connection error.
-            // handleStop() sets isStreaming = false before the EventSource fires its
-            // error event, so we can use that as a signal to skip cleanup here.
-            if (streamCompleted || !isStreaming) return
-
-            // Transient drop (e.g. backgrounded tab): the server keeps the run
-            // alive and buffered, so reconnect from our last offset with backoff
-            // instead of failing. Only surface an error once the budget is spent.
-            eventSource?.close()
-            eventSource = null
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts += 1
-                const delay = Math.min(1000 * 2 ** (reconnectAttempts - 1), 15000)
-                if (reconnectTimer) clearTimeout(reconnectTimer)
-                reconnectTimer = setTimeout(() => {
-                    reconnectTimer = null
-                    if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
-                    reconnectStream?.()
-                }, delay)
-                return
-            }
-
-            error =
-                messageEventsReceived > 0
-                    ? 'Response stream disconnected before it finished. Please try again.'
-                    : 'Failed to connect to the response stream. Please try again.'
-            errorDetail = null
-            isStreaming = false
-            activeStreamingMessageId = null
-            refreshProcessedMessages()
-            stopThinkingText()
-            requestAnimationFrame(() => recalcBottomPadding())
-            userInputRef?.focus()
-            activeStreamChatId = null
-            clearReconnectState()
-        }
 
             eventSource.addEventListener('stream_error', handleStreamError)
             eventSource.addEventListener('error', handleConnectionError)
@@ -2387,7 +2393,7 @@
                             chat: 'Ask a follow-up...',
                             search: 'Search for something else...',
                         }}
-                        {isStreaming}
+                        isStreaming={isStreaming || stopInProgress}
                         onStop={handleStop}
                         maxWidth="max-w-4xl" />
                 </div>
