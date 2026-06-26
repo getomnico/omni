@@ -11,6 +11,10 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
+    if (!locals.user?.id) {
+        return json({ error: 'User not authenticated' }, { status: 401 })
+    }
+
     const chat = await chatRepository.get(chatId)
     if (!chat) {
         return json({ error: 'Chat not found' }, { status: 404 })
@@ -21,12 +25,18 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'Forbidden' }, { status: 403 })
     }
 
+    // Test-only replay mode bypasses omni-ai, so there is no AI run to cancel.
+    const replayPath = env.OMNI_TEST_CHAT_STREAM_REPLAY_PATH?.trim()
+    if (replayPath) {
+        return json({ status: 'ok' })
+    }
+
     try {
         const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/cancel`, {
             method: 'POST',
         })
         if (!response.ok) {
-            logger.warn('AI service cancel returned non-OK', undefined, {
+            logger.warn('AI service cancel returned non-OK', {
                 chatId,
                 status: response.status,
             })
@@ -35,7 +45,6 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         logger.error('Failed to cancel chat stream', err, { chatId })
     }
 
-    // Best-effort: report success even if the AI service is unreachable, since
-    // the client also tears down its own stream state on Stop.
+    // Best-effort: report success even if the AI service is unreachable.
     return json({ status: 'ok' })
 }

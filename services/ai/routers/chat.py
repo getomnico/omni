@@ -129,6 +129,7 @@ _LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a lo
 _STREAM_TTL = 300  # seconds a finished stream stays replayable
 _STREAM_MAXLEN = 5000  # cap buffered events per run
 _CANCEL_TTL = 300
+_CANCEL_CHECK_INTERVAL_SECONDS = 1.0
 
 _background_run_tasks: set[asyncio.Task] = set()
 
@@ -166,6 +167,24 @@ def _sse_event_data(event_str: str) -> str:
         if line.startswith("data:"):
             return line[len("data:") :].strip()
     return ""
+
+
+def _partial_assistant_message(
+    content_blocks: list[TextBlockParam | ToolUseBlockParam],
+) -> MessageParam | None:
+    text_blocks: list[TextBlockParam] = []
+    for block in content_blocks:
+        if block["type"] != "text":
+            continue
+        text_block = cast(TextBlockParam, block)
+        if not text_block["text"].strip():
+            continue
+        text_blocks.append(cast(TextBlockParam, dict(text_block)))
+
+    if not text_blocks:
+        return None
+
+    return MessageParam(role="assistant", content=text_blocks)
 
 
 async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
@@ -1341,6 +1360,7 @@ async def stream_chat(
             )
 
             usage_repo = UsageRepository()
+            assistant_message: MessageParam | None = None
 
             for iteration in range(AGENT_MAX_ITERATIONS):
                 # Stop only on an explicit user cancel (Stop button). The run is
@@ -1400,17 +1420,17 @@ async def stream_chat(
                 event_index = 0
                 message_stop_received = False
                 cancelled = False
+                last_cancel_check_at = 0.0
                 async for event in stream:
                     logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
 
-                    # Responsive Stop: poll the cancel flag periodically so an
-                    # explicit user Stop interrupts a long in-progress message.
-                    if event_index % 32 == 0 and await _is_run_cancelled(
-                        redis_client, chat_id
-                    ):
-                        cancelled = True
-                        break
+                    now = asyncio.get_running_loop().time()
+                    if now - last_cancel_check_at >= _CANCEL_CHECK_INTERVAL_SECONDS:
+                        last_cancel_check_at = now
+                        if await _is_run_cancelled(redis_client, chat_id):
+                            cancelled = True
+                            break
 
                     if event.type == "message_start":
                         logger.info("Message start received.")
@@ -1507,6 +1527,10 @@ async def stream_chat(
                         break
 
                 if cancelled:
+                    assistant_message = _partial_assistant_message(content_blocks)
+                    if assistant_message is not None:
+                        conversation_messages.append(assistant_message)
+                        yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
 
                 tracker.save()

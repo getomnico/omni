@@ -17,10 +17,11 @@ export default defineConfig({
             AI_SERVICE_URL: process.env.AI_SERVICE_URL ?? 'http://localhost:1',
             CONNECTOR_MANAGER_URL: process.env.CONNECTOR_MANAGER_URL ?? 'http://localhost:1',
             APP_URL: process.env.APP_URL ?? 'http://localhost:4173',
-            OMNI_CHAT_STREAM_REPLAY_PATH:
-                process.env.OMNI_CHAT_STREAM_REPLAY_PATH ?? 'e2e/fixtures/branched-chat-stream.sse',
-            OMNI_CHAT_STREAM_REPLAY_FIXTURE_DIR:
-                process.env.OMNI_CHAT_STREAM_REPLAY_FIXTURE_DIR ?? 'e2e/fixtures',
+            OMNI_TEST_CHAT_STREAM_REPLAY_PATH:
+                process.env.OMNI_TEST_CHAT_STREAM_REPLAY_PATH ??
+                'e2e/fixtures/branched-chat-stream.sse',
+            OMNI_TEST_CHAT_STREAM_REPLAY_FIXTURE_DIR:
+                process.env.OMNI_TEST_CHAT_STREAM_REPLAY_FIXTURE_DIR ?? 'e2e/fixtures',
         },
     },
     testDir: 'e2e',

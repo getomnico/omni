@@ -320,6 +320,24 @@ async function seedCitationRenderingChat(): Promise<SeededCitationChat> {
     return { ...seeded, assistantMessageId: assistantMessage.id }
 }
 
+async function countMessagesContaining(
+    chatId: string,
+    role: 'user' | 'assistant',
+    text: string,
+): Promise<number> {
+    const sql = postgres(dbConfig)
+    const [row] = await sql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count
+        FROM chat_messages
+        WHERE chat_id = ${chatId}
+          AND message->>'role' = ${role}
+          AND message::text LIKE ${`%${text}%`}
+    `
+    await sql.end()
+
+    return row.count
+}
+
 async function cleanupChat(seeded: SeededChat | null): Promise<void> {
     if (!seeded) return
 
@@ -565,8 +583,8 @@ test('chat renders a captured stream from a seeded chat fixture', async ({ page 
         !capturedSeedChatPath ||
             !capturedExpectedText ||
             !capturedSubmitText ||
-            !process.env.OMNI_CHAT_STREAM_REPLAY_PATH,
-        'Set OMNI_CAPTURE_SEED_CHAT_PATH, OMNI_CAPTURE_SUBMIT_TEXT, OMNI_CAPTURE_EXPECT_TEXT, and OMNI_CHAT_STREAM_REPLAY_PATH to run this capture replay test.',
+            !process.env.OMNI_TEST_CHAT_STREAM_REPLAY_PATH,
+        'Set OMNI_CAPTURE_SEED_CHAT_PATH, OMNI_CAPTURE_SUBMIT_TEXT, OMNI_CAPTURE_EXPECT_TEXT, and OMNI_TEST_CHAT_STREAM_REPLAY_PATH to run this capture replay test.',
     )
 
     let seeded: SeededChat | null = null
@@ -579,6 +597,80 @@ test('chat renders a captured stream from a seeded chat fixture', async ({ page 
         await page.keyboard.press('Enter')
 
         await expect(page.getByText(capturedExpectedText!)).toBeVisible({ timeout: 30_000 })
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('stopping a partial assistant stream allows a follow-up message to be submitted', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, 'cancel-partial-stream.sse')
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Start the partial stream')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Start the partial stream')).toBeVisible()
+        await expect(page.getByText('Partial answer before stop.')).toBeVisible()
+
+        const stopButton = page.locator('.omni-composer-send.rounded-full')
+        await expect(stopButton).toBeVisible()
+        await stopButton.click()
+        await expect(stopButton).not.toBeVisible()
+
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Follow-up after stop')
+        await page.keyboard.press('Enter')
+
+        await expect
+            .poll(() => countMessagesContaining(seeded!.chatId, 'user', 'Follow-up after stop'), {
+                message: 'follow-up user message should be persisted after stopping',
+            })
+            .toBe(1)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('stopping a partial assistant stream persists the partial content across reload', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, 'cancel-partial-stream.sse')
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Start a persisted partial stream')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Partial answer before stop.')).toBeVisible()
+
+        const stopButton = page.locator('.omni-composer-send.rounded-full')
+        await expect(stopButton).toBeVisible()
+        await stopButton.click()
+        await expect(stopButton).not.toBeVisible()
+
+        await expect
+            .poll(
+                () =>
+                    countMessagesContaining(
+                        seeded!.chatId,
+                        'assistant',
+                        'Partial answer before stop.',
+                    ),
+                { message: 'partial assistant content should be persisted to chat_messages' },
+            )
+            .toBe(1)
+
+        await page.reload()
+        await expect(page.getByText('Partial answer before stop.')).toBeVisible()
     } finally {
         await cleanupChat(seeded)
     }
@@ -609,7 +701,7 @@ test('stop button during streaming resets state so the input is ready for a new 
             await route.fulfill({
                 status: 200,
                 headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-                body: '',
+                body: 'event: end_of_stream\ndata: Stream stopped\n\n',
             })
         })
 
