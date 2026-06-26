@@ -129,6 +129,7 @@ _LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a lo
 _STREAM_TTL = 300  # seconds a finished stream stays replayable
 _STREAM_MAXLEN = 5000  # cap buffered events per run
 _CANCEL_TTL = 300
+_CANCEL_CHECK_INTERVAL_SECONDS = 1.0
 
 _background_run_tasks: set[asyncio.Task] = set()
 
@@ -1419,13 +1420,17 @@ async def stream_chat(
                 event_index = 0
                 message_stop_received = False
                 cancelled = False
+                last_cancel_check_at = 0.0
                 async for event in stream:
                     logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
 
-                    if await _is_run_cancelled(redis_client, chat_id):
-                        cancelled = True
-                        break
+                    now = asyncio.get_running_loop().time()
+                    if now - last_cancel_check_at >= _CANCEL_CHECK_INTERVAL_SECONDS:
+                        last_cancel_check_at = now
+                        if await _is_run_cancelled(redis_client, chat_id):
+                            cancelled = True
+                            break
 
                     if event.type == "message_start":
                         logger.info("Message start received.")
