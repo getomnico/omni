@@ -12,6 +12,37 @@ logger = logging.getLogger(__name__)
 DEFAULT_INLINE_TEXT_MAX_BYTES = 40 * 1024
 
 
+def _sandbox_write_error_result(
+    *,
+    file_name: str,
+    size_kb: float,
+    status_code: int,
+    detail: str,
+) -> ToolResult:
+    if status_code == 413:
+        message = (
+            f"Could not save {file_name} to the sandbox because the payload is too "
+            f"large ({size_kb:.0f} KB). Try a narrower request, fetch a smaller "
+            "range, avoid recursively resolving large schemas, or fetch only the "
+            "specific referenced types needed for the task."
+        )
+    else:
+        message = f"Could not save {file_name} to the sandbox: {detail}"
+    return ToolResult(content=[{"type": "text", "text": message}], is_error=True)
+
+
+def _response_error_detail(resp: httpx.Response) -> str:
+    try:
+        body = resp.json()
+    except ValueError:
+        return resp.text or f"HTTP {resp.status_code}"
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, str):
+            return detail
+    return resp.text or f"HTTP {resp.status_code}"
+
+
 def is_textual_content_type(content_type: str) -> bool:
     normalized = content_type.lower()
     return normalized.startswith("text/") or any(
@@ -87,7 +118,13 @@ async def write_text_to_sandbox(
                 "chat_id": chat_id,
             },
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            return _sandbox_write_error_result(
+                file_name=file_name,
+                size_kb=size_kb,
+                status_code=resp.status_code,
+                detail=_response_error_detail(resp),
+            )
 
     text_message = message or f"File saved to workspace: {file_name} ({size_kb:.0f} KB)"
     return ToolResult(content=[{"type": "text", "text": text_message}])
@@ -112,7 +149,13 @@ async def write_binary_to_sandbox(
                 "chat_id": chat_id,
             },
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            return _sandbox_write_error_result(
+                file_name=file_name,
+                size_kb=size_kb,
+                status_code=resp.status_code,
+                detail=_response_error_detail(resp),
+            )
 
     return ToolResult(
         content=[

@@ -13,7 +13,7 @@ from anthropic.types import ToolParam
 from db.documents import DocumentsRepository
 from storage import ContentStorage, PostgresContentStorage
 from tools.registry import ToolContext, ToolResult
-from tools.sandbox import write_binary_to_sandbox
+from tools.sandbox import write_binary_to_sandbox, write_text_to_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ class DocumentToolHandler:
         document_id = tool_input.get("id", "")
         # Strip the _ref: prefix if the LLM passes the raw search result reference token.
         if document_id and document_id.startswith("_ref:"):
-            document_id = document_id[len("_ref:"):]
+            document_id = document_id[len("_ref:") :]
         document_name = tool_input.get("name", document_id)
         start_line = tool_input.get("start_line")
         end_line = tool_input.get("end_line")
@@ -179,7 +179,12 @@ class DocumentToolHandler:
                         exc_info=True,
                     )
 
-            if is_binary and not has_extracted_text and self._connector_manager_url and doc.source_id:
+            if (
+                is_binary
+                and not has_extracted_text
+                and self._connector_manager_url
+                and doc.source_id
+            ):
                 return await self._fetch_binary(doc, document_name, context)
             else:
                 return await self._read_text(
@@ -279,25 +284,13 @@ class DocumentToolHandler:
             if "." not in file_name:
                 file_name += ".txt"
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                resp = await client.post(
-                    f"{self._sandbox_url}/files/write",
-                    json={
-                        "path": file_name,
-                        "content": content,
-                        "chat_id": context.chat_id,
-                    },
-                )
-                resp.raise_for_status()
-
             size_kb = len(content.encode("utf-8")) / 1024
-            return ToolResult(
-                content=[
-                    {
-                        "type": "text",
-                        "text": f"Document saved to workspace: {file_name} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
-                    }
-                ],
+            return await write_text_to_sandbox(
+                self._sandbox_url,
+                content,
+                file_name,
+                context.chat_id,
+                message=f"Document saved to workspace: {file_name} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
             )
 
         # No sandbox available, return truncated content
