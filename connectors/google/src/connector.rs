@@ -52,7 +52,7 @@ const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
 #[derive(Debug, Deserialize)]
 struct GwsSchemaRequest {
     schema: String,
-    #[serde(default = "default_resolve_refs")]
+    #[serde(default)]
     resolve_refs: bool,
 }
 
@@ -73,10 +73,6 @@ struct GwsCallRequest {
     page_all: bool,
     #[serde(default)]
     page_limit: Option<u64>,
-}
-
-fn default_resolve_refs() -> bool {
-    true
 }
 
 fn file_name_with_extension(file_name: &str, extension: &str) -> String {
@@ -824,8 +820,8 @@ impl Connector for GoogleConnector {
                         },
                         "resolve_refs": {
                             "type": "boolean",
-                            "default": true,
-                            "description": "Whether to resolve schema references"
+                            "default": false,
+                            "description": "Whether to recursively resolve schema references. Leave false by default; fetch specific referenced types separately for large Google Workspace schemas."
                         }
                     },
                     "required": ["schema"]
@@ -1215,7 +1211,18 @@ mod tests {
     }
 
     #[test]
-    fn build_gws_schema_args_resolves_refs_by_default() {
+    fn build_gws_schema_args_leaves_refs_unresolved_by_default() {
+        let args = build_gws_schema_args(&GwsSchemaRequest {
+            schema: "drive.files.list".to_string(),
+            resolve_refs: false,
+        })
+        .unwrap();
+
+        assert_eq!(args, ["schema", "drive.files.list"]);
+    }
+
+    #[test]
+    fn build_gws_schema_args_resolves_refs_when_requested() {
         let args = build_gws_schema_args(&GwsSchemaRequest {
             schema: "drive.files.list".to_string(),
             resolve_refs: true,

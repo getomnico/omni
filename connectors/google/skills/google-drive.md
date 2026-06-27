@@ -13,6 +13,13 @@ For unfamiliar Drive or editor methods, call `google_workspace_schema` first
 with schema names like `drive.files.list`, `drive.files.get`,
 `drive.permissions.create`, `docs.documents.batchUpdate`,
 `sheets.spreadsheets.values.update`, or `slides.presentations.batchUpdate`.
+Leave `resolve_refs` unset/false by default. Google discovery schemas are a type
+graph, and recursively resolving all references can produce multi-MB schemas.
+When a schema contains `$ref` values, fetch only the specific referenced type you
+need, e.g. `sheets.Request`, `sheets.UpdateCellsRequest`, `sheets.CellData`,
+`docs.Request`, or `docs.InsertTextRequest`. Use `resolve_refs: true` only for
+small schemas or when targeted type lookups are not enough.
+
 Then call `google_workspace_call` with the matching `service` (`drive`, `docs`,
 `sheets`, or `slides`), the resource path such as `files`, `permissions`,
 `documents`, `spreadsheets.values`, or `presentations`, the method, and any
@@ -68,6 +75,17 @@ e.g. `service: "sheets"`, `resource: "spreadsheets.values"`, `method:
 "update"`, `params` containing `spreadsheetId`, `range`, and
 `valueInputOption`, plus a JSON body with `values`. Use
 `sheets.spreadsheets.batchUpdate` for structural changes.
+
+For spreadsheet tasks, choose between export-and-analyze and API edits:
+- If the task is reading, analyzing, summarizing, transforming, or creating a
+  new workbook based on one or more existing sheets, exporting/fetching the
+  spreadsheet as `.xlsx` and working with it in the sandbox using Python is often
+  simpler and more reliable.
+- If the task is a specific in-place edit to an existing sheet, such as changing
+  cells, adding/removing rows or columns, adding a pivot table, creating a chart,
+  formatting ranges, or changing sheet structure, use the Sheets API. Prefer
+  `spreadsheets.values.update`/`append` for cell values and
+  `spreadsheets.batchUpdate` for structural or formatting changes.
 
 For Google Slides content edits, use the Slides API via `google_workspace_call`,
 e.g. `service: "slides"`, `resource: "presentations"`, `method:
