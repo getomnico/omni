@@ -669,29 +669,9 @@
         return childrenMap
     }
 
-    function getPathToMessage(messages: ChatMessage[], messageId: string): ChatMessage[] {
-        const messageById = new Map(messages.map((message) => [message.id, message]))
-        const path: ChatMessage[] = []
-        let current = messageById.get(messageId)
-        const seen = new Set<string>()
-
-        while (current && !seen.has(current.id)) {
-            seen.add(current.id)
-            path.push(current)
-            current = current.parentId ? messageById.get(current.parentId) : undefined
-        }
-
-        return path.reverse()
-    }
-
     // Build the display path from the message tree based on branch selections
     function getDisplayPath(chatMessages: ChatMessage[]): ChatMessage[] {
         if (chatMessages.length === 0) return []
-
-        if (activeStreamingMessageId) {
-            const streamingPath = getPathToMessage(chatMessages, activeStreamingMessageId)
-            if (streamingPath.length > 0) return streamingPath
-        }
 
         const childrenMap = buildChildrenMap(chatMessages)
 
