@@ -468,6 +468,7 @@
     let showTopShadow = $state(false)
     let bottomPadding = $state(80)
 
+    let processMessagesCallCount = 0
     let processedMessages = $state<ProcessedMessage[]>(processMessages(chatMessages))
     let processedMessagesRefreshScheduled = false
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
@@ -830,7 +831,6 @@
 
     // Converts messages into a format that makes it easy to render the messages
     // E.g., combines multiple content blocks into a single content block, handles citations, etc.
-    let processMessagesCallCount = 0
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
         const processStartedAt = performance.now()
         processMessagesCallCount += 1
