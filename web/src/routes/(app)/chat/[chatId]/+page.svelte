@@ -239,7 +239,7 @@
             const response = await fetch(`/api/chat/${data.chat.id}/stream/status`)
             if (!response.ok) return
             const status = (await response.json()) as ChatStreamStatus
-            if (status.running || status.resumable) {
+            if (status.running) {
                 streamResponse(data.chat.id)
             }
         } catch (err) {
