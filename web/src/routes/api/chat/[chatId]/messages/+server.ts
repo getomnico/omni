@@ -4,6 +4,7 @@ import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
 import type { OmniUploadBlock } from '$lib/types/message'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
+import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 
 interface MessageRequest {
     content: string
@@ -120,6 +121,21 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
                 throw error(403, 'Admin access required for agent chats')
             }
+        }
+
+        try {
+            const streamStatus = await getChatStreamStatus(chatId)
+            if (streamStatus.active) {
+                return json(
+                    {
+                        error: 'A response is still in progress for this chat. Reconnect to the stream before sending another message.',
+                        streamActive: true,
+                    },
+                    { status: 409 },
+                )
+            }
+        } catch (error) {
+            logger.warn('Could not check stream status before adding message', error, { chatId })
         }
 
         // Create the user message in MessageParam format. If there are attachments, build

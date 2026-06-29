@@ -289,9 +289,15 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                     logger.info(
                                         `Generated title for chat ${chatId}: ${result.title}`,
                                     )
-                                    controller.enqueue(
-                                        encoder.encode(sseEvent('title', { title: result.title })),
-                                    )
+                                    try {
+                                        controller.enqueue(
+                                            encoder.encode(
+                                                sseEvent('title', { title: result.title }),
+                                            ),
+                                        )
+                                    } catch {
+                                        // The browser may have disconnected while title generation ran.
+                                    }
                                 } else if (result.status === 'failed') {
                                     logger.warn('Title generation failed', {
                                         chatId,
@@ -308,7 +314,11 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                         const { done, value } = await reader.read()
 
                         if (done) {
-                            controller.close()
+                            try {
+                                controller.close()
+                            } catch {
+                                // The browser may have disconnected first.
+                            }
                             break
                         }
 
@@ -471,8 +481,16 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                     logger.error('Error in stream processing', error, { chatId })
                     const message =
                         error instanceof Error ? error.message : 'Failed to process chat stream'
-                    controller.enqueue(encoder.encode(sseEvent('stream_error', { message })))
-                    controller.close()
+                    try {
+                        controller.enqueue(encoder.encode(sseEvent('stream_error', { message })))
+                    } catch {
+                        // The browser may have disconnected already.
+                    }
+                    try {
+                        controller.close()
+                    } catch {
+                        // The browser may have disconnected already.
+                    }
                 }
             },
             async cancel() {
@@ -481,7 +499,11 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                 // continues server-side so the client can reconnect and resume.
                 // Generation is ended only via the explicit Stop endpoint.
                 logger.info('Client disconnected from stream proxy', { chatId })
-                reader.cancel()
+                try {
+                    await reader.cancel()
+                } catch {
+                    // Upstream may already be closed.
+                }
                 abortController.abort()
             },
         })

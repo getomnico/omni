@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
+import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 
 interface EditRequest {
     content: string
@@ -33,6 +34,24 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         const chat = await chatRepository.get(chatId)
         if (!chat) {
             return json({ error: 'Chat not found' }, { status: 404 })
+        }
+
+        try {
+            const streamStatus = await getChatStreamStatus(chatId)
+            if (streamStatus.active) {
+                return json(
+                    {
+                        error: 'A response is still in progress for this chat. Reconnect to the stream before editing a message.',
+                        streamActive: true,
+                    },
+                    { status: 409 },
+                )
+            }
+        } catch (error) {
+            logger.warn('Could not check stream status before editing message', error, {
+                chatId,
+                messageId,
+            })
         }
 
         // Get the original message to find its parent

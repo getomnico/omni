@@ -214,6 +214,28 @@
         statusCode?: number | null
     }
 
+    type ChatStreamStatus = {
+        active: boolean
+        running: boolean
+        resumable: boolean
+        pendingApproval: boolean
+        pendingOAuth: boolean
+    }
+
+    async function resumeActiveStreamIfNeeded() {
+        if (isStreaming || eventSource) return
+        try {
+            const response = await fetch(`/api/chat/${data.chat.id}/stream/status`)
+            if (!response.ok) return
+            const status = (await response.json()) as ChatStreamStatus
+            if (status.active) {
+                streamResponse(data.chat.id)
+            }
+        } catch (err) {
+            console.warn('Failed to check chat stream status', err)
+        }
+    }
+
     function streamErrorMessage(event: MessageEvent<string>): {
         message: string
         detail: string | null
@@ -770,7 +792,12 @@
         })
 
         if (!response.ok) {
-            console.error('Failed to edit message')
+            if (response.status === 409) {
+                void resumeActiveStreamIfNeeded()
+                toast.info('The previous response is still in progress. Reconnecting to it now.')
+            } else {
+                console.error('Failed to edit message')
+            }
             return
         }
 
@@ -1197,6 +1224,8 @@
     onMount(() => {
         if ((page.state as any).stream) {
             streamResponse(data.chat.id)
+        } else {
+            void resumeActiveStreamIfNeeded()
         }
 
         const handleScroll = () => {
@@ -1514,6 +1543,10 @@
                 // Title generation is best-effort; answer streaming should not surface its failures.
             })
 
+            eventSource.addEventListener('heartbeat', () => {
+                lastStreamEventAt = Date.now()
+            })
+
             eventSource.addEventListener('message', (event) => {
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
@@ -1759,14 +1792,19 @@
         openStream(null)
 
         // Safety net for the case where the browser never fires an 'error' event
-        // after a freeze: if the stream stalls while its connection is not open,
-        // reconnect from the last offset.
+        // after a freeze or half-open connection: if the stream goes silent, force
+        // a reconnect from the last offset. The server emits heartbeat events while
+        // the agent is legitimately idle, so a healthy long-running tool call will
+        // not trip this timer.
         if (streamWatchdog) clearInterval(streamWatchdog)
         streamWatchdog = setInterval(() => {
             if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
             const stalled = Date.now() - lastStreamEventAt > STREAM_STALL_MS
-            const notOpen = !eventSource || eventSource.readyState !== EventSource.OPEN
-            if (stalled && notOpen && !reconnectTimer) reconnectStream?.()
+            if (stalled && !reconnectTimer) {
+                eventSource?.close()
+                eventSource = null
+                reconnectStream?.()
+            }
         }, 5000)
     }
 
@@ -1836,7 +1874,12 @@
 
         if (!response.ok) {
             userMessage = userMsg
-            console.error('Failed to send message to chat session')
+            if (response.status === 409) {
+                void resumeActiveStreamIfNeeded()
+                toast.info('The previous response is still in progress. Reconnecting to it now.')
+            } else {
+                console.error('Failed to send message to chat session')
+            }
             return
         }
 
