@@ -432,6 +432,81 @@ def _message_content_blocks(message: MessageParam) -> list[ContentBlockParam]:
     return list(cast(Iterable[ContentBlockParam], content))
 
 
+def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockParam:
+    return ToolResultBlockParam(
+        type="tool_result",
+        tool_use_id=tool_use["id"],
+        content=[
+            {
+                "type": "text",
+                "text": (
+                    f"Tool call {tool_use['name']} did not complete because the previous response was interrupted. "
+                    "Treat this tool call as failed and retry it if the result is still needed."
+                ),
+            }
+        ],
+        is_error=True,
+    )
+
+
+def _tool_use_blocks(message: MessageParam) -> list[ToolUseBlockParam]:
+    if message.get("role") != "assistant":
+        return []
+    return [
+        cast(ToolUseBlockParam, block)
+        for block in _message_content_blocks(message)
+        if block["type"] == "tool_use"
+    ]
+
+
+def _tool_result_ids(message: MessageParam) -> set[str]:
+    if message.get("role") != "user":
+        return set()
+    return {
+        cast(ToolResultBlockParam, block)["tool_use_id"]
+        for block in _message_content_blocks(message)
+        if block["type"] == "tool_result"
+    }
+
+
+def _repair_interrupted_tool_calls(
+    messages: list[MessageParam],
+) -> tuple[list[MessageParam], int]:
+    repaired: list[MessageParam] = []
+    repair_count = 0
+
+    for idx, message in enumerate(messages):
+        tool_uses = _tool_use_blocks(message)
+        if not tool_uses:
+            repaired.append(message)
+            continue
+
+        next_message = messages[idx + 1] if idx + 1 < len(messages) else None
+        answered_ids = _tool_result_ids(next_message) if next_message else set()
+        missing = [
+            tool_use for tool_use in tool_uses if tool_use["id"] not in answered_ids
+        ]
+
+        repaired.append(message)
+        if not missing:
+            continue
+
+        missing_results = [_interrupted_tool_result(tool_use) for tool_use in missing]
+        if answered_ids and next_message is not None:
+            content = next_message["content"]
+            if isinstance(content, list):
+                next_message = cast(MessageParam, dict(next_message))
+                next_message["content"] = [*content, *missing_results]
+                messages[idx + 1] = next_message
+                repair_count += len(missing_results)
+                continue
+
+        repaired.append(MessageParam(role="user", content=missing_results))
+        repair_count += len(missing_results)
+
+    return repaired, repair_count
+
+
 def _extract_text_for_title(
     content: str | list[ContentBlockParam] | None,
 ) -> str | None:
@@ -1247,6 +1322,12 @@ async def stream_chat(
                 request.app.state, "web_fetch_provider", None
             )
             is not None,
+        )
+
+    messages, repaired_tool_calls = _repair_interrupted_tool_calls(messages)
+    if repaired_tool_calls:
+        logger.warning(
+            f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
         )
 
     # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).

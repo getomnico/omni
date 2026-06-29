@@ -3,7 +3,11 @@ import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
 import type { OmniUploadBlock } from '$lib/types/message'
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
+import type {
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+} from '@anthropic-ai/sdk/resources/messages'
 import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 
 interface MessageRequest {
@@ -13,6 +17,42 @@ interface MessageRequest {
 }
 
 type UserMessageBlock = OmniUploadBlock | TextBlockParam
+
+type AssistantToolUseBlock = {
+    type: 'tool_use'
+    id: string
+    name: string
+}
+
+function interruptedToolResultMessage(message: unknown): MessageParam | null {
+    if (!message || typeof message !== 'object') return null
+    const candidate = message as Record<string, unknown>
+    if (candidate.role !== 'assistant' || !Array.isArray(candidate.content)) return null
+
+    const toolUses = candidate.content.filter(
+        (block): block is AssistantToolUseBlock =>
+            !!block &&
+            typeof block === 'object' &&
+            (block as Record<string, unknown>).type === 'tool_use' &&
+            typeof (block as Record<string, unknown>).id === 'string' &&
+            typeof (block as Record<string, unknown>).name === 'string',
+    )
+    if (toolUses.length === 0) return null
+
+    const content: ToolResultBlockParam[] = toolUses.map((toolUse) => ({
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: [
+            {
+                type: 'text',
+                text: `Tool call ${toolUse.name} did not complete because the previous response was interrupted. Treat this tool call as failed and retry it if the result is still needed.`,
+            },
+        ],
+        is_error: true,
+    }))
+
+    return { role: 'user', content }
+}
 
 export const GET: RequestHandler = async ({ params, locals }) => {
     const logger = locals.logger.child('chat')
@@ -155,12 +195,28 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             userMessage = { role: 'user', content: trimmedText }
         }
 
-        // Determine parentId: use provided value, or find the last message in the active path
+        // Determine parentId: use provided value, or find the last message in the active path.
+        // If the active leaf is an assistant tool_use without a tool_result, first insert an
+        // error tool_result so the next user turn does not create invalid provider history.
         let parentId = messageRequest.parentId
         if (!parentId) {
             const lastMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
             if (lastMessage) {
-                parentId = lastMessage.id
+                const repairMessage = interruptedToolResultMessage(lastMessage.message)
+                if (repairMessage) {
+                    const savedRepairMessage = await chatMessageRepository.create(
+                        chatId,
+                        repairMessage,
+                        lastMessage.id,
+                    )
+                    parentId = savedRepairMessage.id
+                    logger.warn('Inserted failed tool_result for interrupted tool call', {
+                        chatId,
+                        repairMessageId: savedRepairMessage.id,
+                    })
+                } else {
+                    parentId = lastMessage.id
+                }
             }
         }
 
