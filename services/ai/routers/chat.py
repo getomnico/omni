@@ -914,12 +914,12 @@ async def _update_tool_approval_status(
         )
 
 
-async def _latest_tool_approval(
+async def _tool_approvals(
     chat_id: str, approval_type: str, statuses: set[str]
-) -> dict | None:
+) -> list[dict]:
     pool = await MessagesRepository()._get_pool()
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
+        rows = await conn.fetch(
             """
             SELECT id, tool_name, tool_input, tool_call_id, source_id, source_type,
                    provider, oauth_start_url, status
@@ -927,28 +927,53 @@ async def _latest_tool_approval(
             WHERE chat_id = $1
               AND approval_type = $2
               AND status = ANY($3::text[])
-            ORDER BY created_at DESC
-            LIMIT 1
+            ORDER BY created_at ASC
             """,
             chat_id,
             approval_type,
             list(statuses),
         )
-    if not row:
-        return None
-    return {
-        "approval_id": row["id"],
-        "status": row["status"],
-        "tool_call": {
-            "id": row["tool_call_id"],
-            "name": row["tool_name"],
-            "input": _jsonb_value(row["tool_input"]),
-        },
-        "source_id": row["source_id"],
-        "source_type": row["source_type"],
-        "provider": row["provider"],
-        "oauth_start_url": row["oauth_start_url"],
+
+    return [
+        {
+            "approval_id": row["id"],
+            "status": row["status"],
+            "tool_call": {
+                "id": row["tool_call_id"],
+                "name": row["tool_name"],
+                "input": _jsonb_value(row["tool_input"]),
+            },
+            "source_id": row["source_id"],
+            "source_type": row["source_type"],
+            "provider": row["provider"],
+            "oauth_start_url": row["oauth_start_url"],
+        }
+        for row in rows
+    ]
+
+
+def _approval_required_event(approvals: list[dict]) -> dict:
+    first = approvals[0]
+    event = {
+        "approval_id": first["approval_id"],
+        "tool_name": first["tool_call"]["name"],
+        "tool_input": first["tool_call"]["input"],
+        "tool_call_id": first["tool_call"]["id"],
+        "source_id": first.get("source_id"),
+        "source_type": first.get("source_type"),
+        "approvals": [
+            {
+                "approval_id": approval["approval_id"],
+                "tool_name": approval["tool_call"]["name"],
+                "tool_input": approval["tool_call"]["input"],
+                "tool_call_id": approval["tool_call"]["id"],
+                "source_id": approval.get("source_id"),
+                "source_type": approval.get("source_type"),
+            }
+            for approval in approvals
+        ],
     }
+    return event
 
 
 @router.get("/chat/{chat_id}/stream_status")
@@ -956,10 +981,8 @@ async def stream_status(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
     redis_client = getattr(request.app.state, "redis_client", None)
-    pending_approval = bool(
-        await _latest_tool_approval(chat_id, "approval", {"pending"})
-    )
-    pending_oauth = bool(await _latest_tool_approval(chat_id, "oauth", {"pending"}))
+    pending_approval = bool(await _tool_approvals(chat_id, "approval", {"pending"}))
+    pending_oauth = bool(await _tool_approvals(chat_id, "oauth", {"pending"}))
     if redis_client is None:
         return {
             "running": False,
@@ -1032,8 +1055,8 @@ async def stream_chat(
     memory_write_key: str | None = (
         None  # None = no write (e.g. agent chats are read-only)
     )
-    pending = None
-    pending_oauth = None
+    pending: list[dict] = []
+    pending_oauth: list[dict] = []
 
     if chat.agent_id:
         # --- Agent chat setup ---
@@ -1081,7 +1104,7 @@ async def stream_chat(
         # Agent chats are read-only; no connector handler, so the per-turn
         # builder collapses to just the always-on handlers.
         loaded_toolsets: set[str] = set()
-        pending = None  # no approval flow for agent chats
+        pending = []  # no approval flow for agent chats
 
         # Build agent chat system prompt with run history
         run_repo = AgentRunRepository()
@@ -1192,10 +1215,10 @@ async def stream_chat(
         registry = build_result.registry
 
         # Check for pending approval / OAuth resume flow from durable state.
-        pending = await _latest_tool_approval(
+        pending = await _tool_approvals(
             chat_id, "approval", {"pending", "approved", "denied"}
         )
-        pending_oauth = await _latest_tool_approval(chat_id, "oauth", {"pending"})
+        pending_oauth = await _tool_approvals(chat_id, "oauth", {"pending"})
 
         active_sources = [
             s for s in build_result.sources if s.is_active and not s.is_deleted
@@ -1334,56 +1357,81 @@ async def stream_chat(
             conversation_messages = messages.copy()
 
             if pending or pending_oauth:
-                intervention = pending or pending_oauth
-                approval_type = "approval" if pending else "oauth"
-                logger.info(f"Resuming from pending {approval_type} for chat {chat_id}")
-
-                tool_call = intervention["tool_call"]
-                approval_id = intervention.get("approval_id")
-                approval_status = intervention.get("status")
-
-                if pending and approval_status not in {"approved", "denied"}:
-                    approval_event = {
-                        "approval_id": approval_id,
-                        "tool_name": tool_call["name"],
-                        "tool_input": tool_call["input"],
+                if pending_oauth:
+                    intervention = pending_oauth[0]
+                    logger.info(f"Resuming from pending oauth for chat {chat_id}")
+                    tool_call = intervention["tool_call"]
+                    oauth_event = {
                         "tool_call_id": tool_call["id"],
+                        "tool_name": tool_call["name"],
                         "source_id": intervention.get("source_id"),
                         "source_type": intervention.get("source_type"),
+                        "provider": intervention.get("provider"),
+                        "oauth_start_url": intervention.get("oauth_start_url"),
                     }
-                    yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
+                    yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
+                    yield "event: end_of_stream\ndata: OAuth required\n\n"
+                    return
+
+                logger.info(f"Resuming from pending approval batch for chat {chat_id}")
+                if any(approval["status"] == "pending" for approval in pending):
+                    yield f"event: approval_required\ndata: {json.dumps(_approval_required_event(pending))}\n\n"
                     yield "event: end_of_stream\ndata: Approval required\n\n"
                     return
 
-                if pending and approval_status == "denied":
-                    tool_result = ToolResultBlockParam(
-                        type="tool_result",
-                        tool_use_id=tool_call["id"],
-                        content=[
-                            {
-                                "type": "text",
-                                "text": "The user denied approval for this tool call.",
-                            }
-                        ],
-                        is_error=True,
-                    )
-                else:
-                    context = ToolContext(
-                        chat_id=chat_id,
-                        user_id=tool_user_id,
-                        user_email=user_email,
-                        user_configuration=user_configuration,
-                        skip_permission_check=tool_skip_perm,
-                    )
-                    result = await registry.execute(
-                        tool_call["name"], tool_call["input"], context
-                    )
-                    if result.oauth_required is not None:
-                        payload = result.oauth_required
-                        if pending:
-                            await _update_tool_approval_status(
-                                approval_id, "completed", chat.user_id
-                            )
+                approvals_by_tool_call_id = {
+                    approval["tool_call"]["id"]: approval for approval in pending
+                }
+                answered_ids = (
+                    _tool_result_ids(conversation_messages[-1])
+                    if conversation_messages
+                    else set()
+                )
+                tool_calls_to_resume: list[ToolUseBlockParam] = []
+                for message in reversed(conversation_messages):
+                    tool_uses = _tool_use_blocks(message)
+                    if not tool_uses:
+                        answered_ids.update(_tool_result_ids(message))
+                        continue
+                    tool_calls_to_resume = [
+                        tool_use
+                        for tool_use in tool_uses
+                        if tool_use["id"] not in answered_ids
+                    ]
+                    break
+
+                context = ToolContext(
+                    chat_id=chat_id,
+                    user_id=tool_user_id,
+                    user_email=user_email,
+                    user_configuration=user_configuration,
+                    skip_permission_check=tool_skip_perm,
+                )
+                tool_results: list[ToolResultBlockParam] = []
+                completed_approval_ids: list[str] = []
+                for tool_call in tool_calls_to_resume:
+                    approval = approvals_by_tool_call_id.get(tool_call["id"])
+                    if approval and approval["status"] == "denied":
+                        tool_result = ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=tool_call["id"],
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": "The user denied approval for this tool call.",
+                                }
+                            ],
+                            is_error=True,
+                        )
+                        completed_approval_ids.append(approval["approval_id"])
+                    else:
+                        result = await registry.execute(
+                            tool_call["name"], tool_call["input"], context
+                        )
+                        if result.oauth_required is not None:
+                            payload = result.oauth_required
+                            if approval:
+                                completed_approval_ids.append(approval["approval_id"])
                             await _save_pending_tool_approval(
                                 chat_id,
                                 chat.user_id,
@@ -1394,38 +1442,48 @@ async def stream_chat(
                                 provider=payload.provider,
                                 oauth_start_url=payload.oauth_start_url,
                             )
-                        oauth_event = {
-                            "tool_call_id": tool_call["id"],
-                            "tool_name": tool_call["name"],
-                            "source_id": payload.source_id,
-                            "source_type": payload.source_type,
-                            "provider": payload.provider,
-                            "oauth_start_url": payload.oauth_start_url,
-                        }
-                        yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                        yield "event: end_of_stream\ndata: OAuth required\n\n"
-                        return
-                    tool_result = ToolResultBlockParam(
-                        type="tool_result",
-                        tool_use_id=tool_call["id"],
-                        content=result.content,
-                        is_error=result.is_error,
+                            oauth_event = {
+                                "tool_call_id": tool_call["id"],
+                                "tool_name": tool_call["name"],
+                                "source_id": payload.source_id,
+                                "source_type": payload.source_type,
+                                "provider": payload.provider,
+                                "oauth_start_url": payload.oauth_start_url,
+                            }
+                            if tool_results:
+                                tool_result_message = MessageParam(
+                                    role="user", content=tool_results
+                                )
+                                conversation_messages.append(tool_result_message)
+                                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+                            for approval_id in completed_approval_ids:
+                                await _update_tool_approval_status(
+                                    approval_id, "completed", chat.user_id
+                                )
+                            yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
+                            yield "event: end_of_stream\ndata: OAuth required\n\n"
+                            return
+                        tool_result = ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=tool_call["id"],
+                            content=result.content,
+                            is_error=result.is_error,
+                        )
+                        if approval:
+                            completed_approval_ids.append(approval["approval_id"])
+
+                    tool_results.append(tool_result)
+                    yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
+
+                if tool_results:
+                    tool_result_message = MessageParam(
+                        role="user", content=tool_results
                     )
-
-                tool_result_message = MessageParam(role="user", content=[tool_result])
-                conversation_messages.append(tool_result_message)
-                yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-                await _update_tool_approval_status(
-                    approval_id, "completed", chat.user_id
-                )
-
-                conversation_messages, repaired_tool_calls = (
-                    _repair_interrupted_tool_calls(conversation_messages)
-                )
-                if repaired_tool_calls:
-                    logger.warning(
-                        f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) after intervention resume in chat {chat_id}"
+                    conversation_messages.append(tool_result_message)
+                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+                for approval_id in completed_approval_ids:
+                    await _update_tool_approval_status(
+                        approval_id, "completed", chat.user_id
                     )
 
             logger.info(
@@ -1670,15 +1728,12 @@ async def stream_chat(
                     )
                     break
 
-                tool_results: list[ToolResultBlockParam] = []
+                approval_required: list[dict] = []
                 for tool_call in tool_calls:
                     tool_name = tool_call["name"]
                     tool_input = tool_call["input"]
-
                     if registry.requires_approval(tool_name):
-                        logger.info(
-                            f"Tool {tool_name} requires approval, pausing stream"
-                        )
+                        logger.info(f"Tool {tool_name} requires approval")
                         approval_id = await _save_pending_tool_approval(
                             chat_id,
                             chat.user_id,
@@ -1687,17 +1742,28 @@ async def stream_chat(
                             source_id=tool_input.get("source_id"),
                             source_type=tool_input.get("source_type"),
                         )
-                        approval_event = {
-                            "approval_id": approval_id,
-                            "tool_name": tool_name,
-                            "tool_input": tool_input,
-                            "tool_call_id": tool_call["id"],
-                            "source_id": tool_input.get("source_id"),
-                            "source_type": tool_input.get("source_type"),
-                        }
-                        yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
-                        yield "event: end_of_stream\ndata: Approval required\n\n"
-                        return
+                        approval_required.append(
+                            {
+                                "approval_id": approval_id,
+                                "status": "pending",
+                                "tool_call": tool_call,
+                                "source_id": tool_input.get("source_id"),
+                                "source_type": tool_input.get("source_type"),
+                            }
+                        )
+
+                if approval_required:
+                    logger.info(
+                        f"Pausing stream for {len(approval_required)} approval-required tool call(s)"
+                    )
+                    yield f"event: approval_required\ndata: {json.dumps(_approval_required_event(approval_required))}\n\n"
+                    yield "event: end_of_stream\ndata: Approval required\n\n"
+                    return
+
+                tool_results: list[ToolResultBlockParam] = []
+                for tool_call in tool_calls:
+                    tool_name = tool_call["name"]
+                    tool_input = tool_call["input"]
 
                     result = await registry.execute(tool_name, tool_input, context)
                     if result.oauth_required is not None:

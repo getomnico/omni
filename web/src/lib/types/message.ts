@@ -65,13 +65,17 @@ export type ToolMessageContent = {
     oauthRequired?: OAuthRequired
 }
 
-export type ApprovalRequiredEvent = {
+export type ApprovalRequiredItem = {
     approval_id: string
     tool_name: string
     tool_input: Record<string, unknown>
     tool_call_id: string
     source_id?: string | null
     source_type?: string | null
+}
+
+export type ApprovalRequiredEvent = ApprovalRequiredItem & {
+    approvals?: ApprovalRequiredItem[]
 }
 
 // Wire shape emitted by the AI service before the web layer enriches it

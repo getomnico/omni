@@ -23,35 +23,53 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 
     try {
         const body = await request.json()
-        const { approvalId, decision } = body as {
-            approvalId: string
+        const { approvalId, approvalIds, decision } = body as {
+            approvalId?: string
+            approvalIds?: string[]
             decision: 'approved' | 'denied'
         }
+        const ids = approvalIds ?? (approvalId ? [approvalId] : [])
 
-        if (!approvalId || !decision) {
-            return json({ error: 'approvalId and decision are required' }, { status: 400 })
+        if (ids.length === 0 || !decision) {
+            return json(
+                { error: 'approvalId/approvalIds and decision are required' },
+                { status: 400 },
+            )
         }
 
         if (decision !== 'approved' && decision !== 'denied') {
             return json({ error: 'decision must be "approved" or "denied"' }, { status: 400 })
         }
 
-        // Update the approval record in the database
-        const approval = await toolApprovalRepository.resolve(approvalId, decision, locals.user.id)
-        if (!approval) {
-            return json({ error: 'Approval not found' }, { status: 404 })
+        const approvals = []
+        for (const id of ids) {
+            const approval = await toolApprovalRepository.get(id)
+            if (!approval) {
+                return json({ error: `Approval ${id} not found` }, { status: 404 })
+            }
+            if (approval.chatId !== chatId || approval.userId !== locals.user.id) {
+                return json({ error: 'Forbidden' }, { status: 403 })
+            }
+            approvals.push(approval)
         }
+
+        const resolvedApprovals = await toolApprovalRepository.resolveMany(
+            ids,
+            decision,
+            locals.user.id,
+        )
 
         logger.info('Tool approval resolved', {
             chatId,
-            approvalId,
+            approvalIds: ids,
             decision,
-            toolName: approval.toolName,
+            toolNames: approvals.map((approval) => approval.toolName),
         })
 
         return json({
             status: decision,
-            approvalId,
+            approvalId: ids[0],
+            approvalIds: resolvedApprovals.map((approval) => approval.id),
         })
     } catch (error) {
         logger.error('Error processing tool approval', error, { chatId })

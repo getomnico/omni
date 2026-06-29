@@ -1,4 +1,4 @@
-import { eq, and, desc } from 'drizzle-orm'
+import { eq, and, asc, desc } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { db } from './index'
 import { toolApprovals } from './schema'
@@ -96,6 +96,19 @@ export class ToolApprovalRepository {
         return approval || null
     }
 
+    async resolveMany(
+        approvalIds: string[],
+        status: 'approved' | 'denied',
+        resolvedBy: string,
+    ): Promise<ToolApproval[]> {
+        const resolved: ToolApproval[] = []
+        for (const approvalId of approvalIds) {
+            const approval = await this.resolve(approvalId, status, resolvedBy)
+            if (approval) resolved.push(approval)
+        }
+        return resolved
+    }
+
     async getPendingForChat(
         chatId: string,
         approvalType?: 'approval' | 'oauth',
@@ -113,6 +126,22 @@ export class ToolApprovalRepository {
             .limit(1)
 
         return approval || null
+    }
+
+    async getPendingForChatAll(
+        chatId: string,
+        approvalType?: 'approval' | 'oauth',
+    ): Promise<ToolApproval[]> {
+        const filters = [eq(toolApprovals.chatId, chatId), eq(toolApprovals.status, 'pending')]
+        if (approvalType) {
+            filters.push(eq(toolApprovals.approvalType, approvalType))
+        }
+
+        return this.db
+            .select()
+            .from(toolApprovals)
+            .where(and(...filters))
+            .orderBy(asc(toolApprovals.createdAt))
     }
 }
 

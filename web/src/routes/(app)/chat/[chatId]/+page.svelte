@@ -111,16 +111,7 @@
             activeStreamingMessageId = null
             editingMessageId = null
             uploadFilenames = { ...data.uploadFilenames }
-            pendingApproval = data.pendingApproval
-                ? {
-                      approval_id: data.pendingApproval.id,
-                      tool_name: data.pendingApproval.toolName,
-                      tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
-                      tool_call_id: data.pendingApproval.toolCallId ?? '',
-                      source_id: data.pendingApproval.sourceId,
-                      source_type: data.pendingApproval.sourceType,
-                  }
-                : null
+            pendingApproval = pendingApprovalFromData()
             markChatMessagesChanged()
         }
     })
@@ -371,18 +362,27 @@
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
-    let pendingApproval = $state<ApprovalRequiredEvent | null>(
-        data.pendingApproval
-            ? {
-                  approval_id: data.pendingApproval.id,
-                  tool_name: data.pendingApproval.toolName,
-                  tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
-                  tool_call_id: data.pendingApproval.toolCallId ?? '',
-                  source_id: data.pendingApproval.sourceId,
-                  source_type: data.pendingApproval.sourceType,
-              }
-            : null,
-    )
+    function pendingApprovalFromData(): ApprovalRequiredEvent | null {
+        const approvals = data.pendingApprovals.length > 0 ? data.pendingApprovals : []
+        const first = approvals[0]
+        if (!first) return null
+
+        const mapped = approvals.map((approval) => ({
+            approval_id: approval.id,
+            tool_name: approval.toolName,
+            tool_input: approval.toolInput as Record<string, unknown>,
+            tool_call_id: approval.toolCallId ?? '',
+            source_id: approval.sourceId,
+            source_type: approval.sourceType,
+        }))
+
+        return {
+            ...mapped[0],
+            approvals: mapped,
+        }
+    }
+
+    let pendingApproval = $state<ApprovalRequiredEvent | null>(pendingApprovalFromData())
 
     type ApprovalInputDisplayField = {
         label: string
@@ -1977,12 +1977,16 @@
             return
         }
 
-        const approvalId = pendingApproval.approval_id
+        const approvalIds = pendingApproval.approvals?.map((approval) => approval.approval_id) ?? [
+            pendingApproval.approval_id,
+        ]
+        const approvalId = approvalIds[0]
 
         try {
             console.log('Submitting tool approval decision', {
                 decision,
                 approvalId,
+                approvalIds,
                 chatId: data.chat.id,
             })
             const response = await fetch(`/api/chat/${data.chat.id}/approve`, {
@@ -1990,12 +1994,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     approvalId,
+                    approvalIds,
                     decision,
                 }),
             })
             console.log('Tool approval decision response received', {
                 decision,
                 approvalId,
+                approvalIds,
                 status: response.status,
                 ok: response.ok,
             })
@@ -2005,6 +2011,7 @@
                 console.error('Failed to submit approval decision', {
                     decision,
                     approvalId,
+                    approvalIds,
                     status: response.status,
                     responseText,
                 })
@@ -2012,10 +2019,14 @@
             }
 
             pendingApproval = null
-            console.log('Cleared pending tool approval', { decision, approvalId })
+            console.log('Cleared pending tool approval', { decision, approvalId, approvalIds })
 
             if (decision === 'approved') {
-                console.log('Resuming stream after approval', { approvalId, chatId: data.chat.id })
+                console.log('Resuming stream after approval', {
+                    approvalId,
+                    approvalIds,
+                    chatId: data.chat.id,
+                })
                 // Re-trigger stream to resume execution
                 streamResponse(data.chat.id)
             }
@@ -2574,21 +2585,43 @@
 
                                     <!-- Action summary -->
                                     <Card.Content class="px-5 py-4">
+                                        {@const approvalItems = pendingApproval.approvals ?? [
+                                            pendingApproval,
+                                        ]}
                                         {@const approvalFields = approvalInputDisplayFields(
                                             pendingApproval.tool_input,
                                         )}
                                         <div class="space-y-4">
                                             <div class="space-y-1">
                                                 <div class="text-sm font-medium">
-                                                    Omni wants to {approvalActionLabel(
-                                                        pendingApproval.tool_name,
-                                                    )}.
+                                                    {#if approvalItems.length === 1}
+                                                        Omni wants to {approvalActionLabel(
+                                                            pendingApproval.tool_name,
+                                                        )}.
+                                                    {:else}
+                                                        Omni wants to perform {approvalItems.length}
+                                                        actions.
+                                                    {/if}
                                                 </div>
                                                 <p class="text-muted-foreground text-xs">
                                                     Review the important details below before
-                                                    approving this action.
+                                                    approving {approvalItems.length === 1
+                                                        ? 'this action'
+                                                        : 'these actions'}.
                                                 </p>
                                             </div>
+
+                                            {#if approvalItems.length > 1}
+                                                <div class="space-y-1 text-[13px]">
+                                                    {#each approvalItems as approval}
+                                                        <div>
+                                                            • {approvalActionLabel(
+                                                                approval.tool_name,
+                                                            )}
+                                                        </div>
+                                                    {/each}
+                                                </div>
+                                            {/if}
 
                                             {#if approvalFields.length > 0}
                                                 <div class="space-y-2 text-[13px]">
@@ -2701,21 +2734,36 @@
                             </div>
                         </Card.Header>
                         <Card.Content class="px-5 py-4">
+                            {@const approvalItems = pendingApproval.approvals ?? [pendingApproval]}
                             {@const approvalFields = approvalInputDisplayFields(
                                 pendingApproval.tool_input,
                             )}
                             <div class="space-y-4">
                                 <div class="space-y-1">
                                     <div class="text-sm font-medium">
-                                        Omni wants to {approvalActionLabel(
-                                            pendingApproval.tool_name,
-                                        )}.
+                                        {#if approvalItems.length === 1}
+                                            Omni wants to {approvalActionLabel(
+                                                pendingApproval.tool_name,
+                                            )}.
+                                        {:else}
+                                            Omni wants to perform {approvalItems.length} actions.
+                                        {/if}
                                     </div>
                                     <p class="text-muted-foreground text-xs">
-                                        Review the important details below before approving this
-                                        action.
+                                        Review the important details below before approving {approvalItems.length ===
+                                        1
+                                            ? 'this action'
+                                            : 'these actions'}.
                                     </p>
                                 </div>
+
+                                {#if approvalItems.length > 1}
+                                    <div class="space-y-1 text-[13px]">
+                                        {#each approvalItems as approval}
+                                            <div>• {approvalActionLabel(approval.tool_name)}</div>
+                                        {/each}
+                                    </div>
+                                {/if}
 
                                 {#if approvalFields.length > 0}
                                     <div class="space-y-2 text-[13px]">

@@ -73,7 +73,8 @@ export const load = async ({ params, locals, fetch }) => {
 
     const uploadIds = collectUploadIds(messages)
     const uploadFilenames = await resolveUploadFilenames(uploadIds, fetch)
-    const pendingApproval = await toolApprovalRepository.getPendingForChat(chat.id, 'approval')
+    const pendingApprovals = await toolApprovalRepository.getPendingForChatAll(chat.id, 'approval')
+    const pendingApproval = pendingApprovals[0] ?? null
     const pendingOAuth = await toolApprovalRepository.getPendingForChat(chat.id, 'oauth')
 
     return {
@@ -84,6 +85,7 @@ export const load = async ({ params, locals, fetch }) => {
         agent,
         uploadFilenames,
         pendingApproval,
+        pendingApprovals,
         pendingOAuth,
     }
 }
