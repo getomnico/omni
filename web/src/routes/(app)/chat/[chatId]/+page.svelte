@@ -111,17 +111,16 @@
             activeStreamingMessageId = null
             editingMessageId = null
             uploadFilenames = { ...data.uploadFilenames }
-            pendingApproval =
-                data.pendingApproval && data.pendingApproval.toolCallId
-                    ? {
-                          approval_id: data.pendingApproval.id,
-                          tool_name: data.pendingApproval.toolName,
-                          tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
-                          tool_call_id: data.pendingApproval.toolCallId,
-                          source_id: data.pendingApproval.sourceId,
-                          source_type: data.pendingApproval.sourceType,
-                      }
-                    : null
+            pendingApproval = data.pendingApproval
+                ? {
+                      approval_id: data.pendingApproval.id,
+                      tool_name: data.pendingApproval.toolName,
+                      tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
+                      tool_call_id: data.pendingApproval.toolCallId ?? '',
+                      source_id: data.pendingApproval.sourceId,
+                      source_type: data.pendingApproval.sourceType,
+                  }
+                : null
             markChatMessagesChanged()
         }
     })
@@ -240,7 +239,7 @@
             const response = await fetch(`/api/chat/${data.chat.id}/stream/status`)
             if (!response.ok) return
             const status = (await response.json()) as ChatStreamStatus
-            if (status.active) {
+            if (status.running || status.resumable) {
                 streamResponse(data.chat.id)
             }
         } catch (err) {
@@ -373,12 +372,12 @@
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
     let pendingApproval = $state<ApprovalRequiredEvent | null>(
-        data.pendingApproval && data.pendingApproval.toolCallId
+        data.pendingApproval
             ? {
                   approval_id: data.pendingApproval.id,
                   tool_name: data.pendingApproval.toolName,
                   tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
-                  tool_call_id: data.pendingApproval.toolCallId,
+                  tool_call_id: data.pendingApproval.toolCallId ?? '',
                   source_id: data.pendingApproval.sourceId,
                   source_type: data.pendingApproval.sourceType,
               }
@@ -1340,6 +1339,7 @@
 
         let streamCompleted = false
         let messageEventsReceived = 0
+        let pauseEventReceived = false
         reconnectAttempts = 0
 
         const nextTempMessageId = () => `temp-${Date.now()}-${tempMessageCounter++}`
@@ -1693,6 +1693,7 @@
             })
 
             eventSource.addEventListener('approval_required', (event) => {
+                pauseEventReceived = true
                 try {
                     const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
                     pendingApproval = approvalData
@@ -1708,6 +1709,7 @@
             })
 
             eventSource.addEventListener('oauth_required', (event) => {
+                pauseEventReceived = true
                 try {
                     const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
                     oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
@@ -1775,7 +1777,7 @@
                 activeStreamChatId = null
                 clearReconnectState()
 
-                if (messageEventsReceived === 0 && !error && !wasStopping) {
+                if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
                     error = 'Failed to generate response. Please try again.'
                 }
             })
