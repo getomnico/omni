@@ -32,6 +32,6 @@ export async function getChatStreamStatus(chatId: string): Promise<ChatStreamSta
         resumable,
         pendingApproval,
         pendingOAuth,
-        active: running || pendingApproval || pendingOAuth,
+        active: running,
     }
 }
