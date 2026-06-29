@@ -1832,22 +1832,24 @@ async def stream_chat(
                         logger.info(
                             f"Tool {tool_name} requires approval, pausing stream"
                         )
+                        tool_input = tool_call["input"]
+                        approval_action_info = {
+                            "source_id": tool_input.get("source_id"),
+                            "source_type": tool_input.get("source_type"),
+                        }
                         approval_id = await _save_pending_approval(
                             chat_id,
                             chat.user_id,
                             tool_call,
+                            approval_action_info,
                         )
                         approval_payload = ApprovalRequiredPayload(
                             approval_id=approval_id,
                             tool_name=tool_name,
-                            tool_input=tool_call["input"],
+                            tool_input=tool_input,
                             tool_call_id=tool_call["id"],
-                            source_id=(
-                                action_info.get("source_id") if action_info else None
-                            ),
-                            source_type=(
-                                action_info.get("source_type") if action_info else None
-                            ),
+                            source_id=approval_action_info["source_id"],
+                            source_type=approval_action_info["source_type"],
                         )
                         tool_result = ToolResultBlockParam(
                             type="tool_result",
