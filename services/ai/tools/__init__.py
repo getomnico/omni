@@ -9,6 +9,7 @@ from .sandbox_handler import SandboxToolHandler
 from .document_handler import DocumentToolHandler
 from .people_handler import PeopleSearchHandler
 from .web_handler import WebToolHandler
+from .mcp_capability_handler import McpCapabilityHandler
 
 __all__ = [
     "SearcherTool",
@@ -25,4 +26,5 @@ __all__ = [
     "DocumentToolHandler",
     "PeopleSearchHandler",
     "WebToolHandler",
+    "McpCapabilityHandler",
 ]

@@ -74,6 +74,7 @@ from tools.connector_handler import (
     sources_from_sync_overview_response,
 )
 from tools.meta_handler import MetaToolHandler, OnLoad
+from tools.mcp_capability_handler import McpCapabilityHandler
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -579,6 +580,18 @@ async def _build_registry(
         registry.register(meta_handler)
         always_on_handlers.append(meta_handler)
 
+    if CONNECTOR_MANAGER_URL:
+        mcp_handler = McpCapabilityHandler(
+            connector_manager_url=CONNECTOR_MANAGER_URL,
+            searcher_client=request.app.state.searcher_tool.client,
+            prefetched_sources=sources,
+        )
+        await mcp_handler.refresh()
+        if mcp_handler.has_capabilities():
+            await mcp_handler.publish_capabilities()
+            registry.register(mcp_handler)
+            always_on_handlers.append(mcp_handler)
+
     # Fetch dynamic operator values for enriched search tool description
     active_sources = [s for s in sources if s.is_active and not s.is_deleted]
     connected_source_types = list({s.source_type for s in active_sources})
@@ -691,6 +704,19 @@ async def _build_agent_chat_registry(
         await connector_handler._ensure_initialized()
         if connector_handler.search_operators:
             search_operators = connector_handler.search_operators
+
+    if CONNECTOR_MANAGER_URL:
+        mcp_handler = McpCapabilityHandler(
+            connector_manager_url=CONNECTOR_MANAGER_URL,
+            searcher_client=request.app.state.searcher_tool.client,
+            prefetched_sources=sources,
+            source_filter=source_filter,
+        )
+        await mcp_handler.refresh()
+        if mcp_handler.has_capabilities():
+            await mcp_handler.publish_capabilities()
+            registry.register(mcp_handler)
+            always_on_handlers.append(mcp_handler)
 
     active_sources = [s for s in sources if s.is_active and not s.is_deleted]
     connected_source_types = list({s.source_type for s in active_sources})

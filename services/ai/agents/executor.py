@@ -71,6 +71,7 @@ from tools.connector_handler import (
 )
 from tools.email_handler import EmailToolHandler
 from tools.meta_handler import MetaToolHandler
+from tools.mcp_capability_handler import McpCapabilityHandler
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
@@ -222,6 +223,19 @@ async def _build_agent_registry(
         await meta_handler.publish_tool_capabilities()
         registry.register(meta_handler)
         always_on_handlers.append(meta_handler)
+
+    if CONNECTOR_MANAGER_URL:
+        mcp_handler = McpCapabilityHandler(
+            connector_manager_url=CONNECTOR_MANAGER_URL,
+            searcher_client=app_state.searcher_tool.client,
+            prefetched_sources=sources,
+            source_filter=source_filter,
+        )
+        await mcp_handler.refresh()
+        if mcp_handler.has_capabilities():
+            await mcp_handler.publish_capabilities()
+            registry.register(mcp_handler)
+            always_on_handlers.append(mcp_handler)
 
     # Search tool — always registered
     search_operators = None
