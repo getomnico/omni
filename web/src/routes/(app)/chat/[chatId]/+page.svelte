@@ -830,7 +830,10 @@
 
     // Converts messages into a format that makes it easy to render the messages
     // E.g., combines multiple content blocks into a single content block, handles citations, etc.
+    let processMessagesCallCount = 0
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
+        const processStartedAt = performance.now()
+        processMessagesCallCount += 1
         let result: ProcessedMessage[] = []
         const siblingInfo = computeSiblingInfo(chatMessages)
         const displayPath = getDisplayPath(chatMessages)
@@ -1216,6 +1219,18 @@
             }
         }
 
+        const durationMs = performance.now() - processStartedAt
+        if (durationMs > 50 || processMessagesCallCount % 25 === 0) {
+            console.debug('[chat-stream-debug]', 'processMessages:done', {
+                processMessagesCallCount,
+                durationMs,
+                chatMessageCount: chatMessages.length,
+                displayPathLength: displayPath.length,
+                processedMessageCount: result.length,
+                activeStreamingMessageId,
+            })
+        }
+
         return result
     }
 
@@ -1302,17 +1317,27 @@
     })
 
     function streamResponse(chatId: string) {
-        const debugStream = (label: string, details?: Record<string, unknown>) => {
-            console.debug('[chat-stream-debug]', label, details ?? {})
+        let debugEventCount = 0
+        const debugStream = (label: string, details?: Record<string, unknown>, force = false) => {
+            debugEventCount += 1
+            if (!force && debugEventCount > 200 && debugEventCount % 50 !== 0) return
+            console.debug('[chat-stream-debug]', label, {
+                debugEventCount,
+                ...details,
+            })
         }
 
-        debugStream('streamResponse:start', {
-            chatId,
-            existingMessageCount: chatMessages.length,
-            processedMessageCount: processedMessages.length,
-            activeStreamingMessageId,
-            branchSelections: { ...branchSelections },
-        })
+        debugStream(
+            'streamResponse:start',
+            {
+                chatId,
+                existingMessageCount: chatMessages.length,
+                processedMessageCount: processedMessages.length,
+                activeStreamingMessageId,
+                branchSelections: { ...branchSelections },
+            },
+            true,
+        )
 
         isStreaming = true
         activeStreamChatId = chatId
@@ -1384,6 +1409,7 @@
             replaceTempMessageId(tempId, messageId)
         }
 
+        let collectStreamingResponseCount = 0
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
@@ -1394,8 +1420,10 @@
                 | CitationsDelta,
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
+            collectStreamingResponseCount += 1
             const lastMessage = chatMessages[chatMessages.length - 1]
             debugStream('collectStreamingResponse', {
+                collectStreamingResponseCount,
                 blockType: block.type,
                 blockIdx,
                 lastMessageId: lastMessage?.id,
@@ -1819,15 +1847,20 @@
             })
 
             eventSource.addEventListener('end_of_stream', () => {
-                debugStream('event:end_of_stream', {
-                    messageEventsReceived,
-                    pauseEventReceived,
-                    error,
-                    stopInProgress,
-                    chatMessageCount: chatMessages.length,
-                    processedMessageCount: processedMessages.length,
-                    activeStreamingMessageId,
-                })
+                debugStream(
+                    'event:end_of_stream',
+                    {
+                        messageEventsReceived,
+                        pauseEventReceived,
+                        error,
+                        stopInProgress,
+                        chatMessageCount: chatMessages.length,
+                        processedMessageCount: processedMessages.length,
+                        activeStreamingMessageId,
+                        collectStreamingResponseCount,
+                    },
+                    true,
+                )
                 const wasStopping = stopInProgress
                 streamCompleted = true
                 isStreaming = false
