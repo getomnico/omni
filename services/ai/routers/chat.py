@@ -941,7 +941,10 @@ def _tool_uses_by_id(chat_messages) -> dict[str, dict]:
     return tool_uses
 
 
-async def _pending_approval_from_chat_messages(chat_messages) -> dict | None:
+async def _pending_approval_from_chat_messages(
+    chat_messages, statuses: set[str] | None = None
+) -> dict | None:
+    allowed_statuses = statuses if statuses is not None else {"pending"}
     tool_uses = _tool_uses_by_id(chat_messages)
 
     for cm in reversed(chat_messages):
@@ -965,7 +968,8 @@ async def _pending_approval_from_chat_messages(chat_messages) -> dict | None:
             approval_id = payload.get("approval_id")
             if not isinstance(approval_id, str):
                 continue
-            if await _tool_approval_status(approval_id) != "pending":
+            approval_status = await _tool_approval_status(approval_id)
+            if approval_status not in allowed_statuses:
                 continue
             tool_use_id = block.get("tool_use_id")
             if not isinstance(tool_use_id, str):
@@ -1261,7 +1265,9 @@ async def stream_chat(
         registry = build_result.registry
 
         # Check for pending approval / OAuth resume flow from durable state.
-        pending = await _pending_approval_from_chat_messages(chat_messages)
+        pending = await _pending_approval_from_chat_messages(
+            chat_messages, statuses={"pending", "approved", "denied"}
+        )
         pending_oauth = _pending_oauth_from_chat_messages(chat_messages)
 
         active_sources = [
