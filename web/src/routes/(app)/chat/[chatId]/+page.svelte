@@ -2673,6 +2673,88 @@
                     {/if}
                 {/each}
 
+                {#if pendingApproval && processedMessages[processedMessages.length - 1]?.role !== 'assistant'}
+                    {@const connectorName = pendingApproval.tool_name.split('__')[0]}
+                    {@const actionName = pendingApproval.tool_name.split('__').slice(1).join('__')}
+                    {@const connectorIcon = getSourceIconPath(connectorName)}
+                    <Card.Root class="gap-0 overflow-hidden py-0">
+                        <Card.Header
+                            class="flex items-center gap-3 border-b px-5 py-3 [.border-b]:py-3">
+                            {#if connectorIcon}
+                                <img src={connectorIcon} alt={connectorName} class="h-7 w-7" />
+                            {/if}
+                            <div class="min-w-0 flex-1">
+                                <Card.Title class="text-sm">
+                                    {getSourceDisplayName(connectorName as SourceType) ||
+                                        connectorName}
+                                </Card.Title>
+                                <Card.Description class="text-xs">
+                                    {actionName.replaceAll('_', ' ')}
+                                </Card.Description>
+                            </div>
+                            <div
+                                class="flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 dark:bg-amber-950">
+                                <span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>
+                                <span
+                                    class="text-[11px] font-medium text-amber-700 dark:text-amber-400"
+                                    >Awaiting approval</span>
+                            </div>
+                        </Card.Header>
+                        <Card.Content class="px-5 py-4">
+                            {@const approvalFields = approvalInputDisplayFields(
+                                pendingApproval.tool_input,
+                            )}
+                            <div class="space-y-4">
+                                <div class="space-y-1">
+                                    <div class="text-sm font-medium">
+                                        Omni wants to {approvalActionLabel(
+                                            pendingApproval.tool_name,
+                                        )}.
+                                    </div>
+                                    <p class="text-muted-foreground text-xs">
+                                        Review the important details below before approving this
+                                        action.
+                                    </p>
+                                </div>
+
+                                {#if approvalFields.length > 0}
+                                    <div class="space-y-2 text-[13px]">
+                                        {#each approvalFields as field}
+                                            <div
+                                                class="grid grid-cols-[120px_1fr] items-start gap-x-4 gap-y-2">
+                                                <div class="text-muted-foreground">
+                                                    {field.label}
+                                                </div>
+                                                <div class="break-words whitespace-pre-wrap">
+                                                    {field.value}
+                                                </div>
+                                            </div>
+                                        {/each}
+                                    </div>
+                                {/if}
+                            </div>
+                        </Card.Content>
+                        <Card.Footer
+                            class="bg-muted/50 justify-end gap-2 border-t px-3 py-3 [.border-t]:py-3">
+                            <Button
+                                size="sm"
+                                variant="outline"
+                                class="cursor-pointer"
+                                onclick={() => handleApproval('denied')}>
+                                Deny
+                            </Button>
+                            <Button
+                                size="sm"
+                                variant="default"
+                                class="cursor-pointer"
+                                onclick={() => handleApproval('approved')}>
+                                <Check class="h-3 w-3" />
+                                Approve & send
+                            </Button>
+                        </Card.Footer>
+                    </Card.Root>
+                {/if}
+
                 <!-- Streaming AI Response -->
                 {#if isStreaming || (error && processedMessages[processedMessages.length - 1]?.role !== 'assistant')}
                     <div class="flex px-2">

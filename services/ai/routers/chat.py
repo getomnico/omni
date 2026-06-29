@@ -1420,6 +1420,14 @@ async def stream_chat(
                     approval_id, "completed", chat.user_id
                 )
 
+                conversation_messages, repaired_tool_calls = (
+                    _repair_interrupted_tool_calls(conversation_messages)
+                )
+                if repaired_tool_calls:
+                    logger.warning(
+                        f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) after intervention resume in chat {chat_id}"
+                    )
+
             logger.info(
                 f"Starting conversation with {len(conversation_messages)} initial messages"
             )
