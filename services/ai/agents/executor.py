@@ -126,8 +126,6 @@ def _resolve_llm_provider(state: AppState, agent: Agent) -> LLMProvider:
 
 async def _fetch_sources() -> list[Source] | None:
     """Fetch all sources from the connector manager."""
-    if not CONNECTOR_MANAGER_URL:
-        return None
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
@@ -193,24 +191,23 @@ async def _build_agent_registry(
     connector_handlers: list[ConnectorToolHandler] = []
     toolsets: list[ToolsetSummary] = []
 
-    if CONNECTOR_MANAGER_URL:
-        connector_handler = ConnectorToolHandler(
-            connector_manager_url=CONNECTOR_MANAGER_URL,
-            user_id=agent.user_id,
-            redis_client=app_state.redis_client,
-            prefetched_sources=sources,
-            source_filter=source_filter,
-            action_whitelist=action_whitelist,
-            documents_repo=DocumentsRepository(),
-            sandbox_url=SANDBOX_URL,
-            is_admin=is_admin,
-        )
-        await connector_handler._ensure_initialized()
-        registry.register(connector_handler)
-        connector_handlers.append(connector_handler)
+    connector_handler = ConnectorToolHandler(
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+        user_id=agent.user_id,
+        redis_client=app_state.redis_client,
+        prefetched_sources=sources,
+        source_filter=source_filter,
+        action_whitelist=action_whitelist,
+        documents_repo=DocumentsRepository(),
+        sandbox_url=SANDBOX_URL,
+        is_admin=is_admin,
+    )
+    await connector_handler._ensure_initialized()
+    registry.register(connector_handler)
+    connector_handlers.append(connector_handler)
 
-        if connector_handler.actions:
-            toolsets = connector_handler.list_toolsets()
+    if connector_handler.actions:
+        toolsets = connector_handler.list_toolsets()
 
     # Meta-tools: register only when there's something for the agent to load.
     if connector_handler is not None and toolsets:
@@ -224,18 +221,17 @@ async def _build_agent_registry(
         registry.register(meta_handler)
         always_on_handlers.append(meta_handler)
 
-    if CONNECTOR_MANAGER_URL:
-        mcp_handler = McpCapabilityHandler(
-            connector_manager_url=CONNECTOR_MANAGER_URL,
-            searcher_client=app_state.searcher_tool.client,
-            prefetched_sources=sources,
-            source_filter=source_filter,
-        )
-        await mcp_handler.refresh()
-        if mcp_handler.has_capabilities():
-            await mcp_handler.publish_capabilities()
-            registry.register(mcp_handler)
-            always_on_handlers.append(mcp_handler)
+    mcp_handler = McpCapabilityHandler(
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+        searcher_client=app_state.searcher_tool.client,
+        prefetched_sources=sources,
+        source_filter=source_filter,
+    )
+    await mcp_handler.refresh()
+    if mcp_handler.has_capabilities():
+        await mcp_handler.publish_capabilities()
+        registry.register(mcp_handler)
+        always_on_handlers.append(mcp_handler)
 
     # Search tool — always registered
     search_operators = None
@@ -274,15 +270,14 @@ async def _build_agent_registry(
     always_on_handlers.append(people_handler)
 
     content_storage = app_state.content_storage
-    if content_storage or CONNECTOR_MANAGER_URL:
-        document_handler = DocumentToolHandler(
-            content_storage=content_storage,
-            documents_repo=DocumentsRepository(),
-            sandbox_url=SANDBOX_URL,
-            connector_manager_url=CONNECTOR_MANAGER_URL or None,
-        )
-        registry.register(document_handler)
-        always_on_handlers.append(document_handler)
+    document_handler = DocumentToolHandler(
+        content_storage=content_storage,
+        documents_repo=DocumentsRepository(),
+        sandbox_url=SANDBOX_URL,
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+    )
+    registry.register(document_handler)
+    always_on_handlers.append(document_handler)
 
     if SANDBOX_URL:
         sandbox_handler = SandboxToolHandler(sandbox_url=SANDBOX_URL)
@@ -293,7 +288,7 @@ async def _build_agent_registry(
     skill_handler = SkillHandler(
         skills_dir=skills_dir,
         searcher_client=app_state.searcher_tool.client,
-        connector_manager_url=CONNECTOR_MANAGER_URL or None,
+        connector_manager_url=CONNECTOR_MANAGER_URL,
     )
     await skill_handler.refresh_connector_skills()
     if skill_handler.has_skills():

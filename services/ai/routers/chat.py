@@ -508,8 +508,6 @@ def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None
 
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
     """Fetch all sources from the connector manager. Returns None on failure."""
-    if not CONNECTOR_MANAGER_URL:
-        return None
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
@@ -545,26 +543,24 @@ async def _build_registry(
     toolsets: list[ToolsetSummary] = []
     search_operators: list[SearchOperator] = []
 
-    # Register connector tools if connector-manager is configured
-    if CONNECTOR_MANAGER_URL:
-        connector_handler = ConnectorToolHandler(
-            connector_manager_url=CONNECTOR_MANAGER_URL,
-            user_id=chat.user_id,
-            redis_client=getattr(request.app.state, "redis_client", None),
-            prefetched_sources=sources,
-            documents_repo=DocumentsRepository(),
-            sandbox_url=SANDBOX_URL,
-            is_admin=is_admin,
-        )
-        await connector_handler._ensure_initialized()
-        # Register for dispatch / requires_approval; tool exposure is filtered per-turn.
-        registry.register(connector_handler)
+    connector_handler = ConnectorToolHandler(
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+        user_id=chat.user_id,
+        redis_client=getattr(request.app.state, "redis_client", None),
+        prefetched_sources=sources,
+        documents_repo=DocumentsRepository(),
+        sandbox_url=SANDBOX_URL,
+        is_admin=is_admin,
+    )
+    await connector_handler._ensure_initialized()
+    # Register for dispatch / requires_approval; tool exposure is filtered per-turn.
+    registry.register(connector_handler)
 
-        if connector_handler.actions:
-            toolsets = connector_handler.list_toolsets()
+    if connector_handler.actions:
+        toolsets = connector_handler.list_toolsets()
 
-        if connector_handler.search_operators:
-            search_operators = connector_handler.search_operators
+    if connector_handler.search_operators:
+        search_operators = connector_handler.search_operators
 
     # Meta-tools: discoverable as always-on so the LLM can opt in to specific
     # connector tools. Only register when there's actually a connector handler
@@ -580,17 +576,16 @@ async def _build_registry(
         registry.register(meta_handler)
         always_on_handlers.append(meta_handler)
 
-    if CONNECTOR_MANAGER_URL:
-        mcp_handler = McpCapabilityHandler(
-            connector_manager_url=CONNECTOR_MANAGER_URL,
-            searcher_client=request.app.state.searcher_tool.client,
-            prefetched_sources=sources,
-        )
-        await mcp_handler.refresh()
-        if mcp_handler.has_capabilities():
-            await mcp_handler.publish_capabilities()
-            registry.register(mcp_handler)
-            always_on_handlers.append(mcp_handler)
+    mcp_handler = McpCapabilityHandler(
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+        searcher_client=request.app.state.searcher_tool.client,
+        prefetched_sources=sources,
+    )
+    await mcp_handler.refresh()
+    if mcp_handler.has_capabilities():
+        await mcp_handler.publish_capabilities()
+        registry.register(mcp_handler)
+        always_on_handlers.append(mcp_handler)
 
     # Fetch dynamic operator values for enriched search tool description
     active_sources = [s for s in sources if s.is_active and not s.is_deleted]
@@ -629,15 +624,14 @@ async def _build_registry(
 
     # Register document handler (unified read_document tool)
     content_storage = getattr(request.app.state, "content_storage", None)
-    if content_storage or CONNECTOR_MANAGER_URL:
-        document_handler = DocumentToolHandler(
-            content_storage=content_storage,
-            documents_repo=DocumentsRepository(),
-            sandbox_url=SANDBOX_URL,
-            connector_manager_url=CONNECTOR_MANAGER_URL or None,
-        )
-        registry.register(document_handler)
-        always_on_handlers.append(document_handler)
+    document_handler = DocumentToolHandler(
+        content_storage=content_storage,
+        documents_repo=DocumentsRepository(),
+        sandbox_url=SANDBOX_URL,
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+    )
+    registry.register(document_handler)
+    always_on_handlers.append(document_handler)
 
     # Register sandbox tools if sandbox service is configured
     if SANDBOX_URL:
@@ -650,7 +644,7 @@ async def _build_registry(
     skill_handler = SkillHandler(
         skills_dir=skills_dir,
         searcher_client=request.app.state.searcher_tool.client,
-        connector_manager_url=CONNECTOR_MANAGER_URL or None,
+        connector_manager_url=CONNECTOR_MANAGER_URL,
     )
     await skill_handler.refresh_connector_skills()
     if skill_handler.has_skills():
@@ -691,32 +685,30 @@ async def _build_agent_chat_registry(
 
     # We still need connector handler for search operators, but won't register it
     search_operators: list[SearchOperator] = []
-    if CONNECTOR_MANAGER_URL:
-        connector_handler = ConnectorToolHandler(
-            connector_manager_url=CONNECTOR_MANAGER_URL,
-            user_id=agent.user_id if agent.agent_type == "user" else "",
-            redis_client=getattr(request.app.state, "redis_client", None),
-            prefetched_sources=sources,
-            source_filter=source_filter,
-            documents_repo=DocumentsRepository(),
-            is_admin=is_admin,
-        )
-        await connector_handler._ensure_initialized()
-        if connector_handler.search_operators:
-            search_operators = connector_handler.search_operators
+    connector_handler = ConnectorToolHandler(
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+        user_id=agent.user_id if agent.agent_type == "user" else "",
+        redis_client=getattr(request.app.state, "redis_client", None),
+        prefetched_sources=sources,
+        source_filter=source_filter,
+        documents_repo=DocumentsRepository(),
+        is_admin=is_admin,
+    )
+    await connector_handler._ensure_initialized()
+    if connector_handler.search_operators:
+        search_operators = connector_handler.search_operators
 
-    if CONNECTOR_MANAGER_URL:
-        mcp_handler = McpCapabilityHandler(
-            connector_manager_url=CONNECTOR_MANAGER_URL,
-            searcher_client=request.app.state.searcher_tool.client,
-            prefetched_sources=sources,
-            source_filter=source_filter,
-        )
-        await mcp_handler.refresh()
-        if mcp_handler.has_capabilities():
-            await mcp_handler.publish_capabilities()
-            registry.register(mcp_handler)
-            always_on_handlers.append(mcp_handler)
+    mcp_handler = McpCapabilityHandler(
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+        searcher_client=request.app.state.searcher_tool.client,
+        prefetched_sources=sources,
+        source_filter=source_filter,
+    )
+    await mcp_handler.refresh()
+    if mcp_handler.has_capabilities():
+        await mcp_handler.publish_capabilities()
+        registry.register(mcp_handler)
+        always_on_handlers.append(mcp_handler)
 
     active_sources = [s for s in sources if s.is_active and not s.is_deleted]
     connected_source_types = list({s.source_type for s in active_sources})
@@ -751,15 +743,14 @@ async def _build_agent_chat_registry(
     always_on_handlers.append(people_handler)
 
     content_storage = getattr(request.app.state, "content_storage", None)
-    if content_storage or CONNECTOR_MANAGER_URL:
-        document_handler = DocumentToolHandler(
-            content_storage=content_storage,
-            documents_repo=DocumentsRepository(),
-            sandbox_url=SANDBOX_URL,
-            connector_manager_url=CONNECTOR_MANAGER_URL or None,
-        )
-        registry.register(document_handler)
-        always_on_handlers.append(document_handler)
+    document_handler = DocumentToolHandler(
+        content_storage=content_storage,
+        documents_repo=DocumentsRepository(),
+        sandbox_url=SANDBOX_URL,
+        connector_manager_url=CONNECTOR_MANAGER_URL,
+    )
+    registry.register(document_handler)
+    always_on_handlers.append(document_handler)
 
     if SANDBOX_URL:
         sandbox_handler = SandboxToolHandler(sandbox_url=SANDBOX_URL)
@@ -770,7 +761,7 @@ async def _build_agent_chat_registry(
     skill_handler = SkillHandler(
         skills_dir=skills_dir,
         searcher_client=request.app.state.searcher_tool.client,
-        connector_manager_url=CONNECTOR_MANAGER_URL or None,
+        connector_manager_url=CONNECTOR_MANAGER_URL,
     )
     await skill_handler.refresh_connector_skills()
     if skill_handler.has_skills():

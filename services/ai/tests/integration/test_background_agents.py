@@ -164,8 +164,7 @@ def _patch_db_pool(db_pool, monkeypatch):
 
 @pytest.fixture
 def _patch_env(monkeypatch):
-    """Disable connector manager and sandbox to simplify the test."""
-    monkeypatch.setenv("CONNECTOR_MANAGER_URL", "")
+    """Disable sandbox to simplify the test."""
     monkeypatch.setenv("SANDBOX_URL", "")
 
 
