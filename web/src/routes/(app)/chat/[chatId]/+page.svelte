@@ -1421,11 +1421,20 @@
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
             collectStreamingResponseCount += 1
-            const lastMessage = chatMessages[chatMessages.length - 1]
+            const targetMessageId = activeStreamingMessageId
+            const targetMessageIndex = targetMessageId
+                ? chatMessages.findIndex((message) => message.id === targetMessageId)
+                : -1
+            const lastMessage =
+                targetMessageIndex === -1
+                    ? chatMessages[chatMessages.length - 1]
+                    : chatMessages[targetMessageIndex]
             debugStream('collectStreamingResponse', {
                 collectStreamingResponseCount,
                 blockType: block.type,
                 blockIdx,
+                targetMessageId,
+                targetMessageIndex,
                 lastMessageId: lastMessage?.id,
                 lastMessageRole: lastMessage?.message.role,
                 lastMessageContentIsArray: Array.isArray(lastMessage?.message.content),
@@ -1439,15 +1448,22 @@
             }
 
             const replaceLastMessage = (message: ChatMessage) => {
-                debugStream('replaceLastMessage', {
-                    oldLastMessageId: lastMessage.id,
+                const replaceIndex =
+                    targetMessageIndex === -1 ? chatMessages.length - 1 : targetMessageIndex
+                debugStream('replaceStreamingMessage', {
+                    replaceIndex,
+                    oldMessageId: lastMessage.id,
                     newMessageId: message.id,
                     role: message.message.role,
                     contentBlockCount: Array.isArray(message.message.content)
                         ? message.message.content.length
                         : null,
                 })
-                chatMessages = [...chatMessages.slice(0, -1), message]
+                chatMessages = [
+                    ...chatMessages.slice(0, replaceIndex),
+                    message,
+                    ...chatMessages.slice(replaceIndex + 1),
+                ]
                 markChatMessagesChanged()
             }
 
