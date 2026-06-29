@@ -5,7 +5,8 @@ use shared::models::{Source, SourceType, SyncRun, SyncType};
 pub use shared::models::{
     ActionContext, ActionDefinition, ActionRequest, ActionResponse, CancelRequest,
     ConnectorManifest, McpCredentials, McpPromptDefinition, McpResourceDefinition, PromptRequest,
-    ResourceRequest, SearchOperator, SyncRequest, SyncResponse, SyncStatusResponse,
+    ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -250,6 +251,15 @@ pub struct ExecuteResourceRequest {
 pub struct ExecutePromptRequest {
     pub source_id: String,
     pub name: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecuteSkillRequest {
+    pub skill_id: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
     #[serde(default)]
     pub arguments: Option<JsonValue>,
 }

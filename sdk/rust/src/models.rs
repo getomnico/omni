@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 pub use shared::models::{
     ActionActor, ActionContext, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
-    McpCredentials, PromptRequest, ResourceRequest, SyncRequest, SyncResponse, SyncStatusResponse,
+    McpCredentials, PromptRequest, ResourceRequest, SkillRequest, SkillResponse, SyncRequest,
+    SyncResponse, SyncStatusResponse,
 };
 use std::collections::HashMap;
 

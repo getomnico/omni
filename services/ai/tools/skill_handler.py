@@ -7,8 +7,10 @@ import hashlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from anthropic.types import ToolParam
 
 from tools.registry import ToolContext, ToolResult
@@ -29,6 +31,15 @@ _CAPABILITY_UPSERT_BATCH_SIZE = 500
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
+@dataclass(frozen=True)
+class ConnectorSkill:
+    skill_id: str
+    title: str
+    description: str
+    source_type: str | None = None
+    source_id: str | None = None
+
+
 class SkillHandler:
     """Serves skill files from a directory so the LLM can load instructions on demand.
 
@@ -47,11 +58,19 @@ class SkillHandler:
     _published_capability_keys: set[tuple[int, str]] = set()
 
     def __init__(
-        self, skills_dir: Path, searcher_client: SearcherClient | None = None
+        self,
+        skills_dir: Path,
+        searcher_client: SearcherClient | None = None,
+        connector_manager_url: str | None = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._searcher_client = searcher_client
+        self._connector_manager_url = (
+            connector_manager_url.rstrip("/") if connector_manager_url else None
+        )
         self._available: dict[str, Path] = {}
+        self._connector_skills: dict[str, ConnectorSkill] = {}
+        self._connector_skills_loaded = False
         self._discover_skills()
 
     def _discover_skills(self) -> None:
@@ -72,6 +91,47 @@ class SkillHandler:
             skill_file = skill_dir / _SKILL_FILENAME
             if skill_file.is_file():
                 self._available[skill_dir.name] = skill_file
+
+    async def refresh_connector_skills(self) -> None:
+        if self._connector_skills_loaded or not self._connector_manager_url:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{self._connector_manager_url}/skills")
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as e:
+            logger.warning(f"Failed to load connector skills: {e}")
+            self._connector_skills_loaded = True
+            return
+
+        if not isinstance(payload, dict):
+            self._connector_skills_loaded = True
+            return
+
+        skills: dict[str, ConnectorSkill] = {}
+        for item in payload.get("skills", []):
+            if not isinstance(item, dict):
+                continue
+            skill_id = item.get("id")
+            title = item.get("title")
+            if not isinstance(skill_id, str) or not isinstance(title, str):
+                continue
+            description = item.get("description")
+            source_type = item.get("source_type")
+            source_id = item.get("source_id")
+            skills[skill_id] = ConnectorSkill(
+                skill_id=skill_id,
+                title=title,
+                description=description if isinstance(description, str) else "",
+                source_type=source_type if isinstance(source_type, str) else None,
+                source_id=source_id if isinstance(source_id, str) else None,
+            )
+        self._connector_skills = skills
+        self._connector_skills_loaded = True
+
+    def has_skills(self) -> bool:
+        return bool(self._available or self._connector_skills)
 
     def get_tools(self) -> list[ToolParam]:
         return [
@@ -137,7 +197,7 @@ class SkillHandler:
             )
 
         skill = tool_input.get("skill")
-        if not skill:
+        if not isinstance(skill, str) or not skill:
             return ToolResult(
                 content=[
                     {
@@ -147,22 +207,95 @@ class SkillHandler:
                 ],
                 is_error=True,
             )
+        await self.refresh_connector_skills()
         path = self._available.get(skill)
-        if not path:
-            available = ", ".join(sorted(self._available.keys()))
+        if path:
+            content = path.read_text(encoding="utf-8")
+            return ToolResult(content=[{"type": "text", "text": content}])
+
+        if skill in self._connector_skills:
+            return await self._load_connector_skill(skill)
+
+        available = ", ".join(sorted(self._all_skill_ids()))
+        return ToolResult(
+            content=[
+                {
+                    "type": "text",
+                    "text": f"Unknown skill: '{skill}'. Available: {available}",
+                }
+            ],
+            is_error=True,
+        )
+
+    async def _load_connector_skill(self, skill_id: str) -> ToolResult:
+        if not self._connector_manager_url:
+            return ToolResult(
+                content=[
+                    {"type": "text", "text": "Connector manager is not configured."}
+                ],
+                is_error=True,
+            )
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._connector_manager_url}/skill",
+                    json=self._connector_skill_request(skill_id),
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as e:
+            logger.warning(f"Failed to load connector skill {skill_id}: {e}")
             return ToolResult(
                 content=[
                     {
                         "type": "text",
-                        "text": f"Unknown skill: '{skill}'. Available: {available}",
+                        "text": f"Failed to load connector skill: {skill_id}",
                     }
                 ],
                 is_error=True,
             )
-        content = path.read_text(encoding="utf-8")
+        content = payload.get("content") if isinstance(payload, dict) else None
+        if not isinstance(content, str):
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"Connector skill returned no content: {skill_id}",
+                    }
+                ],
+                is_error=True,
+            )
         return ToolResult(content=[{"type": "text", "text": content}])
 
+    async def _connector_skill_content(self, skill_id: str) -> str | None:
+        if not self._connector_manager_url:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._connector_manager_url}/skill",
+                    json=self._connector_skill_request(skill_id),
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as e:
+            logger.warning(f"Failed to fetch connector skill content {skill_id}: {e}")
+            return None
+        content = payload.get("content") if isinstance(payload, dict) else None
+        return content if isinstance(content, str) else None
+
+    def _connector_skill_request(self, skill_id: str) -> dict[str, str]:
+        request = {"skill_id": skill_id}
+        skill = self._connector_skills.get(skill_id)
+        if skill and skill.source_id:
+            request["source_id"] = skill.source_id
+        return request
+
+    def _all_skill_ids(self) -> set[str]:
+        return set(self._available) | set(self._connector_skills)
+
     async def _skill_search(self, tool_input: dict) -> ToolResult:
+        await self.refresh_connector_skills()
         query = (tool_input.get("query") or "").strip()
         if not query:
             return ToolResult(
@@ -216,13 +349,13 @@ class SkillHandler:
                 capability_type="skill",
                 query=query,
                 limit=limit,
-                allowed_ids=[f"skill:{skill_id}" for skill_id in self._available],
+                allowed_ids=[f"skill:{skill_id}" for skill_id in self._all_skill_ids()],
             )
         )
         matches: list[tuple[str, str, str]] = []
         for result in response.results:
             skill_id = result.data["skill_id"]
-            if skill_id not in self._available:
+            if skill_id not in self._all_skill_ids():
                 continue
             title = result.data.get("title") or skill_id
             body = result.data.get("body") or result.data.get("description") or ""
@@ -230,10 +363,11 @@ class SkillHandler:
         return matches
 
     async def publish_skill_capabilities(self) -> None:
-        if self._searcher_client is None or not self._available:
+        await self.refresh_connector_skills()
+        if self._searcher_client is None or not self._all_skill_ids():
             return
 
-        capabilities = self._skill_capabilities()
+        capabilities = await self._skill_capabilities()
         publish_key = (
             id(self._searcher_client),
             self._capability_fingerprint(capabilities),
@@ -258,7 +392,7 @@ class SkillHandler:
                 return
             self._published_capability_keys.add(publish_key)
 
-    def _skill_capabilities(self) -> list[CapabilityUpsert]:
+    async def _skill_capabilities(self) -> list[CapabilityUpsert]:
         capabilities: list[CapabilityUpsert] = []
         for skill_id, path in self._available.items():
             content = path.read_text()
@@ -276,6 +410,26 @@ class SkillHandler:
                         "description": self._snippet(content, max_chars=240),
                         "body": content,
                         "path": str(path.relative_to(self._skills_dir)),
+                    },
+                )
+            )
+        for skill_id, skill in self._connector_skills.items():
+            content = await self._connector_skill_content(skill_id)
+            body = content or skill.description
+            capabilities.append(
+                CapabilityUpsert(
+                    id=f"skill:{skill_id}",
+                    capability_type="skill",
+                    name=skill_id,
+                    description=skill.description or self._snippet(body, max_chars=240),
+                    search_text=f"{skill_id} {skill.title}\n{body}",
+                    data={
+                        "skill_id": skill_id,
+                        "title": skill.title,
+                        "description": skill.description,
+                        "body": body,
+                        "source_type": skill.source_type,
+                        "source_id": skill.source_id,
                     },
                 )
             )

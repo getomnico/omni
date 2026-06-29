@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest, SearchOperator, ServiceCredential, Source, SourceType,
-    SyncType,
+    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, SearchOperator,
+    ServiceCredential, Source, SourceType, SyncType,
 };
 
 #[derive(Debug, Clone)]
@@ -61,6 +61,10 @@ pub trait Connector: Send + Sync + 'static {
         vec![]
     }
 
+    fn skills(&self) -> Vec<ConnectorSkillDefinition> {
+        vec![]
+    }
+
     fn read_only(&self) -> bool {
         false
     }
@@ -88,14 +92,20 @@ pub trait Connector: Send + Sync + 'static {
     /// argument is the wire-format wrapper forwarded by the connector-manager
     /// (`{credentials, config, principal_email}`). Connectors typically
     /// deserialize `credentials.credentials` into their own typed struct.
-    fn prepare_mcp_env(&self, _credentials: &McpCredentials) -> HashMap<String, String> {
-        HashMap::new()
+    async fn prepare_mcp_env(
+        &self,
+        _credentials: &McpCredentials,
+    ) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
     }
 
     /// Return HTTP headers for a remote MCP server. Used only when
     /// `mcp_server()` returns `Some(McpServer::Http(_))`.
-    fn prepare_mcp_headers(&self, _credentials: &McpCredentials) -> HashMap<String, String> {
-        HashMap::new()
+    async fn prepare_mcp_headers(
+        &self,
+        _credentials: &McpCredentials,
+    ) -> Result<HashMap<String, String>> {
+        Ok(HashMap::new())
     }
 
     /// Declarative OAuth2 config consumed by the web app's generic OAuth
@@ -163,6 +173,7 @@ pub trait Connector: Send + Sync + 'static {
             mcp_enabled: self.mcp_server().is_some(),
             resources: vec![],
             prompts: vec![],
+            skills: self.skills(),
             oauth: self
                 .oauth_config()
                 .and_then(|c| serde_json::to_value(c).ok()),

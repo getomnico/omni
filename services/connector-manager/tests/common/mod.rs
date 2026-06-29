@@ -3,13 +3,13 @@ pub mod mock_connector;
 use anyhow::Result;
 use mock_connector::MockConnector;
 use omni_connector_manager::{
-    AppState, config::ConnectorManagerConfig, create_app, sync_manager::SyncManager,
+    config::ConnectorManagerConfig, create_app, sync_manager::SyncManager, AppState,
 };
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::ObjectStorage;
 use shared::models::{ConnectorManifest, SourceType, SyncType};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
+use shared::ObjectStorage;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -71,6 +71,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
         attributes_schema: None,
         mcp_enabled: false,
         prompts: vec![],
+        skills: vec![],
         resources: vec![],
         oauth: None,
     };

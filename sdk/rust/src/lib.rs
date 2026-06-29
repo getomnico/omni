@@ -12,15 +12,16 @@ pub use mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
 pub use models::{
     ActionActor, ActionContext, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
     McpCredentials, OAuthManifestConfig, OAuthScopeSet, PromptRequest, ResourceRequest,
-    SyncRequest, SyncResponse, SyncStatusResponse,
+    SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 pub use server::{create_router, serve, serve_with_config, serve_with_extra_routes, ServerConfig};
 
 pub use shared::models::DocumentAttributes;
 pub use shared::models::{
-    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest, DocumentMetadata,
-    DocumentPermissions, McpPromptDefinition, McpResourceDefinition, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
+    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest,
+    ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions, McpPromptDefinition,
+    McpResourceDefinition, SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType,
+    SyncRun, SyncStatus, SyncType,
 };
 pub use shared::rate_limiter::{RateLimiter, RetryableError};
 pub use shared::telemetry;

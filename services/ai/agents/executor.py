@@ -277,9 +277,12 @@ async def _build_agent_registry(
 
     skills_dir = Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(
-        skills_dir=skills_dir, searcher_client=app_state.searcher_tool.client
+        skills_dir=skills_dir,
+        searcher_client=app_state.searcher_tool.client,
+        connector_manager_url=CONNECTOR_MANAGER_URL or None,
     )
-    if skill_handler._available:
+    await skill_handler.refresh_connector_skills()
+    if skill_handler.has_skills():
         await skill_handler.publish_skill_capabilities()
         registry.register(skill_handler)
         always_on_handlers.append(skill_handler)
@@ -326,7 +329,9 @@ def _tool_result_id(block: AgentContentBlock) -> str | None:
     return None
 
 
-def _find_unanswered_tool_calls(messages: list[AgentRunLogMessage]) -> list[ToolUseBlockParam]:
+def _find_unanswered_tool_calls(
+    messages: list[AgentRunLogMessage],
+) -> list[ToolUseBlockParam]:
     pending: dict[str, ToolUseBlockParam] = {}
     for message in messages:
         for block in _content_blocks(message):
@@ -389,7 +394,9 @@ def _conversation_from_log_messages(
 
     for message in messages:
         if _is_tool_result_only_user_message(message):
-            pending_tool_results.extend(cast(list[ToolResultBlockParam], _content_blocks(message)))
+            pending_tool_results.extend(
+                cast(list[ToolResultBlockParam], _content_blocks(message))
+            )
         else:
             flush_tool_results()
             conversation.append(cast(MessageParam, message))
@@ -481,7 +488,9 @@ async def _run_agent_loop(
         if is_org_agent:
             effective_mode = org_default
         elif agent_user_configuration is not None:
-            effective_mode = resolve_memory_mode(agent_user_configuration.memory_mode, org_default)
+            effective_mode = resolve_memory_mode(
+                agent_user_configuration.memory_mode, org_default
+            )
         memory_namespace = agent_key(agent.id)
 
         if effective_mode == MemoryMode.FULL and agent.instructions:
@@ -609,7 +618,9 @@ async def _run_agent_loop(
                     if event.index < len(content_blocks):
                         text_block = cast(TextBlockParam, content_blocks[event.index])
                         text_block["text"] += event.delta.text
-                elif event.delta.type == "input_json_delta" and event.index < len(content_blocks):
+                elif event.delta.type == "input_json_delta" and event.index < len(
+                    content_blocks
+                ):
                     tool_block = cast(ToolUseBlockParam, content_blocks[event.index])
                     tool_block["input"] = (
                         cast(str, tool_block["input"]) + event.delta.partial_json
@@ -668,7 +679,9 @@ async def _run_agent_loop(
         # Execute tool calls — no approval needed. Persist each result immediately.
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
-            logger.info("Agent %s run %s: executing tool %s", agent.id, run.id, tool_name)
+            logger.info(
+                "Agent %s run %s: executing tool %s", agent.id, run.id, tool_name
+            )
 
             result = await registry.execute(tool_name, tool_call["input"], context)
             tool_result = ToolResultBlockParam(
@@ -805,7 +818,9 @@ async def execute_agent(
             raise RuntimeError(f"Lost claim before completing run {claim.run.id}")
         return completed
     except Exception as e:
-        logger.error("Agent %s run %s failed: %s", agent.id, claim.run.id, e, exc_info=True)
+        logger.error(
+            "Agent %s run %s failed: %s", agent.id, claim.run.id, e, exc_info=True
+        )
         failed = await run_repo.fail_run(
             claim.run.id, claim.claim_token, str(e), retry_policy
         )

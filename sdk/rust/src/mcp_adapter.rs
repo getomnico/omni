@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, GetPromptRequestParams, PaginatedRequestParams, PromptMessageContent,
     RawContent, ReadResourceRequestParams, ResourceContents,
@@ -10,7 +11,6 @@ use rmcp::model::{
 use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
-use rmcp::ServiceExt;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ActionMode, McpPromptArgument, McpPromptDefinition, McpResourceDefinition,

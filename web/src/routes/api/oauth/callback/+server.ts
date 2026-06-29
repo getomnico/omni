@@ -66,14 +66,14 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null
-    const credentials = {
+    const credentialsWithRefreshFallback = (existingCredentials: Record<string, unknown>) => ({
         access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token ?? null,
+        refresh_token: tokens.refresh_token ?? existingCredentials.refresh_token ?? null,
         token_type: tokens.token_type ?? 'Bearer',
         client_id: clientCreds.clientId,
         client_secret: clientCreds.clientSecret,
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
-    }
+    })
 
     if (flow.type === 'org_source') {
         if (user.role !== 'admin') {
@@ -91,7 +91,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             provider: config.provider,
             authType: 'oauth',
             principalEmail,
-            credentials: { ...existingCredentials, ...credentials },
+            credentials: {
+                ...existingCredentials,
+                ...credentialsWithRefreshFallback(existingCredentials),
+            },
             config: (existing?.config as Record<string, unknown> | undefined) ?? {},
             expiresAt,
         })
@@ -110,13 +113,22 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     if (flow.type === 'user_write') {
+        const existing = await serviceCredentialsRepository.getByUserAndSource(
+            flow.sourceId,
+            user.id,
+        )
+        const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
+
         await serviceCredentialsRepository.createForUser({
             sourceId: flow.sourceId,
             userId: user.id,
             provider: config.provider,
             authType: 'oauth',
             principalEmail,
-            credentials,
+            credentials: {
+                ...existingCredentials,
+                ...credentialsWithRefreshFallback(existingCredentials),
+            },
             config: { granted_scopes: grantedScopes },
             expiresAt,
         })
@@ -133,13 +145,23 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
 
         if (existing) {
             // Source already exists for this user — refresh its creds in place.
+            const existingCredential = await serviceCredentialsRepository.getByUserAndSource(
+                existing.id,
+                user.id,
+            )
+            const existingCredentials = existingCredential
+                ? decryptConfig(existingCredential.credentials)
+                : {}
             await serviceCredentialsRepository.createForUser({
                 sourceId: existing.id,
                 userId: user.id,
                 provider: config.provider,
                 authType: 'oauth',
                 principalEmail,
-                credentials,
+                credentials: {
+                    ...existingCredentials,
+                    ...credentialsWithRefreshFallback(existingCredentials),
+                },
                 config: { granted_scopes: grantedScopes },
                 expiresAt,
             })
@@ -165,7 +187,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             provider: config.provider,
             authType: 'oauth',
             principalEmail,
-            credentials,
+            credentials: credentialsWithRefreshFallback({}),
             config: { granted_scopes: grantedScopes },
             expiresAt,
         })

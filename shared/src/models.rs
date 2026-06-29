@@ -799,6 +799,20 @@ pub struct McpPromptDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorSkillDefinition {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub source_types: Vec<SourceType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorManifest {
     pub name: String,
     pub display_name: String,
@@ -826,6 +840,8 @@ pub struct ConnectorManifest {
     pub resources: Vec<McpResourceDefinition>,
     #[serde(default)]
     pub prompts: Vec<McpPromptDefinition>,
+    #[serde(default)]
+    pub skills: Vec<ConnectorSkillDefinition>,
     /// Declarative OAuth2 config consumed by the web app's generic OAuth
     /// service. Connectors that use OAuth populate this. The typed shape
     /// lives in the connector SDK (`omni_connector_sdk::OAuthManifestConfig`);
@@ -1161,6 +1177,10 @@ pub struct McpCredentials {
     /// The provider-specific service config blob.
     #[serde(default)]
     pub config: JsonValue,
+    /// Credential auth type. Required by connectors that share their normal
+    /// credential-loading path for MCP auth preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_type: Option<AuthType>,
     /// Optional acting-user email (for delegated/principal-aware connectors).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_email: Option<String>,
@@ -1173,6 +1193,7 @@ impl McpCredentials {
         Self {
             credentials: creds.credentials.clone(),
             config: creds.config.clone(),
+            auth_type: Some(creds.auth_type),
             principal_email: creds.principal_email.clone(),
         }
     }
@@ -1192,6 +1213,22 @@ pub struct PromptRequest {
     pub arguments: Option<JsonValue>,
     #[serde(default)]
     pub credentials: McpCredentials,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillRequest {
+    pub skill_id: String,
+    #[serde(default)]
+    pub arguments: Option<JsonValue>,
+    #[serde(default)]
+    pub credentials: McpCredentials,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillResponse {
+    pub skill_id: String,
+    pub title: String,
+    pub content: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

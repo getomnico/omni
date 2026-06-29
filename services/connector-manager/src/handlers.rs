@@ -1,9 +1,9 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionContext, ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, McpCredentials, PromptRequest, ResourceRequest, ScheduleInfo,
-    SourceHealth, SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse,
-    TriggerType,
+    ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, PromptRequest, ResourceRequest,
+    ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress, TriggerSyncRequest,
+    TriggerSyncResponse, TriggerType,
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
@@ -932,6 +932,125 @@ pub async fn get_prompt(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok(Json(result))
+}
+
+pub async fn list_skills(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_all_sources_without_state()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mut all_skills = Vec::new();
+
+    for manifest in manifests {
+        for skill in &manifest.skills {
+            let source_types = if skill.source_types.is_empty() {
+                &manifest.source_types
+            } else {
+                &skill.source_types
+            };
+            for source_type in source_types {
+                let matching_sources: Vec<_> = sources
+                    .iter()
+                    .filter(|source| source.source_type == *source_type)
+                    .collect();
+                if matching_sources.is_empty() {
+                    all_skills.push(json!({
+                        "connector_id": manifest.connector_id,
+                        "source_type": source_type,
+                        "source_id": null,
+                        "id": skill.id,
+                        "title": skill.title,
+                        "description": skill.description,
+                        "mcp_prompt": skill.mcp_prompt,
+                    }));
+                    continue;
+                }
+                for source in matching_sources {
+                    all_skills.push(json!({
+                        "connector_id": manifest.connector_id,
+                        "source_type": source_type,
+                        "source_id": source.id,
+                        "id": skill.id,
+                        "title": skill.title,
+                        "description": skill.description,
+                        "mcp_prompt": skill.mcp_prompt,
+                    }));
+                }
+            }
+        }
+    }
+
+    Ok(Json(json!({ "skills": all_skills })))
+}
+
+pub async fn get_skill(
+    State(state): State<AppState>,
+    Json(request): Json<ExecuteSkillRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!("Getting skill {}", request.skill_id);
+
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    for manifest in manifests {
+        let Some(skill) = manifest
+            .skills
+            .iter()
+            .find(|skill| skill.id == request.skill_id)
+        else {
+            continue;
+        };
+
+        if let Some(content) = &skill.content {
+            return Ok(Json(json!({
+                "skill_id": skill.id,
+                "title": skill.title,
+                "content": content,
+            })));
+        }
+
+        let source_id = request.source_id.clone().ok_or_else(|| {
+            ApiError::BadRequest(format!(
+                "source_id is required to load connector skill: {}",
+                request.skill_id
+            ))
+        })?;
+        let source_repo = SourceRepository::new(state.db_pool.pool());
+        let source = source_repo
+            .find_by_id(source_id.clone())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+        let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let creds = creds_repo
+            .find_owner_credential(&source)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Credentials not found for source: {}", source_id))
+            })?;
+
+        let client = ConnectorClient::new();
+        let skill_request = shared::models::SkillRequest {
+            skill_id: request.skill_id,
+            arguments: request.arguments,
+            credentials: McpCredentials::from_service_credential(&creds),
+        };
+        let result = client
+            .get_skill(&manifest.connector_url, &skill_request)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        return Ok(Json(result));
+    }
+
+    Err(ApiError::NotFound(format!(
+        "Skill not found: {}",
+        request.skill_id
+    )))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2374,6 +2493,7 @@ mod tests {
             mcp_enabled: false,
             resources: Vec::new(),
             prompts: Vec::new(),
+            skills: Vec::new(),
             oauth: None,
         }
     }

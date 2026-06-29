@@ -38,12 +38,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         const source = await getSourceById(sourceId)
         if (!source || source.isDeleted) throw error(404, 'Source not found')
-        if (source.scope !== 'org') {
-            throw error(
-                400,
-                'OAuth for an existing source attaches to org-wide sources only. ' +
-                    'Personal sources already use the owner credential.',
-            )
+        if (source.scope === 'user') {
+            if (flow === 'org_source') {
+                throw error(400, 'org_source OAuth is only valid for org-wide sources')
+            }
+            if (source.createdBy !== locals.user.id) {
+                throw error(403, "Cannot attach OAuth credentials to another user's source")
+            }
+        } else if (source.scope !== 'org') {
+            throw error(400, `Unsupported source scope: ${source.scope}`)
         }
 
         const config = await getOAuthManifestForSourceType(source.sourceType)

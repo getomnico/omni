@@ -1,6 +1,6 @@
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, PromptRequest,
-    ResourceRequest, SyncRequest, SyncResponse, SyncStatusResponse,
+    ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
 use shared::models::SyncType;
@@ -322,6 +322,38 @@ impl ConnectorClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             error!("Failed to get prompt: {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
+    }
+
+    pub async fn get_skill(
+        &self,
+        connector_url: &str,
+        request: &SkillRequest,
+    ) -> Result<serde_json::Value, ClientError> {
+        let url = format!("{}/skill", connector_url);
+        debug!("Getting skill {} at {}", request.skill_id, url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Failed to get skill: {} - {}", status, body);
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: body,
