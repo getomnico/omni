@@ -33,6 +33,8 @@ class ApprovalRequiredPayload:
     tool_name: str
     tool_input: dict[str, object]
     tool_call_id: str
+    source_id: str | None = None
+    source_type: str | None = None
 
 
 @dataclass

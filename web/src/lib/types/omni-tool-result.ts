@@ -26,6 +26,8 @@ export type ApprovalRequiredPayload = {
     tool_name: string
     tool_input: Record<string, unknown>
     tool_call_id: string
+    source_id?: string | null
+    source_type?: string | null
 }
 
 export type OmniToolResultEnvelope =
@@ -96,6 +98,8 @@ export function tryParseOmniEnvelope(text: string): OmniToolResultEnvelope | nul
                 tool_name: p.tool_name,
                 tool_input: p.tool_input as Record<string, unknown>,
                 tool_call_id: p.tool_call_id,
+                source_id: typeof p.source_id === 'string' ? p.source_id : null,
+                source_type: typeof p.source_type === 'string' ? p.source_type : null,
             },
         }
     }

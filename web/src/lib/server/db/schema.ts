@@ -235,7 +235,6 @@ export const toolApprovals = pgTable('tool_approvals', {
         .references(() => user.id, { onDelete: 'cascade' }),
     toolName: text('tool_name').notNull(),
     toolInput: jsonb('tool_input').notNull(),
-    toolCallId: text('tool_call_id'),
     sourceId: text('source_id'),
     sourceType: text('source_type'),
     status: text('status').notNull().default('pending'),
