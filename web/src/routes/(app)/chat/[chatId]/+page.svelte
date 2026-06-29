@@ -1810,31 +1810,58 @@
     }
 
     async function handleApproval(decision: 'approved' | 'denied') {
-        if (!pendingApproval) return
+        console.log('Tool approval decision requested', { decision, pendingApproval })
+        if (!pendingApproval) {
+            console.warn('Tool approval decision ignored because no pending approval is set', {
+                decision,
+            })
+            return
+        }
+
+        const approvalId = pendingApproval.approval_id
 
         try {
+            console.log('Submitting tool approval decision', {
+                decision,
+                approvalId,
+                chatId: data.chat.id,
+            })
             const response = await fetch(`/api/chat/${data.chat.id}/approve`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    approvalId: pendingApproval.approval_id,
+                    approvalId,
                     decision,
                 }),
             })
+            console.log('Tool approval decision response received', {
+                decision,
+                approvalId,
+                status: response.status,
+                ok: response.ok,
+            })
 
             if (!response.ok) {
-                console.error('Failed to submit approval decision')
+                const responseText = await response.text().catch(() => null)
+                console.error('Failed to submit approval decision', {
+                    decision,
+                    approvalId,
+                    status: response.status,
+                    responseText,
+                })
                 return
             }
 
             pendingApproval = null
+            console.log('Cleared pending tool approval', { decision, approvalId })
 
             if (decision === 'approved') {
+                console.log('Resuming stream after approval', { approvalId, chatId: data.chat.id })
                 // Re-trigger stream to resume execution
                 streamResponse(data.chat.id)
             }
         } catch (err) {
-            console.error('Error submitting approval:', err)
+            console.error('Error submitting approval:', err, { decision, approvalId })
         }
     }
 
@@ -2440,14 +2467,27 @@
                                             size="sm"
                                             variant="outline"
                                             class="cursor-pointer"
-                                            onclick={() => handleApproval('denied')}>
+                                            onclick={() => {
+                                                console.log('Tool approval deny button clicked', {
+                                                    pendingApproval,
+                                                })
+                                                handleApproval('denied')
+                                            }}>
                                             Deny
                                         </Button>
                                         <Button
                                             size="sm"
                                             variant="default"
                                             class="cursor-pointer"
-                                            onclick={() => handleApproval('approved')}>
+                                            onclick={() => {
+                                                console.log(
+                                                    'Tool approval approve button clicked',
+                                                    {
+                                                        pendingApproval,
+                                                    },
+                                                )
+                                                handleApproval('approved')
+                                            }}>
                                             <Check class="h-3 w-3" />
                                             Approve & send
                                         </Button>
