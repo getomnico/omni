@@ -93,6 +93,21 @@ class Chunker:
                     f"model sequence length of {max_len} tokens (~{max_chars} chars)"
                 )
 
+    @staticmethod
+    def _tokenize_with_offsets(text: str, tokenizer: AutoTokenizer):
+        if hasattr(tokenizer, "encode_plus"):
+            return tokenizer.encode_plus(
+                text, return_offsets_mapping=True, add_special_tokens=False
+            )
+        return tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+
+    @staticmethod
+    def _offset_mapping(tokens):
+        mapping = getattr(tokens, "offset_mapping", None)
+        if mapping is not None:
+            return mapping
+        return tokens["offset_mapping"]
+
     def chunk_by_tokens(
         self,
         text: str,
@@ -104,10 +119,8 @@ class Chunker:
 
         self._check_text_length(text, tokenizer)
 
-        tokens = tokenizer.encode_plus(
-            text, return_offsets_mapping=True, add_special_tokens=False
-        )
-        token_offsets = tokens.offset_mapping
+        tokens = self._tokenize_with_offsets(text, tokenizer)
+        token_offsets = self._offset_mapping(tokens)
 
         token_spans = []
         char_spans = []
@@ -141,10 +154,8 @@ class Chunker:
 
         self._check_text_length(text, tokenizer)
 
-        tokens = tokenizer.encode_plus(
-            text, return_offsets_mapping=True, add_special_tokens=False
-        )
-        token_offsets = tokens.offset_mapping
+        tokens = self._tokenize_with_offsets(text, tokenizer)
+        token_offsets = self._offset_mapping(tokens)
 
         if not token_offsets:
             return [], []

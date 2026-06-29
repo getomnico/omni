@@ -78,10 +78,27 @@ class ConnectorAction:
     source_name: str
     action_name: str
     description: str
-    input_schema: dict
-    mode: SourceMode
+    input_schema: dict | None = None
+    mode: SourceMode = "write"
     admin_only: bool = False
     hidden: bool = False
+    parameters: dict | None = None
+
+    def __post_init__(self) -> None:
+        # Backward compatibility for older tests/cache payloads that used a
+        # `parameters` object before connector actions carried JSON Schema.
+        if self.input_schema is None:
+            required = [
+                name
+                for name, spec in (self.parameters or {}).items()
+                if isinstance(spec, Mapping) and spec.get("required") is True
+            ]
+            self.input_schema = {
+                "type": "object",
+                "properties": self.parameters or {},
+            }
+            if required:
+                self.input_schema["required"] = required
 
 
 class ConnectorToolHandler:

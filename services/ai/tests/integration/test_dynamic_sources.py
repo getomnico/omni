@@ -867,9 +867,9 @@ async def test_build_registry_no_sources_generic_description(
     monkeypatch.setattr("routers.chat.CONNECTOR_MANAGER_URL", connector_manager_url)
     monkeypatch.setattr("routers.chat.SANDBOX_URL", "")
 
-    # Ensure no sources for this user
+    # Ensure no sources exist in the DB; connector-manager lists sources globally.
     async with db_pool.acquire() as conn:
-        await _cleanup_sources(conn, test_user)
+        await conn.execute("DELETE FROM sources")
 
     app = _make_app()
     request = _make_request(app)

@@ -233,7 +233,7 @@ async def test_stream_completes_with_tool_results(
     events = parse_sse_events(body)
     event_types = [e[0] for e in events]
 
-    assert "save_message" in event_types
+    assert "message_id" in event_types
     assert "end_of_stream" in event_types
 
     tool_result_events = [

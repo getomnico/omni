@@ -51,8 +51,8 @@ Connected apps: {connected_apps}
 {web_tool_lines}
 - Search results include relevant content snippets (highlights) extracted from the indexed documents. For most factual questions, these snippets already contain the answer — use them directly without calling `read_document`.
 - Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
-- To make an OR query, simply put both: "budget report in:slack in:gmail" - this will return results from both Slack and Gmail. multiple filters for the same operator are OR'd.
-- To make an AND query, use multiple operators: "budget report in:slack type:pdf" - this will return results that are both in Slack and are PDFs. Multiple filters for different operators are AND'd.
+- To make an OR query, simply put both: "budget report in:slack in:gmail" - this will return results from both selected apps. multiple filters for the same operator are OR'd.
+- To make an AND query, use multiple operators: "budget report in:slack type:pdf" - this will return results that match both app and type filters. Multiple filters for different operators are AND'd.
 - For time-scoped queries, use date operators or natural language: "after:2024-06 report", "budget last week", "standup yesterday".
 - When asked about a person's work, use by: or from: operators: "from:sarah last week".
 - Use multiple targeted searches rather than one broad search. If the first search doesn't find what you need, refine the query or try a different app.
