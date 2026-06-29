@@ -24,6 +24,15 @@ logger = logging.getLogger(__name__)
 
 class OmniToolResultKind(str, Enum):
     OAUTH_REQUIRED = "oauth_required"
+    APPROVAL_REQUIRED = "approval_required"
+
+
+@dataclass
+class ApprovalRequiredPayload:
+    approval_id: str
+    tool_name: str
+    tool_input: dict[str, object]
+    tool_call_id: str
 
 
 @dataclass
@@ -40,14 +49,23 @@ class OAuthRequiredPayload:
     oauth_start_url: str
 
 
-def encode_oauth_required(payload: OAuthRequiredPayload) -> TextBlockParam:
-    """Wrap an OAuthRequiredPayload as a tool_result text content block."""
+def _encode_envelope(kind: OmniToolResultKind, payload: object) -> TextBlockParam:
     return TextBlockParam(
         type="text",
         text=json.dumps(
             {
-                "omni_kind": OmniToolResultKind.OAUTH_REQUIRED.value,
+                "omni_kind": kind.value,
                 "payload": asdict(payload),
             }
         ),
     )
+
+
+def encode_approval_required(payload: ApprovalRequiredPayload) -> TextBlockParam:
+    """Wrap an ApprovalRequiredPayload as a tool_result text content block."""
+    return _encode_envelope(OmniToolResultKind.APPROVAL_REQUIRED, payload)
+
+
+def encode_oauth_required(payload: OAuthRequiredPayload) -> TextBlockParam:
+    """Wrap an OAuthRequiredPayload as a tool_result text content block."""
+    return _encode_envelope(OmniToolResultKind.OAUTH_REQUIRED, payload)

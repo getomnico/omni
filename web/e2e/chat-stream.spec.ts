@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import crypto from 'node:crypto'
-import { readFile } from 'node:fs/promises'
+import { readFile, unlink, writeFile } from 'node:fs/promises'
 import postgres from 'postgres'
 import { createClient } from 'redis'
 import { ulid } from 'ulid'
@@ -130,6 +130,68 @@ function finalAssistantTextSse(text: string): string {
         sseMessage({ type: 'content_block_stop', index: 0 }),
         sseMessage({ type: 'message_stop' }),
         `event: message_id\ndata: ${ulid()}\n\n`,
+    ].join('')
+}
+
+type ApprovalPauseFixture = {
+    approvalId: string
+    toolCallId: string
+    toolName: string
+    toolInput: Record<string, unknown>
+}
+
+function approvalRequiredSse({
+    approvalId,
+    toolCallId,
+    toolName,
+    toolInput,
+}: ApprovalPauseFixture): string {
+    return `event: approval_required\ndata: ${JSON.stringify({
+        approval_id: approvalId,
+        tool_name: toolName,
+        tool_input: toolInput,
+        tool_call_id: toolCallId,
+    })}\n\n`
+}
+
+function approvalPauseSse(fixture: ApprovalPauseFixture): string {
+    const assistantMessage = {
+        role: 'assistant',
+        content: [
+            {
+                type: 'tool_use',
+                id: fixture.toolCallId,
+                name: fixture.toolName,
+                input: fixture.toolInput,
+            },
+        ],
+    }
+
+    return [
+        assistantStart(),
+        sseMessage({
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+                type: 'tool_use',
+                id: fixture.toolCallId,
+                name: fixture.toolName,
+                input: {},
+            },
+        }),
+        sseMessage({
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify(fixture.toolInput),
+            },
+        }),
+        sseMessage({ type: 'content_block_stop', index: 0 }),
+        sseMessage({ type: 'message_stop' }),
+        `event: save_message\ndata: ${JSON.stringify(assistantMessage)}\n\n`,
+        approvalRequiredSse(fixture),
+        'event: end_of_stream\ndata: Approval required\n\n',
     ].join('')
 }
 
@@ -614,6 +676,204 @@ data: {}
         })
         expect(streamRequests).toBeGreaterThanOrEqual(2)
     } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat keeps prior messages visible when reloaded during an active stream', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `reload-active-stream-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+    try {
+        seeded = await seedChat()
+        const historicAssistantId = ulid()
+        const sql = postgres(dbConfig)
+        await sql`
+            INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+            VALUES (
+                ${historicAssistantId},
+                ${seeded.chatId},
+                ${seeded.userMessageId},
+                2,
+                ${sql.json({
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Historical assistant answer before reload.' }],
+                })},
+                'Historical assistant answer before reload.'
+            )
+        `
+        await sql.end()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+
+        await writeFile(
+            fixturePath,
+            `${finalAssistantTextSse('Recovered assistant response after reload.')}${Array.from(
+                { length: 500 },
+                () => 'event: heartbeat\ndata: {}\n\n',
+            ).join('')}event: end_of_stream\ndata: Stream ended\n\n`,
+        )
+
+        let streamActive = false
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: streamActive,
+                    running: streamActive,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            const requestBody = (await route.request().postDataJSON()) as {
+                content: string
+                parentId?: string
+            }
+            const messageId = ulid()
+            const sql = postgres(dbConfig)
+            await sql`
+                INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+                VALUES (
+                    ${messageId},
+                    ${seeded.chatId},
+                    ${requestBody.parentId ?? null},
+                    3,
+                    ${sql.json({ role: 'user', content: requestBody.content })},
+                    ${requestBody.content}
+                )
+            `
+            await sql.end()
+            streamActive = true
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId }),
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await expect(page.getByText('What tools can you use?')).toBeVisible()
+        await expect(page.getByText('Historical assistant answer before reload.')).toBeVisible()
+
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Reload this stream mid-flight')
+        await page.keyboard.press('Enter')
+        await expect(page.getByText('Reload this stream mid-flight')).toBeVisible()
+        await expect(page.getByText('Recovered assistant response after reload.')).toBeVisible()
+
+        await page.reload({ waitUntil: 'domcontentloaded' })
+        await expect(page.getByText('Recovered assistant response after reload.')).toBeVisible()
+
+        await expect(page.getByText('What tools can you use?')).toBeVisible()
+        await expect(page.getByText('Historical assistant answer before reload.')).toBeVisible()
+        await expect(page.getByText('Reload this stream mid-flight')).toBeVisible()
+        await expect(page.locator('.omni-composer-send.rounded-full')).toBeVisible()
+
+        streamActive = false
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
+        await cleanupChat(seeded)
+    }
+})
+
+test('approval card can be approved after reload', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `approval-reload-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+    const approvalFixture: ApprovalPauseFixture = {
+        approvalId: ulid(),
+        toolCallId: `call_${ulid()}`,
+        toolName: 'google_drive__google_workspace_call',
+        toolInput: {
+            service: 'sheets',
+            resource: 'spreadsheets.values',
+            method: 'update',
+            params: { spreadsheetId: 'spreadsheet-1', range: 'Sheet1!A1:B2' },
+            body: {
+                values: [
+                    ['Asset', 'Risk'],
+                    ['Debt', 'Low'],
+                ],
+            },
+        },
+    }
+
+    try {
+        seeded = await seedChatFromTemplateFixture()
+        const sql = postgres(dbConfig)
+        await sql`
+            INSERT INTO tool_approvals (id, chat_id, user_id, tool_name, tool_input)
+            VALUES (
+                ${approvalFixture.approvalId},
+                ${seeded.chatId},
+                ${seeded.userId},
+                ${approvalFixture.toolName},
+                ${sql.json(approvalFixture.toolInput)}
+            )
+        `
+        await sql.end()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+
+        await writeFile(fixturePath, approvalPauseSse(approvalFixture))
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: true,
+                    running: false,
+                    resumable: false,
+                    pendingApproval: true,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Trigger an approval')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Awaiting approval')).toBeVisible()
+        await expect(page.getByRole('button', { name: /Approve\s*&\s*send/ })).toBeVisible()
+
+        await writeFile(
+            fixturePath,
+            [
+                approvalRequiredSse(approvalFixture),
+                'event: end_of_stream\ndata: Approval required\n\n',
+            ].join(''),
+        )
+        await page.reload({ waitUntil: 'domcontentloaded' })
+
+        await expect(page.getByText('Awaiting approval')).toBeVisible()
+        const approveButton = page.getByRole('button', { name: /Approve\s*&\s*send/ })
+        await expect(approveButton).toBeVisible()
+
+        await writeFile(
+            fixturePath,
+            `${finalAssistantTextSse('Approved action completed after reload.')}event: end_of_stream\ndata: {}\n\n`,
+        )
+        await Promise.all([
+            page.waitForResponse(
+                (response) =>
+                    response.url().includes(`/api/chat/${seeded!.chatId}/approve`) &&
+                    response.status() === 200,
+            ),
+            approveButton.click(),
+        ])
+
+        await expect(page.getByText('Awaiting approval')).toHaveCount(0)
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
         await cleanupChat(seeded)
     }
 })

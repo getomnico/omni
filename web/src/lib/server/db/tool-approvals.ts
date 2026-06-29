@@ -20,8 +20,18 @@ export class ToolApprovalRepository {
         toolInput: Record<string, unknown>,
         sourceId?: string,
         sourceType?: string,
+        toolCallId?: string,
     ): Promise<ToolApproval> {
-        return this.createWithId(ulid(), chatId, userId, toolName, toolInput, sourceId, sourceType)
+        return this.createWithId(
+            ulid(),
+            chatId,
+            userId,
+            toolName,
+            toolInput,
+            sourceId,
+            sourceType,
+            toolCallId,
+        )
     }
 
     async createWithId(
@@ -32,6 +42,7 @@ export class ToolApprovalRepository {
         toolInput: Record<string, unknown>,
         sourceId?: string,
         sourceType?: string,
+        toolCallId?: string,
     ): Promise<ToolApproval> {
         const [approval] = await this.db
             .insert(toolApprovals)
@@ -41,6 +52,7 @@ export class ToolApprovalRepository {
                 userId,
                 toolName,
                 toolInput,
+                toolCallId: toolCallId || null,
                 sourceId: sourceId || null,
                 sourceType: sourceType || null,
             })

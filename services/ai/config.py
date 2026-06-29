@@ -84,9 +84,6 @@ COMPACTION_CACHE_TTL_SECONDS = int(
 # Agent configuration
 AGENT_MAX_ITERATIONS = int(get_optional_env("AGENT_MAX_ITERATIONS", "15"))
 CONNECTOR_MANAGER_URL = get_required_env("CONNECTOR_MANAGER_URL")
-APPROVAL_TIMEOUT_SECONDS = int(
-    get_optional_env("APPROVAL_TIMEOUT_SECONDS", "600")
-)  # 10 minutes
 SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
 MEMORY_ENABLED = get_optional_env("MEMORY_ENABLED", "false").lower() == "true"
 MEMORY_PROVIDER: str = get_optional_env("MEMORY_PROVIDER", "mem0")

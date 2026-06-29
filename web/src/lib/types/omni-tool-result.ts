@@ -8,6 +8,7 @@
 
 export const OmniToolResultKind = {
     OauthRequired: 'oauth_required',
+    ApprovalRequired: 'approval_required',
 } as const
 
 export type OmniToolResultKind = (typeof OmniToolResultKind)[keyof typeof OmniToolResultKind]
@@ -20,10 +21,22 @@ export type OAuthRequiredPayload = {
     oauth_start_url: string
 }
 
-export type OmniToolResultEnvelope = {
-    omni_kind: typeof OmniToolResultKind.OauthRequired
-    payload: OAuthRequiredPayload
+export type ApprovalRequiredPayload = {
+    approval_id: string
+    tool_name: string
+    tool_input: Record<string, unknown>
+    tool_call_id: string
 }
+
+export type OmniToolResultEnvelope =
+    | {
+          omni_kind: typeof OmniToolResultKind.OauthRequired
+          payload: OAuthRequiredPayload
+      }
+    | {
+          omni_kind: typeof OmniToolResultKind.ApprovalRequired
+          payload: ApprovalRequiredPayload
+      }
 
 /**
  * Best-effort parse of a tool_result text block as an Omni envelope. Returns
@@ -62,6 +75,27 @@ export function tryParseOmniEnvelope(text: string): OmniToolResultEnvelope | nul
                 source_type: p.source_type,
                 provider: p.provider,
                 oauth_start_url: p.oauth_start_url,
+            },
+        }
+    }
+    if (kind === OmniToolResultKind.ApprovalRequired) {
+        const p = payload as Record<string, unknown>
+        if (
+            typeof p.approval_id !== 'string' ||
+            typeof p.tool_name !== 'string' ||
+            typeof p.tool_call_id !== 'string' ||
+            !p.tool_input ||
+            typeof p.tool_input !== 'object'
+        ) {
+            return null
+        }
+        return {
+            omni_kind: OmniToolResultKind.ApprovalRequired,
+            payload: {
+                approval_id: p.approval_id,
+                tool_name: p.tool_name,
+                tool_input: p.tool_input as Record<string, unknown>,
+                tool_call_id: p.tool_call_id,
             },
         }
     }

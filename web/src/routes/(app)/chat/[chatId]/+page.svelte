@@ -43,6 +43,7 @@
         ToolResultReplacedEvent,
         OmniUploadBlock,
     } from '$lib/types/message'
+    import { ToolApprovalStatus } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
@@ -974,6 +975,13 @@
             updateToolBlock(toolUseId, (block) => ({ ...block, oauthRequired }))
         }
 
+        const updateApprovalRequired = (toolUseId: string, approvalId: string) => {
+            updateToolBlock(toolUseId, (block) => ({
+                ...block,
+                approval: { approvalId, status: ToolApprovalStatus.Pending },
+            }))
+        }
+
         for (let i = 0; i < displayPath.length; i++) {
             const chatMsg = displayPath[i]
             const message = chatMsg.message
@@ -1113,10 +1121,11 @@
                                       (b): b is TextBlockParam => b.type === 'text',
                                   )
                                 : []
-                            // First text block may carry an Omni envelope (OAuth-required
-                            // prompt). Surface it as a typed UI variant; if it doesn't
-                            // parse, fall through to the normal action-result path.
-                            let oauthHandled = false
+                            // First text block may carry an Omni envelope (OAuth- or
+                            // approval-required prompt). Surface it as a typed UI
+                            // variant; if it doesn't parse, fall through to the normal
+                            // action-result path.
+                            let promptHandled = false
                             if (textBlocks.length > 0) {
                                 const envelope = tryParseOmniEnvelope(textBlocks[0].text)
                                 if (
@@ -1141,10 +1150,16 @@
                                         oauthStartUrl: envelope.payload.oauth_start_url,
                                         status: 'pending',
                                     })
-                                    oauthHandled = true
+                                    promptHandled = true
+                                } else if (
+                                    envelope &&
+                                    envelope.omni_kind === OmniToolResultKind.ApprovalRequired
+                                ) {
+                                    updateApprovalRequired(toolUseId, envelope.payload.approval_id)
+                                    promptHandled = true
                                 }
                             }
-                            if (!oauthHandled && textBlocks.length > 0) {
+                            if (!promptHandled && textBlocks.length > 0) {
                                 const text = textBlocks.map((b: any) => b.text).join('\n')
                                 updateActionResult({
                                     toolUseId,

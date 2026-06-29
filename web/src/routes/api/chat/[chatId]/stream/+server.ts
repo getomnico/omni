@@ -351,25 +351,10 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                             // so the browser advances Last-Event-ID correctly.
                             const idPrefix = id ? `id: ${id}\n` : ''
 
-                            // Forward approval_required events to client
+                            // Forward approval_required events to client. The AI service
+                            // owns creation of the durable approval row; web only resolves
+                            // approve/deny decisions through /api/chat/:chatId/approve.
                             if (eventType === 'approval_required' && data) {
-                                try {
-                                    const approvalData = JSON.parse(data)
-                                    // Save approval record to database using the same ID from Redis
-                                    const { toolApprovalRepository } =
-                                        await import('$lib/server/db/tool-approvals.js')
-                                    await toolApprovalRepository.createWithId(
-                                        approvalData.approval_id,
-                                        chatId,
-                                        chat.userId,
-                                        approvalData.tool_name,
-                                        approvalData.tool_input,
-                                    )
-                                } catch (err) {
-                                    logger.error('Failed to save tool approval record', err, {
-                                        chatId,
-                                    })
-                                }
                                 const approvalEvent = `${idPrefix}event: approval_required\ndata: ${data}\n\n`
                                 controller.enqueue(encoder.encode(approvalEvent))
                                 continue

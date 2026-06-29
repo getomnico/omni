@@ -31,7 +31,6 @@ from agents.repository import AgentRepository, AgentRunRepository
 from attachments import expand_uploads
 from config import (
     AGENT_MAX_ITERATIONS,
-    APPROVAL_TIMEOUT_SECONDS,
     CONNECTOR_MANAGER_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TEMPERATURE,
@@ -74,7 +73,12 @@ from tools.connector_handler import (
     sources_from_sync_overview_response,
 )
 from tools.meta_handler import MetaToolHandler, OnLoad
-from tools.omni_tool_result import OAuthRequiredPayload
+from tools.omni_tool_result import (
+    ApprovalRequiredPayload,
+    OAuthRequiredPayload,
+    OmniToolResultKind,
+    encode_approval_required,
+)
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
@@ -783,54 +787,86 @@ async def _build_agent_chat_registry(
     )
 
 
+def _jsonb_value(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
 async def _save_pending_approval(
-    redis_client,
     chat_id: str,
+    user_id: str,
     tool_call: dict,
-    conversation_messages: list[MessageParam],
     action_info: dict | None = None,
 ) -> str:
-    """Save pending approval state to Redis."""
+    """Save pending approval state to Postgres."""
     import ulid
 
     approval_id = str(ulid.ULID())
-    state = {
-        "approval_id": approval_id,
-        "tool_call": {
-            "id": tool_call["id"],
-            "name": tool_call["name"],
-            "input": tool_call["input"],
-        },
-        "conversation_messages": conversation_messages,
-        "source_id": action_info.get("source_id") if action_info else None,
-        "source_type": action_info.get("source_type") if action_info else None,
-        "action_name": action_info.get("action_name") if action_info else None,
-    }
+    source_id = action_info.get("source_id") if action_info else None
+    source_type = action_info.get("source_type") if action_info else None
 
-    key = f"chat:{chat_id}:pending_approval"
-    await redis_client.set(
-        key, json.dumps(state, default=str), ex=APPROVAL_TIMEOUT_SECONDS
-    )
+    pool = await MessagesRepository()._get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO tool_approvals (
+                id,
+                chat_id,
+                user_id,
+                tool_name,
+                tool_input,
+                tool_call_id,
+                source_id,
+                source_type
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            approval_id,
+            chat_id,
+            user_id,
+            tool_call["name"],
+            json.dumps(tool_call["input"]),
+            tool_call["id"],
+            source_id,
+            source_type,
+        )
+
     logger.info(f"Saved pending approval {approval_id} for chat {chat_id}")
     return approval_id
 
 
-async def _get_pending_approval(redis_client, chat_id: str) -> dict | None:
-    """Get pending approval state from Redis."""
-    key = f"chat:{chat_id}:pending_approval"
+async def _get_pending_approval(chat_id: str) -> dict | None:
+    """Get the latest pending approval state from Postgres."""
     try:
-        data = await redis_client.get(key)
-        if data:
-            return json.loads(data)
+        pool = await MessagesRepository()._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, tool_name, tool_input, tool_call_id, source_id, source_type
+                FROM tool_approvals
+                WHERE chat_id = $1 AND status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                chat_id,
+            )
+        if not row:
+            return None
+        return {
+            "approval_id": row["id"],
+            "tool_call": {
+                "id": row["tool_call_id"],
+                "name": row["tool_name"],
+                "input": _jsonb_value(row["tool_input"]),
+            },
+            "source_id": row["source_id"],
+            "source_type": row["source_type"],
+        }
     except Exception as e:
         logger.warning(f"Failed to get pending approval: {e}")
     return None
-
-
-async def _clear_pending_approval(redis_client, chat_id: str) -> None:
-    """Clear pending approval state from Redis."""
-    key = f"chat:{chat_id}:pending_approval"
-    await redis_client.delete(key)
 
 
 async def _tool_approval_status(approval_id: str | None) -> str | None:
@@ -847,43 +883,82 @@ async def _tool_approval_status(approval_id: str | None) -> str | None:
         return None
 
 
-async def _save_pending_oauth(
-    redis_client,
-    chat_id: str,
-    tool_calls: list[dict],
-    conversation_messages: list[MessageParam],
-) -> None:
-    """Save pending OAuth state to Redis."""
-    state = {
-        "tool_calls": [
-            {"id": tc["id"], "name": tc["name"], "input": tc["input"]}
-            for tc in tool_calls
-        ],
-        "conversation_messages": conversation_messages,
-    }
-    key = f"chat:{chat_id}:pending_oauth"
-    await redis_client.set(
-        key, json.dumps(state, default=str), ex=APPROVAL_TIMEOUT_SECONDS
-    )
-    logger.info(
-        f"Saved pending OAuth for chat {chat_id} ({len(tool_calls)} tool call(s))"
-    )
-
-
-async def _get_pending_oauth(redis_client, chat_id: str) -> dict | None:
-    key = f"chat:{chat_id}:pending_oauth"
+def _parse_omni_tool_result_envelope(block: dict) -> dict | None:
+    if block.get("type") != "tool_result":
+        return None
+    content = block.get("content")
+    if not isinstance(content, list) or not content:
+        return None
+    first = content[0]
+    if not isinstance(first, dict) or first.get("type") != "text":
+        return None
+    text = first.get("text")
+    if not isinstance(text, str) or not text.startswith("{"):
+        return None
     try:
-        data = await redis_client.get(key)
-        if data:
-            return json.loads(data)
-    except Exception as e:
-        logger.warning(f"Failed to get pending OAuth: {e}")
-    return None
+        envelope = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    return envelope
 
 
-async def _clear_pending_oauth(redis_client, chat_id: str) -> None:
-    key = f"chat:{chat_id}:pending_oauth"
-    await redis_client.delete(key)
+def _tool_uses_by_id(chat_messages) -> dict[str, dict]:
+    tool_uses: dict[str, dict] = {}
+    for cm in chat_messages:
+        msg = cm.message
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and isinstance(block.get("id"), str)
+            ):
+                tool_uses[block["id"]] = {
+                    "id": block["id"],
+                    "name": block.get("name"),
+                    "input": block.get("input") or {},
+                }
+    return tool_uses
+
+
+def _pending_oauth_from_chat_messages(chat_messages) -> dict | None:
+    tool_uses = _tool_uses_by_id(chat_messages)
+    pending_tool_calls: list[dict] = []
+    seen: set[str] = set()
+
+    for cm in chat_messages:
+        msg = cm.message
+        if not isinstance(msg, dict) or msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            tool_use_id = block.get("tool_use_id")
+            if not isinstance(tool_use_id, str) or tool_use_id in seen:
+                continue
+            envelope = _parse_omni_tool_result_envelope(block)
+            if not envelope:
+                continue
+            if envelope.get("omni_kind") != OmniToolResultKind.OAUTH_REQUIRED.value:
+                continue
+            tool_call = tool_uses.get(tool_use_id)
+            if not tool_call:
+                continue
+            pending_tool_calls.append(tool_call)
+            seen.add(tool_use_id)
+
+    if not pending_tool_calls:
+        return None
+    return {"tool_calls": pending_tool_calls}
 
 
 @router.get("/chat/{chat_id}/stream_status")
@@ -891,19 +966,22 @@ async def stream_status(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
     redis_client = getattr(request.app.state, "redis_client", None)
+    pending_approval = bool(await _get_pending_approval(chat_id))
+    active_path = await MessagesRepository().get_active_path(chat_id)
+    pending_oauth = bool(_pending_oauth_from_chat_messages(active_path))
     if redis_client is None:
         return {
             "running": False,
             "resumable": False,
-            "pending_approval": False,
-            "pending_oauth": False,
+            "pending_approval": pending_approval,
+            "pending_oauth": pending_oauth,
         }
 
     return {
         "running": bool(await redis_client.exists(_run_lock_key(chat_id))),
         "resumable": bool(await redis_client.exists(_stream_key(chat_id))),
-        "pending_approval": bool(await _get_pending_approval(redis_client, chat_id)),
-        "pending_oauth": bool(await _get_pending_oauth(redis_client, chat_id)),
+        "pending_approval": pending_approval,
+        "pending_oauth": pending_oauth,
     }
 
 
@@ -1122,12 +1200,9 @@ async def stream_chat(
             )
         registry = build_result.registry
 
-        # Check for pending approval / OAuth resume flow
-        pending = None
-        pending_oauth = None
-        if redis_client:
-            pending = await _get_pending_approval(redis_client, chat_id)
-            pending_oauth = await _get_pending_oauth(redis_client, chat_id)
+        # Check for pending approval / OAuth resume flow from durable state.
+        pending = await _get_pending_approval(chat_id)
+        pending_oauth = _pending_oauth_from_chat_messages(chat_messages)
 
         active_sources = [
             s for s in build_result.sources if s.is_active and not s.is_deleted
@@ -1256,16 +1331,10 @@ async def stream_chat(
     # Stream AI response with tool calling
     async def stream_generator():
         try:
-            if pending and isinstance(pending.get("conversation_messages"), list):
-                conversation_messages = pending["conversation_messages"].copy()
-            elif pending_oauth and isinstance(
-                pending_oauth.get("conversation_messages"), list
-            ):
-                conversation_messages = pending_oauth["conversation_messages"].copy()
-            else:
-                conversation_messages = messages.copy()
+            conversation_messages = messages.copy()
 
-            # Handle approval resume
+            # Handle approval resume — replace the persisted placeholder
+            # tool_result in-place, matching the OAuth pause/resume shape.
             if pending:
                 logger.info(f"Resuming from pending approval for chat {chat_id}")
 
@@ -1273,39 +1342,48 @@ async def stream_chat(
                 approval_id = pending.get("approval_id")
                 approval_status = await _tool_approval_status(approval_id)
 
-                if approval_status != "approved":
-                    if approval_status == "denied":
-                        await _clear_pending_approval(redis_client, chat_id)
-                        tool_result = ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call["id"],
-                            content=[
-                                {
-                                    "type": "text",
-                                    "text": "The user denied approval for this tool call.",
-                                }
-                            ],
-                            is_error=True,
-                        )
-                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-                        tool_result_message = MessageParam(
-                            role="user", content=[tool_result]
-                        )
-                        conversation_messages.append(tool_result_message)
-                        yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-                    else:
-                        approval_event = {
-                            "approval_id": approval_id,
-                            "tool_name": tool_call["name"],
-                            "tool_input": tool_call["input"],
-                            "tool_call_id": tool_call["id"],
-                        }
-                        yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
-                        yield "event: end_of_stream\ndata: Approval required\n\n"
-                        return
-                else:
-                    await _clear_pending_approval(redis_client, chat_id)
+                if approval_status not in {"approved", "denied"}:
+                    approval_event = {
+                        "approval_id": approval_id,
+                        "tool_name": tool_call["name"],
+                        "tool_input": tool_call["input"],
+                        "tool_call_id": tool_call["id"],
+                    }
+                    yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
+                    yield "event: end_of_stream\ndata: Approval required\n\n"
+                    return
 
+                placeholder_id = None
+                for cm in chat_messages:
+                    msg = cm.message
+                    if not isinstance(msg, dict) or msg.get("role") != "user":
+                        continue
+                    content = msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    if any(
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == tool_call["id"]
+                        for block in content
+                    ):
+                        placeholder_id = cm.id
+                        break
+
+                resumed_oauth_required: OAuthRequiredPayload | None = None
+                if approval_status == "denied":
+                    tool_result = ToolResultBlockParam(
+                        type="tool_result",
+                        tool_use_id=tool_call["id"],
+                        content=[
+                            {
+                                "type": "text",
+                                "text": "The user denied approval for this tool call.",
+                            }
+                        ],
+                        is_error=True,
+                    )
+                else:
                     context = ToolContext(
                         chat_id=chat_id,
                         user_id=tool_user_id,
@@ -1316,7 +1394,7 @@ async def stream_chat(
                     result = await registry.execute(
                         tool_call["name"], tool_call["input"], context
                     )
-
+                    resumed_oauth_required = result.oauth_required
                     tool_result = ToolResultBlockParam(
                         type="tool_result",
                         tool_use_id=tool_call["id"],
@@ -1324,14 +1402,61 @@ async def stream_chat(
                         is_error=result.is_error,
                     )
 
-                    # Emit the tool result to the client
+                if placeholder_id is None:
+                    logger.warning(
+                        f"Approval resume: placeholder tool_result missing for {tool_call['id']} in chat {chat_id}; appending legacy tool_result"
+                    )
                     yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
                     tool_result_message = MessageParam(
                         role="user", content=[tool_result]
                     )
                     conversation_messages.append(tool_result_message)
                     yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+                else:
+                    for cm_msg in conversation_messages:
+                        if not isinstance(cm_msg, dict) or cm_msg.get("role") != "user":
+                            continue
+                        content = cm_msg.get("content")
+                        if not isinstance(content, list):
+                            continue
+                        new_content = [
+                            (
+                                tool_result
+                                if (
+                                    isinstance(block, dict)
+                                    and block.get("type") == "tool_result"
+                                    and block.get("tool_use_id") == tool_call["id"]
+                                )
+                                else block
+                            )
+                            for block in content
+                        ]
+                        if new_content != content:
+                            cm_msg["content"] = new_content
+                            await messages_repo.update_message_content(
+                                placeholder_id, cm_msg
+                            )
+                            break
+
+                    replaced_event = {
+                        "tool_use_id": tool_call["id"],
+                        "content": tool_result["content"],
+                        "is_error": tool_result["is_error"],
+                    }
+                    yield f"event: tool_result_replaced\ndata: {json.dumps(replaced_event)}\n\n"
+
+                if resumed_oauth_required is not None:
+                    oauth_event = {
+                        "tool_call_id": tool_call["id"],
+                        "tool_name": tool_call["name"],
+                        "source_id": resumed_oauth_required.source_id,
+                        "source_type": resumed_oauth_required.source_type,
+                        "provider": resumed_oauth_required.provider,
+                        "oauth_start_url": resumed_oauth_required.oauth_start_url,
+                    }
+                    yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
+                    yield "event: end_of_stream\ndata: OAuth required\n\n"
+                    return
 
             # Handle OAuth resume — replace each placeholder tool_result in-place
             # so the LLM sees real results on the next iteration, not the
@@ -1341,7 +1466,6 @@ async def stream_chat(
             # all so the LLM doesn't see a mix of real and stale results.
             elif pending_oauth:
                 logger.info(f"Resuming from pending OAuth for chat {chat_id}")
-                await _clear_pending_oauth(redis_client, chat_id)
 
                 pending_tool_calls = pending_oauth["tool_calls"]
 
@@ -1388,6 +1512,7 @@ async def stream_chat(
                 # Execute each pending tool call and collect the new blocks
                 # keyed by tool_use_id for the in-place rewrite below.
                 new_blocks_by_id: dict[str, ToolResultBlockParam] = {}
+                still_pending_oauths: list[tuple[dict, OAuthRequiredPayload]] = []
                 for tc in pending_tool_calls:
                     result = await registry.execute(tc["name"], tc["input"], context)
                     new_blocks_by_id[tc["id"]] = ToolResultBlockParam(
@@ -1396,6 +1521,8 @@ async def stream_chat(
                         content=result.content,
                         is_error=result.is_error,
                     )
+                    if result.oauth_required is not None:
+                        still_pending_oauths.append((tc, result.oauth_required))
 
                 # Walk conversation_messages once. For every user message that
                 # contains at least one matching placeholder, rewrite all
@@ -1452,6 +1579,20 @@ async def stream_chat(
                         "is_error": new_block["is_error"],
                     }
                     yield f"event: tool_result_replaced\ndata: {json.dumps(replaced_event)}\n\n"
+
+                if still_pending_oauths:
+                    primary_tc, primary_payload = still_pending_oauths[0]
+                    oauth_event = {
+                        "tool_call_id": primary_tc["id"],
+                        "tool_name": primary_tc["name"],
+                        "source_id": primary_payload.source_id,
+                        "source_type": primary_payload.source_type,
+                        "provider": primary_payload.provider,
+                        "oauth_start_url": primary_payload.oauth_start_url,
+                    }
+                    yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
+                    yield "event: end_of_stream\ndata: OAuth required\n\n"
+                    return
 
             logger.info(
                 f"Starting conversation with {len(conversation_messages)} initial messages"
@@ -1695,63 +1836,43 @@ async def stream_chat(
                     )
                     break
 
-                # Execute each tool call via the registry
+                # Execute each tool call via the registry. Approval-required
+                # tools are represented as persisted placeholder tool_results,
+                # matching the OAuth-required pause shape. This keeps provider
+                # history valid: every assistant tool_use is immediately paired
+                # with a user tool_result before we pause.
                 tool_results: list[ToolResultBlockParam] = []
-                # Track every tool call in this iteration that surfaced an
-                # oauth_required envelope so we can pause the agent loop after
-                # the iteration's tool_results are persisted (every tool_use
-                # must be paired with a tool_result before we can pause, per
-                # the Anthropic API contract). The frontend dedupes the cards
-                # by sourceId; on resume we re-execute *every* pending call
-                # so all hidden placeholders also get replaced with real
-                # results.
+                loop_pending_approvals: list[tuple[dict, str]] = []
                 loop_pending_oauths: list[tuple[dict, OAuthRequiredPayload]] = []
                 for tool_call in tool_calls:
                     tool_name = tool_call["name"]
 
-                    # Check if this tool requires approval
                     if registry.requires_approval(tool_name):
                         logger.info(
                             f"Tool {tool_name} requires approval, pausing stream"
                         )
+                        approval_id = await _save_pending_approval(
+                            chat_id,
+                            chat.user_id,
+                            tool_call,
+                        )
+                        approval_payload = ApprovalRequiredPayload(
+                            approval_id=approval_id,
+                            tool_name=tool_name,
+                            tool_input=tool_call["input"],
+                            tool_call_id=tool_call["id"],
+                        )
+                        tool_result = ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=tool_call["id"],
+                            content=[encode_approval_required(approval_payload)],
+                            is_error=False,
+                        )
+                        tool_results.append(tool_result)
+                        loop_pending_approvals.append((tool_call, approval_id))
+                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
+                        continue
 
-                        # Save state to Redis for resume
-                        if redis_client:
-                            approval_id = await _save_pending_approval(
-                                redis_client,
-                                chat_id,
-                                tool_call,
-                                conversation_messages,
-                            )
-
-                            # Emit approval_required event
-                            approval_event = {
-                                "approval_id": approval_id,
-                                "tool_name": tool_name,
-                                "tool_input": tool_call["input"],
-                                "tool_call_id": tool_call["id"],
-                            }
-                            yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
-                            yield "event: end_of_stream\ndata: Approval required\n\n"
-                            return
-                        else:
-                            # No Redis, can't do approvals — treat as denied
-                            tool_results.append(
-                                ToolResultBlockParam(
-                                    type="tool_result",
-                                    tool_use_id=tool_call["id"],
-                                    content=[
-                                        {
-                                            "type": "text",
-                                            "text": "This action requires user approval, but the approval system is not available.",
-                                        }
-                                    ],
-                                    is_error=True,
-                                )
-                            )
-                            continue
-
-                    # Execute the tool
                     result = await registry.execute(
                         tool_name, tool_call["input"], context
                     )
@@ -1775,16 +1896,24 @@ async def stream_chat(
                 # Send complete tool result message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
 
+                if loop_pending_approvals:
+                    primary_tc, approval_id = loop_pending_approvals[0]
+                    approval_event = {
+                        "approval_id": approval_id,
+                        "tool_name": primary_tc["name"],
+                        "tool_input": primary_tc["input"],
+                        "tool_call_id": primary_tc["id"],
+                    }
+                    yield f"event: approval_required\ndata: {json.dumps(approval_event)}\n\n"
+                    yield "event: end_of_stream\ndata: Approval required\n\n"
+                    return
+
                 # If any tool surfaced an oauth_required envelope, pause the loop now
                 # that the placeholder tool_result has been persisted. The frontend
                 # will render the Connect card; on completion it re-opens the stream
                 # and the resume branch (top of stream_generator) replaces the
                 # placeholder with the real result.
-                if loop_pending_oauths and redis_client:
-                    pending_tcs = [tc for (tc, _) in loop_pending_oauths]
-                    await _save_pending_oauth(
-                        redis_client, chat_id, pending_tcs, conversation_messages
-                    )
+                if loop_pending_oauths:
                     # Surface a single oauth_required event for the first
                     # pending call — the frontend already dedupes the cards
                     # by sourceId, so emitting more would be redundant.
@@ -1856,16 +1985,32 @@ async def stream_chat(
             )
             yield _sse_event("stream_error", _chat_error_payload(e))
 
-    # First new message persisted by the producer is normally the child of the
-    # latest active-path row. Approval resumes are different: the user may have
-    # reloaded or tried to branch while the approval card was hidden, so use the
-    # assistant message that actually contains the pending tool_use as parent.
     if pending:
-        parent_id = await _find_tool_use_message_id(
-            messages_repo, chat_id, pending["tool_call"]["id"]
-        )
-        if parent_id is None:
+        pending_tool_call_id = pending["tool_call"].get("id")
+        has_placeholder = False
+        for cm in chat_messages:
+            msg = cm.message
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            if any(
+                isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and block.get("tool_use_id") == pending_tool_call_id
+                for block in content
+            ):
+                has_placeholder = True
+                break
+        if has_placeholder:
             parent_id = chat_messages[-1].id if chat_messages else None
+        else:
+            parent_id = await _find_tool_use_message_id(
+                messages_repo, chat_id, pending_tool_call_id
+            )
+            if parent_id is None:
+                parent_id = chat_messages[-1].id if chat_messages else None
     else:
         parent_id = chat_messages[-1].id if chat_messages else None
 
