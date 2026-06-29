@@ -51,6 +51,28 @@ type TemplateChatMessage = {
     createdAt: string
 }
 
+type InterruptedToolRepairRow = {
+    id: string
+    parent_id: string | null
+    message_seq_num: number
+    message: unknown
+}
+
+type InterruptedToolResultMessage = {
+    role: 'user'
+    content: Array<{
+        type: 'tool_result'
+        tool_use_id: string
+        is_error: boolean
+        content: Array<{ type: 'text'; text: string }>
+    }>
+}
+
+type TextUserMessage = {
+    role: 'user'
+    content: string
+}
+
 type SeededCitationChat = SeededChat & {
     assistantMessageId: string
 }
@@ -305,6 +327,40 @@ async function seedChat(): Promise<SeededChat> {
     await redis.disconnect()
 
     return { userId, chatId, userMessageId, sessionToken, sessionKey }
+}
+
+async function seedInterruptedToolCallChat(): Promise<
+    SeededChat & { assistantMessageId: string; toolUseId: string }
+> {
+    const seeded = await seedChat()
+    const sql = postgres(dbConfig)
+    const assistantMessageId = ulid()
+    const toolUseId = `toolu_interrupted_${ulid()}`
+
+    await sql`
+        INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+        VALUES (
+            ${assistantMessageId},
+            ${seeded.chatId},
+            ${seeded.userMessageId},
+            2,
+            ${sql.json({
+                role: 'assistant',
+                content: [
+                    {
+                        type: 'tool_use',
+                        id: toolUseId,
+                        name: 'search_documents',
+                        input: { query: 'interrupted tool call', limit: 10 },
+                    },
+                ],
+            })},
+            NULL
+        )
+    `
+    await sql.end()
+
+    return { ...seeded, assistantMessageId, toolUseId }
 }
 
 async function seedChatFromTemplateFixture(
@@ -675,6 +731,81 @@ data: {}
             timeout: 10_000,
         })
         expect(streamRequests).toBeGreaterThanOrEqual(2)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat inserts failed tool result before a user reply after interrupted tool call', async ({
+    page,
+}) => {
+    let seeded: (SeededChat & { assistantMessageId: string; toolUseId: string }) | null = null
+    try {
+        seeded = await seedInterruptedToolCallChat()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: false,
+                    running: false,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: 'event: end_of_stream\ndata: Stream ended\n\n',
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Please continue after failure')
+        await page.keyboard.press('Enter')
+        await expect(page.getByText('Please continue after failure')).toBeVisible()
+
+        const sql = postgres(dbConfig)
+        const rows = await sql<InterruptedToolRepairRow[]>`
+            SELECT id, parent_id, message_seq_num, message
+            FROM chat_messages
+            WHERE chat_id = ${seeded.chatId}
+            ORDER BY message_seq_num
+        `
+        await sql.end()
+
+        expect(rows).toHaveLength(4)
+        const repairMessage = rows[2]
+        const followUpMessage = rows[3]
+        const repairPayload = repairMessage.message as InterruptedToolResultMessage
+        const followUpPayload = followUpMessage.message as TextUserMessage
+
+        expect(repairMessage.parent_id).toBe(seeded.assistantMessageId)
+        expect(repairPayload.role).toBe('user')
+        expect(repairPayload.content).toEqual([
+            expect.objectContaining({
+                type: 'tool_result',
+                tool_use_id: seeded.toolUseId,
+                is_error: true,
+            }),
+        ])
+        expect(repairPayload.content[0].content[0].text).toContain(
+            'previous response was interrupted',
+        )
+        expect(followUpMessage.parent_id).toBe(repairMessage.id)
+        expect(followUpPayload).toEqual({
+            role: 'user',
+            content: 'Please continue after failure',
+        })
     } finally {
         await cleanupChat(seeded)
     }
