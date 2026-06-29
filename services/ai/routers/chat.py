@@ -914,9 +914,55 @@ async def _update_tool_approval_status(
         )
 
 
+async def _active_path_tool_call_ids(chat_id: str) -> set[str]:
+    pool = await MessagesRepository()._get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH RECURSIVE walk_up AS (
+                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                FROM (
+                    SELECT *
+                    FROM chat_messages
+                    WHERE chat_id = $1
+                    AND id NOT IN (
+                        SELECT DISTINCT parent_id FROM chat_messages
+                        WHERE chat_id = $1 AND parent_id IS NOT NULL
+                    )
+                    ORDER BY message_seq_num DESC
+                    LIMIT 1
+                ) cm
+
+                UNION ALL
+
+                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                FROM chat_messages cm
+                JOIN walk_up wu ON cm.id = wu.parent_id
+            ), content_blocks AS (
+                SELECT jsonb_array_elements(message->'content') AS block
+                FROM walk_up
+                WHERE message->>'role' = 'assistant'
+                  AND jsonb_typeof(message->'content') = 'array'
+            )
+            SELECT block->>'id' AS tool_call_id
+            FROM content_blocks
+            WHERE block->>'type' = 'tool_use'
+              AND block->>'id' IS NOT NULL
+            """,
+            chat_id,
+        )
+    return {row["tool_call_id"] for row in rows}
+
+
 async def _tool_approvals(
-    chat_id: str, approval_type: str, statuses: set[str]
+    chat_id: str,
+    approval_type: str,
+    statuses: set[str],
+    active_tool_call_ids: set[str] | None = None,
 ) -> list[dict]:
+    if active_tool_call_ids is not None and not active_tool_call_ids:
+        return []
+
     pool = await MessagesRepository()._get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -927,11 +973,13 @@ async def _tool_approvals(
             WHERE chat_id = $1
               AND approval_type = $2
               AND status = ANY($3::text[])
+              AND ($4::text[] IS NULL OR tool_call_id = ANY($4::text[]))
             ORDER BY created_at ASC
             """,
             chat_id,
             approval_type,
             list(statuses),
+            list(active_tool_call_ids) if active_tool_call_ids is not None else None,
         )
 
     return [
@@ -981,8 +1029,13 @@ async def stream_status(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
     redis_client = getattr(request.app.state, "redis_client", None)
-    pending_approval = bool(await _tool_approvals(chat_id, "approval", {"pending"}))
-    pending_oauth = bool(await _tool_approvals(chat_id, "oauth", {"pending"}))
+    active_tool_call_ids = await _active_path_tool_call_ids(chat_id)
+    pending_approval = bool(
+        await _tool_approvals(chat_id, "approval", {"pending"}, active_tool_call_ids)
+    )
+    pending_oauth = bool(
+        await _tool_approvals(chat_id, "oauth", {"pending"}, active_tool_call_ids)
+    )
     if redis_client is None:
         return {
             "running": False,
@@ -1215,10 +1268,20 @@ async def stream_chat(
         registry = build_result.registry
 
         # Check for pending approval / OAuth resume flow from durable state.
+        active_tool_call_ids = {
+            tool_use["id"]
+            for message in messages
+            for tool_use in _tool_use_blocks(message)
+        }
         pending = await _tool_approvals(
-            chat_id, "approval", {"pending", "approved", "denied"}
+            chat_id,
+            "approval",
+            {"pending", "approved", "denied"},
+            active_tool_call_ids,
         )
-        pending_oauth = await _tool_approvals(chat_id, "oauth", {"pending"})
+        pending_oauth = await _tool_approvals(
+            chat_id, "oauth", {"pending"}, active_tool_call_ids
+        )
 
         active_sources = [
             s for s in build_result.sources if s.is_active and not s.is_deleted

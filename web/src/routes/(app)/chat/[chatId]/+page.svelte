@@ -521,6 +521,63 @@
             .join('|')
     }
 
+    function summarizeChatMessagesForDebug(messages: ChatMessage[]) {
+        return messages.slice(-6).map((message) => ({
+            id: message.id,
+            parentId: message.parentId,
+            seq: message.messageSeqNum,
+            role: message.message.role,
+            contentType: Array.isArray(message.message.content) ? 'array' : 'string',
+            blockTypes: Array.isArray(message.message.content)
+                ? message.message.content.map((block) => block.type)
+                : undefined,
+        }))
+    }
+
+    function summarizeProcessedMessagesForDebug(messages: ProcessedMessage[]) {
+        return messages.slice(-4).map((message) => ({
+            origMessageId: message.origMessageId,
+            role: message.role,
+            sourceMessageIds: message.sourceMessageIds,
+            contentTypes: message.content.map((block) => block.type),
+            toolIds: message.content
+                .filter((block): block is ToolMessageContent => block.type === 'tool')
+                .map((block) => block.toolUse.id),
+            textLengths: message.content
+                .filter((block): block is TextMessageContent => block.type === 'text')
+                .map((block) => block.text.length),
+        }))
+    }
+
+    $effect(() => {
+        const displayPath = getDisplayPath(chatMessages)
+        console.debug('[chat-state-debug]', {
+            isStreaming,
+            activeStreamingMessageId,
+            chatMessageCount: chatMessages.length,
+            processedMessageCount: processedMessages.length,
+            displayPathLength: displayPath.length,
+            displayPathTail: displayPath.slice(-5).map((message) => ({
+                id: message.id,
+                parentId: message.parentId,
+                seq: message.messageSeqNum,
+                role: message.message.role,
+            })),
+            chatTail: summarizeChatMessagesForDebug(chatMessages),
+            processedTail: summarizeProcessedMessagesForDebug(processedMessages),
+            pendingApproval: pendingApproval
+                ? {
+                      approvalId: pendingApproval.approval_id,
+                      toolCallId: pendingApproval.tool_call_id,
+                      approvals: pendingApproval.approvals?.map((approval) => ({
+                          approvalId: approval.approval_id,
+                          toolCallId: approval.tool_call_id,
+                      })),
+                  }
+                : null,
+        })
+    })
+
     function markChatMessagesChanged() {
         scheduleProcessedMessagesRefresh()
     }
@@ -821,9 +878,13 @@
         }
         chatMessages = [...chatMessages, newUserMessage]
 
-        // Select the new branch
+        // Select the new branch. Pending interventions belong to the abandoned
+        // branch below the edited message, so clear their local UI state before
+        // starting the replay stream for this branch.
         branchSelections[parentKey] = messageId
         clearDownstreamSelections(messageId)
+        pendingApproval = null
+        oauthEventByToolCallId = {}
         markChatMessagesChanged()
 
         streamResponse(data.chat.id)
@@ -2032,6 +2093,49 @@
                     responseText,
                 })
                 return
+            }
+
+            const responseBody = (await response.json()) as { denialMessageId?: string | null }
+            const approvalItems = pendingApproval.approvals ?? [pendingApproval]
+            if (decision === 'denied' && responseBody.denialMessageId) {
+                const firstToolCallId = approvalItems[0]?.tool_call_id
+                const parentMessage = chatMessages.find((message) => {
+                    const content = message.message.content
+                    return (
+                        Array.isArray(content) &&
+                        content.some(
+                            (block) => block.type === 'tool_use' && block.id === firstToolCallId,
+                        )
+                    )
+                })
+                if (parentMessage) {
+                    const denialBlocks: ToolResultBlockParam[] = approvalItems.map((approval) => ({
+                        type: 'tool_result',
+                        tool_use_id: approval.tool_call_id,
+                        content: [
+                            {
+                                type: 'text',
+                                text: 'The user denied approval for this tool call.',
+                            },
+                        ],
+                        is_error: true,
+                    }))
+                    const denialMessage: ChatMessage = {
+                        id: responseBody.denialMessageId,
+                        chatId: data.chat.id,
+                        parentId: parentMessage.id,
+                        message: {
+                            role: 'user',
+                            content: denialBlocks,
+                        },
+                        contentText: null,
+                        messageSeqNum: nextMessageSeqNum(chatMessages),
+                        createdAt: new Date(),
+                    }
+                    chatMessages = [...chatMessages, denialMessage]
+                    selectBranch(parentMessage.id, denialMessage.id)
+                    markChatMessagesChanged()
+                }
             }
 
             pendingApproval = null

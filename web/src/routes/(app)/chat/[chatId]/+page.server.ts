@@ -4,6 +4,32 @@ import { getAgent } from '$lib/server/db/agents.js'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
+import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
+
+function isToolUseBlock(block: unknown): block is ToolUseBlockParam {
+    return (
+        typeof block === 'object' &&
+        block !== null &&
+        'type' in block &&
+        block.type === 'tool_use' &&
+        'id' in block &&
+        typeof block.id === 'string'
+    )
+}
+
+function collectActivePathToolCallIds(messages: ChatMessage[]): Set<string> {
+    const ids = new Set<string>()
+    for (const msg of messages) {
+        const content = msg.message.content
+        if (!Array.isArray(content)) continue
+        for (const block of content) {
+            if (isToolUseBlock(block)) {
+                ids.add(block.id)
+            }
+        }
+    }
+    return ids
+}
 
 function collectUploadIds(messages: ChatMessage[]): Set<string> {
     const ids = new Set<string>()
@@ -73,9 +99,23 @@ export const load = async ({ params, locals, fetch }) => {
 
     const uploadIds = collectUploadIds(messages)
     const uploadFilenames = await resolveUploadFilenames(uploadIds, fetch)
-    const pendingApprovals = await toolApprovalRepository.getPendingForChatAll(chat.id, 'approval')
+    const activePathMessages = await chatMessageRepository.getActivePath(chat.id)
+    const activePathToolCallIds = collectActivePathToolCallIds(activePathMessages)
+    const allPendingApprovals = await toolApprovalRepository.getPendingForChatAll(
+        chat.id,
+        'approval',
+    )
+    const pendingApprovals = allPendingApprovals.filter(
+        (approval) =>
+            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+    )
     const pendingApproval = pendingApprovals[0] ?? null
-    const pendingOAuth = await toolApprovalRepository.getPendingForChat(chat.id, 'oauth')
+    const allPendingOAuth = await toolApprovalRepository.getPendingForChatAll(chat.id, 'oauth')
+    const pendingOAuth =
+        allPendingOAuth.find(
+            (approval) =>
+                approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+        ) ?? null
 
     return {
         user: locals.user!,
