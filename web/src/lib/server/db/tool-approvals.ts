@@ -44,9 +44,17 @@ export class ToolApprovalRepository {
                 sourceId: sourceId || null,
                 sourceType: sourceType || null,
             })
+            .onConflictDoNothing()
             .returning()
 
-        return approval
+        if (approval) return approval
+
+        const existingApproval = await this.get(id)
+        if (!existingApproval) {
+            throw new Error(`Tool approval ${id} was not created and no existing row was found`)
+        }
+
+        return existingApproval
     }
 
     async get(approvalId: string): Promise<ToolApproval | null> {
