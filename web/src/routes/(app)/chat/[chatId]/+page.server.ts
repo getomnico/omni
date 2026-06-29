@@ -1,6 +1,7 @@
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
 import { getModel } from '$lib/server/db/model-providers.js'
 import { getAgent } from '$lib/server/db/agents.js'
+import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
 
@@ -72,6 +73,8 @@ export const load = async ({ params, locals, fetch }) => {
 
     const uploadIds = collectUploadIds(messages)
     const uploadFilenames = await resolveUploadFilenames(uploadIds, fetch)
+    const pendingApproval = await toolApprovalRepository.getPendingForChat(chat.id, 'approval')
+    const pendingOAuth = await toolApprovalRepository.getPendingForChat(chat.id, 'oauth')
 
     return {
         user: locals.user!,
@@ -80,5 +83,7 @@ export const load = async ({ params, locals, fetch }) => {
         modelDisplayName,
         agent,
         uploadFilenames,
+        pendingApproval,
+        pendingOAuth,
     }
 }

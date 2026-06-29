@@ -111,6 +111,17 @@
             activeStreamingMessageId = null
             editingMessageId = null
             uploadFilenames = { ...data.uploadFilenames }
+            pendingApproval =
+                data.pendingApproval && data.pendingApproval.toolCallId
+                    ? {
+                          approval_id: data.pendingApproval.id,
+                          tool_name: data.pendingApproval.toolName,
+                          tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
+                          tool_call_id: data.pendingApproval.toolCallId,
+                          source_id: data.pendingApproval.sourceId,
+                          source_type: data.pendingApproval.sourceType,
+                      }
+                    : null
             markChatMessagesChanged()
         }
     })
@@ -361,7 +372,18 @@
     let copiedMessageId = $state<number | null>(null)
     let copiedUrl = $state(false)
     let messageFeedback = $state<Record<string, 'upvote' | 'downvote'>>({})
-    let pendingApproval = $state<ApprovalRequiredEvent | null>(null)
+    let pendingApproval = $state<ApprovalRequiredEvent | null>(
+        data.pendingApproval && data.pendingApproval.toolCallId
+            ? {
+                  approval_id: data.pendingApproval.id,
+                  tool_name: data.pendingApproval.toolName,
+                  tool_input: data.pendingApproval.toolInput as Record<string, unknown>,
+                  tool_call_id: data.pendingApproval.toolCallId,
+                  source_id: data.pendingApproval.sourceId,
+                  source_type: data.pendingApproval.sourceType,
+              }
+            : null,
+    )
 
     type ApprovalInputDisplayField = {
         label: string
@@ -1096,6 +1118,28 @@
                                     name: block.name,
                                     input: block.input,
                                 },
+                            }
+
+                            if (
+                                data.pendingOAuth &&
+                                data.pendingOAuth.toolCallId === block.id &&
+                                data.pendingOAuth.sourceId &&
+                                data.pendingOAuth.sourceType &&
+                                data.pendingOAuth.provider &&
+                                data.pendingOAuth.oauthStartUrl
+                            ) {
+                                toolMsgContent.oauthRequired = {
+                                    sourceId: data.pendingOAuth.sourceId,
+                                    sourceType: data.pendingOAuth.sourceType,
+                                    sourceDisplayName:
+                                        getSourceDisplayName(
+                                            data.pendingOAuth.sourceType as SourceType,
+                                        ) ?? data.pendingOAuth.sourceType,
+                                    provider: data.pendingOAuth.provider,
+                                    providerConfigured: true,
+                                    oauthStartUrl: data.pendingOAuth.oauthStartUrl,
+                                    status: 'pending',
+                                }
                             }
 
                             processedMessage.content.push(toolMsgContent)
