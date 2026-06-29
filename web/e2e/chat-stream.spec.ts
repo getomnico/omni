@@ -553,6 +553,139 @@ test('branched chat keeps the second streamed assistant response on delayed tool
     }
 })
 
+test('chat reconnects after a dropped stream connection', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId: ulid() }),
+            })
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: false,
+                    running: false,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        let streamRequests = 0
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            streamRequests += 1
+            if (streamRequests === 1) {
+                await route.abort('failed')
+                return
+            }
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: `${finalAssistantTextSse('Recovered after reconnecting to the active stream.')}
+event: end_of_stream
+data: {}
+
+`,
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Start a stream that drops')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Start a stream that drops')).toBeVisible()
+        await expect(
+            page.getByText('Recovered after reconnecting to the active stream.'),
+        ).toBeVisible({
+            timeout: 10_000,
+        })
+        expect(streamRequests).toBeGreaterThanOrEqual(2)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat reconnects instead of sending a new message while a response is active', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+
+        let statusRequests = 0
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            statusRequests += 1
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: statusRequests > 1,
+                    running: statusRequests > 1,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            await route.fulfill({
+                status: 409,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    error: 'A response is still in progress for this chat.',
+                    streamActive: true,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: {
+                    'content-type': 'text/event-stream',
+                    'cache-control': 'no-cache',
+                    connection: 'keep-alive',
+                },
+                body: `${finalAssistantTextSse('Continued the prior response after reconnect.')}
+event: end_of_stream
+data: {}
+
+`,
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await expect.poll(() => statusRequests).toBe(1)
+
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Do not send this while the prior response is active')
+        await page.keyboard.press('Enter')
+
+        await expect(
+            page.getByText('The previous response is still in progress. Reconnecting to it now.'),
+        ).toBeVisible()
+        await expect(textbox).toContainText('Do not send this while the prior response is active')
+        await expect(page.getByText('Continued the prior response after reconnect.')).toBeVisible()
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
 test('chat renders a sanitized captured stream with incrementally replayed markdown', async ({
     page,
 }) => {
@@ -684,7 +817,9 @@ test('stop button during streaming resets state so the input is ready for a new 
         seeded = await seedChat()
         await authenticate(page, seeded)
 
+        let messagePosts = 0
         await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            messagePosts += 1
             await route.fulfill({
                 status: 200,
                 headers: { 'content-type': 'application/json' },
@@ -692,16 +827,30 @@ test('stop button during streaming resets state so the input is ready for a new 
             })
         })
 
-        let resolveStream!: () => void
-        const streamUnblocked = new Promise<void>((resolve) => {
-            resolveStream = resolve
+        let resolveFirstStream!: () => void
+        const firstStreamUnblocked = new Promise<void>((resolve) => {
+            resolveFirstStream = resolve
         })
+        let streamRequests = 0
         await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
-            await streamUnblocked
+            streamRequests += 1
+            if (streamRequests === 1) {
+                await firstStreamUnblocked
+                await route.fulfill({
+                    status: 200,
+                    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+                    body: 'event: end_of_stream\ndata: Stream stopped\n\n',
+                })
+                return
+            }
             await route.fulfill({
                 status: 200,
                 headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-                body: 'event: end_of_stream\ndata: Stream stopped\n\n',
+                body: `${finalAssistantTextSse('Follow-up response after stop.')}
+event: end_of_stream
+data: Stream ended
+
+`,
             })
         })
 
@@ -713,13 +862,21 @@ test('stop button during streaming resets state so the input is ready for a new 
         const stopButton = page.locator('.omni-composer-send.rounded-full')
         await expect(stopButton).toBeVisible()
         await stopButton.click()
-        resolveStream()
+        resolveFirstStream()
 
-        // After stopping, the stop button is gone and the input accepts a new message
+        // After stopping, the stop button is gone, no empty-response error is shown,
+        // and the next message is submitted instead of being treated as an active stream.
         await expect(stopButton).not.toBeVisible()
+        await expect(
+            page.getByText('Failed to generate response. Please try again.'),
+        ).not.toBeVisible()
         const textbox = page.getByRole('main').getByRole('textbox')
         await textbox.fill('Follow-up question')
         await expect(page.locator('.omni-composer-send')).not.toBeDisabled()
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Follow-up response after stop.')).toBeVisible()
+        expect(messagePosts).toBe(2)
     } finally {
         await cleanupChat(seeded)
     }

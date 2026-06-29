@@ -1702,6 +1702,7 @@
             })
 
             eventSource.addEventListener('end_of_stream', () => {
+                const wasStopping = stopInProgress
                 streamCompleted = true
                 isStreaming = false
                 stopInProgress = false
@@ -1715,7 +1716,7 @@
                 activeStreamChatId = null
                 clearReconnectState()
 
-                if (messageEventsReceived === 0 && !error) {
+                if (messageEventsReceived === 0 && !error && !wasStopping) {
                     error = 'Failed to generate response. Please try again.'
                 }
             })
