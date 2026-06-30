@@ -7,6 +7,7 @@ import type {
     MessageParam,
     TextBlockParam,
     ToolResultBlockParam,
+    ToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
 import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 
@@ -18,24 +19,11 @@ interface MessageRequest {
 
 type UserMessageBlock = OmniUploadBlock | TextBlockParam
 
-type AssistantToolUseBlock = {
-    type: 'tool_use'
-    id: string
-    name: string
-}
+function interruptedToolResultMessage(message: MessageParam): MessageParam | null {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) return null
 
-function interruptedToolResultMessage(message: unknown): MessageParam | null {
-    if (!message || typeof message !== 'object') return null
-    const candidate = message as Record<string, unknown>
-    if (candidate.role !== 'assistant' || !Array.isArray(candidate.content)) return null
-
-    const toolUses = candidate.content.filter(
-        (block): block is AssistantToolUseBlock =>
-            !!block &&
-            typeof block === 'object' &&
-            (block as Record<string, unknown>).type === 'tool_use' &&
-            typeof (block as Record<string, unknown>).id === 'string' &&
-            typeof (block as Record<string, unknown>).name === 'string',
+    const toolUses = message.content.filter(
+        (block): block is ToolUseBlockParam => block.type === 'tool_use',
     )
     if (toolUses.length === 0) return null
 

@@ -4,18 +4,6 @@ import { getAgent } from '$lib/server/db/agents.js'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
-import type { ToolUseBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
-
-function isToolUseBlock(block: unknown): block is ToolUseBlockParam {
-    return (
-        typeof block === 'object' &&
-        block !== null &&
-        'type' in block &&
-        block.type === 'tool_use' &&
-        'id' in block &&
-        typeof block.id === 'string'
-    )
-}
 
 function collectActivePathToolCallIds(messages: ChatMessage[]): Set<string> {
     const ids = new Set<string>()
@@ -23,7 +11,7 @@ function collectActivePathToolCallIds(messages: ChatMessage[]): Set<string> {
         const content = msg.message.content
         if (!Array.isArray(content)) continue
         for (const block of content) {
-            if (isToolUseBlock(block)) {
+            if (block.type === 'tool_use') {
                 ids.add(block.id)
             }
         }
@@ -109,7 +97,6 @@ export const load = async ({ params, locals, fetch }) => {
         (approval) =>
             approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
     )
-    const pendingApproval = pendingApprovals[0] ?? null
     const allPendingOAuth = await toolApprovalRepository.getPendingForChatAll(chat.id, 'oauth')
     const pendingOAuth =
         allPendingOAuth.find(
@@ -124,7 +111,6 @@ export const load = async ({ params, locals, fetch }) => {
         modelDisplayName,
         agent,
         uploadFilenames,
-        pendingApproval,
         pendingApprovals,
         pendingOAuth,
     }

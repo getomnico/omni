@@ -915,12 +915,7 @@ async def stream_status(
         )
     )
     if redis_client is None:
-        return {
-            "running": False,
-            "resumable": False,
-            "pending_approval": pending_approval,
-            "pending_oauth": pending_oauth,
-        }
+        raise HTTPException(status_code=500, detail="Redis client is not initialized")
 
     return {
         "running": bool(await redis_client.exists(_run_lock_key(chat_id))),

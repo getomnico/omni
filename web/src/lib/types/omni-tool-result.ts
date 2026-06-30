@@ -81,26 +81,9 @@ export function tryParseOmniEnvelope(text: string): OmniToolResultEnvelope | nul
         }
     }
     if (kind === OmniToolResultKind.ApprovalRequired) {
-        const p = payload as Record<string, unknown>
-        if (
-            typeof p.approval_id !== 'string' ||
-            typeof p.tool_name !== 'string' ||
-            typeof p.tool_call_id !== 'string' ||
-            !p.tool_input ||
-            typeof p.tool_input !== 'object'
-        ) {
-            return null
-        }
         return {
             omni_kind: OmniToolResultKind.ApprovalRequired,
-            payload: {
-                approval_id: p.approval_id,
-                tool_name: p.tool_name,
-                tool_input: p.tool_input as Record<string, unknown>,
-                tool_call_id: p.tool_call_id,
-                source_id: typeof p.source_id === 'string' ? p.source_id : null,
-                source_type: typeof p.source_type === 'string' ? p.source_type : null,
-            },
+            payload: payload as ApprovalRequiredPayload,
         }
     }
     return null

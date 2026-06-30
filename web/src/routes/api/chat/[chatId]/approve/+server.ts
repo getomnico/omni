@@ -1,23 +1,8 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatMessageRepository, chatRepository } from '$lib/server/db/chats.js'
-import type {
-    MessageParam,
-    ToolResultBlockParam,
-    ToolUseBlockParam,
-} from '@anthropic-ai/sdk/resources/messages.js'
+import type { MessageParam, ToolResultBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
-
-function isToolUseBlock(block: unknown): block is ToolUseBlockParam {
-    return (
-        typeof block === 'object' &&
-        block !== null &&
-        'type' in block &&
-        block.type === 'tool_use' &&
-        'id' in block &&
-        typeof block.id === 'string'
-    )
-}
 
 type ActiveToolCallContext = {
     toolCallIds: Set<string>
@@ -32,7 +17,7 @@ async function activeToolCallContext(chatId: string): Promise<ActiveToolCallCont
         const content = message.message.content
         if (!Array.isArray(content)) continue
         for (const block of content) {
-            if (isToolUseBlock(block)) {
+            if (block.type === 'tool_use') {
                 toolCallIds.add(block.id)
                 parentMessageIdsByToolCallId.set(block.id, message.id)
             }

@@ -1,11 +1,5 @@
 import { env } from '$env/dynamic/private'
-
-export type StreamStatus = {
-    running: boolean
-    resumable: boolean
-    pendingApproval: boolean
-    pendingOAuth: boolean
-}
+import type { StreamStatus } from '$lib/types/stream-status'
 
 export async function getChatStreamStatus(chatId: string): Promise<StreamStatus> {
     const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/stream/status`)

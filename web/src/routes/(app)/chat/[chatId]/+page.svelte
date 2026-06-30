@@ -45,6 +45,7 @@
     } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
+    import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolMessage from '$lib/components/tool-message.svelte'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
@@ -216,20 +217,11 @@
         statusCode?: number | null
     }
 
-    type StreamStatus = {
-        running: boolean
-        resumable: boolean
-        pendingApproval: boolean
-        pendingOAuth: boolean
-    }
-
     async function resumeActiveStreamIfNeeded() {
         if (isStreaming || eventSource) return
         try {
-            const response = await fetch(`/api/chat/${data.chat.id}/stream/status`)
-            if (!response.ok) return
-            const status = (await response.json()) as StreamStatus
-            if (status.running) {
+            const status = await fetchChatStreamStatus(data.chat.id)
+            if (status?.running) {
                 streamResponse(data.chat.id)
             }
         } catch (err) {
