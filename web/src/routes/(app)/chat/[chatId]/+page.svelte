@@ -182,6 +182,7 @@
     let errorDetail = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
     let activeStreamChatId: string | null = null
+    let streamRunCounter = 0
 
     // --- Stream resilience (reconnect after a backgrounded tab / transient drop) ---
     // The server keeps the run alive and buffered, so we reconnect from the last
@@ -1391,6 +1392,9 @@
             true,
         )
 
+        const streamRunId = ++streamRunCounter
+        const isCurrentStream = () => streamRunId === streamRunCounter && activeStreamChatId === chatId
+
         isStreaming = true
         activeStreamChatId = chatId
         activeStreamingMessageId = null
@@ -1462,6 +1466,29 @@
         }
 
         let collectStreamingResponseCount = 0
+        const appendStreamingAssistantMessage = (): ChatMessage => {
+            const displayPath = getDisplayPath(chatMessages)
+            const streamParentId =
+                displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
+            const startedMessage: ChatMessage = {
+                id: nextTempMessageId(),
+                chatId,
+                parentId: streamParentId ?? null,
+                message: {
+                    role: 'assistant',
+                    content: [],
+                },
+                contentText: null,
+                messageSeqNum: nextMessageSeqNum(chatMessages),
+                createdAt: new Date(),
+            }
+            chatMessages = [...chatMessages, startedMessage]
+            activeStreamingMessageId = startedMessage.id
+            selectBranch(startedMessage.parentId, startedMessage.id)
+            trackTempMessage(startedMessage.id)
+            markChatMessagesChanged()
+            return startedMessage
+        }
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
@@ -1473,14 +1500,26 @@
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
             collectStreamingResponseCount += 1
-            const targetMessageId = activeStreamingMessageId
-            const targetMessageIndex = targetMessageId
+            let targetMessageId = activeStreamingMessageId
+            let targetMessageIndex = targetMessageId
                 ? chatMessages.findIndex((message) => message.id === targetMessageId)
                 : -1
-            const lastMessage =
+            let lastMessage =
                 targetMessageIndex === -1
                     ? chatMessages[chatMessages.length - 1]
                     : chatMessages[targetMessageIndex]
+
+            if (
+                block.type !== 'tool_result' &&
+                (!lastMessage ||
+                    lastMessage.message.role !== 'assistant' ||
+                    !Array.isArray(lastMessage.message.content))
+            ) {
+                lastMessage = appendStreamingAssistantMessage()
+                targetMessageId = lastMessage.id
+                targetMessageIndex = chatMessages.length - 1
+            }
+
             debugStream('collectStreamingResponse', {
                 collectStreamingResponseCount,
                 blockType: block.type,
@@ -1494,7 +1533,6 @@
                 activeStreamingMessageId,
             })
             if (!lastMessage) {
-                // This should never happen
                 console.error('No last message found when streaming response')
                 return
             }
@@ -1517,12 +1555,6 @@
                     ...chatMessages.slice(replaceIndex + 1),
                 ]
                 markChatMessagesChanged()
-            }
-
-            if (block.type !== 'tool_result' && !Array.isArray(lastMessage.message.content)) {
-                throw new Error(
-                    'Cannot append streamed assistant content to non-array message content',
-                )
             }
 
             const existingBlocks = Array.isArray(lastMessage.message.content)
@@ -1695,6 +1727,7 @@
             )
 
             eventSource.addEventListener('message_id', (event) => {
+                if (!isCurrentStream()) return
                 debugStream('event:message_id', {
                     data: event.data,
                     lastEventId: event.lastEventId,
@@ -1707,6 +1740,7 @@
             })
 
             eventSource.addEventListener('not_resumable', () => {
+                if (!isCurrentStream()) return
                 // The buffered run is gone (expired or never existed). Reload the
                 // persisted messages from the server and clear streaming state.
                 streamCompleted = true
@@ -1731,10 +1765,12 @@
             })
 
             eventSource.addEventListener('heartbeat', () => {
+                if (!isCurrentStream()) return
                 lastStreamEventAt = Date.now()
             })
 
             eventSource.addEventListener('message', (event) => {
+                if (!isCurrentStream()) return
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
@@ -1843,6 +1879,7 @@
             })
 
             eventSource.addEventListener('approval_required', (event) => {
+                if (!isCurrentStream()) return
                 debugStream('event:approval_required', { data: event.data })
                 pauseEventReceived = true
                 try {
@@ -1860,6 +1897,7 @@
             })
 
             eventSource.addEventListener('oauth_required', (event) => {
+                if (!isCurrentStream()) return
                 debugStream('event:oauth_required', { data: event.data })
                 pauseEventReceived = true
                 try {
@@ -1877,6 +1915,7 @@
             })
 
             eventSource.addEventListener('tool_result_replaced', (event) => {
+                if (!isCurrentStream()) return
                 try {
                     const data: ToolResultReplacedEvent = JSON.parse(event.data)
                     // Find the user-role chat message that holds the placeholder
@@ -1915,6 +1954,7 @@
             })
 
             eventSource.addEventListener('end_of_stream', () => {
+                if (!isCurrentStream()) return
                 debugStream(
                     'event:end_of_stream',
                     {
@@ -1949,6 +1989,7 @@
             })
 
             const handleStreamError = (event: Event) => {
+                if (!isCurrentStream()) return
                 streamCompleted = true
                 if (event instanceof MessageEvent) {
                     const streamError = streamErrorMessage(event as MessageEvent<string>)
@@ -1972,6 +2013,7 @@
             }
 
             const handleConnectionError = () => {
+                if (!isCurrentStream()) return
                 // Guard against treating an intentional stop() as a connection error.
                 // handleStop() sets isStreaming = false before the EventSource fires its
                 // error event, so we can use that as a signal to skip cleanup here.
