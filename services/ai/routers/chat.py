@@ -546,7 +546,7 @@ async def _build_registry(
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=chat.user_id,
-        redis_client=getattr(request.app.state, "redis_client", None),
+        redis_client=request.app.state.redis_client,
         prefetched_sources=sources,
         documents_repo=DocumentsRepository(),
         sandbox_url=SANDBOX_URL,
@@ -595,7 +595,7 @@ async def _build_registry(
         operator_values = await fetch_operator_values(
             request.app.state.searcher_tool.client,
             search_operators,
-            redis_client=getattr(request.app.state, "redis_client", None),
+            redis_client=request.app.state.redis_client,
         )
 
     # Register search tools (with dynamic operators from connector manifests)
@@ -688,7 +688,7 @@ async def _build_agent_chat_registry(
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=agent.user_id if agent.agent_type == "user" else "",
-        redis_client=getattr(request.app.state, "redis_client", None),
+        redis_client=request.app.state.redis_client,
         prefetched_sources=sources,
         source_filter=source_filter,
         documents_repo=DocumentsRepository(),
@@ -717,7 +717,7 @@ async def _build_agent_chat_registry(
         operator_values = await fetch_operator_values(
             request.app.state.searcher_tool.client,
             search_operators,
-            redis_client=getattr(request.app.state, "redis_client", None),
+            redis_client=request.app.state.redis_client,
         )
 
     search_handler = SearchToolHandler(
@@ -887,7 +887,7 @@ async def stream_chat(
         raise HTTPException(status_code=404, detail="Chat thread not found")
 
     llm_provider = _resolve_llm_provider(request.app.state, chat)
-    redis_client = getattr(request.app.state, "redis_client", None)
+    redis_client = request.app.state.redis_client
 
     # Reconnect/resume fast path: if a buffered run already exists for this chat,
     # attach to it (tail from the client's offset) and skip all (re)setup so we
@@ -1822,7 +1822,7 @@ async def cancel_chat_stream(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
     """Explicit Stop: signal the background run to stop at its next checkpoint."""
-    redis_client = getattr(request.app.state, "redis_client", None)
+    redis_client = request.app.state.redis_client
     if redis_client is not None:
         try:
             await redis_client.set(_cancel_key(chat_id), "1", ex=_CANCEL_TTL)

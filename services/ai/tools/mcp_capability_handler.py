@@ -35,6 +35,10 @@ _RESOURCE_INLINE_MAX_BYTES = 24_000
 _RESOURCE_PREVIEW_MAX_LINES = 80
 _RESOURCE_PREVIEW_MAX_BYTES = 12_000
 
+# Connector-manager returns Omni connector manifests, not raw MCP SDK objects.
+# These DTOs mirror shared::models and the connector SDKs; the adapters populate
+# them from MCP list_resources/list_resource_templates/list_prompts responses.
+
 
 class McpResourceDefinition(BaseModel):
     model_config = ConfigDict(extra="ignore")
