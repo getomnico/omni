@@ -195,6 +195,45 @@ def _partial_assistant_message(
     return MessageParam(role="assistant", content=text_blocks)
 
 
+def _parse_tool_call_inputs(
+    tool_calls: list[ToolUseBlockParam],
+) -> list[ToolResultBlockParam]:
+    parse_errors: list[ToolResultBlockParam] = []
+    for tool_call in tool_calls:
+        raw_input = cast(str, tool_call["input"])
+        try:
+            tool_call["input"] = json.loads(raw_input)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Failed to parse tool call input for %s: %s. Raw input: %s",
+                tool_call["name"],
+                e,
+                raw_input,
+            )
+            raw_input_preview = raw_input[:4000]
+            if len(raw_input) > len(raw_input_preview):
+                raw_input_preview += "... [truncated]"
+            tool_call["input"] = {}
+            parse_errors.append(
+                ToolResultBlockParam(
+                    type="tool_result",
+                    tool_use_id=tool_call["id"],
+                    content=[
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Invalid JSON in tool input: {e}. "
+                                "The tool was not executed. Retry with valid JSON.\n\n"
+                                f"Raw tool input:\n{raw_input_preview}"
+                            ),
+                        }
+                    ],
+                    is_error=True,
+                )
+            )
+    return parse_errors
+
+
 async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
     """Persist assistant/tool_result messages (single writer of the streaming
     path) and replace each internal `save_message` event with a client-facing
@@ -1716,16 +1755,13 @@ async def stream_chat(
                         yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
 
-                # Parse tool call inputs. Convert to JSON.
+                # Parse tool call inputs. Convert to JSON. If the provider emits
+                # malformed JSON, do not execute the tool with `{}`; feed the
+                # parse error back to the model so it can retry.
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
-                for tool_call in tool_calls:
-                    try:
-                        tool_call["input"] = json.loads(cast(str, tool_call["input"]))
-                    except json.JSONDecodeError as e:
-                        logger.error(
-                            f"Failed to parse tool call input as JSON: {tool_call['input']}. Error: {e}"
-                        )
-                        tool_call["input"] = {}
+                parse_errors = _parse_tool_call_inputs(
+                    cast(list[ToolUseBlockParam], tool_calls)
+                )
 
                 assistant_message = MessageParam(
                     role="assistant", content=content_blocks
@@ -1734,6 +1770,16 @@ async def stream_chat(
 
                 # Send complete message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
+
+                if parse_errors:
+                    tool_result_message = MessageParam(
+                        role="user", content=parse_errors
+                    )
+                    conversation_messages.append(tool_result_message)
+                    for parse_error in parse_errors:
+                        yield f"event: message\ndata: {json.dumps(parse_error)}\n\n"
+                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+                    continue
 
                 # If no tool calls, we're done
                 if not tool_calls:
