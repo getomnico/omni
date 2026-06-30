@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 from anthropic.types import ToolParam
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from db.models import Source
 from tools.connector_handler import SourceFilter, sources_from_sync_overview_response
@@ -33,6 +34,56 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _RESOURCE_INLINE_MAX_BYTES = 24_000
 _RESOURCE_PREVIEW_MAX_LINES = 80
 _RESOURCE_PREVIEW_MAX_BYTES = 12_000
+
+
+class McpResourceDefinition(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    uri_template: str
+    name: str
+    description: str | None = None
+    mime_type: str | None = None
+
+
+class McpPromptArgument(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    description: str | None = None
+    required: bool = False
+
+    def to_data(self) -> dict[str, object]:
+        data: dict[str, object] = {"name": self.name, "required": self.required}
+        if self.description is not None:
+            data["description"] = self.description
+        return data
+
+
+class McpPromptDefinition(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    description: str | None = None
+    arguments: list[McpPromptArgument] = Field(default_factory=list)
+
+
+class McpConnectorManifest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    mcp_enabled: bool = False
+    resources: list[McpResourceDefinition] = Field(default_factory=list)
+    prompts: list[McpPromptDefinition] = Field(default_factory=list)
+
+
+class McpConnectorInfo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_type: str
+    healthy: bool
+    manifest: McpConnectorManifest | None = None
+
+
+_CONNECTORS_RESPONSE_ADAPTER = TypeAdapter(list[McpConnectorInfo])
 
 
 @dataclass(frozen=True)
@@ -59,7 +110,7 @@ class McpPromptRecord:
     source_name: str
     name: str
     description: str
-    arguments: list[dict[str, Any]]
+    arguments: list[McpPromptArgument]
 
 
 class McpCapabilityHandler:
@@ -93,7 +144,9 @@ class McpCapabilityHandler:
                     f"{self._connector_manager_url}/connectors"
                 )
                 connectors_resp.raise_for_status()
-                connectors = connectors_resp.json()
+                connectors = _CONNECTORS_RESPONSE_ADAPTER.validate_python(
+                    connectors_resp.json()
+                )
 
                 if self._prefetched_sources is not None:
                     sources = self._prefetched_sources
@@ -105,10 +158,6 @@ class McpCapabilityHandler:
                     sources = sources_from_sync_overview_response(sources_resp.json())
         except Exception as e:
             logger.warning(f"Failed to fetch MCP connector capabilities: {e}")
-            self._initialized = True
-            return
-
-        if not isinstance(connectors, list):
             self._initialized = True
             return
 
@@ -124,15 +173,11 @@ class McpCapabilityHandler:
         prompts: dict[str, McpPromptRecord] = {}
 
         for connector in connectors:
-            if not isinstance(connector, dict):
+            if not connector.healthy or connector.manifest is None:
                 continue
-            if not connector.get("healthy"):
-                continue
-            source_type = connector.get("source_type")
-            manifest = connector.get("manifest")
-            if not isinstance(source_type, str) or not isinstance(manifest, dict):
-                continue
-            if not manifest.get("mcp_enabled"):
+            source_type = connector.source_type
+            manifest = connector.manifest
+            if not manifest.mcp_enabled:
                 continue
 
             matching_sources = active_sources_by_type.get(source_type, [])
@@ -141,19 +186,17 @@ class McpCapabilityHandler:
 
             for source in matching_sources:
                 source_name = source.name or source_type
-                for resource_def in manifest.get("resources", []) or []:
-                    if not isinstance(resource_def, dict):
-                        continue
-                    record = self._resource_record(source, source_type, source_name, resource_def)
-                    if record is not None:
-                        resources[record.id] = record
+                for resource_def in manifest.resources:
+                    record = self._resource_record(
+                        source, source_type, source_name, resource_def
+                    )
+                    resources[record.id] = record
 
-                for prompt_def in manifest.get("prompts", []) or []:
-                    if not isinstance(prompt_def, dict):
-                        continue
-                    record = self._prompt_record(source, source_type, source_name, prompt_def)
-                    if record is not None:
-                        prompts[record.id] = record
+                for prompt_def in manifest.prompts:
+                    record = self._prompt_record(
+                        source, source_type, source_name, prompt_def
+                    )
+                    prompts[record.id] = record
 
         self._resources = resources
         self._prompts = prompts
@@ -576,50 +619,45 @@ class McpCapabilityHandler:
                         "source_name": record.source_name,
                         "name": record.name,
                         "description": record.description,
-                        "arguments": record.arguments,
+                        "arguments": [arg.to_data() for arg in record.arguments],
                     },
                 )
             )
         return capabilities
 
     def _resource_record(
-        self, source: Source, source_type: str, source_name: str, resource_def: dict
-    ) -> McpResourceRecord | None:
-        uri_template = resource_def.get("uri_template")
-        name = resource_def.get("name")
-        if not isinstance(uri_template, str) or not uri_template:
-            return None
-        if not isinstance(name, str) or not name:
-            name = uri_template
-        description = resource_def.get("description")
-        mime_type = resource_def.get("mime_type")
+        self,
+        source: Source,
+        source_type: str,
+        source_name: str,
+        resource_def: McpResourceDefinition,
+    ) -> McpResourceRecord:
         return McpResourceRecord(
-            id=f"resource:{source.id}:{self._short_hash(uri_template)}",
+            id=f"resource:{source.id}:{self._short_hash(resource_def.uri_template)}",
             source_id=source.id,
             source_type=source_type,
             source_name=source_name,
-            uri_template=uri_template,
-            name=name,
-            description=description if isinstance(description, str) else "",
-            mime_type=mime_type if isinstance(mime_type, str) else None,
+            uri_template=resource_def.uri_template,
+            name=resource_def.name,
+            description=resource_def.description or "",
+            mime_type=resource_def.mime_type,
         )
 
     def _prompt_record(
-        self, source: Source, source_type: str, source_name: str, prompt_def: dict
-    ) -> McpPromptRecord | None:
-        name = prompt_def.get("name")
-        if not isinstance(name, str) or not name:
-            return None
-        description = prompt_def.get("description")
-        arguments = prompt_def.get("arguments")
+        self,
+        source: Source,
+        source_type: str,
+        source_name: str,
+        prompt_def: McpPromptDefinition,
+    ) -> McpPromptRecord:
         return McpPromptRecord(
-            id=f"prompt:{source.id}:{name}",
+            id=f"prompt:{source.id}:{prompt_def.name}",
             source_id=source.id,
             source_type=source_type,
             source_name=source_name,
-            name=name,
-            description=description if isinstance(description, str) else "",
-            arguments=arguments if isinstance(arguments, list) else [],
+            name=prompt_def.name,
+            description=prompt_def.description or "",
+            arguments=prompt_def.arguments,
         )
 
     def _source_allows_read(self, source_id: str) -> bool:
@@ -665,45 +703,29 @@ class McpCapabilityHandler:
 
     @staticmethod
     def _missing_required_arguments(
-        argument_defs: list[dict[str, Any]], arguments: dict[str, Any]
+        argument_defs: list[McpPromptArgument], arguments: dict[str, Any]
     ) -> list[str]:
-        missing: list[str] = []
-        for arg in argument_defs:
-            if not isinstance(arg, dict):
-                continue
-            name = arg.get("name")
-            if isinstance(name, str) and arg.get("required") is True and name not in arguments:
-                missing.append(name)
-        return missing
+        return [
+            arg.name
+            for arg in argument_defs
+            if arg.required and arg.name not in arguments
+        ]
 
     @staticmethod
-    def _format_argument_search_text(arguments: list[dict[str, Any]]) -> str:
+    def _format_argument_search_text(arguments: list[McpPromptArgument]) -> str:
         parts: list[str] = []
         for arg in arguments:
-            if not isinstance(arg, dict):
-                continue
-            name = arg.get("name")
-            description = arg.get("description")
-            required = "required" if arg.get("required") else "optional"
-            if isinstance(name, str):
-                parts.append(name)
-            if isinstance(description, str):
-                parts.append(description)
-            parts.append(required)
+            parts.append(arg.name)
+            if arg.description is not None:
+                parts.append(arg.description)
+            parts.append("required" if arg.required else "optional")
         return " ".join(parts)
 
     @staticmethod
-    def _format_argument_summary(arguments: list[dict[str, Any]]) -> str:
-        parts: list[str] = []
-        for arg in arguments:
-            if not isinstance(arg, dict):
-                continue
-            name = arg.get("name")
-            if not isinstance(name, str):
-                continue
-            suffix = "*" if arg.get("required") else ""
-            parts.append(f"{name}{suffix}")
-        return ", ".join(parts)
+    def _format_argument_summary(arguments: list[McpPromptArgument]) -> str:
+        return ", ".join(
+            f"{arg.name}{'*' if arg.required else ''}" for arg in arguments
+        )
 
     def _format_resource_result(
         self,

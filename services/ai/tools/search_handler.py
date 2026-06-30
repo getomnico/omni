@@ -144,16 +144,12 @@ def _build_query_description(
     # Group connector-specific operators by source_type
     ops_by_source: dict[str, list[str]] = {}
     for op in search_operators:
-        operator = op["operator"] if isinstance(op, dict) else op.operator
-        attribute_key = op["attribute_key"] if isinstance(op, dict) else op.attribute_key
-        source_type = op["source_type"] if isinstance(op, dict) else op.source_type
-        display_name = op.get("display_name") if isinstance(op, dict) else op.display_name
-        if operator in _UNIVERSAL_OPERATORS:
+        if op.operator in _UNIVERSAL_OPERATORS:
             continue
-        display_name = display_name or source_type
+        display_name = op.display_name or op.source_type
 
         # Build operator text with values if available
-        values = (operator_values or {}).get(attribute_key, [])
+        values = (operator_values or {}).get(op.attribute_key, [])
         if values:
             displayed = values[:_MAX_DISPLAYED_VALUES]
             suffix = ", ..." if len(values) > _MAX_DISPLAYED_VALUES else ""
@@ -161,7 +157,7 @@ def _build_query_description(
         else:
             values_str = ""
         ops_by_source.setdefault(display_name, []).append(
-            f"{operator}:<value>{values_str}"
+            f"{op.operator}:<value>{values_str}"
         )
 
     if ops_by_source:

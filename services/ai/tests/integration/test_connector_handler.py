@@ -30,7 +30,11 @@ def _register_fetch_file(handler: ConnectorToolHandler, source_id: str) -> None:
         source_name="Test",
         action_name="fetch_file",
         description="Fetch file",
-        parameters={"document_id": {"type": "string", "required": True}},
+        input_schema={
+            "type": "object",
+            "properties": {"document_id": {"type": "string"}},
+            "required": ["document_id"],
+        },
         mode="read",
     )
     handler._initialized = True
