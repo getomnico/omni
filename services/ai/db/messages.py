@@ -55,10 +55,13 @@ class MessagesRepository:
     ) -> None:
         """Replace the JSONB `message` payload for a chat_messages row."""
         pool = await self._get_pool()
+        message = _sanitize_jsonb_value(message)
+        content_text = _extract_content_text(message)
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE chat_messages SET message = $1 WHERE id = $2",
-                json.dumps(_sanitize_jsonb_value(message)),
+                "UPDATE chat_messages SET message = $1, content_text = $2 WHERE id = $3",
+                json.dumps(message),
+                content_text,
                 message_id,
             )
 

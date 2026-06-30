@@ -122,8 +122,8 @@ def _sse_event(event_type: str, data: object) -> str:
 # a per-chat Redis Stream. HTTP requests are thin "consumers" that tail that
 # stream from an offset (SSE Last-Event-ID), so a client that backgrounds/
 # reconnects resumes without interrupting generation. The producer is the single
-# DB writer of the streaming path (persists messages, then emits `message_id`),
-# which keeps replays free of duplicate writes.
+# DB writer of the streaming path (persists messages before client-visible
+# message events), which keeps replays free of duplicate writes.
 
 SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
@@ -180,19 +180,27 @@ def _sse_event_data(event_str: str) -> str:
 def _partial_assistant_message(
     content_blocks: list[TextBlockParam | ToolUseBlockParam],
 ) -> MessageParam | None:
-    text_blocks: list[TextBlockParam] = []
+    persisted_blocks: list[TextBlockParam | ToolUseBlockParam] = []
     for block in content_blocks:
-        if block["type"] != "text":
+        if block["type"] == "text":
+            text_block = cast(TextBlockParam, block)
+            if text_block["text"].strip():
+                persisted_blocks.append(cast(TextBlockParam, dict(text_block)))
             continue
-        text_block = cast(TextBlockParam, block)
-        if not text_block["text"].strip():
-            continue
-        text_blocks.append(cast(TextBlockParam, dict(text_block)))
 
-    if not text_blocks:
+        tool_block = cast(ToolUseBlockParam, dict(block))
+        raw_input = tool_block.get("input")
+        if isinstance(raw_input, str):
+            try:
+                tool_block["input"] = json.loads(raw_input) if raw_input else {}
+            except json.JSONDecodeError:
+                tool_block["input"] = {}
+        persisted_blocks.append(tool_block)
+
+    if not persisted_blocks:
         return None
 
-    return MessageParam(role="assistant", content=text_blocks)
+    return MessageParam(role="assistant", content=persisted_blocks)
 
 
 def _parse_tool_call_inputs(
@@ -235,23 +243,90 @@ def _parse_tool_call_inputs(
 
 
 async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
-    """Persist assistant/tool_result messages (single writer of the streaming
-    path) and replace each internal `save_message` event with a client-facing
-    `message_id` event. Deterministic parent_id chaining makes replays safe."""
+    """Persist streamed messages before exposing them to the client.
+
+    Assistant rows are created as soon as the provider emits message_start, so
+    the browser can use a durable chat_messages.id for the streaming bubble from
+    the beginning. Tool-result rows are persisted before their tool_result events
+    are forwarded. This keeps frontend render identities and future parent_id
+    values database-backed even if the run is cancelled mid-stream.
+    """
+    current_assistant_message_id: str | None = None
+    buffered_tool_result_events: list[str] = []
+
     async for event_str in gen:
-        if _sse_event_type(event_str) == "save_message":
+        event_type = _sse_event_type(event_str)
+        event_data = _sse_event_data(event_str)
+
+        if event_type == "message":
             try:
-                message = json.loads(_sse_event_data(event_str))
+                message_event = json.loads(event_data)
+            except json.JSONDecodeError:
+                yield event_str
+                continue
+
+            if message_event.get("type") == "message_start":
+                try:
+                    provider_message = message_event.get("message", {})
+                    assistant_message = {
+                        "role": provider_message.get("role", "assistant"),
+                        "content": provider_message.get("content") or [],
+                    }
+                    created = await messages_repo.create(
+                        chat_id, assistant_message, parent_id=parent_id
+                    )
+                    current_assistant_message_id = created.id
+                    parent_id = created.id
+                    message_event.setdefault("message", {})["id"] = created.id
+                    event_str = _sse_event("message", message_event)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to pre-persist assistant message for chat {chat_id}: {e}",
+                        exc_info=True,
+                    )
+                yield event_str
+                continue
+
+            if message_event.get("type") == "tool_result":
+                buffered_tool_result_events.append(event_str)
+                continue
+
+            yield event_str
+            continue
+
+        if event_type == "save_message":
+            try:
+                message = json.loads(event_data)
+                if message.get("role") == "assistant" and current_assistant_message_id:
+                    await messages_repo.update_message_content(
+                        current_assistant_message_id, message
+                    )
+                    current_assistant_message_id = None
+                    continue
+
                 created = await messages_repo.create(
                     chat_id, message, parent_id=parent_id
                 )
                 parent_id = created.id
-                yield f"event: message_id\ndata: {created.id}\n\n"
+
+                if message.get("role") == "user" and buffered_tool_result_events:
+                    for buffered_event in buffered_tool_result_events:
+                        try:
+                            tool_result_event = json.loads(_sse_event_data(buffered_event))
+                            tool_result_event["message_id"] = created.id
+                            yield _sse_event("message", tool_result_event)
+                        except json.JSONDecodeError:
+                            yield buffered_event
+                    buffered_tool_result_events = []
+                else:
+                    yield f"event: message_id\ndata: {created.id}\n\n"
             except Exception as e:
                 logger.error(
-                    f"Failed to persist streamed message for chat {chat_id}: {e}"
+                    f"Failed to persist streamed message for chat {chat_id}: {e}",
+                    exc_info=True,
                 )
             continue
+
         yield event_str
 
 

@@ -628,8 +628,8 @@
 
         // The run is decoupled from this connection, so closing the EventSource
         // is no longer enough — tell the server to actually stop generating.
-        // Keep the stream open until omni-ai emits message_id/end_of_stream for
-        // the partial assistant message it persisted on cancellation.
+        // Keep the stream open until omni-ai emits end_of_stream for the partial
+        // assistant message it persisted on cancellation.
         const stopChatId = activeStreamChatId ?? data.chat.id
         stopInProgress = true
         error = null
@@ -779,20 +779,6 @@
 
     function selectBranch(parentId: string | null | undefined, messageId: string) {
         branchSelections[branchSelectionKey(parentId)] = messageId
-    }
-
-    function replaceMessageIdInBranchSelections(oldId: string, newId: string) {
-        const nextBranchSelections = { ...branchSelections }
-        if (nextBranchSelections[oldId] !== undefined) {
-            nextBranchSelections[newId] = nextBranchSelections[oldId]
-            delete nextBranchSelections[oldId]
-        }
-        for (const [parentId, selectedId] of Object.entries(nextBranchSelections)) {
-            if (selectedId === oldId) {
-                nextBranchSelections[parentId] = newId
-            }
-        }
-        branchSelections = nextBranchSelections
     }
 
     function switchBranch(parentId: string | null, direction: 'prev' | 'next') {
@@ -1406,89 +1392,18 @@
             number,
             { id: string; name: string; inputJson: string }
         >()
-        const pendingTempMessageIds: string[] = []
-        const pendingPersistedMessageIds: string[] = []
-        let tempMessageCounter = 0
-
         let streamCompleted = false
         let messageEventsReceived = 0
         let pauseEventReceived = false
         reconnectAttempts = 0
 
-        const nextTempMessageId = () => `temp-${Date.now()}-${tempMessageCounter++}`
-
-        const replaceTempMessageId = (tempId: string, messageId: string) => {
-            debugStream('replaceTempMessageId', { tempId, messageId })
-            chatMessages = chatMessages.map((message) => {
-                if (message.id === tempId) {
-                    return { ...message, id: messageId }
-                }
-                if (message.parentId === tempId) {
-                    return { ...message, parentId: messageId }
-                }
-                return message
-            })
-            if (activeStreamingMessageId === tempId) {
-                activeStreamingMessageId = messageId
-            }
-            debugStream('replaceTempMessageId:done', {
-                activeStreamingMessageId,
-                messageCount: chatMessages.length,
-            })
-            replaceMessageIdInBranchSelections(tempId, messageId)
-            markChatMessagesChanged()
-        }
-
-        const trackTempMessage = (tempId: string) => {
-            debugStream('trackTempMessage', {
-                tempId,
-                pendingPersistedMessageIds: [...pendingPersistedMessageIds],
-            })
-            const persistedMessageId = pendingPersistedMessageIds.shift()
-            if (persistedMessageId) {
-                replaceTempMessageId(tempId, persistedMessageId)
-                return
-            }
-            pendingTempMessageIds.push(tempId)
-        }
-
-        const applyPersistedMessageId = (messageId: string) => {
-            debugStream('applyPersistedMessageId', {
-                messageId,
-                pendingTempMessageIds: [...pendingTempMessageIds],
-            })
-            const tempId = pendingTempMessageIds.shift()
-            if (!tempId) {
-                pendingPersistedMessageIds.push(messageId)
-                return
-            }
-            replaceTempMessageId(tempId, messageId)
+        const missingStreamMessageId = (reason: string) => {
+            console.error('Missing persisted stream message id', { reason })
+            error = 'Response stream did not provide a message id. Please reload the chat.'
+            errorDetail = null
         }
 
         let collectStreamingResponseCount = 0
-        const appendStreamingAssistantMessage = (): ChatMessage => {
-            const displayPath = getDisplayPath(chatMessages)
-            const streamParentId =
-                displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
-            const startedMessage: ChatMessage = {
-                id: nextTempMessageId(),
-                chatId,
-                parentId: streamParentId ?? null,
-                message: {
-                    role: 'assistant',
-                    content: [],
-                },
-                contentText: null,
-                messageSeqNum: nextMessageSeqNum(chatMessages),
-                createdAt: new Date(),
-            }
-            chatMessages = [...chatMessages, startedMessage]
-            activeStreamingMessageId = startedMessage.id
-            selectBranch(startedMessage.parentId, startedMessage.id)
-            trackTempMessage(startedMessage.id)
-            markChatMessagesChanged()
-            return startedMessage
-        }
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
@@ -1515,9 +1430,14 @@
                     lastMessage.message.role !== 'assistant' ||
                     !Array.isArray(lastMessage.message.content))
             ) {
-                lastMessage = appendStreamingAssistantMessage()
-                targetMessageId = lastMessage.id
-                targetMessageIndex = chatMessages.length - 1
+                console.error('Received streamed assistant content before message_start', {
+                    blockType: block.type,
+                    blockIdx,
+                    activeStreamingMessageId,
+                })
+                error = 'Response stream sent content before a message id. Please reload the chat.'
+                errorDetail = null
+                return
             }
 
             debugStream('collectStreamingResponse', {
@@ -1672,11 +1592,16 @@
                         })
                     }
                 } else {
+                    const messageId = (block as ToolResultBlockParam & { message_id?: string }).message_id
+                    if (!messageId) {
+                        missingStreamMessageId('tool-result-message')
+                        return
+                    }
                     const displayPath = getDisplayPath(chatMessages)
                     const toolParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
                     const toolResultMessage: ChatMessage = {
-                        id: nextTempMessageId(),
+                        id: messageId,
                         chatId,
                         parentId: toolParentId ?? null,
                         message: {
@@ -1695,7 +1620,6 @@
                     chatMessages = [...chatMessages, toolResultMessage]
                     activeStreamingMessageId = toolResultMessage.id
                     selectBranch(toolResultMessage.parentId, toolResultMessage.id)
-                    trackTempMessage(toolResultMessage.id)
                     markChatMessagesChanged()
                 }
 
@@ -1736,7 +1660,6 @@
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
-                applyPersistedMessageId(event.data)
             })
 
             eventSource.addEventListener('not_resumable', () => {
@@ -1781,6 +1704,11 @@
                         lastEventId: event.lastEventId,
                     })
                     if (data.type === 'message_start') {
+                        const messageId = data.message.id
+                        if (!messageId) {
+                            missingStreamMessageId('message_start')
+                            return
+                        }
                         // Find the last message in current display path to use as parent
                         const displayPath = getDisplayPath(chatMessages)
                         const streamParentId =
@@ -1794,7 +1722,7 @@
                             chatMessageCount: chatMessages.length,
                         })
                         const startedMessage: ChatMessage = {
-                            id: nextTempMessageId(),
+                            id: messageId,
                             chatId,
                             parentId: streamParentId ?? null,
                             message: {
@@ -1814,7 +1742,6 @@
                             messageCount: chatMessages.length,
                         })
                         selectBranch(startedMessage.parentId, startedMessage.id)
-                        trackTempMessage(startedMessage.id)
                         markChatMessagesChanged()
                     } else if (data.type === 'content_block_start') {
                         if (data.content_block.type === 'tool_use') {
