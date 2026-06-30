@@ -17,6 +17,12 @@ from .usage import UsageRepository, UsageSummary
 from .configuration import ConfigurationRepository
 from .web_search_providers import WebSearchProvidersRepository, WebSearchProviderRecord
 from .web_fetch_providers import WebFetchProvidersRepository, WebFetchProviderRecord
+from .tool_approvals import (
+    ToolApproval,
+    ToolApprovalStatus,
+    ToolApprovalType,
+    ToolApprovalsRepository,
+)
 
 __all__ = [
     "get_db_pool",
@@ -49,4 +55,8 @@ __all__ = [
     "WebSearchProviderRecord",
     "WebFetchProvidersRepository",
     "WebFetchProviderRecord",
+    "ToolApproval",
+    "ToolApprovalStatus",
+    "ToolApprovalType",
+    "ToolApprovalsRepository",
 ]

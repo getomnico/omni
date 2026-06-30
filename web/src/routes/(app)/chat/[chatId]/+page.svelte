@@ -216,8 +216,7 @@
         statusCode?: number | null
     }
 
-    type ChatStreamStatus = {
-        active: boolean
+    type StreamStatus = {
         running: boolean
         resumable: boolean
         pendingApproval: boolean
@@ -229,7 +228,7 @@
         try {
             const response = await fetch(`/api/chat/${data.chat.id}/stream/status`)
             if (!response.ok) return
-            const status = (await response.json()) as ChatStreamStatus
+            const status = (await response.json()) as StreamStatus
             if (status.running) {
                 streamResponse(data.chat.id)
             }

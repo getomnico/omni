@@ -10,6 +10,8 @@ from .connection import get_db_pool
 
 
 def _sanitize_jsonb_value(value: Any) -> Any:
+    # Postgres JSONB rejects NUL bytes, but tool/sandbox output can contain them.
+    # Preserve the payload shape while escaping NULs before JSON serialization.
     if isinstance(value, str):
         return value.replace("\x00", "\\x00")
     if isinstance(value, list):

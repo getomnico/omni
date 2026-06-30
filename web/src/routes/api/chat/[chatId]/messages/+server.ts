@@ -165,7 +165,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
         try {
             const streamStatus = await getChatStreamStatus(chatId)
-            if (streamStatus.active) {
+            if (streamStatus.running) {
                 return json(
                     {
                         error: 'A response is still in progress for this chat. Reconnect to the stream before sending another message.',
