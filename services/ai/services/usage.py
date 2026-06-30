@@ -85,6 +85,13 @@ class UsageTracker:
         if not (self.input_tokens or self.output_tokens):
             return
 
+        logger.info(
+            "LLM usage: purpose=%s model=%s input_tokens=%s output_tokens=%s",
+            self._ctx.purpose,
+            self._ctx.model_name,
+            self.input_tokens,
+            self.output_tokens,
+        )
         asyncio.create_task(self._persist())
 
     async def _persist(self) -> None:
@@ -136,4 +143,11 @@ def track_usage(
         except Exception:
             logger.warning("Failed to persist usage record", exc_info=True)
 
+    logger.info(
+        "LLM usage: purpose=%s model=%s input_tokens=%s output_tokens=%s",
+        ctx.purpose,
+        ctx.model_name,
+        input_tokens,
+        output_tokens,
+    )
     asyncio.create_task(_persist())

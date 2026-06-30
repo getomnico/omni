@@ -35,11 +35,13 @@ class ProviderError(Exception):
         model: str | None = None,
         status_code: int | None = None,
         cause: BaseException | None = None,
+        is_context_overflow: bool | None = None,
     ):
         super().__init__(message)
         self.message = message
         self.provider_type = provider_type
         self.model = model
         self.status_code = status_code
+        self.is_context_overflow = bool(is_context_overflow)
         if cause is not None:
             self.__cause__ = cause

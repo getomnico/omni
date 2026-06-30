@@ -107,21 +107,30 @@ class BedrockProvider(LLMProvider):
             self.client = boto3.client("bedrock-runtime", region_name=region_name)
 
     def _to_provider_error(self, e: Exception) -> ProviderError:
+        is_context_overflow = False
         if isinstance(e, ClientError):
             error = e.response.get("Error", {})
             code = error.get("Code", "Unknown")
             message = error.get("Message", str(e))
             status = e.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
             body = f"{code}: {message}"
+            is_context_overflow = (
+                code == "ValidationException"
+                and message == "Input is too long for requested model."
+            )
         else:
             body = str(e)
             status = e.status_code if isinstance(e, APIStatusError) else None
+            is_context_overflow = (
+                isinstance(e, APIStatusError) and e.status_code == 413
+            )
         return ProviderError(
             body,
             provider_type=self.provider_type,
             model=self.model_name,
             status_code=status,
             cause=e,
+            is_context_overflow=is_context_overflow,
         )
 
     def _determine_model_family(self, model_id: str) -> str:

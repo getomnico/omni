@@ -242,3 +242,20 @@ class TestOpenAICompatibleProviderError:
         assert "connection refused" in exc.value.message
         assert exc.value.provider_type is ProviderType.OPENAI_COMPATIBLE
         assert exc.value.status_code == 503
+
+
+def test_provider_error_preserves_explicit_context_overflow_flag():
+    err = ProviderError(
+        "context_length_exceeded",
+        provider_type=ProviderType.OPENAI,
+        model="test",
+        is_context_overflow=True,
+    )
+    assert err.is_context_overflow
+
+
+def test_non_context_provider_error_not_classified_by_default():
+    err = ProviderError(
+        "authentication failed", provider_type=ProviderType.OPENAI, model="test"
+    )
+    assert not err.is_context_overflow

@@ -43,6 +43,7 @@ from config import (
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
+from db import CompactionsRepository
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.models import Source, UserConfiguration
@@ -50,7 +51,7 @@ from db.usage import UsageRepository
 from db.users import UsersRepository
 from memory import MemoryMode, agent_key, resolve_memory_mode
 from prompts import build_agent_system_prompt
-from providers import LLMProvider
+from providers import LLMProvider, ProviderError
 from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
@@ -58,10 +59,10 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
-    WebToolHandler,
     ToolContext,
     ToolHandler,
     ToolRegistry,
+    WebToolHandler,
 )
 from tools.connector_handler import (
     ConnectorToolHandler,
@@ -70,8 +71,8 @@ from tools.connector_handler import (
     sources_from_sync_overview_response,
 )
 from tools.email_handler import EmailToolHandler
-from tools.meta_handler import MetaToolHandler
 from tools.mcp_capability_handler import McpCapabilityHandler
+from tools.meta_handler import MetaToolHandler
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
 from tools.skill_handler import SkillHandler
@@ -562,9 +563,11 @@ async def _run_agent_loop(
 
     compactor = ConversationCompactor(
         llm_provider=secondary_provider,
-        redis_client=app_state.redis_client,
         on_usage=_on_compaction_usage,
     )
+    compactions_repo = CompactionsRepository()
+    summarizer_context = await secondary_provider.get_context_window_tokens()
+    latest_compaction = None
 
     for iteration in range(AGENT_MAX_ITERATIONS):
         logger.info(f"Agent {agent.id} run {run.id}: iteration {iteration + 1}")
@@ -573,71 +576,118 @@ async def _run_agent_loop(
         # previous iteration via load_tool / load_tool_set.
         turn_tools = agent_registry.build_turn_tools(loaded_toolsets)
 
-        # Check if compaction is needed
-        if compactor.needs_compaction(conversation_messages, turn_tools):
-            logger.info(f"Compacting conversation for agent run {run.id}")
-            # Using run ID as chat_id for compaction cache key
-            conversation_messages = await compactor.compact_conversation(
-                run.id, conversation_messages
-            )
-
-        # Call LLM (non-streaming — collect full response)
-        content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
-
-        usage_repo = UsageRepository()
-        tracker = UsageTracker(
-            usage_repo,
-            UsageContext(
-                user_id=agent.user_id if not is_org_agent else None,
-                model_id=llm_provider.model_record_id,
-                model_name=llm_provider.model_name,
-                provider_type=llm_provider.provider_type,
-                purpose=UsagePurpose.AGENT_RUN,
-                agent_run_id=run.id,
+        log_rows = await run_repo.list_run_logs(run.id)
+        prepared = await compactor.prepare_agent_conversation(
+            run_id=run.id,
+            log_rows=log_rows,
+            compactions_repo=compactions_repo,
+            target_provider=llm_provider,
+            tools=turn_tools,
+            system_prompt=system_prompt,
+            max_output_tokens=DEFAULT_MAX_TOKENS,
+            coalesce_messages=lambda rows: _conversation_from_log_messages(
+                [row.message for row in rows]
             ),
         )
-
-        raw_stream = llm_provider.stream_response(
-            prompt="",
-            messages=conversation_messages,
-            tools=turn_tools,
-            max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=DEFAULT_TEMPERATURE,
-            top_p=DEFAULT_TOP_P,
-            system_prompt=system_prompt,
+        conversation_messages = prepared.messages
+        latest_compaction = prepared.latest_compaction
+        summarizer_context = prepared.summarizer_context
+        logger.info(
+            "Agent %s run %s context windows: model=%s (%s), summarizer=%s (%s)",
+            agent.id,
+            run.id,
+            prepared.model_context.tokens,
+            prepared.model_context.source,
+            summarizer_context.tokens,
+            summarizer_context.source,
         )
 
-        async for event in tracker.wrap_stream(raw_stream):
-            if event.type == "content_block_start":
-                if event.content_block.type == "text":
-                    content_blocks.append(
-                        TextBlockParam(type="text", text=event.content_block.text)
-                    )
-                elif event.content_block.type == "tool_use":
-                    content_blocks.append(
-                        ToolUseBlockParam(
-                            type="tool_use",
-                            id=event.content_block.id,
-                            name=event.content_block.name,
-                            input="",
-                        )
-                    )
-            elif event.type == "content_block_delta":
-                if event.delta.type == "text_delta":
-                    if event.index < len(content_blocks):
-                        text_block = cast(TextBlockParam, content_blocks[event.index])
-                        text_block["text"] += event.delta.text
-                elif event.delta.type == "input_json_delta" and event.index < len(
-                    content_blocks
-                ):
-                    tool_block = cast(ToolUseBlockParam, content_blocks[event.index])
-                    tool_block["input"] = (
-                        cast(str, tool_block["input"]) + event.delta.partial_json
-                    )
-            elif event.type == "message_stop":
-                break
+        # Call LLM (non-streaming — collect full response). If the provider says
+        # the request exceeded its context window before any content is produced,
+        # force one extra compaction pass and retry once.
+        content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+        tracker: UsageTracker | None = None
+        for llm_attempt in range(2):
+            content_blocks = []
+            usage_repo = UsageRepository()
+            tracker = UsageTracker(
+                usage_repo,
+                UsageContext(
+                    user_id=agent.user_id if not is_org_agent else None,
+                    model_id=llm_provider.model_record_id,
+                    model_name=llm_provider.model_name,
+                    provider_type=llm_provider.provider_type,
+                    purpose=UsagePurpose.AGENT_RUN,
+                    agent_run_id=run.id,
+                ),
+            )
 
-        tracker.save()
+            raw_stream = llm_provider.stream_response(
+                prompt="",
+                messages=conversation_messages,
+                tools=turn_tools,
+                max_tokens=DEFAULT_MAX_TOKENS,
+                temperature=DEFAULT_TEMPERATURE,
+                top_p=DEFAULT_TOP_P,
+                system_prompt=system_prompt,
+            )
+
+            try:
+                async for event in tracker.wrap_stream(raw_stream):
+                    if event.type == "content_block_start":
+                        if event.content_block.type == "text":
+                            content_blocks.append(
+                                TextBlockParam(
+                                    type="text", text=event.content_block.text
+                                )
+                            )
+                        elif event.content_block.type == "tool_use":
+                            content_blocks.append(
+                                ToolUseBlockParam(
+                                    type="tool_use",
+                                    id=event.content_block.id,
+                                    name=event.content_block.name,
+                                    input="",
+                                )
+                            )
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            if event.index < len(content_blocks):
+                                text_block = cast(
+                                    TextBlockParam, content_blocks[event.index]
+                                )
+                                text_block["text"] += event.delta.text
+                        elif event.delta.type == "input_json_delta" and event.index < len(
+                            content_blocks
+                        ):
+                            tool_block = cast(
+                                ToolUseBlockParam, content_blocks[event.index]
+                            )
+                            tool_block["input"] = (
+                                cast(str, tool_block["input"]) + event.delta.partial_json
+                            )
+                    elif event.type == "message_stop":
+                        break
+                break
+            except ProviderError as e:
+                if e.is_context_overflow and llm_attempt == 0 and not content_blocks:
+                    logger.warning(
+                        "Agent run %s hit provider context limit; retrying once after forced compaction",
+                        run.id,
+                    )
+                    conversation_messages = await compactor.compact_conversation(
+                        run.id,
+                        conversation_messages,
+                        previous_summary=(
+                            latest_compaction.summary if latest_compaction else None
+                        ),
+                        summarizer_context_window_tokens=summarizer_context.tokens,
+                    )
+                    continue
+                raise
+
+        if tracker is not None:
+            tracker.save()
 
         # Parse tool call inputs — on failure, send error back to LLM
         tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]

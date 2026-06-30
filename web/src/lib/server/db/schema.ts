@@ -339,6 +339,27 @@ export const agentRunLogs = pgTable('agent_run_logs', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const compactions = pgTable('compactions', {
+    id: text('id').primaryKey(),
+    targetType: text('target_type').notNull(),
+    chatId: text('chat_id').references(() => chats.id, { onDelete: 'cascade' }),
+    agentRunId: text('agent_run_id').references(() => agentRuns.id, { onDelete: 'cascade' }),
+    anchorMessageId: text('anchor_message_id').references(() => chatMessages.id, {
+        onDelete: 'cascade',
+    }),
+    anchorLogId: text('anchor_log_id').references(() => agentRunLogs.id, { onDelete: 'cascade' }),
+    compactedThroughSeqNum: integer('compacted_through_seq_num').notNull(),
+    previousCompactionId: text('previous_compaction_id'),
+    summary: text('summary').notNull(),
+    summaryMessage: jsonb('summary_message').$type<MessageParam>().notNull(),
+    estimatedInputTokens: integer('estimated_input_tokens'),
+    actualInputTokens: integer('actual_input_tokens'),
+    estimatedSummaryTokens: integer('estimated_summary_tokens'),
+    actualSummaryTokens: integer('actual_summary_tokens'),
+    metadata: jsonb('metadata').notNull().default({}),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export const apiKeys = pgTable('api_keys', {
     id: text('id').primaryKey(),
     userId: text('user_id')
@@ -369,6 +390,7 @@ export type ModelProvider = typeof modelProviders.$inferSelect
 export type Model = typeof models.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
+export type Compaction = typeof compactions.$inferSelect
 export type ResponseFeedback = typeof responseFeedback.$inferSelect
 export type AuthProvider = typeof authProviders.$inferSelect
 export type ConnectorConfig = typeof connectorConfigs.$inferSelect

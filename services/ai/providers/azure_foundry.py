@@ -18,7 +18,7 @@ from anthropic import AsyncAnthropicFoundry, MessageStreamEvent
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from openai import AsyncOpenAI
 
-from . import LLMProvider, TokenUsage
+from . import ContextWindowInfo, LLMProvider, TokenUsage
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .types import ProviderError, ProviderType
@@ -82,6 +82,9 @@ class AzureFoundryProvider(LLMProvider):
             f"endpoint={self.endpoint_url})"
         )
 
+    async def get_context_window_tokens(self) -> ContextWindowInfo:
+        return await self._delegate.get_context_window_tokens()
+
     async def stream_response(
         self,
         prompt: str,
@@ -110,6 +113,7 @@ class AzureFoundryProvider(LLMProvider):
                 model=self.model_name,
                 status_code=e.status_code,
                 cause=e,
+                is_context_overflow=e.is_context_overflow,
             ) from e
 
     async def generate_response(
@@ -133,6 +137,7 @@ class AzureFoundryProvider(LLMProvider):
                 model=self.model_name,
                 status_code=e.status_code,
                 cause=e,
+                is_context_overflow=e.is_context_overflow,
             ) from e
 
     async def health_check(self) -> bool:

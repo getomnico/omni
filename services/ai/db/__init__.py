@@ -15,6 +15,7 @@ from .model_providers import (
 from .models import ModelRecord, Source
 from .usage import UsageRepository, UsageSummary
 from .configuration import ConfigurationRepository
+from .compactions import CompactionsRepository, ChatCompaction, AgentRunCompaction
 from .web_search_providers import WebSearchProvidersRepository, WebSearchProviderRecord
 from .web_fetch_providers import WebFetchProvidersRepository, WebFetchProviderRecord
 from .tool_approvals import (
@@ -51,6 +52,9 @@ __all__ = [
     "UsageRepository",
     "UsageSummary",
     "ConfigurationRepository",
+    "CompactionsRepository",
+    "ChatCompaction",
+    "AgentRunCompaction",
     "WebSearchProvidersRepository",
     "WebSearchProviderRecord",
     "WebFetchProvidersRepository",

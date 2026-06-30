@@ -5,7 +5,7 @@ LLM Provider abstraction layer for supporting multiple AI providers.
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from anthropic import MessageStreamEvent
 
@@ -18,6 +18,16 @@ class TokenUsage:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+
+
+ContextWindowSource = Literal["provider_metadata", "safe_default"]
+SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+
+
+@dataclass(frozen=True)
+class ContextWindowInfo:
+    tokens: int
+    source: ContextWindowSource
 
 
 class LLMProviderError(Exception):
@@ -62,6 +72,16 @@ class LLMProvider(ABC):
     # Example: Gemini's ``_gemini_thought_signature``, an opaque reasoning
     # token Gemini 3 requires to round-trip across turns.
     PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
+
+    async def get_context_window_tokens(self) -> ContextWindowInfo:
+        """Return this model's context window without requiring admin input.
+
+        Subclasses can override this to use provider metadata. The base fallback
+        is a safe 128K-token default.
+        """
+        return ContextWindowInfo(
+            tokens=SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS, source="safe_default"
+        )
 
     @abstractmethod
     async def stream_response(
@@ -174,6 +194,9 @@ def create_llm_provider(provider_type: ProviderType | str, **kwargs) -> LLMProvi
 
 __all__ = [
     "TokenUsage",
+    "ContextWindowInfo",
+    "ContextWindowSource",
+    "SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS",
     "LLMProviderError",
     "LLMProviderStreamError",
     "LLMProvider",

@@ -77,10 +77,6 @@ COMPACTION_SUMMARY_MAX_TOKENS = int(
 ENABLE_CONVERSATION_COMPACTION = (
     get_optional_env("ENABLE_CONVERSATION_COMPACTION", "true").lower() == "true"
 )
-COMPACTION_CACHE_TTL_SECONDS = int(
-    get_optional_env("COMPACTION_CACHE_TTL_SECONDS", "86400")
-)  # 24 hours
-
 # Agent configuration
 AGENT_MAX_ITERATIONS = int(get_optional_env("AGENT_MAX_ITERATIONS", "15"))
 CONNECTOR_MANAGER_URL = get_required_env("CONNECTOR_MANAGER_URL")

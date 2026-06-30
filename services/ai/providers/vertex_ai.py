@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 from anthropic import AsyncAnthropicVertex, MessageStreamEvent
 from google import genai
 
-from . import LLMProvider, TokenUsage
+from . import ContextWindowInfo, LLMProvider, TokenUsage
 from .anthropic import AnthropicProvider
 from .gemini import GeminiProvider
 from .types import ProviderError, ProviderType
@@ -57,6 +57,9 @@ class VertexAIProvider(LLMProvider):
             f"region={region}, project={project_id})"
         )
 
+    async def get_context_window_tokens(self) -> ContextWindowInfo:
+        return await self._delegate.get_context_window_tokens()
+
     async def stream_response(
         self,
         prompt: str,
@@ -85,6 +88,7 @@ class VertexAIProvider(LLMProvider):
                 model=self.model_name,
                 status_code=e.status_code,
                 cause=e,
+                is_context_overflow=e.is_context_overflow,
             ) from e
 
     async def generate_response(
@@ -108,6 +112,7 @@ class VertexAIProvider(LLMProvider):
                 model=self.model_name,
                 status_code=e.status_code,
                 cause=e,
+                is_context_overflow=e.is_context_overflow,
             ) from e
 
     async def health_check(self) -> bool:
