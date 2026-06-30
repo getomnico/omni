@@ -55,6 +55,24 @@ def _openai_compat_status_code(e: BaseException) -> int | None:
     return e.status_code if isinstance(e, APIStatusError) else None
 
 
+def _openai_compat_error_code(e: BaseException) -> str | None:
+    code = getattr(e, "code", None)
+    if isinstance(code, str):
+        return code
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            body_code = error.get("code")
+            if isinstance(body_code, str):
+                return body_code
+    return None
+
+
+def _openai_compat_context_overflow(e: BaseException) -> bool:
+    return _openai_compat_error_code(e) == "context_length_exceeded"
+
+
 logger = logging.getLogger(__name__)
 
 # Some OpenAI-compatible providers expose non-standard assistant-message fields
@@ -456,6 +474,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_openai_compat_status_code(e),
                 cause=e,
+                is_context_overflow=_openai_compat_context_overflow(e),
             ) from e
 
     async def generate_response(
@@ -514,6 +533,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_openai_compat_status_code(e),
                 cause=e,
+                is_context_overflow=_openai_compat_context_overflow(e),
             ) from e
 
     async def health_check(self) -> bool:

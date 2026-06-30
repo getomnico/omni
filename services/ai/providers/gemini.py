@@ -38,12 +38,16 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from . import LLMProvider, TokenUsage
+from . import ContextWindowInfo, LLMProvider, TokenUsage
 from .types import ProviderError, ProviderType
 
 
 def _gemini_status_code(e: BaseException) -> int | None:
     return e.code if isinstance(e, APIError) else None
+
+
+def _gemini_context_overflow(e: BaseException) -> bool:
+    return isinstance(e, APIError) and e.code == 400 and "too many tokens" in str(e).lower()
 
 
 logger = logging.getLogger(__name__)
@@ -192,6 +196,23 @@ class GeminiProvider(LLMProvider):
         self.client = genai.Client(api_key=api_key)
         self.model = model
         self.model_name = model
+        self._context_window_info: ContextWindowInfo | None = None
+
+    async def get_context_window_tokens(self) -> ContextWindowInfo:
+        if self._context_window_info is not None:
+            return self._context_window_info
+        try:
+            model_info = await self.client.aio.models.get(model=self.model)
+            input_limit = model_info.input_token_limit
+            if isinstance(input_limit, int) and input_limit > 0:
+                self._context_window_info = ContextWindowInfo(
+                    tokens=input_limit, source="provider_metadata"
+                )
+                return self._context_window_info
+        except Exception as e:
+            logger.debug("Failed to fetch Gemini model metadata for %s: %s", self.model, e)
+        self._context_window_info = await super().get_context_window_tokens()
+        return self._context_window_info
 
     async def stream_response(
         self,
@@ -363,6 +384,7 @@ class GeminiProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
+                is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
     async def generate_response(
@@ -409,6 +431,7 @@ class GeminiProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
+                is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
     async def health_check(self) -> bool:

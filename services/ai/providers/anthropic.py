@@ -18,6 +18,20 @@ from .types import ProviderError, ProviderType
 def _anthropic_status_code(e: BaseException) -> int | None:
     return e.status_code if isinstance(e, APIStatusError) else None
 
+
+def _anthropic_context_overflow(e: BaseException) -> bool:
+    if not isinstance(e, APIStatusError):
+        return False
+    if e.status_code == 413:
+        return True
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("type") == "request_too_large":
+            return True
+    return "prompt is too long" in str(e).lower()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -162,6 +176,7 @@ class AnthropicProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_anthropic_status_code(e),
                 cause=e,
+                is_context_overflow=_anthropic_context_overflow(e),
             ) from e
 
     async def generate_response(
@@ -208,6 +223,7 @@ class AnthropicProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_anthropic_status_code(e),
                 cause=e,
+                is_context_overflow=_anthropic_context_overflow(e),
             ) from e
 
     async def health_check(self) -> bool:

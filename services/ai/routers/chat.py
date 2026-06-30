@@ -37,7 +37,7 @@ from config import (
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
-from db import ChatsRepository, MessagesRepository
+from db import ChatsRepository, CompactionsRepository, MessagesRepository
 from db.documents import DocumentsRepository
 from db.configuration import ConfigurationRepository
 from db.models import Chat, Source, UserConfiguration
@@ -1297,7 +1297,6 @@ async def stream_chat(
 
     compactor = ConversationCompactor(
         llm_provider=secondary_provider,
-        redis_client=redis_client,
         on_usage=_on_compaction_usage,
     )
     # Compaction sees the *current* per-turn tool list — connector tools the
@@ -1308,9 +1307,28 @@ async def stream_chat(
         build_result.connector_handler,
         loaded_toolsets,
     )
-    if compactor.needs_compaction(messages, initial_tools):
-        logger.info(f"Compacting conversation for chat {chat_id}")
-        messages = await compactor.compact_conversation(chat_id, messages)
+
+    prepared = await compactor.prepare_chat_conversation(
+        chat_id=chat_id,
+        chat_messages=chat_messages,
+        messages=messages,
+        compactions_repo=CompactionsRepository(),
+        target_provider=llm_provider,
+        tools=initial_tools,
+        system_prompt=system_prompt,
+        max_output_tokens=DEFAULT_MAX_TOKENS,
+    )
+    messages = prepared.messages
+    latest_compaction = prepared.latest_compaction
+    summarizer_context = prepared.summarizer_context
+    logger.info(
+        "Resolved context windows for chat %s: model=%s (%s), summarizer=%s (%s)",
+        chat_id,
+        prepared.model_context.tokens,
+        prepared.model_context.source,
+        summarizer_context.tokens,
+        summarizer_context.source,
+    )
 
     # Stream AI response with tool calling
     async def stream_generator():
@@ -1521,31 +1539,66 @@ async def stream_chat(
                     f"Tools available: {[tool['name'] for tool in turn_tools]}"
                 )
 
-                tracker = UsageTracker(
-                    usage_repo,
-                    UsageContext(
-                        user_id=chat.user_id,
-                        model_id=llm_provider.model_record_id,
-                        model_name=llm_provider.model_name,
-                        provider_type=llm_provider.provider_type,
-                        purpose=UsagePurpose.CHAT,
-                        chat_id=chat_id,
-                    ),
-                )
+                async def _event_stream_with_context_retry(
+                    turn_tools_for_attempt=turn_tools,
+                ):
+                    nonlocal conversation_messages
+                    for llm_attempt in range(2):
+                        tracker = UsageTracker(
+                            usage_repo,
+                            UsageContext(
+                                user_id=chat.user_id,
+                                model_id=llm_provider.model_record_id,
+                                model_name=llm_provider.model_name,
+                                provider_type=llm_provider.provider_type,
+                                purpose=UsagePurpose.CHAT,
+                                chat_id=chat_id,
+                            ),
+                        )
+                        raw_stream: AsyncStream[MessageStreamEvent] = (
+                            llm_provider.stream_response(
+                                prompt="",  # Not used when messages provided
+                                messages=conversation_messages,
+                                tools=turn_tools_for_attempt,
+                                max_tokens=DEFAULT_MAX_TOKENS,
+                                temperature=DEFAULT_TEMPERATURE,
+                                top_p=DEFAULT_TOP_P,
+                                system_prompt=system_prompt,
+                            )
+                        )
+                        emitted_event = False
+                        try:
+                            async for wrapped_event in tracker.wrap_stream(raw_stream):
+                                emitted_event = True
+                                yield wrapped_event
+                            tracker.save()
+                            return
+                        except ProviderError as e:
+                            if (
+                                e.is_context_overflow
+                                and llm_attempt == 0
+                                and not emitted_event
+                            ):
+                                logger.warning(
+                                    "Chat %s hit provider context limit; retrying once after forced compaction",
+                                    chat_id,
+                                )
+                                conversation_messages = (
+                                    await compactor.compact_conversation(
+                                        chat_id,
+                                        conversation_messages,
+                                        previous_summary=(
+                                            latest_compaction.summary
+                                            if latest_compaction
+                                            else None
+                                        ),
+                                        summarizer_context_window_tokens=summarizer_context.tokens,
+                                    )
+                                )
+                                continue
+                            raise
 
-                raw_stream: AsyncStream[MessageStreamEvent] = (
-                    llm_provider.stream_response(
-                        prompt="",  # Not used when messages provided
-                        messages=conversation_messages,
-                        tools=turn_tools,
-                        max_tokens=DEFAULT_MAX_TOKENS,
-                        temperature=DEFAULT_TEMPERATURE,
-                        top_p=DEFAULT_TOP_P,
-                        system_prompt=system_prompt,
-                    )
-                )
-
-                stream = tracker.wrap_stream(raw_stream)
+                stream = _event_stream_with_context_retry()
 
                 event_index = 0
                 message_stop_received = False
@@ -1662,8 +1715,6 @@ async def stream_chat(
                         conversation_messages.append(assistant_message)
                         yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
-
-                tracker.save()
 
                 # Parse tool call inputs. Convert to JSON.
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]

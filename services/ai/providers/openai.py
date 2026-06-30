@@ -36,6 +36,24 @@ def _openai_status_code(e: BaseException) -> int | None:
     return e.status_code if isinstance(e, APIStatusError) else None
 
 
+def _openai_error_code(e: BaseException) -> str | None:
+    code = getattr(e, "code", None)
+    if isinstance(code, str):
+        return code
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            body_code = error.get("code")
+            if isinstance(body_code, str):
+                return body_code
+    return None
+
+
+def _openai_context_overflow(e: BaseException) -> bool:
+    return _openai_error_code(e) == "context_length_exceeded"
+
+
 logger = logging.getLogger(__name__)
 
 MIN_REASONING_OUTPUT_TOKENS = 1024
@@ -287,13 +305,21 @@ class OpenAIProvider(LLMProvider):
                 elif event_type == "response.failed":
                     error = getattr(event.response, "error", None)
                     msg = getattr(error, "message", None) or "Response failed"
-                    raise RuntimeError(msg)
+                    code = getattr(error, "code", None)
+                    raise ProviderError(
+                        msg,
+                        provider_type=self.provider_type,
+                        model=self.model_name,
+                        is_context_overflow=code == "context_length_exceeded",
+                    )
 
                 elif event_type == "error":
                     raise RuntimeError(getattr(event, "message", "Unknown stream error"))
 
             yield RawMessageStopEvent(type="message_stop")
 
+        except ProviderError:
+            raise
         except Exception as e:
             logger.error(f"Failed to stream from OpenAI: {str(e)}", exc_info=True)
             raise ProviderError(
@@ -302,6 +328,7 @@ class OpenAIProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_openai_status_code(e),
                 cause=e,
+                is_context_overflow=_openai_context_overflow(e),
             ) from e
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -455,6 +482,7 @@ class OpenAIProvider(LLMProvider):
                 model=self.model_name,
                 status_code=_openai_status_code(e),
                 cause=e,
+                is_context_overflow=_openai_context_overflow(e),
             ) from e
 
     async def health_check(self) -> bool:
