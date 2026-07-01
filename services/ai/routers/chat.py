@@ -1083,24 +1083,42 @@ async def stream_chat(
     last_event_id = request.headers.get("last-event-id") or request.query_params.get(
         "last_event_id"
     )
-    if redis_client is not None and last_event_id is not None:
-        if await redis_client.exists(_stream_key(chat_id)):
+    if redis_client is not None:
+        run_active = await redis_client.exists(_run_lock_key(chat_id))
+        if run_active:
+            # A run is in progress for this chat: attach to it instead of starting
+            # a fresh generation. Replay the buffered run from the client's offset,
+            # or from the beginning when (as on a full page reload) no offset is
+            # available. This keeps a reconnect that arrives without a Last-Event-ID
+            # from falling through to fresh-generation setup and bailing out with
+            # "No new user message to process".
             return StreamingResponse(
-                _consume_run(redis_client, chat_id, last_event_id),
+                _consume_run(redis_client, chat_id, last_event_id or "0"),
                 media_type="text/event-stream",
                 headers=SSE_HEADERS,
             )
 
-        # Stream expired (TTL elapsed). Starting a new generation would produce a
-        # duplicate response — tell the client to reload from the database instead.
-        async def _not_resumable_response():
-            yield "event: not_resumable\ndata: \n\n"
+        if last_event_id is not None:
+            if await redis_client.exists(_stream_key(chat_id)):
+                # The run has ended but its buffer is still live: replay the tail
+                # so the client receives any final events it missed, then the
+                # terminal end_of_stream/stream_error already in the buffer.
+                return StreamingResponse(
+                    _consume_run(redis_client, chat_id, last_event_id),
+                    media_type="text/event-stream",
+                    headers=SSE_HEADERS,
+                )
+            # No active run and the buffer is gone/expired. Starting a new
+            # generation would produce a duplicate response — tell the client to
+            # reload from the database instead.
+            async def _not_resumable_response():
+                yield "event: not_resumable\ndata: \n\n"
 
-        return StreamingResponse(
-            _not_resumable_response(),
-            media_type="text/event-stream",
-            headers=SSE_HEADERS,
-        )
+            return StreamingResponse(
+                _not_resumable_response(),
+                media_type="text/event-stream",
+                headers=SSE_HEADERS,
+            )
 
     messages_repo = MessagesRepository()
     approvals_repo = ToolApprovalsRepository()
