@@ -677,7 +677,13 @@
             ? roots.find((r) => r.id === branchSelections['.root']) || roots[roots.length - 1]
             : roots[roots.length - 1]
 
+        const visited = new Set<string>()
         while (current) {
+            if (visited.has(current.id)) {
+                console.error('getDisplayPath: message tree cycle detected at', current.id)
+                break
+            }
+            visited.add(current.id)
             path.push(current)
             const children = childrenMap.get(current.id)
             if (!children || children.length === 0) break
@@ -1578,6 +1584,33 @@
                         const messageId = data.message.id
                         if (!messageId) {
                             missingStreamMessageId('message_start')
+                            return
+                        }
+                        // On a reload/reconnect replay, the assistant row was already
+                        // persisted at the original message_start and loaded from the DB,
+                        // so it is already in chatMessages. Re-appending it would derive
+                        // its parent from the display-path leaf (itself) and create a
+                        // self-cycle (id === parentId) that hangs getDisplayPath. Adopt
+                        // the existing row as the streaming target and let the replayed
+                        // content deltas rebuild it in place instead.
+                        const existingIndex = chatMessages.findIndex(
+                            (m) => m.id === messageId,
+                        )
+                        if (existingIndex !== -1) {
+                            const existing = chatMessages[existingIndex]
+                            chatMessages = [
+                                ...chatMessages.slice(0, existingIndex),
+                                {
+                                    ...existing,
+                                    message: {
+                                        role: data.message.role,
+                                        content: data.message.content,
+                                    },
+                                },
+                                ...chatMessages.slice(existingIndex + 1),
+                            ]
+                            activeStreamingMessageId = messageId
+                            markChatMessagesChanged()
                             return
                         }
                         // Find the last message in current display path to use as parent
