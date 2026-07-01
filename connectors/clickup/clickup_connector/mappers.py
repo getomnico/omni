@@ -16,6 +16,7 @@ class HierarchyLookup:
 
     def __init__(self) -> None:
         self._lists: dict[str, dict[str, str]] = {}
+        self._folders: dict[str, str] = {}
         self._space_groups: dict[str, str] = {}
 
     def register_space(self, space_id: str, private: bool, team_id: str) -> None:
@@ -23,6 +24,9 @@ class HierarchyLookup:
             self._space_groups[space_id] = f"clickup:space:{space_id}"
         else:
             self._space_groups[space_id] = f"clickup:workspace:{team_id}"
+
+    def register_folder(self, folder_id: str, space_id: str) -> None:
+        self._folders[folder_id] = space_id
 
     def register_list(
         self,
@@ -49,6 +53,9 @@ class HierarchyLookup:
                 "space_id": "",
             },
         )
+
+    def get_folder_space_id(self, folder_id: str) -> str:
+        return self._folders.get(folder_id, "")
 
     def get_permission_group(self, list_id: str, team_id: str) -> str:
         list_info = self.get(list_id)
@@ -77,9 +84,7 @@ def map_task_to_document(
     task_name = task.get("name", "Untitled")
 
     assignees = task.get("assignees", [])
-    assignee_names = ",".join(
-        a.get("username", "") for a in assignees if a.get("username")
-    )
+    assignee_names = ",".join(a.get("username", "") for a in assignees if a.get("username"))
     assignee_emails = ",".join(a.get("email", "") for a in assignees if a.get("email"))
 
     tags = task.get("tags", [])
@@ -112,11 +117,7 @@ def map_task_to_document(
         ),
         permissions=DocumentPermissions(
             public=False,
-            groups=[
-                hierarchy.get_permission_group(
-                    task.get("list", {}).get("id", ""), team_id
-                )
-            ],
+            groups=[hierarchy.get_permission_group(task.get("list", {}).get("id", ""), team_id)],
         ),
         attributes={
             "source_type": "clickup",

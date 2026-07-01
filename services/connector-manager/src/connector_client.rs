@@ -3,6 +3,7 @@ use crate::models::{
     ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
+use serde_json::json;
 use shared::models::SyncType;
 use shared::{RateLimiter, RetryableError};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -268,6 +269,38 @@ impl ConnectorClient {
         // Return the raw response regardless of status code so the handler
         // can proxy status, headers, and body verbatim.
         Ok(response)
+    }
+
+    pub async fn bootstrap_mcp(
+        &self,
+        connector_url: &str,
+        credentials: &serde_json::Value,
+    ) -> Result<ConnectorManifest, ClientError> {
+        let url = format!("{}/mcp/bootstrap", connector_url);
+        debug!("Bootstrapping MCP catalog at {}", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&json!({ "credentials": credentials }))
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Failed to bootstrap MCP: {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
     pub async fn read_resource(

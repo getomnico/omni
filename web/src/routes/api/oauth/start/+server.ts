@@ -53,7 +53,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         if (!config) {
             throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
         }
-        if (!(await isProviderConfigured(config.provider))) {
+        if (!(await isProviderConfigured(config.provider, config))) {
             throw error(412, oauthClientNotConfiguredMessage(config.provider))
         }
 
@@ -87,7 +87,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         if (!config) {
             throw error(501, `OAuth not implemented for source_type=${sourceTypes[0]}`)
         }
-        if (!(await isProviderConfigured(config.provider))) {
+        if (!(await isProviderConfigured(config.provider, config))) {
             throw error(412, oauthClientNotConfiguredMessage(config.provider))
         }
 

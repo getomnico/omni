@@ -117,6 +117,26 @@ class McpAdapter:
         async with self._open_session(env, headers) as session:
             return await callback(session)
 
+    def export_catalog(self) -> dict[str, Any]:
+        """Return the cached MCP catalog as JSON-serializable data."""
+        return {
+            "actions": [a.model_dump() for a in self._cached_actions or []],
+            "resources": [r.model_dump() for r in self._cached_resources or []],
+            "prompts": [p.model_dump() for p in self._cached_prompts or []],
+        }
+
+    def import_catalog(self, catalog: dict[str, Any]) -> None:
+        """Restore a previously discovered MCP catalog."""
+        self._cached_actions = [
+            ActionDefinition(**item) for item in catalog.get("actions", [])
+        ]
+        self._cached_resources = [
+            McpResourceDefinition(**item) for item in catalog.get("resources", [])
+        ]
+        self._cached_prompts = [
+            McpPromptDefinition(**item) for item in catalog.get("prompts", [])
+        ]
+
     async def discover(
         self,
         env: dict[str, str] | None = None,

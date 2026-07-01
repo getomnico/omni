@@ -176,23 +176,17 @@ class MockClickUpAPI:
         private: bool = False,
         members: list[dict[str, Any]] | None = None,
     ) -> None:
-        self.spaces.setdefault(team_id, []).append(
-            _space_payload(space_id, name, private, members)
-        )
+        self.spaces.setdefault(team_id, []).append(_space_payload(space_id, name, private, members))
 
     def add_folder(self, space_id: str, folder_id: str, name: str = "Sprint 1") -> None:
         self.folders.setdefault(space_id, []).append(_folder_payload(folder_id, name))
 
-    def add_list_in_folder(
-        self, folder_id: str, list_id: str, name: str = "Backlog"
-    ) -> None:
+    def add_list_in_folder(self, folder_id: str, list_id: str, name: str = "Backlog") -> None:
         self.lists_in_folder.setdefault(folder_id, []).append(
             _list_payload(list_id, name, folder_id=folder_id)
         )
 
-    def add_folderless_list(
-        self, space_id: str, list_id: str, name: str = "Backlog"
-    ) -> None:
+    def add_folderless_list(self, space_id: str, list_id: str, name: str = "Backlog") -> None:
         self.folderless_lists.setdefault(space_id, []).append(
             _list_payload(list_id, name, space_id=space_id)
         )
@@ -246,9 +240,7 @@ class MockClickUpAPI:
             date_updated_gt = request.query_params.get("date_updated_gt")
             if date_updated_gt:
                 threshold = int(date_updated_gt)
-                all_tasks = [
-                    t for t in all_tasks if int(t.get("date_updated", 0)) > threshold
-                ]
+                all_tasks = [t for t in all_tasks if int(t.get("date_updated", 0)) > threshold]
 
             page = int(request.query_params.get("page", "0"))
             start = page * 100
@@ -331,14 +323,14 @@ def connector_server(connector_port: int) -> str:
     import os
 
     os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:0")
+    os.environ.setdefault("CONNECTOR_HOST_NAME", "localhost")
+    os.environ.setdefault("PORT", str(connector_port))
 
     from clickup_connector import ClickUpConnector
     from omni_connector.server import create_app
 
     app = create_app(ClickUpConnector())
-    config = uvicorn.Config(
-        app, host="0.0.0.0", port=connector_port, log_level="warning"
-    )
+    config = uvicorn.Config(app, host="0.0.0.0", port=connector_port, log_level="warning")
     server = uvicorn.Server(config)
 
     thread = threading.Thread(target=server.run, daemon=True)
@@ -399,7 +391,5 @@ async def source_id(
 @pytest_asyncio.fixture
 async def cm_client(harness: OmniTestHarness) -> httpx.AsyncClient:
     """Async httpx client pointed at the connector-manager."""
-    async with httpx.AsyncClient(
-        base_url=harness.connector_manager_url, timeout=30
-    ) as client:
+    async with httpx.AsyncClient(base_url=harness.connector_manager_url, timeout=30) as client:
         yield client

@@ -7,6 +7,7 @@ import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { decryptConfig } from '$lib/server/crypto/encryption'
 import { logger } from '$lib/server/logger'
+import { getConfig } from '$lib/server/config'
 import { getSourceById, getSourcesByType } from '$lib/server/db/sources'
 import { getSourceDisplayName } from '$lib/utils/icons'
 import { SourceType } from '$lib/types'
@@ -71,7 +72,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         refresh_token: tokens.refresh_token ?? existingCredentials.refresh_token ?? null,
         token_type: tokens.token_type ?? 'Bearer',
         client_id: clientCreds.clientId,
-        client_secret: clientCreds.clientSecret,
+        ...(clientCreds.clientSecret ? { client_secret: clientCreds.clientSecret } : {}),
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
     })
 
@@ -112,6 +113,27 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         throw redirect(302, flow.returnTo ?? '/admin/settings/integrations?success=connected')
     }
 
+    const bootstrapClickUpMcp = async (sourceId: string, userId: string) => {
+        if (config.provider !== 'clickup') return
+        try {
+            const cmUrl = getConfig().services.connectorManagerUrl
+            const resp = await fetch(`${cmUrl}/mcp/bootstrap`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ source_id: sourceId, user_id: userId }),
+            })
+            if (!resp.ok) {
+                logger.warn('ClickUp MCP bootstrap failed after OAuth', {
+                    sourceId,
+                    status: resp.status,
+                    body: await resp.text(),
+                })
+            }
+        } catch (err) {
+            logger.warn('ClickUp MCP bootstrap failed after OAuth', { sourceId, err: String(err) })
+        }
+    }
+
     if (flow.type === 'user_write') {
         const existing = await serviceCredentialsRepository.getByUserAndSource(
             flow.sourceId,
@@ -132,6 +154,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             config: { granted_scopes: grantedScopes },
             expiresAt,
         })
+        await bootstrapClickUpMcp(flow.sourceId, user.id)
         const params = new URLSearchParams({ ok: 'true', sourceId: flow.sourceId })
         throw redirect(302, `/oauth/done?${params}`)
     }

@@ -201,6 +201,11 @@ class OAuthManifestConfig(BaseModel):
     extra_auth_params: dict[str, str] = Field(default_factory=dict)
     scope_separator: str = " "
     enrich_endpoint: str | None = None
+    registration_endpoint: str | None = None
+    token_endpoint_auth_method: str = "client_secret_post"
+    client_secret_required: bool = True
+    pkce_required: bool = False
+    resource: str | None = None
 
 
 class ConnectorManifest(BaseModel):
@@ -272,6 +277,10 @@ class ActionRequest(BaseModel):
     action: str
     params: dict[str, Any]
     credentials: dict[str, Any]
+
+
+class BootstrapMcpRequest(BaseModel):
+    credentials: dict[str, Any] = Field(default_factory=dict)
 
 
 class ActionResponse(BaseModel):

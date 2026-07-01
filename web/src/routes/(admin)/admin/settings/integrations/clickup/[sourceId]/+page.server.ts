@@ -3,7 +3,7 @@ import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
-import { SourceType } from '$lib/types'
+import { SourceType, type ClickUpSourceConfig } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
@@ -41,11 +41,17 @@ export const actions: Actions = {
 
         const formData = await request.formData()
         const isActive = formData.has('enabled')
+        const spaceFilters = formData.getAll('spaceFilters') as string[]
 
         try {
+            const config: ClickUpSourceConfig = {
+                ...(source.config || {}),
+                space_filters: spaceFilters.length > 0 ? spaceFilters : undefined,
+            }
+
             await updateSourceById(source.id, {
                 isActive,
-                config: source.config || {},
+                config,
             })
 
             if (isActive) {

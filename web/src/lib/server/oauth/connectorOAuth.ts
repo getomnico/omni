@@ -1,5 +1,6 @@
+import { createHash, randomBytes } from 'crypto'
 import { app, getConfig } from '../config'
-import { getConnectorConfig } from '../db/connector-configs'
+import { getConnectorConfig, upsertConnectorConfig } from '../db/connector-configs'
 import { OAuthStateManager } from './state'
 import type { OAuthError, OAuthTokens } from './types'
 
@@ -17,6 +18,11 @@ export interface OAuthManifestConfig {
     extra_auth_params: Record<string, string>
     scope_separator: string
     enrich_endpoint?: string | null
+    registration_endpoint?: string | null
+    token_endpoint_auth_method?: string
+    client_secret_required?: boolean
+    pkce_required?: boolean
+    resource?: string | null
 }
 
 /// What flow we're driving — encoded into the OAuth state so the single
@@ -39,6 +45,7 @@ export interface ManifestOAuthState {
         // Granted-scope validation mode: writes require *exact* coverage of
         // requiredScopes; reads/identity don't.
         strictScopeCheck: boolean
+        codeVerifier?: string
     }
 }
 
@@ -67,7 +74,8 @@ export async function getOAuthManifestForSourceType(
 
 interface ClientCreds {
     clientId: string
-    clientSecret: string
+    clientSecret?: string
+    tokenEndpointAuthMethod: string
     /// Optional per-deployment override for the manifest's auth_endpoint.
     /// Used when the auth URL has to embed deployment-specific data the
     /// connector can't know at compile time (e.g. Microsoft tenant id).
@@ -76,23 +84,94 @@ interface ClientCreds {
     tokenEndpoint?: string
 }
 
-async function loadClientCreds(provider: string): Promise<ClientCreds | null> {
+async function loadClientCreds(
+    provider: string,
+    manifestConfig?: OAuthManifestConfig,
+): Promise<ClientCreds | null> {
     const row = await getConnectorConfig(provider)
-    if (!row) return null
-    const config = row.config as Record<string, string>
-    const clientId = config.oauth_client_id
-    const clientSecret = config.oauth_client_secret
-    if (!clientId || !clientSecret) return null
+    const storedConfig = (row?.config ?? {}) as Record<string, string>
+    const tokenEndpointAuthMethod =
+        storedConfig.oauth_token_endpoint_auth_method ||
+        manifestConfig?.token_endpoint_auth_method ||
+        'client_secret_post'
+    const clientId = storedConfig.oauth_client_id
+    const clientSecret = storedConfig.oauth_client_secret
+
+    if (clientId && (clientSecret || tokenEndpointAuthMethod === 'none')) {
+        return {
+            clientId,
+            clientSecret: clientSecret || undefined,
+            tokenEndpointAuthMethod,
+            authEndpoint: storedConfig.oauth_auth_endpoint || undefined,
+            tokenEndpoint: storedConfig.oauth_token_endpoint || undefined,
+        }
+    }
+
+    if (manifestConfig?.registration_endpoint && tokenEndpointAuthMethod === 'none') {
+        return dynamicallyRegisterClient(provider, manifestConfig, storedConfig)
+    }
+
+    return null
+}
+
+async function dynamicallyRegisterClient(
+    provider: string,
+    config: OAuthManifestConfig,
+    existingConfig: Record<string, string>,
+): Promise<ClientCreds | null> {
+    const redirectUri = callbackUrl()
+    const scope = scopesForFlow(config, Object.keys(config.scopes), 'write').join(
+        config.scope_separator,
+    )
+    let response: Response
+    try {
+        response = await fetch(config.registration_endpoint!, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+            },
+            body: JSON.stringify({
+                client_name: 'Omni ClickUp MCP',
+                redirect_uris: [redirectUri],
+                grant_types: ['authorization_code'],
+                response_types: ['code'],
+                token_endpoint_auth_method: 'none',
+                scope,
+            }),
+        })
+    } catch {
+        return null
+    }
+    const data = (await response.json().catch(() => ({}))) as { client_id?: string }
+    if (!response.ok || !data.client_id) return null
+
+    const stored = {
+        ...existingConfig,
+        oauth_client_id: data.client_id,
+        oauth_token_endpoint_auth_method: 'none',
+        oauth_dynamic_client_registration: 'true',
+    }
+    await upsertConnectorConfig(provider, stored, null)
+
     return {
-        clientId,
-        clientSecret,
-        authEndpoint: config.oauth_auth_endpoint || undefined,
-        tokenEndpoint: config.oauth_token_endpoint || undefined,
+        clientId: data.client_id,
+        tokenEndpointAuthMethod: 'none',
+        authEndpoint: existingConfig.oauth_auth_endpoint || undefined,
+        tokenEndpoint: existingConfig.oauth_token_endpoint || undefined,
     }
 }
 
-export async function isProviderConfigured(provider: string): Promise<boolean> {
-    return (await loadClientCreds(provider)) !== null
+export async function isProviderConfigured(
+    provider: string,
+    manifestConfig?: OAuthManifestConfig,
+): Promise<boolean> {
+    if ((await loadClientCreds(provider, manifestConfig)) !== null) return true
+    if (manifestConfig) return false
+    const manifest = await getOAuthManifestForProvider(provider)
+    return Boolean(
+        manifest?.registration_endpoint && manifest.token_endpoint_auth_method === 'none',
+    )
 }
 
 /// Derive the scopes required by a flow against a given source_type.
@@ -123,7 +202,7 @@ export async function generateAuthUrl(args: {
         throw new Error(`No OAuth manifest for source_type=${sourceType}`)
     }
 
-    const creds = await loadClientCreds(manifestConfig.provider)
+    const creds = await loadClientCreds(manifestConfig.provider, manifestConfig)
     if (!creds) {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
@@ -134,6 +213,7 @@ export async function generateAuthUrl(args: {
     const sourceTypes = flow.type === 'connect_source' ? flow.sourceTypes : []
     const requiredScopes = scopesForFlow(manifestConfig, sourceTypes, mode)
 
+    const pkce = pkceForConfig(manifestConfig)
     const { stateToken } = await OAuthStateManager.createState(
         manifestConfig.provider,
         callbackUrl(),
@@ -143,11 +223,12 @@ export async function generateAuthUrl(args: {
             provider: manifestConfig.provider,
             requiredScopes,
             strictScopeCheck: false,
+            codeVerifier: pkce?.verifier,
         },
     )
 
     return {
-        url: buildAuthUrl(manifestConfig, creds, requiredScopes, stateToken),
+        url: buildAuthUrl(manifestConfig, creds, requiredScopes, stateToken, pkce?.challenge),
         requiredScopes,
     }
 }
@@ -164,7 +245,7 @@ export async function generateAuthUrlForOrgSource(args: {
     if (!manifestConfig) {
         throw new Error(`No OAuth manifest for source_type=${args.sourceType}`)
     }
-    const creds = await loadClientCreds(manifestConfig.provider)
+    const creds = await loadClientCreds(manifestConfig.provider, manifestConfig)
     if (!creds) {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
@@ -176,6 +257,7 @@ export async function generateAuthUrlForOrgSource(args: {
         returnTo: args.returnTo,
     }
 
+    const pkce = pkceForConfig(manifestConfig)
     const { stateToken } = await OAuthStateManager.createState(
         manifestConfig.provider,
         callbackUrl(),
@@ -185,11 +267,12 @@ export async function generateAuthUrlForOrgSource(args: {
             provider: manifestConfig.provider,
             requiredScopes,
             strictScopeCheck: false,
+            codeVerifier: pkce?.verifier,
         },
     )
 
     return {
-        url: buildAuthUrl(manifestConfig, creds, requiredScopes, stateToken),
+        url: buildAuthUrl(manifestConfig, creds, requiredScopes, stateToken, pkce?.challenge),
         requiredScopes,
     }
 }
@@ -206,7 +289,7 @@ export async function generateAuthUrlForUserWrite(args: {
     if (!manifestConfig) {
         throw new Error(`No OAuth manifest for source_type=${args.sourceType}`)
     }
-    const creds = await loadClientCreds(manifestConfig.provider)
+    const creds = await loadClientCreds(manifestConfig.provider, manifestConfig)
     if (!creds) {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
@@ -236,6 +319,7 @@ export async function generateAuthUrlForUserWrite(args: {
         returnTo: args.returnTo,
     }
 
+    const pkce = pkceForConfig(manifestConfig)
     const { stateToken } = await OAuthStateManager.createState(
         manifestConfig.provider,
         callbackUrl(),
@@ -245,13 +329,23 @@ export async function generateAuthUrlForUserWrite(args: {
             provider: manifestConfig.provider,
             requiredScopes: actionScopes,
             strictScopeCheck: true,
+            codeVerifier: pkce?.verifier,
         },
     )
 
     return {
-        url: buildAuthUrl(manifestConfig, creds, sentScopes, stateToken),
+        url: buildAuthUrl(manifestConfig, creds, sentScopes, stateToken, pkce?.challenge),
         requiredScopes: writeScopes,
     }
+}
+
+function pkceForConfig(
+    config: OAuthManifestConfig,
+): { verifier: string; challenge: string } | null {
+    if (!config.pkce_required) return null
+    const verifier = randomBytes(32).toString('base64url')
+    const challenge = createHash('sha256').update(verifier).digest('base64url')
+    return { verifier, challenge }
 }
 
 function buildAuthUrl(
@@ -259,6 +353,7 @@ function buildAuthUrl(
     creds: ClientCreds,
     scopes: string[],
     stateToken: string,
+    codeChallenge?: string,
 ): string {
     const params = new URLSearchParams({
         client_id: creds.clientId,
@@ -268,6 +363,10 @@ function buildAuthUrl(
         state: stateToken,
         ...config.extra_auth_params,
     })
+    if (codeChallenge) {
+        params.set('code_challenge', codeChallenge)
+        params.set('code_challenge_method', 'S256')
+    }
     const authEndpoint = creds.authEndpoint ?? config.auth_endpoint
     return `${authEndpoint}?${params.toString()}`
 }
@@ -300,18 +399,26 @@ export async function exchangeCodeAndIdentify(
         throw new Error(`No OAuth manifest for provider=${provider}`)
     }
 
-    const creds = await loadClientCreds(provider)
+    const creds = await loadClientCreds(provider, config)
     if (!creds) {
         throw new Error(`OAuth client not configured for provider=${provider}`)
     }
 
     const tokenParams = new URLSearchParams({
         client_id: creds.clientId,
-        client_secret: creds.clientSecret,
         code,
         grant_type: 'authorization_code',
         redirect_uri: callbackUrl(),
     })
+    if (creds.tokenEndpointAuthMethod !== 'none' && creds.clientSecret) {
+        tokenParams.set('client_secret', creds.clientSecret)
+    }
+    if (state.metadata.codeVerifier) {
+        tokenParams.set('code_verifier', state.metadata.codeVerifier)
+    }
+    if (config.resource) {
+        tokenParams.set('resource', config.resource)
+    }
 
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
     const tokenResp = await fetch(tokenEndpoint, {
@@ -377,7 +484,10 @@ function getStringField(
     value: Record<string, unknown> | null | undefined,
     field: string,
 ): string | null {
-    const fieldValue = value?.[field]
+    const fieldValue = field.split('.').reduce<unknown>((current, part) => {
+        if (!isUserinfoObject(current)) return undefined
+        return current[part]
+    }, value)
     return typeof fieldValue === 'string' && fieldValue ? fieldValue : null
 }
 

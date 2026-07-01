@@ -44,6 +44,21 @@ pub struct OAuthManifestConfig {
     /// `{credentials_extra?, config_extra?}` to be merged into the row.
     #[serde(default)]
     pub enrich_endpoint: Option<String>,
+    /// OAuth Dynamic Client Registration endpoint for public-client providers.
+    #[serde(default)]
+    pub registration_endpoint: Option<String>,
+    /// Token endpoint auth method (e.g. client_secret_post or none).
+    #[serde(default = "default_token_endpoint_auth_method")]
+    pub token_endpoint_auth_method: String,
+    /// Whether deployments must provide/store a client secret.
+    #[serde(default = "default_client_secret_required")]
+    pub client_secret_required: bool,
+    /// Whether authorization requests must use PKCE S256.
+    #[serde(default)]
+    pub pkce_required: bool,
+    /// Optional OAuth resource indicator to send on auth/token requests.
+    #[serde(default)]
+    pub resource: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -60,4 +75,12 @@ fn default_email_field() -> String {
 
 fn default_scope_separator() -> String {
     " ".to_string()
+}
+
+fn default_token_endpoint_auth_method() -> String {
+    "client_secret_post".to_string()
+}
+
+fn default_client_secret_required() -> bool {
+    true
 }

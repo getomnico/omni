@@ -1,9 +1,9 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
-    ActionContext, ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, PromptRequest, ResourceRequest,
-    ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress, TriggerSyncRequest,
-    TriggerSyncResponse, TriggerType,
+    ActionContext, ActionRequest, BootstrapMcpRequest, ConnectorInfo, ExecuteActionRequest,
+    ExecutePromptRequest, ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials,
+    PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress,
+    TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
@@ -932,6 +932,81 @@ pub async fn get_prompt(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
     Ok(Json(result))
+}
+
+pub async fn bootstrap_mcp(
+    State(state): State<AppState>,
+    Json(request): Json<BootstrapMcpRequest>,
+) -> Result<Json<ConnectorManifest>, ApiError> {
+    info!(
+        "Bootstrapping MCP catalog for source {} (user={:?})",
+        request.source_id, request.user_id
+    );
+
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source.source_type
+            ))
+        })?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds = match resolve_credentials(
+        &creds_repo,
+        &request.source_id,
+        request.user_id.as_deref(),
+        false,
+    )
+    .await?
+    {
+        CredentialResolution::Resolved(creds) => creds,
+        CredentialResolution::NeedsUserAuth { provider } => {
+            return Err(ApiError::BadRequest(format!(
+                "User OAuth required before MCP bootstrap for provider {:?}",
+                provider
+            )));
+        }
+        CredentialResolution::NoCredentials => {
+            return Err(ApiError::NotFound(format!(
+                "Credentials not found for source: {}",
+                request.source_id
+            )));
+        }
+    };
+
+    let credentials = serde_json::to_value(McpCredentials::from_service_credential(&creds))
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let client = ConnectorClient::new();
+    let manifest = client
+        .bootstrap_mcp(&connector_url, &credentials)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    validate_connector_manifest_action_schemas(&manifest).map_err(ApiError::BadRequest)?;
+    let manifest_json = serde_json::to_string(&manifest)
+        .map_err(|e| ApiError::Internal(format!("Failed to serialize manifest: {}", e)))?;
+    let key = format!("connector:manifest:{}", manifest.connector_id);
+    let mut conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    let _: () = conn
+        .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
+
+    Ok(Json(manifest))
 }
 
 pub async fn list_skills(
