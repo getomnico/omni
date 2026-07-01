@@ -735,7 +735,21 @@
             ? roots.find((r) => r.id === branchSelections['.root']) || roots[roots.length - 1]
             : roots[roots.length - 1]
 
+        const visited = new Set<string>()
         while (current) {
+            if (visited.has(current.id)) {
+                console.error('[chat-stream-debug]', 'getDisplayPath:cycle-detected', {
+                    cycleAt: current.id,
+                    pathSoFar: path.map((m) => ({ id: m.id, parentId: m.parentId })),
+                    childrenOfCycle: childrenMap.get(current.id)?.map((m) => ({
+                        id: m.id,
+                        parentId: m.parentId,
+                        seq: m.messageSeqNum,
+                    })),
+                })
+                break
+            }
+            visited.add(current.id)
             path.push(current)
             const children = childrenMap.get(current.id)
             if (!children || children.length === 0) break
@@ -1379,7 +1393,8 @@
         )
 
         const streamRunId = ++streamRunCounter
-        const isCurrentStream = () => streamRunId === streamRunCounter && activeStreamChatId === chatId
+        const isCurrentStream = () =>
+            streamRunId === streamRunCounter && activeStreamChatId === chatId
 
         isStreaming = true
         activeStreamChatId = chatId
@@ -1592,7 +1607,8 @@
                         })
                     }
                 } else {
-                    const messageId = (block as ToolResultBlockParam & { message_id?: string }).message_id
+                    const messageId = (block as ToolResultBlockParam & { message_id?: string })
+                        .message_id
                     if (!messageId) {
                         missingStreamMessageId('tool-result-message')
                         return
@@ -1709,18 +1725,32 @@
                             missingStreamMessageId('message_start')
                             return
                         }
+                        const existingMessage = chatMessages.find((m) => m.id === messageId)
                         // Find the last message in current display path to use as parent
                         const displayPath = getDisplayPath(chatMessages)
                         const streamParentId =
                             displayPath.length > 0
                                 ? displayPath[displayPath.length - 1].id
                                 : undefined
-                        debugStream('message_start:parent', {
-                            streamParentId,
-                            displayPathLength: displayPath.length,
-                            displayPathLastId: displayPath[displayPath.length - 1]?.id,
-                            chatMessageCount: chatMessages.length,
-                        })
+                        debugStream(
+                            'message_start:parent',
+                            {
+                                messageId,
+                                messageIdAlreadyExists: !!existingMessage,
+                                existingMessageParentId: existingMessage?.parentId ?? null,
+                                streamParentId,
+                                selfParent: streamParentId === messageId,
+                                displayPathLength: displayPath.length,
+                                displayPathLastId: displayPath[displayPath.length - 1]?.id,
+                                chatMessageCount: chatMessages.length,
+                                chatMessageIds: chatMessages.map((m) => ({
+                                    id: m.id,
+                                    parentId: m.parentId,
+                                    role: m.message.role,
+                                })),
+                            },
+                            true,
+                        )
                         const startedMessage: ChatMessage = {
                             id: messageId,
                             chatId,
@@ -1911,12 +1941,34 @@
                 clearReconnectState()
 
                 if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
+                    console.error('[chat-stream-debug]', 'end_of_stream:no-messages', {
+                        messageEventsReceived,
+                        pauseEventReceived,
+                        hadError: !!error,
+                        wasStopping,
+                        streamLastEventId,
+                    })
                     error = 'Failed to generate response. Please try again.'
+                } else {
+                    console.debug('[chat-stream-debug]', 'end_of_stream:normal', {
+                        messageEventsReceived,
+                        pauseEventReceived,
+                        hadError: !!error,
+                        wasStopping,
+                        streamLastEventId,
+                    })
                 }
             })
 
             const handleStreamError = (event: Event) => {
                 if (!isCurrentStream()) return
+                console.error('[chat-stream-debug]', 'handleStreamError', {
+                    isMessageEvent: event instanceof MessageEvent,
+                    data: event instanceof MessageEvent ? event.data : null,
+                    lastEventId: event instanceof MessageEvent ? event.lastEventId : null,
+                    messageEventsReceived,
+                    streamLastEventId,
+                })
                 streamCompleted = true
                 if (event instanceof MessageEvent) {
                     const streamError = streamErrorMessage(event as MessageEvent<string>)
@@ -1946,6 +1998,12 @@
                 // error event, so we can use that as a signal to skip cleanup here.
                 if (streamCompleted || !isStreaming) return
 
+                console.error('[chat-stream-debug]', 'handleConnectionError', {
+                    readyState: eventSource?.readyState,
+                    reconnectAttempts,
+                    messageEventsReceived,
+                    streamLastEventId,
+                })
                 // Transient drop (e.g. backgrounded tab): the server keeps the run
                 // alive and buffered, so reconnect from our last offset with backoff
                 // instead of failing. Only surface an error once the budget is spent.
