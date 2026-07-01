@@ -301,6 +301,9 @@ async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
                     await messages_repo.update_message_content(
                         current_assistant_message_id, message
                     )
+                    await messages_repo.update_content_text(
+                        current_assistant_message_id, message
+                    )
                     current_assistant_message_id = None
                     continue
 

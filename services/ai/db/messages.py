@@ -53,14 +53,35 @@ class MessagesRepository:
     async def update_message_content(
         self, message_id: str, message: Dict[str, Any]
     ) -> None:
-        """Replace the JSONB `message` payload for a chat_messages row."""
+        """Replace only the JSONB `message` payload for a chat_messages row.
+
+        Intentionally does not touch `content_text`: that column carries a BM25
+        index, so it should be written once when a streamed message is finalized,
+        not on every intermediate content update. Use `update_content_text` for
+        the finalization write.
+        """
         pool = await self._get_pool()
         message = _sanitize_jsonb_value(message)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1 WHERE id = $2",
+                json.dumps(message),
+                message_id,
+            )
+
+    async def update_content_text(
+        self, message_id: str, message: Dict[str, Any]
+    ) -> None:
+        """Derive and persist the BM25-indexed `content_text` for a message.
+
+        Call once when a streamed message is finalized (all content received),
+        not on intermediate updates, to avoid repeated BM25 index writes.
+        """
+        pool = await self._get_pool()
         content_text = _extract_content_text(message)
         async with pool.acquire() as conn:
             await conn.execute(
-                "UPDATE chat_messages SET message = $1, content_text = $2 WHERE id = $3",
-                json.dumps(message),
+                "UPDATE chat_messages SET content_text = $1 WHERE id = $2",
                 content_text,
                 message_id,
             )
