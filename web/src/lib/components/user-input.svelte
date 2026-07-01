@@ -41,6 +41,7 @@
         placeholders?: Record<InputMode, string>
         isLoading?: boolean
         isStreaming?: boolean
+        stopInProgress?: boolean
         onStop?: () => void
         disabled?: boolean
         popoverItems?: PopoverItem[]
@@ -71,6 +72,7 @@
         placeholders = DEFAULT_PLACEHOLDERS,
         isLoading = false,
         isStreaming = false,
+        stopInProgress = false,
         onStop,
         disabled = false,
         popoverItems = [],
@@ -558,12 +560,21 @@
                     </Select.Root>
                 {/if}
                 {#if isStreaming}
-                    <Button
-                        size="icon"
-                        class="omni-composer-send cursor-pointer rounded-full"
-                        onclick={handleStopClick}>
-                        <CircleStop class="h-4 w-4" />
-                    </Button>
+                    {#if stopInProgress}
+                        <Button
+                            size="icon"
+                            class="omni-composer-send cursor-pointer rounded-full"
+                            disabled>
+                            <Loader2 class="h-4 w-4 animate-spin" />
+                        </Button>
+                    {:else}
+                        <Button
+                            size="icon"
+                            class="omni-composer-send cursor-pointer rounded-full"
+                            onclick={handleStopClick}>
+                            <CircleStop class="h-4 w-4" />
+                        </Button>
+                    {/if}
                 {:else if isLoading}
                     <Button size="icon" class="omni-composer-send cursor-pointer" disabled>
                         <Loader2 class="h-4 w-4 animate-spin" />

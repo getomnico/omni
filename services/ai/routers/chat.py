@@ -122,8 +122,8 @@ def _sse_event(event_type: str, data: object) -> str:
 # a per-chat Redis Stream. HTTP requests are thin "consumers" that tail that
 # stream from an offset (SSE Last-Event-ID), so a client that backgrounds/
 # reconnects resumes without interrupting generation. The producer is the single
-# DB writer of the streaming path (persists messages, then emits `message_id`),
-# which keeps replays free of duplicate writes.
+# DB writer of the streaming path (persists messages before client-visible
+# message events), which keeps replays free of duplicate writes.
 
 SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
@@ -180,40 +180,177 @@ def _sse_event_data(event_str: str) -> str:
 def _partial_assistant_message(
     content_blocks: list[TextBlockParam | ToolUseBlockParam],
 ) -> MessageParam | None:
-    text_blocks: list[TextBlockParam] = []
+    persisted_blocks: list[TextBlockParam | ToolUseBlockParam] = []
     for block in content_blocks:
-        if block["type"] != "text":
+        if block["type"] == "text":
+            text_block = cast(TextBlockParam, block)
+            if text_block["text"].strip():
+                persisted_blocks.append(cast(TextBlockParam, dict(text_block)))
             continue
-        text_block = cast(TextBlockParam, block)
-        if not text_block["text"].strip():
-            continue
-        text_blocks.append(cast(TextBlockParam, dict(text_block)))
 
-    if not text_blocks:
+        tool_block = cast(ToolUseBlockParam, dict(block))
+        raw_input = tool_block.get("input")
+        if isinstance(raw_input, str):
+            try:
+                tool_block["input"] = json.loads(raw_input) if raw_input else {}
+            except json.JSONDecodeError:
+                tool_block["input"] = {}
+        persisted_blocks.append(tool_block)
+
+    if not persisted_blocks:
         return None
 
-    return MessageParam(role="assistant", content=text_blocks)
+    return MessageParam(role="assistant", content=persisted_blocks)
+
+
+def _parse_tool_call_inputs(
+    tool_calls: list[ToolUseBlockParam],
+) -> list[ToolResultBlockParam]:
+    parse_errors: list[ToolResultBlockParam] = []
+    for tool_call in tool_calls:
+        raw_input = cast(str, tool_call["input"])
+        try:
+            tool_call["input"] = json.loads(raw_input)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Failed to parse tool call input for %s: %s. Raw input: %s",
+                tool_call["name"],
+                e,
+                raw_input,
+            )
+            raw_input_preview = raw_input[:4000]
+            if len(raw_input) > len(raw_input_preview):
+                raw_input_preview += "... [truncated]"
+            tool_call["input"] = {}
+            parse_errors.append(
+                ToolResultBlockParam(
+                    type="tool_result",
+                    tool_use_id=tool_call["id"],
+                    content=[
+                        {
+                            "type": "text",
+                            "text": (
+                                f"Invalid JSON in tool input: {e}. "
+                                "The tool was not executed. Retry with valid JSON.\n\n"
+                                f"Raw tool input:\n{raw_input_preview}"
+                            ),
+                        }
+                    ],
+                    is_error=True,
+                )
+            )
+    return parse_errors
 
 
 async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
-    """Persist assistant/tool_result messages (single writer of the streaming
-    path) and replace each internal `save_message` event with a client-facing
-    `message_id` event. Deterministic parent_id chaining makes replays safe."""
+    """Persist streamed messages before exposing them to the client.
+
+    Assistant rows are created as soon as the provider emits message_start, so
+    the browser can use a durable chat_messages.id for the streaming bubble from
+    the beginning. Tool-result rows are persisted before their tool_result events
+    are forwarded. This keeps frontend render identities and future parent_id
+    values database-backed even if the run is cancelled mid-stream.
+    """
+    current_assistant_message_id: str | None = None
+    buffered_tool_result_events: list[str] = []
+
     async for event_str in gen:
-        if _sse_event_type(event_str) == "save_message":
+        event_type = _sse_event_type(event_str)
+        event_data = _sse_event_data(event_str)
+
+        if event_type == "message":
             try:
-                message = json.loads(_sse_event_data(event_str))
+                message_event = json.loads(event_data)
+            except json.JSONDecodeError:
+                yield event_str
+                continue
+
+            if message_event.get("type") == "message_start":
+                try:
+                    provider_message = message_event.get("message", {})
+                    assistant_message = {
+                        "role": provider_message.get("role", "assistant"),
+                        "content": provider_message.get("content") or [],
+                    }
+                    created = await messages_repo.create(
+                        chat_id, assistant_message, parent_id=parent_id
+                    )
+                    current_assistant_message_id = created.id
+                    parent_id = created.id
+                    message_event.setdefault("message", {})["id"] = created.id
+                    event_str = _sse_event("message", message_event)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to pre-persist assistant message for chat {chat_id}: {e}",
+                        exc_info=True,
+                    )
+                yield event_str
+                continue
+
+            if message_event.get("type") == "tool_result":
+                buffered_tool_result_events.append(event_str)
+                continue
+
+            yield event_str
+            continue
+
+        if event_type == "save_message":
+            try:
+                message = json.loads(event_data)
+                if message.get("role") == "assistant" and current_assistant_message_id:
+                    await messages_repo.update_message_content(
+                        current_assistant_message_id, message
+                    )
+                    await messages_repo.update_content_text(
+                        current_assistant_message_id, message
+                    )
+                    current_assistant_message_id = None
+                    continue
+
                 created = await messages_repo.create(
                     chat_id, message, parent_id=parent_id
                 )
                 parent_id = created.id
-                yield f"event: message_id\ndata: {created.id}\n\n"
+
+                if message.get("role") == "user" and buffered_tool_result_events:
+                    for buffered_event in buffered_tool_result_events:
+                        try:
+                            tool_result_event = json.loads(_sse_event_data(buffered_event))
+                            tool_result_event["message_id"] = created.id
+                            yield _sse_event("message", tool_result_event)
+                        except json.JSONDecodeError:
+                            yield buffered_event
+                    buffered_tool_result_events = []
+                else:
+                    yield f"event: message_id\ndata: {created.id}\n\n"
             except Exception as e:
                 logger.error(
-                    f"Failed to persist streamed message for chat {chat_id}: {e}"
+                    f"Failed to persist streamed message for chat {chat_id}: {e}",
+                    exc_info=True,
                 )
             continue
+
         yield event_str
+
+    # If the generator ended (cancel/error/client disconnect) without a
+    # matching save_message, the early-persisted assistant row was never
+    # finalized. With partial content the generator emits save_message itself;
+    # reaching here with the id still set means no content was ever committed,
+    # so delete the empty row rather than leave an invalid assistant message
+    # that would poison the next request's history.
+    if current_assistant_message_id is not None:
+        try:
+            await messages_repo.delete(current_assistant_message_id)
+            logger.info(
+                f"Deleted unfinalized assistant message "
+                f"{current_assistant_message_id} for chat {chat_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to delete unfinalized assistant message "
+                f"{current_assistant_message_id} for chat {chat_id}: {e}"
+            )
+        current_assistant_message_id = None
 
 
 async def _refresh_lock_periodically(redis_client, lock_key):
@@ -507,6 +644,31 @@ def _repair_interrupted_tool_calls(
         repair_count += len(missing_results)
 
     return repaired, repair_count
+
+
+def _drop_empty_assistant_messages(
+    messages: list[MessageParam],
+) -> list[MessageParam]:
+    """Remove assistant messages that have no content and no tool_use blocks.
+
+    A streamed assistant row that was early-persisted at message_start but never
+    finalized (stream cancelled/errored before any content block) can be left as
+    {"role": "assistant", "content": []}. Providers reject such messages
+    ("content or tool_calls must be set"), so drop them from the history before
+    sending. They contribute nothing to the conversation.
+    """
+    kept: list[MessageParam] = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            blocks = _message_content_blocks(message)
+            has_tool_use = any(b.get("type") == "tool_use" for b in blocks)
+            has_content = bool(blocks) and any(
+                b.get("type") == "text" and b.get("text") for b in blocks
+            )
+            if not has_tool_use and not has_content:
+                continue
+        kept.append(message)
+    return kept
 
 
 def _extract_text_for_title(
@@ -969,24 +1131,42 @@ async def stream_chat(
     last_event_id = request.headers.get("last-event-id") or request.query_params.get(
         "last_event_id"
     )
-    if redis_client is not None and last_event_id is not None:
-        if await redis_client.exists(_stream_key(chat_id)):
+    if redis_client is not None:
+        run_active = await redis_client.exists(_run_lock_key(chat_id))
+        if run_active:
+            # A run is in progress for this chat: attach to it instead of starting
+            # a fresh generation. Replay the buffered run from the client's offset,
+            # or from the beginning when (as on a full page reload) no offset is
+            # available. This keeps a reconnect that arrives without a Last-Event-ID
+            # from falling through to fresh-generation setup and bailing out with
+            # "No new user message to process".
             return StreamingResponse(
-                _consume_run(redis_client, chat_id, last_event_id),
+                _consume_run(redis_client, chat_id, last_event_id or "0"),
                 media_type="text/event-stream",
                 headers=SSE_HEADERS,
             )
 
-        # Stream expired (TTL elapsed). Starting a new generation would produce a
-        # duplicate response — tell the client to reload from the database instead.
-        async def _not_resumable_response():
-            yield "event: not_resumable\ndata: \n\n"
+        if last_event_id is not None:
+            if await redis_client.exists(_stream_key(chat_id)):
+                # The run has ended but its buffer is still live: replay the tail
+                # so the client receives any final events it missed, then the
+                # terminal end_of_stream/stream_error already in the buffer.
+                return StreamingResponse(
+                    _consume_run(redis_client, chat_id, last_event_id),
+                    media_type="text/event-stream",
+                    headers=SSE_HEADERS,
+                )
+            # No active run and the buffer is gone/expired. Starting a new
+            # generation would produce a duplicate response — tell the client to
+            # reload from the database instead.
+            async def _not_resumable_response():
+                yield "event: not_resumable\ndata: \n\n"
 
-        return StreamingResponse(
-            _not_resumable_response(),
-            media_type="text/event-stream",
-            headers=SSE_HEADERS,
-        )
+            return StreamingResponse(
+                _not_resumable_response(),
+                media_type="text/event-stream",
+                headers=SSE_HEADERS,
+            )
 
     messages_repo = MessagesRepository()
     approvals_repo = ToolApprovalsRepository()
@@ -1247,6 +1427,13 @@ async def stream_chat(
             logger.warning(
                 f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
             )
+        before = len(messages)
+        messages = _drop_empty_assistant_messages(messages)
+        dropped = before - len(messages)
+        if dropped:
+            logger.warning(
+                f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
+            )
 
     # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
     storage = request.app.state.content_storage
@@ -1334,6 +1521,9 @@ async def stream_chat(
     async def stream_generator():
         try:
             conversation_messages = messages.copy()
+            # Initialized here so the error/cancel handlers below can always
+            # reference whatever content was accumulated before the failure.
+            content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
             if pending or pending_oauth:
                 if pending_oauth:
@@ -1716,16 +1906,13 @@ async def stream_chat(
                         yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
 
-                # Parse tool call inputs. Convert to JSON.
+                # Parse tool call inputs. Convert to JSON. If the provider emits
+                # malformed JSON, do not execute the tool with `{}`; feed the
+                # parse error back to the model so it can retry.
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
-                for tool_call in tool_calls:
-                    try:
-                        tool_call["input"] = json.loads(cast(str, tool_call["input"]))
-                    except json.JSONDecodeError as e:
-                        logger.error(
-                            f"Failed to parse tool call input as JSON: {tool_call['input']}. Error: {e}"
-                        )
-                        tool_call["input"] = {}
+                parse_errors = _parse_tool_call_inputs(
+                    cast(list[ToolUseBlockParam], tool_calls)
+                )
 
                 assistant_message = MessageParam(
                     role="assistant", content=content_blocks
@@ -1734,6 +1921,16 @@ async def stream_chat(
 
                 # Send complete message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
+
+                if parse_errors:
+                    tool_result_message = MessageParam(
+                        role="user", content=parse_errors
+                    )
+                    conversation_messages.append(tool_result_message)
+                    for parse_error in parse_errors:
+                        yield f"event: message\ndata: {json.dumps(parse_error)}\n\n"
+                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+                    continue
 
                 # If no tool calls, we're done
                 if not tool_calls:
@@ -1881,6 +2078,13 @@ async def stream_chat(
             logger.error(
                 f"Failed to generate AI response with tools: {e}", exc_info=True
             )
+            # Finalize whatever partial assistant content was accumulated before
+            # the failure, so the early-persisted row is not left empty. The
+            # cancel path above does the same; this mirrors it for errors.
+            partial = _partial_assistant_message(content_blocks)
+            if partial is not None:
+                conversation_messages.append(partial)
+                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
             yield _sse_event("stream_error", _chat_error_payload(e))
 
     parent_id = chat_messages[-1].id if chat_messages else None

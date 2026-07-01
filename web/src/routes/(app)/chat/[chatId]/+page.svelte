@@ -182,6 +182,7 @@
     let errorDetail = $state<string | null>(null)
     let eventSource: EventSource | null = $state(null)
     let activeStreamChatId: string | null = null
+    let streamRunCounter = 0
 
     // --- Stream resilience (reconnect after a backgrounded tab / transient drop) ---
     // The server keeps the run alive and buffered, so we reconnect from the last
@@ -459,7 +460,6 @@
     let showTopShadow = $state(false)
     let bottomPadding = $state(80)
 
-    let processMessagesCallCount = 0
     let processedMessages = $state<ProcessedMessage[]>(processMessages(chatMessages))
     let processedMessagesRefreshScheduled = false
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
@@ -511,63 +511,6 @@
             })
             .join('|')
     }
-
-    function summarizeChatMessagesForDebug(messages: ChatMessage[]) {
-        return messages.slice(-6).map((message) => ({
-            id: message.id,
-            parentId: message.parentId,
-            seq: message.messageSeqNum,
-            role: message.message.role,
-            contentType: Array.isArray(message.message.content) ? 'array' : 'string',
-            blockTypes: Array.isArray(message.message.content)
-                ? message.message.content.map((block) => block.type)
-                : undefined,
-        }))
-    }
-
-    function summarizeProcessedMessagesForDebug(messages: ProcessedMessage[]) {
-        return messages.slice(-4).map((message) => ({
-            origMessageId: message.origMessageId,
-            role: message.role,
-            sourceMessageIds: message.sourceMessageIds,
-            contentTypes: message.content.map((block) => block.type),
-            toolIds: message.content
-                .filter((block): block is ToolMessageContent => block.type === 'tool')
-                .map((block) => block.toolUse.id),
-            textLengths: message.content
-                .filter((block): block is TextMessageContent => block.type === 'text')
-                .map((block) => block.text.length),
-        }))
-    }
-
-    $effect(() => {
-        const displayPath = getDisplayPath(chatMessages)
-        console.debug('[chat-state-debug]', {
-            isStreaming,
-            activeStreamingMessageId,
-            chatMessageCount: chatMessages.length,
-            processedMessageCount: processedMessages.length,
-            displayPathLength: displayPath.length,
-            displayPathTail: displayPath.slice(-5).map((message) => ({
-                id: message.id,
-                parentId: message.parentId,
-                seq: message.messageSeqNum,
-                role: message.message.role,
-            })),
-            chatTail: summarizeChatMessagesForDebug(chatMessages),
-            processedTail: summarizeProcessedMessagesForDebug(processedMessages),
-            pendingApproval: pendingApproval
-                ? {
-                      approvalId: pendingApproval.approval_id,
-                      toolCallId: pendingApproval.tool_call_id,
-                      approvals: pendingApproval.approvals?.map((approval) => ({
-                          approvalId: approval.approval_id,
-                          toolCallId: approval.tool_call_id,
-                      })),
-                  }
-                : null,
-        })
-    })
 
     function markChatMessagesChanged() {
         scheduleProcessedMessagesRefresh()
@@ -627,8 +570,8 @@
 
         // The run is decoupled from this connection, so closing the EventSource
         // is no longer enough — tell the server to actually stop generating.
-        // Keep the stream open until omni-ai emits message_id/end_of_stream for
-        // the partial assistant message it persisted on cancellation.
+        // Keep the stream open until omni-ai emits end_of_stream for the partial
+        // assistant message it persisted on cancellation.
         const stopChatId = activeStreamChatId ?? data.chat.id
         stopInProgress = true
         error = null
@@ -734,7 +677,13 @@
             ? roots.find((r) => r.id === branchSelections['.root']) || roots[roots.length - 1]
             : roots[roots.length - 1]
 
+        const visited = new Set<string>()
         while (current) {
+            if (visited.has(current.id)) {
+                console.error('getDisplayPath: message tree cycle detected at', current.id)
+                break
+            }
+            visited.add(current.id)
             path.push(current)
             const children = childrenMap.get(current.id)
             if (!children || children.length === 0) break
@@ -778,20 +727,6 @@
 
     function selectBranch(parentId: string | null | undefined, messageId: string) {
         branchSelections[branchSelectionKey(parentId)] = messageId
-    }
-
-    function replaceMessageIdInBranchSelections(oldId: string, newId: string) {
-        const nextBranchSelections = { ...branchSelections }
-        if (nextBranchSelections[oldId] !== undefined) {
-            nextBranchSelections[newId] = nextBranchSelections[oldId]
-            delete nextBranchSelections[oldId]
-        }
-        for (const [parentId, selectedId] of Object.entries(nextBranchSelections)) {
-            if (selectedId === oldId) {
-                nextBranchSelections[parentId] = newId
-            }
-        }
-        branchSelections = nextBranchSelections
     }
 
     function switchBranch(parentId: string | null, direction: 'prev' | 'next') {
@@ -884,8 +819,6 @@
     // Converts messages into a format that makes it easy to render the messages
     // E.g., combines multiple content blocks into a single content block, handles citations, etc.
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
-        const processStartedAt = performance.now()
-        processMessagesCallCount += 1
         let result: ProcessedMessage[] = []
         const siblingInfo = computeSiblingInfo(chatMessages)
         const displayPath = getDisplayPath(chatMessages)
@@ -1271,18 +1204,6 @@
             }
         }
 
-        const durationMs = performance.now() - processStartedAt
-        if (durationMs > 50 || processMessagesCallCount % 25 === 0) {
-            console.debug('[chat-stream-debug]', 'processMessages:done', {
-                processMessagesCallCount,
-                durationMs,
-                chatMessageCount: chatMessages.length,
-                displayPathLength: displayPath.length,
-                processedMessageCount: result.length,
-                activeStreamingMessageId,
-            })
-        }
-
         return result
     }
 
@@ -1369,27 +1290,9 @@
     })
 
     function streamResponse(chatId: string) {
-        let debugEventCount = 0
-        const debugStream = (label: string, details?: Record<string, unknown>, force = false) => {
-            debugEventCount += 1
-            if (!force && debugEventCount > 200 && debugEventCount % 50 !== 0) return
-            console.debug('[chat-stream-debug]', label, {
-                debugEventCount,
-                ...details,
-            })
-        }
-
-        debugStream(
-            'streamResponse:start',
-            {
-                chatId,
-                existingMessageCount: chatMessages.length,
-                processedMessageCount: processedMessages.length,
-                activeStreamingMessageId,
-                branchSelections: { ...branchSelections },
-            },
-            true,
-        )
+        const streamRunId = ++streamRunCounter
+        const isCurrentStream = () =>
+            streamRunId === streamRunCounter && activeStreamChatId === chatId
 
         isStreaming = true
         activeStreamChatId = chatId
@@ -1402,66 +1305,17 @@
             number,
             { id: string; name: string; inputJson: string }
         >()
-        const pendingTempMessageIds: string[] = []
-        const pendingPersistedMessageIds: string[] = []
-        let tempMessageCounter = 0
-
         let streamCompleted = false
         let messageEventsReceived = 0
         let pauseEventReceived = false
         reconnectAttempts = 0
 
-        const nextTempMessageId = () => `temp-${Date.now()}-${tempMessageCounter++}`
-
-        const replaceTempMessageId = (tempId: string, messageId: string) => {
-            debugStream('replaceTempMessageId', { tempId, messageId })
-            chatMessages = chatMessages.map((message) => {
-                if (message.id === tempId) {
-                    return { ...message, id: messageId }
-                }
-                if (message.parentId === tempId) {
-                    return { ...message, parentId: messageId }
-                }
-                return message
-            })
-            if (activeStreamingMessageId === tempId) {
-                activeStreamingMessageId = messageId
-            }
-            debugStream('replaceTempMessageId:done', {
-                activeStreamingMessageId,
-                messageCount: chatMessages.length,
-            })
-            replaceMessageIdInBranchSelections(tempId, messageId)
-            markChatMessagesChanged()
+        const missingStreamMessageId = (reason: string) => {
+            console.error('Missing persisted stream message id', { reason })
+            error = 'Response stream did not provide a message id. Please reload the chat.'
+            errorDetail = null
         }
 
-        const trackTempMessage = (tempId: string) => {
-            debugStream('trackTempMessage', {
-                tempId,
-                pendingPersistedMessageIds: [...pendingPersistedMessageIds],
-            })
-            const persistedMessageId = pendingPersistedMessageIds.shift()
-            if (persistedMessageId) {
-                replaceTempMessageId(tempId, persistedMessageId)
-                return
-            }
-            pendingTempMessageIds.push(tempId)
-        }
-
-        const applyPersistedMessageId = (messageId: string) => {
-            debugStream('applyPersistedMessageId', {
-                messageId,
-                pendingTempMessageIds: [...pendingTempMessageIds],
-            })
-            const tempId = pendingTempMessageIds.shift()
-            if (!tempId) {
-                pendingPersistedMessageIds.push(messageId)
-                return
-            }
-            replaceTempMessageId(tempId, messageId)
-        }
-
-        let collectStreamingResponseCount = 0
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
@@ -1472,29 +1326,32 @@
                 | CitationsDelta,
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
-            collectStreamingResponseCount += 1
-            const targetMessageId = activeStreamingMessageId
-            const targetMessageIndex = targetMessageId
+            let targetMessageId = activeStreamingMessageId
+            let targetMessageIndex = targetMessageId
                 ? chatMessages.findIndex((message) => message.id === targetMessageId)
                 : -1
-            const lastMessage =
+            let lastMessage =
                 targetMessageIndex === -1
                     ? chatMessages[chatMessages.length - 1]
                     : chatMessages[targetMessageIndex]
-            debugStream('collectStreamingResponse', {
-                collectStreamingResponseCount,
-                blockType: block.type,
-                blockIdx,
-                targetMessageId,
-                targetMessageIndex,
-                lastMessageId: lastMessage?.id,
-                lastMessageRole: lastMessage?.message.role,
-                lastMessageContentIsArray: Array.isArray(lastMessage?.message.content),
-                messageCount: chatMessages.length,
-                activeStreamingMessageId,
-            })
+
+            if (
+                block.type !== 'tool_result' &&
+                (!lastMessage ||
+                    lastMessage.message.role !== 'assistant' ||
+                    !Array.isArray(lastMessage.message.content))
+            ) {
+                console.error('Received streamed assistant content before message_start', {
+                    blockType: block.type,
+                    blockIdx,
+                    activeStreamingMessageId,
+                })
+                error = 'Response stream sent content before a message id. Please reload the chat.'
+                errorDetail = null
+                return
+            }
+
             if (!lastMessage) {
-                // This should never happen
                 console.error('No last message found when streaming response')
                 return
             }
@@ -1502,27 +1359,12 @@
             const replaceLastMessage = (message: ChatMessage) => {
                 const replaceIndex =
                     targetMessageIndex === -1 ? chatMessages.length - 1 : targetMessageIndex
-                debugStream('replaceStreamingMessage', {
-                    replaceIndex,
-                    oldMessageId: lastMessage.id,
-                    newMessageId: message.id,
-                    role: message.message.role,
-                    contentBlockCount: Array.isArray(message.message.content)
-                        ? message.message.content.length
-                        : null,
-                })
                 chatMessages = [
                     ...chatMessages.slice(0, replaceIndex),
                     message,
                     ...chatMessages.slice(replaceIndex + 1),
                 ]
                 markChatMessagesChanged()
-            }
-
-            if (block.type !== 'tool_result' && !Array.isArray(lastMessage.message.content)) {
-                throw new Error(
-                    'Cannot append streamed assistant content to non-array message content',
-                )
             }
 
             const existingBlocks = Array.isArray(lastMessage.message.content)
@@ -1640,11 +1482,17 @@
                         })
                     }
                 } else {
+                    const messageId = (block as ToolResultBlockParam & { message_id?: string })
+                        .message_id
+                    if (!messageId) {
+                        missingStreamMessageId('tool-result-message')
+                        return
+                    }
                     const displayPath = getDisplayPath(chatMessages)
                     const toolParentId =
                         displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
                     const toolResultMessage: ChatMessage = {
-                        id: nextTempMessageId(),
+                        id: messageId,
                         chatId,
                         parentId: toolParentId ?? null,
                         message: {
@@ -1655,15 +1503,9 @@
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
-                    debugStream('appendToolResultMessage', {
-                        toolResultMessageId: toolResultMessage.id,
-                        parentId: toolResultMessage.parentId,
-                        toolUseId: block.tool_use_id,
-                    })
                     chatMessages = [...chatMessages, toolResultMessage]
                     activeStreamingMessageId = toolResultMessage.id
                     selectBranch(toolResultMessage.parentId, toolResultMessage.id)
-                    trackTempMessage(toolResultMessage.id)
                     markChatMessagesChanged()
                 }
 
@@ -1695,18 +1537,14 @@
             )
 
             eventSource.addEventListener('message_id', (event) => {
-                debugStream('event:message_id', {
-                    data: event.data,
-                    lastEventId: event.lastEventId,
-                    streamLastEventId,
-                })
+                if (!isCurrentStream()) return
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
-                applyPersistedMessageId(event.data)
             })
 
             eventSource.addEventListener('not_resumable', () => {
+                if (!isCurrentStream()) return
                 // The buffered run is gone (expired or never existed). Reload the
                 // persisted messages from the server and clear streaming state.
                 streamCompleted = true
@@ -1731,34 +1569,58 @@
             })
 
             eventSource.addEventListener('heartbeat', () => {
+                if (!isCurrentStream()) return
                 lastStreamEventAt = Date.now()
             })
 
             eventSource.addEventListener('message', (event) => {
+                if (!isCurrentStream()) return
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
                 try {
                     const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
-                    debugStream('event:message', {
-                        eventType: data.type,
-                        lastEventId: event.lastEventId,
-                    })
                     if (data.type === 'message_start') {
+                        const messageId = data.message.id
+                        if (!messageId) {
+                            missingStreamMessageId('message_start')
+                            return
+                        }
+                        // On a reload/reconnect replay, the assistant row was already
+                        // persisted at the original message_start and loaded from the DB,
+                        // so it is already in chatMessages. Re-appending it would derive
+                        // its parent from the display-path leaf (itself) and create a
+                        // self-cycle (id === parentId) that hangs getDisplayPath. Adopt
+                        // the existing row as the streaming target and let the replayed
+                        // content deltas rebuild it in place instead.
+                        const existingIndex = chatMessages.findIndex(
+                            (m) => m.id === messageId,
+                        )
+                        if (existingIndex !== -1) {
+                            const existing = chatMessages[existingIndex]
+                            chatMessages = [
+                                ...chatMessages.slice(0, existingIndex),
+                                {
+                                    ...existing,
+                                    message: {
+                                        role: data.message.role,
+                                        content: data.message.content,
+                                    },
+                                },
+                                ...chatMessages.slice(existingIndex + 1),
+                            ]
+                            activeStreamingMessageId = messageId
+                            markChatMessagesChanged()
+                            return
+                        }
                         // Find the last message in current display path to use as parent
                         const displayPath = getDisplayPath(chatMessages)
                         const streamParentId =
                             displayPath.length > 0
                                 ? displayPath[displayPath.length - 1].id
                                 : undefined
-                        debugStream('message_start:parent', {
-                            streamParentId,
-                            displayPathLength: displayPath.length,
-                            displayPathLastId: displayPath[displayPath.length - 1]?.id,
-                            chatMessageCount: chatMessages.length,
-                        })
                         const startedMessage: ChatMessage = {
-                            id: nextTempMessageId(),
+                            id: messageId,
                             chatId,
                             parentId: streamParentId ?? null,
                             message: {
@@ -1771,14 +1633,7 @@
                         }
                         chatMessages = [...chatMessages, startedMessage]
                         activeStreamingMessageId = startedMessage.id
-                        debugStream('message_start:appended', {
-                            startedMessageId: startedMessage.id,
-                            parentId: startedMessage.parentId,
-                            activeStreamingMessageId,
-                            messageCount: chatMessages.length,
-                        })
                         selectBranch(startedMessage.parentId, startedMessage.id)
-                        trackTempMessage(startedMessage.id)
                         markChatMessagesChanged()
                     } else if (data.type === 'content_block_start') {
                         if (data.content_block.type === 'tool_use') {
@@ -1793,12 +1648,6 @@
                             collectStreamingResponse(data.content_block, data.index)
                         }
                     } else if (data.type === 'content_block_delta') {
-                        debugStream('content_block_delta', {
-                            index: data.index,
-                            deltaType: data.delta.type,
-                            textLength:
-                                data.delta.type === 'text_delta' ? data.delta.text?.length : null,
-                        })
                         if (data.delta.type === 'text_delta' && data.delta.text) {
                             updateThinkingForText()
                             collectStreamingResponse(data.delta, data.index)
@@ -1843,7 +1692,7 @@
             })
 
             eventSource.addEventListener('approval_required', (event) => {
-                debugStream('event:approval_required', { data: event.data })
+                if (!isCurrentStream()) return
                 pauseEventReceived = true
                 try {
                     const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
@@ -1860,7 +1709,7 @@
             })
 
             eventSource.addEventListener('oauth_required', (event) => {
-                debugStream('event:oauth_required', { data: event.data })
+                if (!isCurrentStream()) return
                 pauseEventReceived = true
                 try {
                     const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
@@ -1877,6 +1726,7 @@
             })
 
             eventSource.addEventListener('tool_result_replaced', (event) => {
+                if (!isCurrentStream()) return
                 try {
                     const data: ToolResultReplacedEvent = JSON.parse(event.data)
                     // Find the user-role chat message that holds the placeholder
@@ -1915,20 +1765,7 @@
             })
 
             eventSource.addEventListener('end_of_stream', () => {
-                debugStream(
-                    'event:end_of_stream',
-                    {
-                        messageEventsReceived,
-                        pauseEventReceived,
-                        error,
-                        stopInProgress,
-                        chatMessageCount: chatMessages.length,
-                        processedMessageCount: processedMessages.length,
-                        activeStreamingMessageId,
-                        collectStreamingResponseCount,
-                    },
-                    true,
-                )
+                if (!isCurrentStream()) return
                 const wasStopping = stopInProgress
                 streamCompleted = true
                 isStreaming = false
@@ -1949,6 +1786,7 @@
             })
 
             const handleStreamError = (event: Event) => {
+                if (!isCurrentStream()) return
                 streamCompleted = true
                 if (event instanceof MessageEvent) {
                     const streamError = streamErrorMessage(event as MessageEvent<string>)
@@ -1972,6 +1810,7 @@
             }
 
             const handleConnectionError = () => {
+                if (!isCurrentStream()) return
                 // Guard against treating an intentional stop() as a connection error.
                 // handleStop() sets isStreaming = false before the EventSource fires its
                 // error event, so we can use that as a signal to skip cleanup here.
@@ -2983,7 +2822,8 @@
                             chat: 'Ask a follow-up...',
                             search: 'Search for something else...',
                         }}
-                        isStreaming={isStreaming || stopInProgress}
+                        isStreaming={isStreaming}
+                        stopInProgress={stopInProgress}
                         onStop={handleStop}
                         maxWidth="max-w-4xl" />
                 </div>

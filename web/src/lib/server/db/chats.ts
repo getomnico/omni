@@ -231,6 +231,16 @@ export class ChatMessageRepository {
             .orderBy(chatMessages.messageSeqNum)
     }
 
+    async getByIdInChat(chatId: string, messageId: string): Promise<ChatMessage | null> {
+        const [message] = await this.db
+            .select()
+            .from(chatMessages)
+            .where(and(eq(chatMessages.chatId, chatId), eq(chatMessages.id, messageId)))
+            .limit(1)
+
+        return message || null
+    }
+
     private async getNextSequenceNumber(chatId: string): Promise<number> {
         const [lastMessage] = await this.db
             .select({ maxSeq: chatMessages.messageSeqNum })

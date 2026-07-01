@@ -17,13 +17,25 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
 
+from anthropic.types import (
+    InputJSONDelta,
+    MessageDeltaUsage,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStopEvent,
+    ToolUseBlock,
+)
+from anthropic.types.raw_message_delta_event import Delta
+
 from db import UsersRepository, ChatsRepository, MessagesRepository
 import db.connection
 from routers import chat_router
 from state import AppState
 from tools import SearchResponse, SearchResult
 from tools.searcher_client import Document
-from tests.helpers import create_mock_llm
+from tests.helpers import create_mock_llm, message_start_event, text_response_events
 
 pytestmark = pytest.mark.integration
 
@@ -67,6 +79,50 @@ def create_mock_searcher():
     searcher = AsyncMock()
     searcher.handle.return_value = MOCK_SEARCH_RESPONSE
     return searcher
+
+
+def create_mock_llm_with_invalid_tool_json(raw_json: str, response_text: str):
+    """Return a mock LLM that emits malformed tool arguments, then a text retry."""
+    call_count = 0
+
+    async def stream_response(*_args, **_kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            yield message_start_event()
+            yield RawContentBlockStartEvent(
+                type="content_block_start",
+                index=0,
+                content_block=ToolUseBlock(
+                    type="tool_use",
+                    id="toolu_invalid_json",
+                    name="search_documents",
+                    input={},
+                ),
+            )
+            yield RawContentBlockDeltaEvent(
+                type="content_block_delta",
+                index=0,
+                delta=InputJSONDelta(
+                    type="input_json_delta",
+                    partial_json=raw_json,
+                ),
+            )
+            yield RawContentBlockStopEvent(type="content_block_stop", index=0)
+            yield RawMessageDeltaEvent(
+                type="message_delta",
+                delta=Delta(stop_reason="tool_use", stop_sequence=None),
+                usage=MessageDeltaUsage(output_tokens=30),
+            )
+            yield RawMessageStopEvent(type="message_stop")
+        else:
+            for evt in text_response_events(response_text):
+                yield evt
+
+    provider = AsyncMock()
+    provider.stream_response = stream_response
+    provider.health_check.return_value = True
+    return provider
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +308,35 @@ async def test_stream_completes_with_tool_results(
 
     text_deltas = [d for t, d in events if t == "message" and response_text in d]
     assert len(text_deltas) >= 1
+
+
+@pytest.mark.asyncio
+async def test_malformed_tool_input_is_not_executed(
+    db_pool, chat_with_message, _patch_db_pool
+):
+    chat_id, _, model_id = chat_with_message
+    response_text = "Retried after receiving the JSON parse error."
+    searcher = create_mock_searcher()
+    app = _build_app(
+        create_mock_llm_with_invalid_tool_json(
+            '{"query": "missing brace"', response_text
+        ),
+        searcher,
+        model_id,
+    )
+
+    body = await _stream_chat(app, chat_id)
+    events = parse_sse_events(body)
+
+    searcher.handle.assert_not_called()
+    tool_result_events = [
+        json.loads(data)
+        for event_type, data in events
+        if event_type == "message" and "tool_result" in data
+    ]
+    assert tool_result_events
+    assert tool_result_events[0]["is_error"] is True
+    assert "Invalid JSON in tool input" in tool_result_events[0]["content"][0]["text"]
+    assert any(
+        response_text in data for event_type, data in events if event_type == "message"
+    )

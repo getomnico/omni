@@ -183,28 +183,42 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             userMessage = { role: 'user', content: trimmedText }
         }
 
-        // Determine parentId: use provided value, or find the last message in the active path.
-        // If the active leaf is an assistant tool_use without a tool_result, first insert an
-        // error tool_result so the next user turn does not create invalid provider history.
-        let parentId = messageRequest.parentId
-        if (!parentId) {
-            const lastMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
-            if (lastMessage) {
-                const repairMessage = interruptedToolResultMessage(lastMessage.message)
-                if (repairMessage) {
-                    const savedRepairMessage = await chatMessageRepository.create(
-                        chatId,
-                        repairMessage,
-                        lastMessage.id,
-                    )
-                    parentId = savedRepairMessage.id
-                    logger.warn('Inserted failed tool_result for interrupted tool call', {
-                        chatId,
-                        repairMessageId: savedRepairMessage.id,
-                    })
-                } else {
-                    parentId = lastMessage.id
-                }
+        // Determine parentId: prefer a valid persisted parent from the client, otherwise
+        // derive the active DB leaf. Client-only streaming ids must never become FK values.
+        let parentId = messageRequest.parentId?.trim() || undefined
+        let parentMessage = parentId
+            ? await chatMessageRepository.getByIdInChat(chatId, parentId)
+            : null
+        if (parentId && !parentMessage) {
+            logger.warn('Ignoring unknown client-provided parent message id', {
+                chatId,
+                parentId,
+            })
+            parentId = undefined
+            parentMessage = null
+        }
+
+        if (!parentMessage) {
+            parentMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
+            parentId = parentMessage?.id
+        }
+
+        // If the selected parent is an assistant tool_use without a tool_result,
+        // first insert an error tool_result so the next user turn does not create
+        // invalid provider history.
+        if (parentMessage) {
+            const repairMessage = interruptedToolResultMessage(parentMessage.message)
+            if (repairMessage) {
+                const savedRepairMessage = await chatMessageRepository.create(
+                    chatId,
+                    repairMessage,
+                    parentMessage.id,
+                )
+                parentId = savedRepairMessage.id
+                logger.warn('Inserted failed tool_result for interrupted tool call', {
+                    chatId,
+                    repairMessageId: savedRepairMessage.id,
+                })
             }
         }
 
