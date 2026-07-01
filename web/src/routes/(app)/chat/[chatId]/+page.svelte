@@ -460,7 +460,6 @@
     let showTopShadow = $state(false)
     let bottomPadding = $state(80)
 
-    let processMessagesCallCount = 0
     let processedMessages = $state<ProcessedMessage[]>(processMessages(chatMessages))
     let processedMessagesRefreshScheduled = false
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
@@ -512,63 +511,6 @@
             })
             .join('|')
     }
-
-    function summarizeChatMessagesForDebug(messages: ChatMessage[]) {
-        return messages.slice(-6).map((message) => ({
-            id: message.id,
-            parentId: message.parentId,
-            seq: message.messageSeqNum,
-            role: message.message.role,
-            contentType: Array.isArray(message.message.content) ? 'array' : 'string',
-            blockTypes: Array.isArray(message.message.content)
-                ? message.message.content.map((block) => block.type)
-                : undefined,
-        }))
-    }
-
-    function summarizeProcessedMessagesForDebug(messages: ProcessedMessage[]) {
-        return messages.slice(-4).map((message) => ({
-            origMessageId: message.origMessageId,
-            role: message.role,
-            sourceMessageIds: message.sourceMessageIds,
-            contentTypes: message.content.map((block) => block.type),
-            toolIds: message.content
-                .filter((block): block is ToolMessageContent => block.type === 'tool')
-                .map((block) => block.toolUse.id),
-            textLengths: message.content
-                .filter((block): block is TextMessageContent => block.type === 'text')
-                .map((block) => block.text.length),
-        }))
-    }
-
-    $effect(() => {
-        const displayPath = getDisplayPath(chatMessages)
-        console.debug('[chat-state-debug]', {
-            isStreaming,
-            activeStreamingMessageId,
-            chatMessageCount: chatMessages.length,
-            processedMessageCount: processedMessages.length,
-            displayPathLength: displayPath.length,
-            displayPathTail: displayPath.slice(-5).map((message) => ({
-                id: message.id,
-                parentId: message.parentId,
-                seq: message.messageSeqNum,
-                role: message.message.role,
-            })),
-            chatTail: summarizeChatMessagesForDebug(chatMessages),
-            processedTail: summarizeProcessedMessagesForDebug(processedMessages),
-            pendingApproval: pendingApproval
-                ? {
-                      approvalId: pendingApproval.approval_id,
-                      toolCallId: pendingApproval.tool_call_id,
-                      approvals: pendingApproval.approvals?.map((approval) => ({
-                          approvalId: approval.approval_id,
-                          toolCallId: approval.tool_call_id,
-                      })),
-                  }
-                : null,
-        })
-    })
 
     function markChatMessagesChanged() {
         scheduleProcessedMessagesRefresh()
@@ -735,21 +677,7 @@
             ? roots.find((r) => r.id === branchSelections['.root']) || roots[roots.length - 1]
             : roots[roots.length - 1]
 
-        const visited = new Set<string>()
         while (current) {
-            if (visited.has(current.id)) {
-                console.error('[chat-stream-debug]', 'getDisplayPath:cycle-detected', {
-                    cycleAt: current.id,
-                    pathSoFar: path.map((m) => ({ id: m.id, parentId: m.parentId })),
-                    childrenOfCycle: childrenMap.get(current.id)?.map((m) => ({
-                        id: m.id,
-                        parentId: m.parentId,
-                        seq: m.messageSeqNum,
-                    })),
-                })
-                break
-            }
-            visited.add(current.id)
             path.push(current)
             const children = childrenMap.get(current.id)
             if (!children || children.length === 0) break
@@ -885,8 +813,6 @@
     // Converts messages into a format that makes it easy to render the messages
     // E.g., combines multiple content blocks into a single content block, handles citations, etc.
     function processMessages(chatMessages: ChatMessage[]): ProcessedMessage[] {
-        const processStartedAt = performance.now()
-        processMessagesCallCount += 1
         let result: ProcessedMessage[] = []
         const siblingInfo = computeSiblingInfo(chatMessages)
         const displayPath = getDisplayPath(chatMessages)
@@ -1272,18 +1198,6 @@
             }
         }
 
-        const durationMs = performance.now() - processStartedAt
-        if (durationMs > 50 || processMessagesCallCount % 25 === 0) {
-            console.debug('[chat-stream-debug]', 'processMessages:done', {
-                processMessagesCallCount,
-                durationMs,
-                chatMessageCount: chatMessages.length,
-                displayPathLength: displayPath.length,
-                processedMessageCount: result.length,
-                activeStreamingMessageId,
-            })
-        }
-
         return result
     }
 
@@ -1370,28 +1284,6 @@
     })
 
     function streamResponse(chatId: string) {
-        let debugEventCount = 0
-        const debugStream = (label: string, details?: Record<string, unknown>, force = false) => {
-            debugEventCount += 1
-            if (!force && debugEventCount > 200 && debugEventCount % 50 !== 0) return
-            console.debug('[chat-stream-debug]', label, {
-                debugEventCount,
-                ...details,
-            })
-        }
-
-        debugStream(
-            'streamResponse:start',
-            {
-                chatId,
-                existingMessageCount: chatMessages.length,
-                processedMessageCount: processedMessages.length,
-                activeStreamingMessageId,
-                branchSelections: { ...branchSelections },
-            },
-            true,
-        )
-
         const streamRunId = ++streamRunCounter
         const isCurrentStream = () =>
             streamRunId === streamRunCounter && activeStreamChatId === chatId
@@ -1418,7 +1310,6 @@
             errorDetail = null
         }
 
-        let collectStreamingResponseCount = 0
         const collectStreamingResponse = (
             block:
                 | ToolUseBlock
@@ -1429,7 +1320,6 @@
                 | CitationsDelta,
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
         ) => {
-            collectStreamingResponseCount += 1
             let targetMessageId = activeStreamingMessageId
             let targetMessageIndex = targetMessageId
                 ? chatMessages.findIndex((message) => message.id === targetMessageId)
@@ -1455,18 +1345,6 @@
                 return
             }
 
-            debugStream('collectStreamingResponse', {
-                collectStreamingResponseCount,
-                blockType: block.type,
-                blockIdx,
-                targetMessageId,
-                targetMessageIndex,
-                lastMessageId: lastMessage?.id,
-                lastMessageRole: lastMessage?.message.role,
-                lastMessageContentIsArray: Array.isArray(lastMessage?.message.content),
-                messageCount: chatMessages.length,
-                activeStreamingMessageId,
-            })
             if (!lastMessage) {
                 console.error('No last message found when streaming response')
                 return
@@ -1475,15 +1353,6 @@
             const replaceLastMessage = (message: ChatMessage) => {
                 const replaceIndex =
                     targetMessageIndex === -1 ? chatMessages.length - 1 : targetMessageIndex
-                debugStream('replaceStreamingMessage', {
-                    replaceIndex,
-                    oldMessageId: lastMessage.id,
-                    newMessageId: message.id,
-                    role: message.message.role,
-                    contentBlockCount: Array.isArray(message.message.content)
-                        ? message.message.content.length
-                        : null,
-                })
                 chatMessages = [
                     ...chatMessages.slice(0, replaceIndex),
                     message,
@@ -1628,11 +1497,6 @@
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
-                    debugStream('appendToolResultMessage', {
-                        toolResultMessageId: toolResultMessage.id,
-                        parentId: toolResultMessage.parentId,
-                        toolUseId: block.tool_use_id,
-                    })
                     chatMessages = [...chatMessages, toolResultMessage]
                     activeStreamingMessageId = toolResultMessage.id
                     selectBranch(toolResultMessage.parentId, toolResultMessage.id)
@@ -1668,11 +1532,6 @@
 
             eventSource.addEventListener('message_id', (event) => {
                 if (!isCurrentStream()) return
-                debugStream('event:message_id', {
-                    data: event.data,
-                    lastEventId: event.lastEventId,
-                    streamLastEventId,
-                })
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
@@ -1715,42 +1574,18 @@
                 reconnectAttempts = 0
                 try {
                     const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
-                    debugStream('event:message', {
-                        eventType: data.type,
-                        lastEventId: event.lastEventId,
-                    })
                     if (data.type === 'message_start') {
                         const messageId = data.message.id
                         if (!messageId) {
                             missingStreamMessageId('message_start')
                             return
                         }
-                        const existingMessage = chatMessages.find((m) => m.id === messageId)
                         // Find the last message in current display path to use as parent
                         const displayPath = getDisplayPath(chatMessages)
                         const streamParentId =
                             displayPath.length > 0
                                 ? displayPath[displayPath.length - 1].id
                                 : undefined
-                        debugStream(
-                            'message_start:parent',
-                            {
-                                messageId,
-                                messageIdAlreadyExists: !!existingMessage,
-                                existingMessageParentId: existingMessage?.parentId ?? null,
-                                streamParentId,
-                                selfParent: streamParentId === messageId,
-                                displayPathLength: displayPath.length,
-                                displayPathLastId: displayPath[displayPath.length - 1]?.id,
-                                chatMessageCount: chatMessages.length,
-                                chatMessageIds: chatMessages.map((m) => ({
-                                    id: m.id,
-                                    parentId: m.parentId,
-                                    role: m.message.role,
-                                })),
-                            },
-                            true,
-                        )
                         const startedMessage: ChatMessage = {
                             id: messageId,
                             chatId,
@@ -1765,12 +1600,6 @@
                         }
                         chatMessages = [...chatMessages, startedMessage]
                         activeStreamingMessageId = startedMessage.id
-                        debugStream('message_start:appended', {
-                            startedMessageId: startedMessage.id,
-                            parentId: startedMessage.parentId,
-                            activeStreamingMessageId,
-                            messageCount: chatMessages.length,
-                        })
                         selectBranch(startedMessage.parentId, startedMessage.id)
                         markChatMessagesChanged()
                     } else if (data.type === 'content_block_start') {
@@ -1786,12 +1615,6 @@
                             collectStreamingResponse(data.content_block, data.index)
                         }
                     } else if (data.type === 'content_block_delta') {
-                        debugStream('content_block_delta', {
-                            index: data.index,
-                            deltaType: data.delta.type,
-                            textLength:
-                                data.delta.type === 'text_delta' ? data.delta.text?.length : null,
-                        })
                         if (data.delta.type === 'text_delta' && data.delta.text) {
                             updateThinkingForText()
                             collectStreamingResponse(data.delta, data.index)
@@ -1837,7 +1660,6 @@
 
             eventSource.addEventListener('approval_required', (event) => {
                 if (!isCurrentStream()) return
-                debugStream('event:approval_required', { data: event.data })
                 pauseEventReceived = true
                 try {
                     const approvalData: ApprovalRequiredEvent = JSON.parse(event.data)
@@ -1855,7 +1677,6 @@
 
             eventSource.addEventListener('oauth_required', (event) => {
                 if (!isCurrentStream()) return
-                debugStream('event:oauth_required', { data: event.data })
                 pauseEventReceived = true
                 try {
                     const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
@@ -1912,20 +1733,6 @@
 
             eventSource.addEventListener('end_of_stream', () => {
                 if (!isCurrentStream()) return
-                debugStream(
-                    'event:end_of_stream',
-                    {
-                        messageEventsReceived,
-                        pauseEventReceived,
-                        error,
-                        stopInProgress,
-                        chatMessageCount: chatMessages.length,
-                        processedMessageCount: processedMessages.length,
-                        activeStreamingMessageId,
-                        collectStreamingResponseCount,
-                    },
-                    true,
-                )
                 const wasStopping = stopInProgress
                 streamCompleted = true
                 isStreaming = false
@@ -1941,34 +1748,12 @@
                 clearReconnectState()
 
                 if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
-                    console.error('[chat-stream-debug]', 'end_of_stream:no-messages', {
-                        messageEventsReceived,
-                        pauseEventReceived,
-                        hadError: !!error,
-                        wasStopping,
-                        streamLastEventId,
-                    })
                     error = 'Failed to generate response. Please try again.'
-                } else {
-                    console.debug('[chat-stream-debug]', 'end_of_stream:normal', {
-                        messageEventsReceived,
-                        pauseEventReceived,
-                        hadError: !!error,
-                        wasStopping,
-                        streamLastEventId,
-                    })
                 }
             })
 
             const handleStreamError = (event: Event) => {
                 if (!isCurrentStream()) return
-                console.error('[chat-stream-debug]', 'handleStreamError', {
-                    isMessageEvent: event instanceof MessageEvent,
-                    data: event instanceof MessageEvent ? event.data : null,
-                    lastEventId: event instanceof MessageEvent ? event.lastEventId : null,
-                    messageEventsReceived,
-                    streamLastEventId,
-                })
                 streamCompleted = true
                 if (event instanceof MessageEvent) {
                     const streamError = streamErrorMessage(event as MessageEvent<string>)
@@ -1998,12 +1783,6 @@
                 // error event, so we can use that as a signal to skip cleanup here.
                 if (streamCompleted || !isStreaming) return
 
-                console.error('[chat-stream-debug]', 'handleConnectionError', {
-                    readyState: eventSource?.readyState,
-                    reconnectAttempts,
-                    messageEventsReceived,
-                    streamLastEventId,
-                })
                 // Transient drop (e.g. backgrounded tab): the server keeps the run
                 // alive and buffered, so reconnect from our last offset with backoff
                 // instead of failing. Only surface an error once the budget is spent.
