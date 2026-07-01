@@ -2822,7 +2822,8 @@
                             chat: 'Ask a follow-up...',
                             search: 'Search for something else...',
                         }}
-                        isStreaming={isStreaming || stopInProgress}
+                        isStreaming={isStreaming}
+                        stopInProgress={stopInProgress}
                         onStop={handleStop}
                         maxWidth="max-w-4xl" />
                 </div>
