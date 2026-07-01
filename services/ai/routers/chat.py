@@ -332,6 +332,26 @@ async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
 
         yield event_str
 
+    # If the generator ended (cancel/error/client disconnect) without a
+    # matching save_message, the early-persisted assistant row was never
+    # finalized. With partial content the generator emits save_message itself;
+    # reaching here with the id still set means no content was ever committed,
+    # so delete the empty row rather than leave an invalid assistant message
+    # that would poison the next request's history.
+    if current_assistant_message_id is not None:
+        try:
+            await messages_repo.delete(current_assistant_message_id)
+            logger.info(
+                f"Deleted unfinalized assistant message "
+                f"{current_assistant_message_id} for chat {chat_id}"
+            )
+        except Exception as e:
+            logger.error(
+                f"Failed to delete unfinalized assistant message "
+                f"{current_assistant_message_id} for chat {chat_id}: {e}"
+            )
+        current_assistant_message_id = None
+
 
 async def _refresh_lock_periodically(redis_client, lock_key):
     """Keep the run lock alive independently of event production, so a long
@@ -624,6 +644,31 @@ def _repair_interrupted_tool_calls(
         repair_count += len(missing_results)
 
     return repaired, repair_count
+
+
+def _drop_empty_assistant_messages(
+    messages: list[MessageParam],
+) -> list[MessageParam]:
+    """Remove assistant messages that have no content and no tool_use blocks.
+
+    A streamed assistant row that was early-persisted at message_start but never
+    finalized (stream cancelled/errored before any content block) can be left as
+    {"role": "assistant", "content": []}. Providers reject such messages
+    ("content or tool_calls must be set"), so drop them from the history before
+    sending. They contribute nothing to the conversation.
+    """
+    kept: list[MessageParam] = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            blocks = _message_content_blocks(message)
+            has_tool_use = any(b.get("type") == "tool_use" for b in blocks)
+            has_content = bool(blocks) and any(
+                b.get("type") == "text" and b.get("text") for b in blocks
+            )
+            if not has_tool_use and not has_content:
+                continue
+        kept.append(message)
+    return kept
 
 
 def _extract_text_for_title(
@@ -1382,6 +1427,13 @@ async def stream_chat(
             logger.warning(
                 f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
             )
+        before = len(messages)
+        messages = _drop_empty_assistant_messages(messages)
+        dropped = before - len(messages)
+        if dropped:
+            logger.warning(
+                f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
+            )
 
     # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
     storage = request.app.state.content_storage
@@ -1469,6 +1521,9 @@ async def stream_chat(
     async def stream_generator():
         try:
             conversation_messages = messages.copy()
+            # Initialized here so the error/cancel handlers below can always
+            # reference whatever content was accumulated before the failure.
+            content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
 
             if pending or pending_oauth:
                 if pending_oauth:
@@ -2023,6 +2078,13 @@ async def stream_chat(
             logger.error(
                 f"Failed to generate AI response with tools: {e}", exc_info=True
             )
+            # Finalize whatever partial assistant content was accumulated before
+            # the failure, so the early-persisted row is not left empty. The
+            # cancel path above does the same; this mirrors it for errors.
+            partial = _partial_assistant_message(content_blocks)
+            if partial is not None:
+                conversation_messages.append(partial)
+                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
             yield _sse_event("stream_error", _chat_error_payload(e))
 
     parent_id = chat_messages[-1].id if chat_messages else None

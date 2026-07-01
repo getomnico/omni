@@ -125,6 +125,19 @@ class MessagesRepository:
 
         return ChatMessage.from_row(dict(row))
 
+    async def delete(self, message_id: str) -> None:
+        """Delete a chat_messages row.
+
+        Used to clean up an early-persisted assistant row when the stream ends
+        before any content is committed, so an empty assistant message never
+        poisons the conversation history.
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM chat_messages WHERE id = $1", message_id
+            )
+
     async def get_by_chat(self, chat_id: str) -> List[ChatMessage]:
         """Get all messages for a chat"""
         pool = await self._get_pool()
