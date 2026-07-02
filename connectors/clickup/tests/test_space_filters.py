@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from clickup_connector import ClickUpConnector
+from omni_connector import SyncMode
 
 
 class FakeContentStorage:
@@ -13,7 +14,7 @@ class FakeContentStorage:
 
 
 class FakeSyncContext:
-    def __init__(self) -> None:
+    def __init__(self, sync_mode: SyncMode = SyncMode.FULL, *, is_resume: bool = False) -> None:
         self.content_storage = FakeContentStorage()
         self.documents_scanned = 0
         self.documents_emitted = 0
@@ -21,6 +22,8 @@ class FakeSyncContext:
         self.failed: str | None = None
         self.completed = False
         self.checkpoint: dict[str, Any] | None = None
+        self.sync_mode = sync_mode
+        self.is_resume = is_resume
 
     def is_cancelled(self) -> bool:
         return False
@@ -52,6 +55,8 @@ class FakeSyncContext:
 
 
 class FakeClickUpClient:
+    seen_date_updated_gt: list[int | None] = []
+
     def __init__(self, token: str, base_url: str | None = None) -> None:
         assert token == "pk_test"
         self.base_url = base_url
@@ -77,6 +82,24 @@ class FakeClickUpClient:
             return [{"id": "list_allowed", "name": "Backlog"}]
         return [{"id": "list_blocked", "name": "Campaigns"}]
 
+    async def list_tasks_page(
+        self,
+        team_id: str,
+        page: int,
+        *,
+        include_closed: bool = True,
+        subtasks: bool = True,
+        date_updated_gt: int | None = None,
+    ) -> list[dict[str, Any]]:
+        assert team_id == "team_1"
+        self.seen_date_updated_gt.append(date_updated_gt)
+        if page > 0:
+            return []
+        return [
+            _task("task_allowed", "Index me", "list_allowed"),
+            _task("task_blocked", "Skip me", "list_blocked"),
+        ]
+
     async def list_tasks(
         self,
         team_id: str,
@@ -85,9 +108,14 @@ class FakeClickUpClient:
         subtasks: bool = True,
         date_updated_gt: int | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        assert team_id == "team_1"
-        yield _task("task_allowed", "Index me", "list_allowed")
-        yield _task("task_blocked", "Skip me", "list_blocked")
+        for task in await self.list_tasks_page(
+            team_id,
+            0,
+            include_closed=include_closed,
+            subtasks=subtasks,
+            date_updated_gt=date_updated_gt,
+        ):
+            yield task
 
     async def get_task_comments(self, task_id: str) -> list[dict[str, Any]]:
         return []
@@ -114,6 +142,7 @@ def _task(task_id: str, name: str, list_id: str) -> dict[str, Any]:
 
 
 async def test_sync_indexes_only_selected_spaces(monkeypatch) -> None:
+    FakeClickUpClient.seen_date_updated_gt = []
     monkeypatch.setattr("clickup_connector.connector.ClickUpClient", FakeClickUpClient)
     connector = ClickUpConnector()
     ctx = FakeSyncContext()
@@ -131,6 +160,7 @@ async def test_sync_indexes_only_selected_spaces(monkeypatch) -> None:
 
 
 async def test_sync_empty_space_filters_indexes_everything(monkeypatch) -> None:
+    FakeClickUpClient.seen_date_updated_gt = []
     monkeypatch.setattr("clickup_connector.connector.ClickUpClient", FakeClickUpClient)
     connector = ClickUpConnector()
     ctx = FakeSyncContext()
@@ -148,3 +178,95 @@ async def test_sync_empty_space_filters_indexes_everything(monkeypatch) -> None:
         "clickup:task:task_allowed",
         "clickup:task:task_blocked",
     ]
+
+
+async def test_full_sync_ignores_previous_checkpoint(monkeypatch) -> None:
+    FakeClickUpClient.seen_date_updated_gt = []
+    monkeypatch.setattr("clickup_connector.connector.ClickUpClient", FakeClickUpClient)
+    connector = ClickUpConnector()
+    ctx = FakeSyncContext(sync_mode=SyncMode.FULL)
+
+    await connector.sync(
+        {"include_docs": False},
+        {"token": "pk_test"},
+        {
+            "mode": "incremental",
+            "workspaces": {
+                "team_1": {
+                    "last_task_updated_ts": 9999999999999,
+                    "last_updated_ts": 9999999999999,
+                }
+            },
+        },
+        ctx,  # type: ignore[arg-type]
+    )
+
+    assert ctx.failed is None
+    assert ctx.completed is True
+    assert FakeClickUpClient.seen_date_updated_gt == [None]
+    assert [doc.external_id for doc in ctx.emitted] == [
+        "clickup:task:task_allowed",
+        "clickup:task:task_blocked",
+    ]
+    assert ctx.checkpoint is not None
+    assert ctx.checkpoint["mode"] == "full"
+
+
+async def test_incremental_sync_uses_previous_checkpoint(monkeypatch) -> None:
+    FakeClickUpClient.seen_date_updated_gt = []
+    monkeypatch.setattr("clickup_connector.connector.ClickUpClient", FakeClickUpClient)
+    connector = ClickUpConnector()
+    ctx = FakeSyncContext(sync_mode=SyncMode.INCREMENTAL)
+
+    await connector.sync(
+        {"include_docs": False},
+        {"token": "pk_test"},
+        {
+            "mode": "incremental",
+            "workspaces": {
+                "team_1": {
+                    "last_task_updated_ts": 1700000000000,
+                    "last_updated_ts": 1700000000000,
+                }
+            },
+        },
+        ctx,  # type: ignore[arg-type]
+    )
+
+    assert ctx.failed is None
+    assert ctx.completed is True
+    assert FakeClickUpClient.seen_date_updated_gt == [1700000000000]
+
+
+async def test_resume_from_docs_phase_does_not_reprocess_tasks(monkeypatch) -> None:
+    FakeClickUpClient.seen_date_updated_gt = []
+    monkeypatch.setattr("clickup_connector.connector.ClickUpClient", FakeClickUpClient)
+    connector = ClickUpConnector()
+    ctx = FakeSyncContext(sync_mode=SyncMode.FULL, is_resume=True)
+
+    await connector.sync(
+        {"include_docs": False},
+        {"token": "pk_test"},
+        {
+            "mode": "full",
+            "workspaces": {
+                "team_1": {
+                    "last_task_updated_ts": 0,
+                    "last_doc_updated_ts": 0,
+                    "in_progress": {
+                        "phase": "docs",
+                        "latest_task_updated_ts": 1709884800000,
+                        "latest_doc_updated_ts": 0,
+                    },
+                }
+            },
+        },
+        ctx,  # type: ignore[arg-type]
+    )
+
+    assert ctx.failed is None
+    assert ctx.completed is True
+    assert FakeClickUpClient.seen_date_updated_gt == []
+    assert ctx.emitted == []
+    assert ctx.checkpoint is not None
+    assert ctx.checkpoint["workspaces"]["team_1"]["last_task_updated_ts"] == 1709884800000

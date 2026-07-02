@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from .config import (
+    DOCS_PER_PAGE,
     INITIAL_BACKOFF_SECONDS,
     MAX_COMMENT_COUNT,
     MAX_RETRIES,
@@ -54,9 +55,7 @@ class ClickUpClient:
                     wait = max(float(reset) - time.time(), 1.0)
                 else:
                     wait = backoff
-                logger.warning(
-                    "Rate limited, waiting %.1fs (attempt %d)", wait, attempt + 1
-                )
+                logger.warning("Rate limited, waiting %.1fs (attempt %d)", wait, attempt + 1)
                 await asyncio.sleep(wait)
                 backoff *= 2
                 continue
@@ -66,9 +65,7 @@ class ClickUpClient:
 
             if resp.status_code >= 500:
                 if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "Server error %d, retrying in %.1fs", resp.status_code, backoff
-                    )
+                    logger.warning("Server error %d, retrying in %.1fs", resp.status_code, backoff)
                     await asyncio.sleep(backoff)
                     backoff *= 2
                     continue
@@ -106,6 +103,27 @@ class ClickUpClient:
 
     # ── Tasks ───────────────────────────────────────────────────────
 
+    async def list_tasks_page(
+        self,
+        team_id: str,
+        page: int,
+        *,
+        include_closed: bool = True,
+        subtasks: bool = True,
+        date_updated_gt: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch one page of tasks from the workspace endpoint."""
+        params: dict[str, Any] = {
+            "page": page,
+            "subtasks": str(subtasks).lower(),
+            "include_closed": str(include_closed).lower(),
+        }
+        if date_updated_gt is not None:
+            params["date_updated_gt"] = str(date_updated_gt)
+
+        data = await self._request("GET", f"/api/v2/team/{team_id}/task", params=params)
+        return data.get("tasks", [])
+
     async def list_tasks(
         self,
         team_id: str,
@@ -117,18 +135,13 @@ class ClickUpClient:
         """Paginate through tasks in a workspace via the filtered team endpoint."""
         page = 0
         while True:
-            params: dict[str, Any] = {
-                "page": page,
-                "subtasks": str(subtasks).lower(),
-                "include_closed": str(include_closed).lower(),
-            }
-            if date_updated_gt is not None:
-                params["date_updated_gt"] = str(date_updated_gt)
-
-            data = await self._request(
-                "GET", f"/api/v2/team/{team_id}/task", params=params
+            tasks = await self.list_tasks_page(
+                team_id,
+                page,
+                include_closed=include_closed,
+                subtasks=subtasks,
+                date_updated_gt=date_updated_gt,
             )
-            tasks = data.get("tasks", [])
             for task in tasks:
                 yield task
 
@@ -153,9 +166,7 @@ class ClickUpClient:
                 params["start"] = str(start)
                 params["start_id"] = start_id
 
-            data = await self._request(
-                "GET", f"/api/v2/task/{task_id}/comment", params=params
-            )
+            data = await self._request("GET", f"/api/v2/task/{task_id}/comment", params=params)
             batch = data.get("comments", [])
             if not batch:
                 break
@@ -174,19 +185,30 @@ class ClickUpClient:
 
     # ── Docs (v3 API) ──────────────────────────────────────────────
 
-    async def list_docs(self, workspace_id: str) -> AsyncIterator[dict[str, Any]]:
-        """List docs in a workspace via the v3 API."""
-        # The v3 docs search endpoint may support pagination; fetch until empty
-        data = await self._request("GET", f"/api/v3/workspaces/{workspace_id}/docs")
-        for doc in data.get("docs", []):
-            yield doc
+    async def list_docs_page(
+        self, workspace_id: str, cursor: str | None = None
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Fetch one cursor page of docs from the v3 API."""
+        params: dict[str, Any] = {"limit": DOCS_PER_PAGE}
+        if cursor is not None:
+            params["cursor"] = cursor
+        data = await self._request("GET", f"/api/v3/workspaces/{workspace_id}/docs", params=params)
+        next_cursor = data.get("next_cursor")
+        return data.get("docs", []), next_cursor if isinstance(next_cursor, str) else None
 
-    async def get_doc_pages(
-        self, workspace_id: str, doc_id: str
-    ) -> list[dict[str, Any]]:
-        data = await self._request(
-            "GET", f"/api/v3/workspaces/{workspace_id}/docs/{doc_id}/pages"
-        )
+    async def list_docs(self, workspace_id: str) -> AsyncIterator[dict[str, Any]]:
+        """List docs in a workspace via the v3 cursor-paginated API."""
+        cursor: str | None = None
+        while True:
+            docs, next_cursor = await self.list_docs_page(workspace_id, cursor)
+            for doc in docs:
+                yield doc
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
+    async def get_doc_pages(self, workspace_id: str, doc_id: str) -> list[dict[str, Any]]:
+        data = await self._request("GET", f"/api/v3/workspaces/{workspace_id}/docs/{doc_id}/pages")
         return data.get("pages", [])
 
     # ── Lifecycle ───────────────────────────────────────────────────
