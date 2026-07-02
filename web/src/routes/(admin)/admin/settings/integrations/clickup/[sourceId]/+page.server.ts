@@ -3,10 +3,11 @@ import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { SourceType, type ClickUpSourceConfig } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
-    requireAdmin(locals)
+    const { user } = requireAdmin(locals)
 
     const source = await getSourceById(params.sourceId)
 
@@ -18,8 +19,26 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
+    const actionCredentials = await serviceCredentialsRepository.getByUserAndSource(
+        source.id,
+        user.id,
+    )
+    const credentialConfig = (actionCredentials?.config ?? {}) as Record<string, unknown>
+    const grantedScopes = Array.isArray(credentialConfig.granted_scopes)
+        ? credentialConfig.granted_scopes.filter(
+              (scope): scope is string => typeof scope === 'string',
+          )
+        : []
+    const hasWriteScope = grantedScopes.includes('write')
+
     return {
         source,
+        actionAuth: {
+            authorized: Boolean(actionCredentials),
+            access: actionCredentials ? (hasWriteScope ? 'read_write' : 'read_only') : 'none',
+            principalEmail: actionCredentials?.principalEmail ?? null,
+            grantedScopes,
+        },
     }
 }
 

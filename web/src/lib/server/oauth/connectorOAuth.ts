@@ -4,6 +4,12 @@ import { getConnectorConfig, upsertConnectorConfig } from '../db/connector-confi
 import { OAuthStateManager } from './state'
 import type { OAuthError, OAuthTokens } from './types'
 
+export type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none'
+
+function isOAuthTokenEndpointAuthMethod(value: unknown): value is OAuthTokenEndpointAuthMethod {
+    return value === 'client_secret_post' || value === 'client_secret_basic' || value === 'none'
+}
+
 /// Mirrors `shared::models::OAuthManifestConfig` (Rust). Pure data: a connector
 /// declares this in its manifest and the web app's generic OAuth2 client uses
 /// it to drive the standard authorization-code flow.
@@ -19,7 +25,7 @@ export interface OAuthManifestConfig {
     scope_separator: string
     enrich_endpoint?: string | null
     registration_endpoint?: string | null
-    token_endpoint_auth_method?: string
+    token_endpoint_auth_method?: OAuthTokenEndpointAuthMethod
     client_secret_required?: boolean
     pkce_required?: boolean
     resource?: string | null
@@ -33,7 +39,9 @@ export type OAuthFlow =
     | { type: 'connect_source'; sourceTypes: string[]; returnTo?: string }
     /// Admin attaches org-wide read/sync creds to a specific org source.
     | { type: 'org_source'; sourceId: string; returnTo?: string }
-    /// User attaches per-user action creds to a specific org source.
+    /// User attaches per-user read creds to a specific org source.
+    | { type: 'user_read'; sourceId: string; returnTo?: string }
+    /// User attaches per-user read/write action creds to a specific org source.
     | { type: 'user_write'; sourceId: string; returnTo?: string }
 
 export interface ManifestOAuthState {
@@ -75,7 +83,7 @@ export async function getOAuthManifestForSourceType(
 interface ClientCreds {
     clientId: string
     clientSecret?: string
-    tokenEndpointAuthMethod: string
+    tokenEndpointAuthMethod: OAuthTokenEndpointAuthMethod
     /// Optional per-deployment override for the manifest's auth_endpoint.
     /// Used when the auth URL has to embed deployment-specific data the
     /// connector can't know at compile time (e.g. Microsoft tenant id).
@@ -90,14 +98,14 @@ async function loadClientCreds(
 ): Promise<ClientCreds | null> {
     const row = await getConnectorConfig(provider)
     const storedConfig = (row?.config ?? {}) as Record<string, string>
-    const tokenEndpointAuthMethod =
-        storedConfig.oauth_token_endpoint_auth_method ||
-        manifestConfig?.token_endpoint_auth_method ||
-        'client_secret_post'
+    const storedMethod = storedConfig.oauth_token_endpoint_auth_method
+    const tokenEndpointAuthMethod = isOAuthTokenEndpointAuthMethod(storedMethod)
+        ? storedMethod
+        : (manifestConfig?.token_endpoint_auth_method ?? 'client_secret_post')
     const clientId = storedConfig.oauth_client_id
     const clientSecret = storedConfig.oauth_client_secret
 
-    if (clientId && (clientSecret || tokenEndpointAuthMethod === 'none')) {
+    if (clientId && isClientConfigComplete(storedConfig, tokenEndpointAuthMethod)) {
         return {
             clientId,
             clientSecret: clientSecret || undefined,
@@ -107,7 +115,7 @@ async function loadClientCreds(
         }
     }
 
-    if (manifestConfig?.registration_endpoint && tokenEndpointAuthMethod === 'none') {
+    if (manifestConfig && isAutoManagedOAuthProvider(manifestConfig)) {
         return dynamicallyRegisterClient(provider, manifestConfig, storedConfig)
     }
 
@@ -162,6 +170,36 @@ async function dynamicallyRegisterClient(
     }
 }
 
+export function tokenEndpointAuthMethodForConfig(
+    config: Record<string, unknown> | undefined,
+    manifestConfig?: OAuthManifestConfig,
+): OAuthTokenEndpointAuthMethod {
+    const storedMethod = config?.oauth_token_endpoint_auth_method
+    if (isOAuthTokenEndpointAuthMethod(storedMethod)) return storedMethod
+    return manifestConfig?.token_endpoint_auth_method ?? 'client_secret_post'
+}
+
+export function isClientConfigComplete(
+    config: Record<string, unknown> | undefined,
+    tokenEndpointAuthMethod: OAuthTokenEndpointAuthMethod,
+): boolean {
+    const clientId = config?.oauth_client_id
+    const clientSecret = config?.oauth_client_secret
+    if (typeof clientId !== 'string' || clientId.length === 0) return false
+    if (tokenEndpointAuthMethod === 'none') return true
+    return typeof clientSecret === 'string' && clientSecret.length > 0
+}
+
+export function isAutoManagedOAuthProvider(
+    manifestConfig: OAuthManifestConfig | null | undefined,
+): boolean {
+    return Boolean(
+        manifestConfig?.registration_endpoint &&
+        manifestConfig.token_endpoint_auth_method === 'none' &&
+        manifestConfig.client_secret_required === false,
+    )
+}
+
 export async function isProviderConfigured(
     provider: string,
     manifestConfig?: OAuthManifestConfig,
@@ -169,9 +207,7 @@ export async function isProviderConfigured(
     if ((await loadClientCreds(provider, manifestConfig)) !== null) return true
     if (manifestConfig) return false
     const manifest = await getOAuthManifestForProvider(provider)
-    return Boolean(
-        manifest?.registration_endpoint && manifest.token_endpoint_auth_method === 'none',
-    )
+    return isAutoManagedOAuthProvider(manifest)
 }
 
 /// Derive the scopes required by a flow against a given source_type.
@@ -277,13 +313,12 @@ export async function generateAuthUrlForOrgSource(args: {
     }
 }
 
-/// Variant for the user-write flow where the caller already has the source's
-/// source_type in hand.
-export async function generateAuthUrlForUserWrite(args: {
+async function generateAuthUrlForExistingSourceUserFlow(args: {
     sourceId: string
     sourceType: string
     userId: string
     returnTo?: string
+    mode: 'read' | 'write'
 }): Promise<{ url: string; requiredScopes: string[] }> {
     const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
     if (!manifestConfig) {
@@ -294,27 +329,22 @@ export async function generateAuthUrlForUserWrite(args: {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
 
-    // Per-user OAuth must cover *every* tool call a user makes against this
-    // source — reads as well as writes. If we only granted write scopes, the
-    // resulting token (e.g. Google's `drive.file`) wouldn't have access to
-    // arbitrary files the user wants to read, leading to confusing 404s.
-    // We never fall back to org credentials for user-invoked calls, so the
-    // per-user token has to stand on its own for both modes.
     const readScopes = manifestConfig.scopes[args.sourceType]?.read ?? []
     const writeScopes = manifestConfig.scopes[args.sourceType]?.write ?? []
-    const actionScopes = [...new Set([...readScopes, ...writeScopes])]
+    const actionScopes =
+        args.mode === 'write' ? [...new Set([...readScopes, ...writeScopes])] : readScopes
     if (actionScopes.length === 0) {
-        throw new Error(`No action scopes declared for source_type=${args.sourceType}`)
+        throw new Error(`No ${args.mode} action scopes declared for source_type=${args.sourceType}`)
     }
 
-    // Send identity + read + write scopes in the auth request. Strict-validate
-    // only the action scopes — providers (Google) rewrite identity scope
-    // aliases (`email` → `userinfo.email`) so equality on identity scopes is
-    // fragile.
+    // Send identity + action scopes in the auth request. Strict-validate only
+    // read/write action scopes for write flows — providers (Google) rewrite
+    // identity scope aliases (`email` → `userinfo.email`) so equality on
+    // identity scopes is fragile.
     const sentScopes = [...new Set([...manifestConfig.identity_scopes, ...actionScopes])]
 
     const flow: OAuthFlow = {
-        type: 'user_write',
+        type: args.mode === 'write' ? 'user_write' : 'user_read',
         sourceId: args.sourceId,
         returnTo: args.returnTo,
     }
@@ -328,15 +358,37 @@ export async function generateAuthUrlForUserWrite(args: {
             flow,
             provider: manifestConfig.provider,
             requiredScopes: actionScopes,
-            strictScopeCheck: true,
+            strictScopeCheck: args.mode === 'write',
             codeVerifier: pkce?.verifier,
         },
     )
 
     return {
         url: buildAuthUrl(manifestConfig, creds, sentScopes, stateToken, pkce?.challenge),
-        requiredScopes: writeScopes,
+        requiredScopes: actionScopes,
     }
+}
+
+/// Variant for the user-read flow where the caller already has the source's
+/// source_type in hand.
+export async function generateAuthUrlForUserRead(args: {
+    sourceId: string
+    sourceType: string
+    userId: string
+    returnTo?: string
+}): Promise<{ url: string; requiredScopes: string[] }> {
+    return generateAuthUrlForExistingSourceUserFlow({ ...args, mode: 'read' })
+}
+
+/// Variant for the user-write flow where the caller already has the source's
+/// source_type in hand.
+export async function generateAuthUrlForUserWrite(args: {
+    sourceId: string
+    sourceType: string
+    userId: string
+    returnTo?: string
+}): Promise<{ url: string; requiredScopes: string[] }> {
+    return generateAuthUrlForExistingSourceUserFlow({ ...args, mode: 'write' })
 }
 
 function pkceForConfig(
@@ -410,8 +462,17 @@ export async function exchangeCodeAndIdentify(
         grant_type: 'authorization_code',
         redirect_uri: callbackUrl(),
     })
-    if (creds.tokenEndpointAuthMethod !== 'none' && creds.clientSecret) {
+    const tokenHeaders: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+    }
+    if (creds.tokenEndpointAuthMethod === 'client_secret_post' && creds.clientSecret) {
         tokenParams.set('client_secret', creds.clientSecret)
+    } else if (creds.tokenEndpointAuthMethod === 'client_secret_basic' && creds.clientSecret) {
+        tokenParams.delete('client_id')
+        tokenHeaders.Authorization = `Basic ${Buffer.from(
+            `${creds.clientId}:${creds.clientSecret}`,
+        ).toString('base64')}`
     }
     if (state.metadata.codeVerifier) {
         tokenParams.set('code_verifier', state.metadata.codeVerifier)
@@ -423,10 +484,7 @@ export async function exchangeCodeAndIdentify(
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
     const tokenResp = await fetch(tokenEndpoint, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Accept: 'application/json',
-        },
+        headers: tokenHeaders,
         body: tokenParams.toString(),
     })
     const tokenData = await tokenResp.json()

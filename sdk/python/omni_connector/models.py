@@ -181,6 +181,13 @@ class ConnectorSkillDefinition(BaseModel):
     mcp_prompt: str | None = None
 
 
+OAuthTokenEndpointAuthMethod = Literal[
+    "client_secret_post",
+    "client_secret_basic",
+    "none",
+]
+
+
 class OAuthScopeSet(BaseModel):
     read: list[str] = Field(default_factory=list)
     write: list[str] = Field(default_factory=list)
@@ -202,7 +209,7 @@ class OAuthManifestConfig(BaseModel):
     scope_separator: str = " "
     enrich_endpoint: str | None = None
     registration_endpoint: str | None = None
-    token_endpoint_auth_method: str = "client_secret_post"
+    token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = "client_secret_post"
     client_secret_required: bool = True
     pkce_required: bool = False
     resource: str | None = None

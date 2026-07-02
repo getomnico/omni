@@ -4,6 +4,7 @@ import { getSourceById } from '$lib/server/db/sources'
 import {
     generateAuthUrl,
     generateAuthUrlForOrgSource,
+    generateAuthUrlForUserRead,
     generateAuthUrlForUserWrite,
     isProviderConfigured,
     getOAuthManifestForSourceType,
@@ -19,7 +20,8 @@ function oauthClientNotConfiguredMessage(provider: string): string {
 /// Unified OAuth start route. Flows are disambiguated by query params:
 ///   ?source_types=google_drive,gmail          → connect_source flow
 ///   ?source_id=01J...&flow=org_source         → admin org-source credential flow
-///   ?source_id=01J...&flow=user_write         → per-user action credential flow
+///   ?source_id=01J...&flow=user_read          → per-user read/action credential flow
+///   ?source_id=01J...&flow=user_write         → per-user read/write action credential flow
 /// Optional `return_to` is preserved through the callback for UI return links.
 export const GET: RequestHandler = async ({ url, locals }) => {
     if (!locals.user) {
@@ -32,8 +34,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const returnTo = url.searchParams.get('return_to') ?? undefined
 
     if (sourceId) {
-        if (flow !== 'org_source' && flow !== 'user_write') {
-            throw error(400, 'flow must be either org_source or user_write')
+        if (flow !== 'org_source' && flow !== 'user_read' && flow !== 'user_write') {
+            throw error(400, 'flow must be org_source, user_read, or user_write')
         }
 
         const source = await getSourceById(sourceId)
@@ -70,7 +72,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             throw redirect(302, authUrl)
         }
 
-        const { url: authUrl } = await generateAuthUrlForUserWrite({
+        const generator =
+            flow === 'user_read' ? generateAuthUrlForUserRead : generateAuthUrlForUserWrite
+        const { url: authUrl } = await generator({
             sourceId,
             sourceType: source.sourceType,
             userId: locals.user.id,

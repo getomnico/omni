@@ -1,6 +1,7 @@
 <script lang="ts">
     import { enhance } from '$app/forms'
     import { Button } from '$lib/components/ui/button'
+    import { Checkbox } from '$lib/components/ui/checkbox'
     import { Label } from '$lib/components/ui/label'
     import { Switch } from '$lib/components/ui/switch'
     import * as Card from '$lib/components/ui/card'
@@ -8,6 +9,7 @@
     import { Loader2, X } from '@lucide/svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
+    import { page } from '$app/state'
     import type { PageProps } from './$types'
     import clickupLogo from '$lib/images/icons/clickup.svg'
     import type { ClickUpSourceConfig } from '$lib/types'
@@ -25,6 +27,7 @@
     let isSubmitting = $state(false)
     let hasUnsavedChanges = $state(false)
     let skipUnsavedCheck = $state(false)
+    let includeWritePermissions = $state(false)
 
     let allSpaces: { id: string; name: string; workspace_name?: string }[] | null = null
     let suggestions = $state<{ id: string; name: string; workspace_name?: string }[]>([])
@@ -35,6 +38,20 @@
 
     let originalEnabled = data.source.isActive
     let originalSpaceFilters: string[] = [...spaceFilters]
+
+    const actionAuthLabel = $derived(
+        data.actionAuth.access === 'read_write'
+            ? 'Authorized with read and write permissions'
+            : data.actionAuth.access === 'read_only'
+              ? 'Authorized with read-only permissions'
+              : 'Not authorized',
+    )
+
+    const actionOAuthUrl = $derived.by(() => {
+        const flow = includeWritePermissions ? 'user_write' : 'user_read'
+        const returnTo = encodeURIComponent(page.url.pathname)
+        return `/api/oauth/start?source_id=${data.source.id}&flow=${flow}&return_to=${returnTo}`
+    })
 
     function addSpace() {
         const space = spaceInput.trim()
@@ -288,3 +305,52 @@
         </Card.Footer>
     </Card.Root>
 </form>
+
+<Card.Root class="relative mt-4">
+    <Card.Header>
+        <Card.Title>ClickUp AI actions</Card.Title>
+        <Card.Description>
+            Indexing uses the API token configured for this source. AI actions use your own ClickUp
+            OAuth authorization, so actions run as you and only have the permissions you grant.
+        </Card.Description>
+    </Card.Header>
+    <Card.Content class="space-y-4">
+        <div class="rounded-md border p-3 text-sm">
+            <div class="font-medium">{actionAuthLabel}</div>
+            {#if data.actionAuth.principalEmail}
+                <div class="text-muted-foreground mt-1">
+                    Authorized account: {data.actionAuth.principalEmail}
+                </div>
+            {:else}
+                <div class="text-muted-foreground mt-1">
+                    Authorize your ClickUp account to let Omni read ClickUp MCP resources and use
+                    ClickUp actions in chat and agents.
+                </div>
+            {/if}
+        </div>
+
+        <div class="flex items-start gap-2">
+            <Checkbox
+                id="include-write-permissions"
+                bind:checked={includeWritePermissions}
+                class="mt-0.5 cursor-pointer" />
+            <div class="space-y-1">
+                <Label for="include-write-permissions" class="cursor-pointer">
+                    Include write permissions
+                </Label>
+                <p class="text-muted-foreground text-sm">
+                    Leave unchecked for read-only access. Check this to allow Omni to create or
+                    update ClickUp tasks, comments, docs, time entries, and other writable objects
+                    as you.
+                </p>
+            </div>
+        </div>
+    </Card.Content>
+    <Card.Footer class="flex justify-end">
+        <Button href={actionOAuthUrl} class="cursor-pointer">
+            {data.actionAuth.authorized
+                ? 'Update ClickUp authorization'
+                : 'Authorize my ClickUp account'}
+        </Button>
+    </Card.Footer>
+</Card.Root>

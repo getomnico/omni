@@ -54,8 +54,11 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         .split(config.scope_separator === ',' ? ',' : /[\s,]+/)
         .filter(Boolean)
     const requiredScopes = state.metadata.requiredScopes
+    // OAuth token responses may omit `scope` when the granted scopes match the
+    // request. Treat omission as the requested scopes for validation/storage.
+    const effectiveGrantedScopes = grantedScopes.length > 0 ? grantedScopes : requiredScopes
     if (state.metadata.strictScopeCheck && flow.type === 'user_write') {
-        const missing = requiredScopes.filter((s) => !grantedScopes.includes(s))
+        const missing = requiredScopes.filter((s) => !effectiveGrantedScopes.includes(s))
         if (missing.length > 0) {
             const params = new URLSearchParams({
                 ok: 'false',
@@ -134,7 +137,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         }
     }
 
-    if (flow.type === 'user_write') {
+    if (flow.type === 'user_read' || flow.type === 'user_write') {
         const existing = await serviceCredentialsRepository.getByUserAndSource(
             flow.sourceId,
             user.id,
@@ -151,10 +154,13 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 ...existingCredentials,
                 ...credentialsWithRefreshFallback(existingCredentials),
             },
-            config: { granted_scopes: grantedScopes },
+            config: { granted_scopes: effectiveGrantedScopes },
             expiresAt,
         })
         await bootstrapClickUpMcp(flow.sourceId, user.id)
+        if (flow.returnTo) {
+            throw redirect(302, flow.returnTo)
+        }
         const params = new URLSearchParams({ ok: 'true', sourceId: flow.sourceId })
         throw redirect(302, `/oauth/done?${params}`)
     }
@@ -185,7 +191,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                     ...existingCredentials,
                     ...credentialsWithRefreshFallback(existingCredentials),
                 },
-                config: { granted_scopes: grantedScopes },
+                config: { granted_scopes: effectiveGrantedScopes },
                 expiresAt,
             })
             continue
@@ -211,7 +217,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             authType: 'oauth',
             principalEmail,
             credentials: credentialsWithRefreshFallback({}),
-            config: { granted_scopes: grantedScopes },
+            config: { granted_scopes: effectiveGrantedScopes },
             expiresAt,
         })
 

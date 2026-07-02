@@ -2,7 +2,13 @@ import { requireAdmin } from '$lib/server/authHelpers'
 import { getConfig } from '$lib/server/config'
 import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getAllConnectorConfigsPublic } from '$lib/server/db/connector-configs'
-import { callbackUrl, type OAuthManifestConfig } from '$lib/server/oauth/connectorOAuth'
+import {
+    callbackUrl,
+    isAutoManagedOAuthProvider,
+    isClientConfigComplete,
+    tokenEndpointAuthMethodForConfig,
+    type OAuthManifestConfig,
+} from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
 import type { PageServerLoad } from './$types'
 
@@ -137,6 +143,7 @@ export const load: PageServerLoad = async ({ locals }) => {
                 { id: string; name: string; description: string; connected: boolean }
             >()
             const sourceTypesByOAuthProvider = new Map<string, Set<string>>()
+            const oauthManifestByProvider = new Map<string, OAuthManifestConfig>()
 
             for (const connector of connectors) {
                 const connectorId = connector.manifest?.connector_id ?? connector.source_type
@@ -155,6 +162,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
                 const oauth = connector.manifest?.oauth
                 if (oauth?.provider) {
+                    oauthManifestByProvider.set(oauth.provider, oauth)
                     const sourceTypes = connector.manifest?.source_types?.length
                         ? connector.manifest.source_types
                         : [connector.source_type]
@@ -173,14 +181,21 @@ export const load: PageServerLoad = async ({ locals }) => {
             }
 
             oauthProviders = Array.from(sourceTypesByOAuthProvider.keys())
+                .filter(
+                    (provider) =>
+                        !isAutoManagedOAuthProvider(oauthManifestByProvider.get(provider)),
+                )
                 .map((provider) => {
                     const saved = savedOAuthConfigByProvider.get(provider)
+                    const manifest = oauthManifestByProvider.get(provider)
+                    const tokenEndpointAuthMethod = tokenEndpointAuthMethodForConfig(
+                        saved?.config,
+                        manifest,
+                    )
                     return {
                         provider,
                         displayName: providerDisplayName(provider, connectors),
-                        configured: !!(
-                            saved?.config?.oauth_client_id && saved?.config?.oauth_client_secret
-                        ),
+                        configured: isClientConfigComplete(saved?.config, tokenEndpointAuthMethod),
                         updatedAt: saved?.updatedAt ?? null,
                         config: saved?.config ?? {},
                     }
