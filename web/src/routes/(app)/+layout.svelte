@@ -374,9 +374,8 @@
                         <Bot />
                         <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                     </Button>
+                    <hr />
                 {/if}
-
-                <hr />
 
                 <Button
                     href="/"
