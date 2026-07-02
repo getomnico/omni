@@ -135,11 +135,15 @@ test('sidebar loads older recent chats and spotlight searches starred chats', as
         expect(
             Math.abs(popoverBox!.y + popoverBox!.height / 2 - viewport!.height / 2),
         ).toBeLessThanOrEqual(2)
+        expect(Math.abs(popoverBox!.height - viewport!.height / 3)).toBeLessThanOrEqual(2)
 
         await page.getByPlaceholder('Search chats...').fill('spotlightstar')
         await expect(
             page.getByRole('option', { name: /Starred Spotlightstar Chat/i }),
         ).toBeVisible()
+        const populatedPopoverBox = await searchPopover.boundingBox()
+        expect(populatedPopoverBox).not.toBeNull()
+        expect(Math.abs(populatedPopoverBox!.height - viewport!.height / 3)).toBeLessThanOrEqual(2)
         await expect(page.getByRole('button', { name: /Load more/i })).toHaveCount(0)
     } finally {
         await cleanupHistory(seeded)

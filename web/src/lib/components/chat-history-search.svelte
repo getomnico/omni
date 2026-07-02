@@ -143,9 +143,9 @@
                 <div
                     {...props}
                     data-testid="chat-history-search-popover"
-                    class="pointer-events-auto w-[min(44rem,calc(100vw-2rem))] rounded-2xl p-0 shadow-2xl">
-                    <div class="bg-card overflow-hidden rounded-2xl border">
-                        <div class="border-b p-3">
+                    class="pointer-events-auto h-[calc(100vh/3)] w-[min(44rem,calc(100vw-2rem))] rounded-2xl p-0 shadow-2xl">
+                    <div class="bg-card flex h-full flex-col overflow-hidden rounded-2xl border">
+                        <div class="shrink-0 border-b p-3">
                             <div class="relative">
                                 <Search
                                     class="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-5 w-5 -translate-y-1/2" />
@@ -160,7 +160,7 @@
                             </div>
                         </div>
 
-                        <div class="max-h-[60vh] min-h-[18rem] overflow-y-auto p-2">
+                        <div class="min-h-0 flex-1 overflow-y-auto p-2">
                             {#if !trimmedQuery}
                                 <div class="text-muted-foreground px-4 py-8 text-center text-sm">
                                     Start typing to search chats.
