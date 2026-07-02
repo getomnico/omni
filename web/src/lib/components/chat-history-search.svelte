@@ -20,6 +20,7 @@
     let open = $state(false)
     let query = $state('')
     let inputRef: HTMLInputElement | null = $state(null)
+    let anchorRef: HTMLDivElement | null = $state(null)
 
     let searchResults = $state<SerializedChatSearchResult[]>([])
     let searchLoading = $state(false)
@@ -124,20 +125,28 @@
 </script>
 
 <Popover.Root bind:open>
+    <div
+        bind:this={anchorRef}
+        class="pointer-events-none fixed top-[18vh] left-1/2 h-0 w-0"
+        aria-hidden="true">
+    </div>
     <Popover.Trigger>
         {#snippet child({ props })}
             <Button
                 {...props}
-                variant="outline"
-                class="bg-card text-muted-foreground h-8 w-full justify-start gap-2 px-2 text-xs font-normal group-data-[collapsible=icon]:hidden"
+                variant="ghost"
+                class="my-1 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                 aria-label="Search chats">
-                <Search class="h-4 w-4" />
-                <span>Search chats...</span>
+                <Search />
+                <span>Search Chats</span>
             </Button>
         {/snippet}
     </Popover.Trigger>
     <Popover.Content
-        class="!fixed !top-[18vh] !left-1/2 !z-50 !w-[min(44rem,calc(100vw-2rem))] !-translate-x-1/2 !translate-y-0 rounded-2xl p-0 shadow-2xl"
+        class="z-50 w-[min(44rem,calc(100vw-2rem))] rounded-2xl p-0 shadow-2xl"
+        strategy="fixed"
+        customAnchor={anchorRef}
+        side="bottom"
         sideOffset={0}
         align="center"
         onOpenAutoFocus={(event) => {
