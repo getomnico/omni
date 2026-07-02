@@ -74,6 +74,7 @@
     let additionalRecentHasMore = $state<boolean | null>(null)
     let recentLoadingMore = $state(false)
     let recentLoadError = $state('')
+    let lastRecentRevision = ''
 
     let deleteTargetChat = $state<SidebarChat | null>(null)
     let deleteTargetTitle = $state('')
@@ -146,8 +147,9 @@
 
     $effect(() => {
         const recentRevision = `${data.recentChats.map((chat) => chat.id).join(',')}:${data.recentChatsHasMore}`
-        if (!recentRevision) return
+        if (recentRevision === lastRecentRevision) return
 
+        lastRecentRevision = recentRevision
         additionalRecentChats = []
         additionalRecentHasMore = null
         recentLoadError = ''

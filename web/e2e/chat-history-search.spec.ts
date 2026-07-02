@@ -115,13 +115,16 @@ test('sidebar loads older recent chats and spotlight searches starred chats', as
 
         await expect(page.getByRole('button', { name: /Load more/i })).toBeVisible()
         await page.getByRole('button', { name: /Load more/i }).click()
-        await expect(page.getByRole('link', { name: /History Chat 25/i })).toBeVisible()
+        const oldestChat = page.getByRole('link', { name: /History Chat 25/i })
+        await expect(oldestChat).toHaveCount(1)
+        await oldestChat.scrollIntoViewIfNeeded()
+        await expect(oldestChat).toBeVisible()
 
         await page.getByRole('button', { name: 'Search chats' }).click()
         await expect(page.getByPlaceholder('Search chats...')).toBeFocused()
         await page.getByPlaceholder('Search chats...').fill('spotlightstar')
         await expect(
-            page.getByRole('button', { name: /Starred Spotlightstar Chat/i }),
+            page.getByRole('option', { name: /Starred Spotlightstar Chat/i }),
         ).toBeVisible()
         await expect(page.getByRole('button', { name: /Load more/i })).toHaveCount(0)
     } finally {

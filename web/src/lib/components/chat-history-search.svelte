@@ -19,7 +19,7 @@
 
     let open = $state(false)
     let query = $state('')
-    let inputRef: HTMLInputElement | undefined = $state()
+    let inputRef: HTMLInputElement | null = $state(null)
 
     let searchResults = $state<SerializedChatSearchResult[]>([])
     let searchLoading = $state(false)
