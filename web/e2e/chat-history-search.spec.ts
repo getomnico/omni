@@ -122,6 +122,20 @@ test('sidebar loads older recent chats and spotlight searches starred chats', as
 
         await page.getByRole('button', { name: 'Search chats' }).click()
         await expect(page.getByPlaceholder('Search chats...')).toBeFocused()
+
+        const searchPopover = page.getByTestId('chat-history-search-popover')
+        await expect(searchPopover).toBeVisible()
+        const popoverBox = await searchPopover.boundingBox()
+        const viewport = page.viewportSize()
+        expect(popoverBox).not.toBeNull()
+        expect(viewport).not.toBeNull()
+        expect(
+            Math.abs(popoverBox!.x + popoverBox!.width / 2 - viewport!.width / 2),
+        ).toBeLessThanOrEqual(2)
+        expect(
+            Math.abs(popoverBox!.y + popoverBox!.height / 2 - viewport!.height / 2),
+        ).toBeLessThanOrEqual(2)
+
         await page.getByPlaceholder('Search chats...').fill('spotlightstar')
         await expect(
             page.getByRole('option', { name: /Starred Spotlightstar Chat/i }),

@@ -27,7 +27,7 @@
     import * as Dialog from '$lib/components/ui/dialog/index.js'
     import type { LayoutData } from './$types.js'
     import {
-        MessageCirclePlus,
+        MessageCircle,
         EllipsisVertical,
         Star,
         StarOff,
@@ -369,33 +369,33 @@
                 {#if data.agentsEnabled}
                     <Button
                         href="/agents"
-                        class="mb-1 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                        class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                         variant="ghost">
                         <Bot />
                         <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                     </Button>
                 {/if}
 
+                <hr />
+
                 <Button
                     href="/"
-                    class="my-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                    class="mt-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                     variant="ghost">
-                    <MessageCirclePlus />
+                    <MessageCircle />
                     <span class="group-data-[collapsible=icon]:hidden">New Chat</span>
                 </Button>
 
                 <!-- Chat history search -->
-                <div class="my-1 group-data-[collapsible=icon]:hidden">
-                    <ChatHistorySearch
-                        currentChatId={page.params.chatId}
-                        timeZone={data.user.configuration.timezone} />
-                </div>
+                <ChatHistorySearch
+                    currentChatId={page.params.chatId}
+                    timeZone={data.user.configuration.timezone} />
 
                 <SidebarGroupContent>
                     <!-- Starred chats -->
                     {#if data.starredChats.length > 0}
                         <p
-                            class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
+                            class="text-muted-foreground mt-2 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
                             Starred
                         </p>
                         <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
@@ -407,7 +407,7 @@
 
                     <!-- Recent chats -->
                     <p
-                        class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
+                        class="text-muted-foreground mt-2 p-1.5 text-xs font-semibold group-data-[collapsible=icon]:hidden">
                         Recent chats
                     </p>
                     {#if recentChats.length > 0}
@@ -426,7 +426,7 @@
                             <Button
                                 variant="ghost"
                                 size="sm"
-                                class="mt-2 w-full cursor-pointer group-data-[collapsible=icon]:hidden"
+                                class="mt-2 w-full cursor-pointer text-xs group-data-[collapsible=icon]:hidden"
                                 disabled={recentLoadingMore}
                                 onclick={loadMoreRecentChats}>
                                 {recentLoadingMore ? 'Loading...' : 'Load more'}

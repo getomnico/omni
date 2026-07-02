@@ -185,9 +185,18 @@ export class ChatRepository {
         const results = await this.db.execute(sql`
             WITH title_matches AS (
                 SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
-                       NULL::text AS message_id, NULL::text AS content_text,
+                       preview.message_id, preview.content_text,
                        pdb.score(c.id) AS score, 'title'::text AS source
                 FROM chats c
+                LEFT JOIN LATERAL (
+                    SELECT cm.id AS message_id, cm.content_text
+                    FROM chat_messages cm
+                    WHERE cm.chat_id = c.id
+                      AND cm.content_text IS NOT NULL
+                      AND btrim(cm.content_text) <> ''
+                    ORDER BY cm.message_seq_num ASC
+                    LIMIT 1
+                ) preview ON TRUE
                 WHERE c.title ||| ${query}
                   AND c.user_id = ${userId}
                   AND c.is_deleted = FALSE
@@ -238,11 +247,9 @@ export class ChatRepository {
                            plainto_tsquery('english', ${query}),
                            'StartSel=**, StopSel=**, MaxFragments=2, MaxWords=24, MinWords=6'
                        )
-                       ELSE ts_headline(
-                           'english',
-                           COALESCE(title, ''),
-                           plainto_tsquery('english', ${query}),
-                           'StartSel=**, StopSel=**, MaxFragments=1, MaxWords=12, MinWords=1'
+                       ELSE NULLIF(
+                           left(regexp_replace(COALESCE(content_text, ''), '[[:space:]]+', ' ', 'g'), 180),
+                           ''
                        )
                    END AS headline
             FROM final_candidates
@@ -253,6 +260,8 @@ export class ChatRepository {
 
         return rows.map((row) => {
             const parts = highlightPartsFromHeadline(row.headline)
+            const hasHighlightedMatch = parts.some((part) => part.match)
+            const hasSnippetText = parts.some((part) => part.text.trim().length > 0)
             return {
                 id: row.id,
                 userId: row.user_id,
@@ -263,13 +272,15 @@ export class ChatRepository {
                 isDeleted: false,
                 createdAt: row.created_at,
                 updatedAt: row.updated_at,
-                snippet: parts.length
-                    ? {
-                          source: row.source === 'message' ? 'message' : 'title',
-                          messageId: row.message_id ?? null,
-                          parts,
-                      }
-                    : null,
+                snippet:
+                    (row.source === 'message' && hasHighlightedMatch) ||
+                    (row.source === 'title' && hasSnippetText)
+                        ? {
+                              source: row.source === 'message' ? 'message' : 'title',
+                              messageId: row.message_id ?? null,
+                              parts,
+                          }
+                        : null,
             }
         })
     }

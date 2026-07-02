@@ -145,6 +145,23 @@ describe('ChatRepository history and search', () => {
         expect(results.find((chat) => chat.id === starred)?.isStarred).toBe(true)
     })
 
+    it('search() shows chat content preview when the title matches', async () => {
+        const titleMatch = await createTestChat(db, userId, 'Unique Narwhal Roadmap')
+        const preview = await repo.create(
+            titleMatch,
+            userMsg('Discuss Q3 launch risks, customer rollout sequencing, and owner follow-ups.'),
+        )
+
+        const results = await chatRepo.search(userId, 'narwhal')
+        const result = results.find((chat) => chat.id === titleMatch)
+
+        expect(result?.snippet?.source).toBe('title')
+        expect(result?.snippet?.messageId).toBe(preview.id)
+        expect(result?.snippet?.parts.map((part) => part.text).join('')).toContain(
+            'Discuss Q3 launch risks',
+        )
+    })
+
     it('search() returns the best matching message snippet with safe highlight parts', async () => {
         const searchChat = await createTestChat(db, userId, 'Kitchen planning')
         await repo.create(searchChat, userMsg('This mentions dragonfruit once.'))
