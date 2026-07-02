@@ -36,7 +36,6 @@
         Bot,
     } from '@lucide/svelte'
     import { onMount, type Snippet } from 'svelte'
-    import type { SerializedChat } from '$lib/types/chat'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
     import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
@@ -57,28 +56,29 @@
 
     let { data, children }: Props = $props()
 
-    type SidebarChat = Chat | SerializedChat
-    type ChatDateGroup = { key: string; label: string; items: SidebarChat[] }
+    type ChatDateGroup = { key: string; label: string; items: Chat[] }
+    type SerializedChat = Omit<Chat, 'createdAt' | 'updatedAt'> & {
+        createdAt: string
+        updatedAt: string
+    }
     type ChatHistoryResponse = {
         items: SerializedChat[]
         nextOffset: number | null
         hasMore: boolean
     }
-    type PendingChatAction =
-        | { type: 'rename'; chat: SidebarChat }
-        | { type: 'delete'; chat: SidebarChat }
+    type PendingChatAction = { type: 'rename'; chat: Chat } | { type: 'delete'; chat: Chat }
 
     const RECENT_CHATS_PAGE_SIZE = 20
 
-    let additionalRecentChats = $state<SerializedChat[]>([])
+    let additionalRecentChats = $state<Chat[]>([])
     let additionalRecentHasMore = $state<boolean | null>(null)
     let recentLoadingMore = $state(false)
     let recentLoadError = $state('')
-    let lastRecentRevision = ''
+    let lastRecentChatSnapshot = ''
 
-    let deleteTargetChat = $state<SidebarChat | null>(null)
+    let deleteTargetChat = $state<Chat | null>(null)
     let deleteTargetTitle = $state('')
-    let renameTargetChat = $state<SidebarChat | null>(null)
+    let renameTargetChat = $state<Chat | null>(null)
     let renameValue = $state('')
     let pendingChatAction = $state<PendingChatAction | null>(null)
 
@@ -93,13 +93,9 @@
                 ? (page.data as { chat?: { title?: string | null } }).chat?.title
                 : null),
     )
-    let recentChats = $derived<SidebarChat[]>([...data.recentChats, ...additionalRecentChats])
+    let recentChats = $derived<Chat[]>([...data.recentChats, ...additionalRecentChats])
     let recentHasMore = $derived(additionalRecentHasMore ?? data.recentChatsHasMore)
     let recentChatGroups = $derived(groupChatsByDate(recentChats, data.user.configuration.timezone))
-
-    function toDate(value: Date | string): Date {
-        return value instanceof Date ? value : new Date(value)
-    }
 
     function dayKey(date: Date, zone?: string | null): string {
         const parts = new Intl.DateTimeFormat('en-US', {
@@ -123,11 +119,11 @@
         return formatDate(date, zone)
     }
 
-    function groupChatsByDate(items: SidebarChat[], zone?: string | null): ChatDateGroup[] {
+    function groupChatsByDate(items: Chat[], zone?: string | null): ChatDateGroup[] {
         const groups: ChatDateGroup[] = []
 
         for (const chat of items) {
-            const date = toDate(chat.updatedAt)
+            const date = chat.updatedAt
             const key = dayKey(date, zone)
             let group = groups[groups.length - 1]
             if (!group || group.key !== key) {
@@ -140,16 +136,25 @@
         return groups
     }
 
+    function deserializeChat(chat: SerializedChat): Chat {
+        return {
+            ...chat,
+            createdAt: new Date(chat.createdAt),
+            updatedAt: new Date(chat.updatedAt),
+        }
+    }
+
     afterNavigate(() => {
         isEditingHeaderTitle = false
         optimisticTitle = null
     })
 
     $effect(() => {
-        const recentRevision = `${data.recentChats.map((chat) => chat.id).join(',')}:${data.recentChatsHasMore}`
-        if (recentRevision === lastRecentRevision) return
+        // Reset appended pages when the server-provided first page changes after chat actions.
+        const recentChatSnapshot = `${data.recentChats.map((chat) => chat.id).join(',')}:${data.recentChatsHasMore}`
+        if (recentChatSnapshot === lastRecentChatSnapshot) return
 
-        lastRecentRevision = recentRevision
+        lastRecentChatSnapshot = recentChatSnapshot
         additionalRecentChats = []
         additionalRecentHasMore = null
         recentLoadError = ''
@@ -168,7 +173,7 @@
             if (!response.ok) throw new Error('Failed to load more chats')
 
             const data = (await response.json()) as ChatHistoryResponse
-            additionalRecentChats = [...additionalRecentChats, ...data.items]
+            additionalRecentChats = [...additionalRecentChats, ...data.items.map(deserializeChat)]
             additionalRecentHasMore = data.hasMore
         } catch (error) {
             recentLoadError = error instanceof Error ? error.message : 'Failed to load more chats'
@@ -196,7 +201,7 @@
 
     // logout is handled inside SidebarUserMenu
 
-    async function toggleStar(chat: SidebarChat) {
+    async function toggleStar(chat: Chat) {
         await fetch(`/api/chat/${chat.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -233,7 +238,7 @@
         invalidate('app:recent_chats')
     }
 
-    function openRenameDialog(chat: SidebarChat) {
+    function openRenameDialog(chat: Chat) {
         renameTargetChat = chat
         renameValue = chat.title || ''
     }
@@ -510,7 +515,7 @@
     </div>
 </SidebarProvider>
 
-{#snippet chatItem(chat: SidebarChat)}
+{#snippet chatItem(chat: Chat)}
     <SidebarMenuItem>
         <SidebarMenuButton
             class={cn(

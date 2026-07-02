@@ -3,12 +3,29 @@
     import { Button } from '$lib/components/ui/button/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
     import * as Popover from '$lib/components/ui/popover/index.js'
-    import type { SerializedChat, SerializedChatSearchResult } from '$lib/types/chat'
+    import type { Chat } from '$lib/server/db/schema'
     import { cn } from '$lib/utils'
     import { formatChatTimestamp } from '$lib/utils/datetime'
     import { Bot, Search, Star, MessageCircle } from '@lucide/svelte'
 
-    type SearchResponse = SerializedChatSearchResult[]
+    type SerializedChat = Omit<Chat, 'createdAt' | 'updatedAt'> & {
+        createdAt: string
+        updatedAt: string
+    }
+
+    type HighlightPart = { text: string; match: boolean }
+
+    type SerializedChatSearchHit = {
+        chat: SerializedChat
+        titleParts: HighlightPart[]
+        snippet: {
+            source: 'title' | 'message'
+            messageId: string | null
+            parts: HighlightPart[]
+        } | null
+    }
+
+    type SearchResponse = SerializedChatSearchHit[]
 
     interface Props {
         currentChatId?: string
@@ -21,13 +38,13 @@
     let query = $state('')
     let inputRef: HTMLInputElement | null = $state(null)
 
-    let searchResults = $state<SerializedChatSearchResult[]>([])
+    let searchResults = $state<SerializedChatSearchHit[]>([])
     let searchLoading = $state(false)
     let searchError = $state('')
     let selectedIndex = $state(0)
 
     let trimmedQuery = $derived(query.trim())
-    let activeItems = $derived<SerializedChat[]>(searchResults)
+    let activeItems = $derived<SerializedChat[]>(searchResults.map((hit) => hit.chat))
 
     async function navigateToChat(chatId: string) {
         open = false
@@ -182,7 +199,7 @@
                                     class="space-y-1"
                                     role="listbox"
                                     aria-label="Chat search results">
-                                    {#each searchResults as chat, index (chat.id)}
+                                    {#each searchResults as hit, index (hit.chat.id)}
                                         <button
                                             type="button"
                                             role="option"
@@ -191,15 +208,15 @@
                                                 'hover:bg-accent hover:text-accent-foreground flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-2 text-left',
                                                 index === selectedIndex &&
                                                     'bg-accent text-accent-foreground',
-                                                currentChatId === chat.id && 'ring-ring ring-1',
+                                                currentChatId === hit.chat.id && 'ring-ring ring-1',
                                             )}
                                             onmouseenter={() => (selectedIndex = index)}
-                                            onclick={() => navigateToChat(chat.id)}>
+                                            onclick={() => navigateToChat(hit.chat.id)}>
                                             <div
                                                 class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center">
-                                                {#if chat.agentId}
+                                                {#if hit.chat.agentId}
                                                     <Bot class="text-muted-foreground h-4 w-4" />
-                                                {:else if chat.isStarred}
+                                                {:else if hit.chat.isStarred}
                                                     <Star class="text-muted-foreground h-4 w-4" />
                                                 {:else}
                                                     <MessageCircle
@@ -208,12 +225,19 @@
                                             </div>
                                             <div class="min-w-0 flex-1">
                                                 <div class="truncate text-sm font-medium">
-                                                    {chat.title || 'Untitled'}
+                                                    {#each hit.titleParts as part, partIndex (`${hit.chat.id}-title-${partIndex}`)}
+                                                        {#if part.match}
+                                                            <strong class="font-semibold"
+                                                                >{part.text}</strong>
+                                                        {:else}
+                                                            {part.text}
+                                                        {/if}
+                                                    {/each}
                                                 </div>
-                                                {#if chat.snippet?.parts?.length}
+                                                {#if hit.snippet?.parts?.length}
                                                     <div
                                                         class="text-muted-foreground mt-0.5 line-clamp-2 text-xs leading-relaxed">
-                                                        {#each chat.snippet.parts as part, partIndex (`${chat.id}-${partIndex}`)}
+                                                        {#each hit.snippet.parts as part, partIndex (`${hit.chat.id}-${partIndex}`)}
                                                             {#if part.match}
                                                                 <strong
                                                                     class="text-foreground font-semibold"
@@ -227,7 +251,7 @@
                                             </div>
                                             <div
                                                 class="text-muted-foreground shrink-0 pt-0.5 text-xs">
-                                                {formatChatTimestamp(chat.updatedAt, timeZone)}
+                                                {formatChatTimestamp(hit.chat.updatedAt, timeZone)}
                                             </div>
                                         </button>
                                     {/each}

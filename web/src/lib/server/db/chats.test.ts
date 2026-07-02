@@ -141,8 +141,8 @@ describe('ChatRepository history and search', () => {
 
         const results = await chatRepo.search(userId, 'narwhal')
 
-        expect(results.map((chat) => chat.id)).toContain(starred)
-        expect(results.find((chat) => chat.id === starred)?.isStarred).toBe(true)
+        expect(results.map((hit) => hit.chat.id)).toContain(starred)
+        expect(results.find((hit) => hit.chat.id === starred)?.chat.isStarred).toBe(true)
     })
 
     it('search() shows chat content preview when the title matches', async () => {
@@ -153,8 +153,11 @@ describe('ChatRepository history and search', () => {
         )
 
         const results = await chatRepo.search(userId, 'narwhal')
-        const result = results.find((chat) => chat.id === titleMatch)
+        const result = results.find((hit) => hit.chat.id === titleMatch)
 
+        expect(result?.titleParts.some((part) => part.match && /narwhal/i.test(part.text))).toBe(
+            true,
+        )
         expect(result?.snippet?.source).toBe('title')
         expect(result?.snippet?.messageId).toBe(preview.id)
         expect(result?.snippet?.parts.map((part) => part.text).join('')).toContain(
@@ -171,7 +174,7 @@ describe('ChatRepository history and search', () => {
         )
 
         const results = await chatRepo.search(userId, 'dragonfruit')
-        const result = results.find((chat) => chat.id === searchChat)
+        const result = results.find((hit) => hit.chat.id === searchChat)
 
         expect(result).toBeDefined()
         expect(result?.snippet?.source).toBe('message')
@@ -182,7 +185,9 @@ describe('ChatRepository history and search', () => {
     })
 
     it('highlightPartsFromHeadline() converts marker output to structured non-HTML parts', () => {
-        expect(highlightPartsFromHeadline('alpha **bravo** <script>charlie</script>')).toEqual([
+        expect(
+            highlightPartsFromHeadline('alpha \u0002bravo\u0003 <script>charlie</script>'),
+        ).toEqual([
             { text: 'alpha ', match: false },
             { text: 'bravo', match: true },
             { text: ' <script>charlie</script>', match: false },

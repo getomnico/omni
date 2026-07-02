@@ -4,11 +4,28 @@ import type { MessageParam } from '@anthropic-ai/sdk/resources'
 import { db } from './index'
 import { chats, chatMessages } from './schema'
 import type { Chat, ChatMessage } from './schema'
-import type { ChatSearchResult, HighlightPart } from '$lib/types/chat'
 import * as schema from './schema'
 import { ulid } from 'ulid'
 
-const HEADLINE_MARKER = '**'
+const DEFAULT_CHAT_SEARCH_LIMIT = 20
+const DEFAULT_CHAT_SEARCH_MESSAGE_CANDIDATE_LIMIT = 50
+const TEXT_SEARCH_CONFIG = 'simple'
+const HEADLINE_START_MARKER = '\u0002'
+const HEADLINE_STOP_MARKER = '\u0003'
+const TITLE_HEADLINE_OPTIONS = `StartSel=${HEADLINE_START_MARKER}, StopSel=${HEADLINE_STOP_MARKER}, HighlightAll=true`
+const SNIPPET_HEADLINE_OPTIONS = `StartSel=${HEADLINE_START_MARKER}, StopSel=${HEADLINE_STOP_MARKER}, MaxFragments=2, MaxWords=24, MinWords=6`
+
+type HighlightPart = { text: string; match: boolean }
+
+export type ChatSearchHit = {
+    chat: Chat
+    titleParts: HighlightPart[]
+    snippet: {
+        source: 'title' | 'message'
+        messageId: string | null
+        parts: HighlightPart[]
+    } | null
+}
 
 export function highlightPartsFromHeadline(headline: string | null | undefined): HighlightPart[] {
     if (!headline) return []
@@ -17,7 +34,7 @@ export function highlightPartsFromHeadline(headline: string | null | undefined):
     let cursor = 0
 
     while (cursor < headline.length) {
-        const start = headline.indexOf(HEADLINE_MARKER, cursor)
+        const start = headline.indexOf(HEADLINE_START_MARKER, cursor)
         if (start === -1) {
             parts.push({ text: headline.slice(cursor), match: false })
             break
@@ -27,8 +44,8 @@ export function highlightPartsFromHeadline(headline: string | null | undefined):
             parts.push({ text: headline.slice(cursor, start), match: false })
         }
 
-        const matchStart = start + HEADLINE_MARKER.length
-        const end = headline.indexOf(HEADLINE_MARKER, matchStart)
+        const matchStart = start + HEADLINE_START_MARKER.length
+        const end = headline.indexOf(HEADLINE_STOP_MARKER, matchStart)
         if (end === -1) {
             parts.push({ text: headline.slice(start), match: false })
             break
@@ -38,7 +55,7 @@ export function highlightPartsFromHeadline(headline: string | null | undefined):
             parts.push({ text: headline.slice(matchStart, end), match: true })
         }
 
-        cursor = end + HEADLINE_MARKER.length
+        cursor = end + HEADLINE_STOP_MARKER.length
     }
 
     return parts.filter((part) => part.text.length > 0)
@@ -56,28 +73,11 @@ function extractContentText(message: MessageParam): string | null {
     return textParts.length > 0 ? textParts.join('\n') : null
 }
 
-type ChatSearchRow = {
-    id: string
-    user_id: string
-    title: string | null
-    is_starred: boolean
-    model_id: string | null
-    agent_id: string | null
-    created_at: Date
-    updated_at: Date
-    message_id: string | null
-    source: 'title' | 'message'
-    headline: string | null
-}
-
-type ChatMessageRow = {
-    id: string
-    chat_id: string
-    parent_id: string | null
-    message_seq_num: number
-    message: MessageParam
-    content_text: string | null
-    created_at: Date
+type ChatSearchSqlRow = Chat & {
+    titleHeadline: string | null
+    snippetMessageId: string | null
+    snippetSource: 'title' | 'message'
+    snippetHeadline: string | null
 }
 
 export class ChatRepository {
@@ -181,10 +181,10 @@ export class ChatRepository {
         return updated.length > 0
     }
 
-    async search(userId: string, query: string): Promise<ChatSearchResult[]> {
-        const results = await this.db.execute(sql`
+    async search(userId: string, query: string): Promise<ChatSearchHit[]> {
+        const results = await this.db.execute<ChatSearchSqlRow>(sql`
             WITH title_matches AS (
-                SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
+                SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.is_deleted, c.created_at, c.updated_at,
                        preview.message_id, preview.content_text,
                        pdb.score(c.id) AS score, 'title'::text AS source
                 FROM chats c
@@ -201,7 +201,7 @@ export class ChatRepository {
                   AND c.user_id = ${userId}
                   AND c.is_deleted = FALSE
                 ORDER BY score DESC
-                LIMIT 20
+                LIMIT ${DEFAULT_CHAT_SEARCH_LIMIT}
             ),
             top_message_matches AS (
                 SELECT cm.id AS message_id, cm.chat_id, cm.content_text, pdb.score(cm.id) AS score
@@ -211,11 +211,11 @@ export class ChatRepository {
                   AND c.user_id = ${userId}
                   AND c.is_deleted = FALSE
                 ORDER BY score DESC
-                LIMIT 50
+                LIMIT ${DEFAULT_CHAT_SEARCH_MESSAGE_CANDIDATE_LIMIT}
             ),
             message_matches AS (
                 SELECT DISTINCT ON (c.id)
-                       c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
+                       c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.is_deleted, c.created_at, c.updated_at,
                        tmm.message_id, tmm.content_text, tmm.score, 'message'::text AS source
                 FROM top_message_matches tmm
                 JOIN chats c ON c.id = tmm.chat_id
@@ -223,7 +223,7 @@ export class ChatRepository {
             ),
             ranked_matches AS (
                 SELECT DISTINCT ON (id)
-                       id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at,
+                       id, user_id, title, is_starred, model_id, agent_id, is_deleted, created_at, updated_at,
                        message_id, content_text, score, source
                 FROM (
                     SELECT * FROM title_matches
@@ -236,49 +236,61 @@ export class ChatRepository {
                 SELECT *
                 FROM ranked_matches
                 ORDER BY score DESC
-                LIMIT 20
+                LIMIT ${DEFAULT_CHAT_SEARCH_LIMIT}
             )
-            SELECT id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at,
-                   message_id, source,
+            SELECT id,
+                   user_id AS "userId",
+                   title,
+                   is_starred AS "isStarred",
+                   model_id AS "modelId",
+                   agent_id AS "agentId",
+                   is_deleted AS "isDeleted",
+                   created_at AS "createdAt",
+                   updated_at AS "updatedAt",
+                   ts_headline(
+                       ${TEXT_SEARCH_CONFIG}::regconfig,
+                       COALESCE(title, ''),
+                       plainto_tsquery(${TEXT_SEARCH_CONFIG}::regconfig, ${query}),
+                       ${TITLE_HEADLINE_OPTIONS}
+                   ) AS "titleHeadline",
+                   message_id AS "snippetMessageId",
+                   source AS "snippetSource",
                    CASE
                        WHEN source = 'message' THEN ts_headline(
-                           'english',
+                           ${TEXT_SEARCH_CONFIG}::regconfig,
                            COALESCE(content_text, ''),
-                           plainto_tsquery('english', ${query}),
-                           'StartSel=**, StopSel=**, MaxFragments=2, MaxWords=24, MinWords=6'
+                           plainto_tsquery(${TEXT_SEARCH_CONFIG}::regconfig, ${query}),
+                           ${SNIPPET_HEADLINE_OPTIONS}
                        )
                        ELSE NULLIF(
                            left(regexp_replace(COALESCE(content_text, ''), '[[:space:]]+', ' ', 'g'), 180),
                            ''
                        )
-                   END AS headline
+                   END AS "snippetHeadline"
             FROM final_candidates
             ORDER BY score DESC
         `)
 
-        const rows = results as unknown as ChatSearchRow[]
+        return results.map((row) => {
+            const { titleHeadline, snippetMessageId, snippetSource, snippetHeadline, ...chat } = row
+            const titleParts = highlightPartsFromHeadline(titleHeadline)
+            const snippetParts = highlightPartsFromHeadline(snippetHeadline)
+            const hasHighlightedSnippetMatch = snippetParts.some((part) => part.match)
+            const hasSnippetText = snippetParts.some((part) => part.text.trim().length > 0)
 
-        return rows.map((row) => {
-            const parts = highlightPartsFromHeadline(row.headline)
-            const hasHighlightedMatch = parts.some((part) => part.match)
-            const hasSnippetText = parts.some((part) => part.text.trim().length > 0)
             return {
-                id: row.id,
-                userId: row.user_id,
-                title: row.title,
-                isStarred: row.is_starred,
-                modelId: row.model_id,
-                agentId: row.agent_id,
-                isDeleted: false,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
+                chat,
+                titleParts:
+                    titleParts.length > 0
+                        ? titleParts
+                        : [{ text: row.title ?? 'Untitled', match: false }],
                 snippet:
-                    (row.source === 'message' && hasHighlightedMatch) ||
-                    (row.source === 'title' && hasSnippetText)
+                    (snippetSource === 'message' && hasHighlightedSnippetMatch) ||
+                    (snippetSource === 'title' && hasSnippetText)
                         ? {
-                              source: row.source === 'message' ? 'message' : 'title',
-                              messageId: row.message_id ?? null,
-                              parts,
+                              source: snippetSource,
+                              messageId: snippetMessageId,
+                              parts: snippetParts,
                           }
                         : null,
             }
@@ -361,7 +373,7 @@ export class ChatMessageRepository {
     }
 
     async getActivePath(chatId: string): Promise<ChatMessage[]> {
-        const result = await this.db.execute(sql`
+        const rows = await this.db.execute<ChatMessage>(sql`
             WITH RECURSIVE walk_up AS (
                 SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.created_at
                 FROM (
@@ -382,20 +394,18 @@ export class ChatMessageRepository {
                 FROM chat_messages cm
                 JOIN walk_up wu ON cm.id = wu.parent_id
             )
-            SELECT * FROM walk_up ORDER BY message_seq_num
+            SELECT id,
+                   chat_id AS "chatId",
+                   parent_id AS "parentId",
+                   message_seq_num AS "messageSeqNum",
+                   message,
+                   content_text AS "contentText",
+                   created_at AS "createdAt"
+            FROM walk_up
+            ORDER BY message_seq_num
         `)
 
-        const rows = result as unknown as ChatMessageRow[]
-
-        return rows.map((row) => ({
-            id: row.id,
-            chatId: row.chat_id,
-            parentId: row.parent_id,
-            messageSeqNum: row.message_seq_num,
-            message: row.message,
-            contentText: row.content_text,
-            createdAt: row.created_at,
-        }))
+        return [...rows]
     }
 
     async getLastMessageInActivePath(chatId: string): Promise<ChatMessage | null> {
@@ -404,9 +414,12 @@ export class ChatMessageRepository {
     }
 
     async deleteByChat(chatId: string): Promise<number> {
-        const result = await this.db.delete(chatMessages).where(eq(chatMessages.chatId, chatId))
+        const deleted = await this.db
+            .delete(chatMessages)
+            .where(eq(chatMessages.chatId, chatId))
+            .returning({ id: chatMessages.id })
 
-        return (result as unknown as { rowCount: number }).rowCount
+        return deleted.length
     }
 }
 
