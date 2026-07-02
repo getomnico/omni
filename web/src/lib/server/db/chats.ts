@@ -4,8 +4,45 @@ import type { MessageParam } from '@anthropic-ai/sdk/resources'
 import { db } from './index'
 import { chats, chatMessages } from './schema'
 import type { Chat, ChatMessage } from './schema'
+import type { ChatSearchResult, HighlightPart } from '$lib/types/chat'
 import * as schema from './schema'
 import { ulid } from 'ulid'
+
+const HEADLINE_MARKER = '**'
+
+export function highlightPartsFromHeadline(headline: string | null | undefined): HighlightPart[] {
+    if (!headline) return []
+
+    const parts: HighlightPart[] = []
+    let cursor = 0
+
+    while (cursor < headline.length) {
+        const start = headline.indexOf(HEADLINE_MARKER, cursor)
+        if (start === -1) {
+            parts.push({ text: headline.slice(cursor), match: false })
+            break
+        }
+
+        if (start > cursor) {
+            parts.push({ text: headline.slice(cursor, start), match: false })
+        }
+
+        const matchStart = start + HEADLINE_MARKER.length
+        const end = headline.indexOf(HEADLINE_MARKER, matchStart)
+        if (end === -1) {
+            parts.push({ text: headline.slice(start), match: false })
+            break
+        }
+
+        if (end > matchStart) {
+            parts.push({ text: headline.slice(matchStart, end), match: true })
+        }
+
+        cursor = end + HEADLINE_MARKER.length
+    }
+
+    return parts.filter((part) => part.text.length > 0)
+}
 
 function extractContentText(message: MessageParam): string | null {
     if (message.role !== 'user' && message.role !== 'assistant') return null
@@ -17,6 +54,30 @@ function extractContentText(message: MessageParam): string | null {
         .map((block) => block.text)
 
     return textParts.length > 0 ? textParts.join('\n') : null
+}
+
+type ChatSearchRow = {
+    id: string
+    user_id: string
+    title: string | null
+    is_starred: boolean
+    model_id: string | null
+    agent_id: string | null
+    created_at: Date
+    updated_at: Date
+    message_id: string | null
+    source: 'title' | 'message'
+    headline: string | null
+}
+
+type ChatMessageRow = {
+    id: string
+    chat_id: string
+    parent_id: string | null
+    message_seq_num: number
+    message: MessageParam
+    content_text: string | null
+    created_at: Date
 }
 
 export class ChatRepository {
@@ -71,6 +132,7 @@ export class ChatRepository {
             .from(chats)
             .where(and(...conditions))
             .orderBy(desc(chats.updatedAt))
+            .$dynamic()
 
         if (options?.limit !== undefined) {
             query = query.limit(options.limit)
@@ -119,11 +181,12 @@ export class ChatRepository {
         return updated.length > 0
     }
 
-    async search(userId: string, query: string): Promise<Chat[]> {
+    async search(userId: string, query: string): Promise<ChatSearchResult[]> {
         const results = await this.db.execute(sql`
             WITH title_matches AS (
                 SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
-                       pdb.score(c.id) AS score
+                       NULL::text AS message_id, NULL::text AS content_text,
+                       pdb.score(c.id) AS score, 'title'::text AS source
                 FROM chats c
                 WHERE c.title ||| ${query}
                   AND c.user_id = ${userId}
@@ -132,7 +195,7 @@ export class ChatRepository {
                 LIMIT 20
             ),
             top_message_matches AS (
-                SELECT cm.id AS message_id, cm.chat_id, pdb.score(cm.id) AS score
+                SELECT cm.id AS message_id, cm.chat_id, cm.content_text, pdb.score(cm.id) AS score
                 FROM chat_messages cm
                 JOIN chats c ON c.id = cm.chat_id
                 WHERE cm.content_text ||| ${query}
@@ -144,37 +207,71 @@ export class ChatRepository {
             message_matches AS (
                 SELECT DISTINCT ON (c.id)
                        c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.created_at, c.updated_at,
-                       tmm.score
+                       tmm.message_id, tmm.content_text, tmm.score, 'message'::text AS source
                 FROM top_message_matches tmm
                 JOIN chats c ON c.id = tmm.chat_id
                 ORDER BY c.id, tmm.score DESC
             ),
-            combined AS (
-                SELECT id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at,
-                       MAX(score) AS max_score
+            ranked_matches AS (
+                SELECT DISTINCT ON (id)
+                       id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at,
+                       message_id, content_text, score, source
                 FROM (
                     SELECT * FROM title_matches
                     UNION ALL
                     SELECT * FROM message_matches
                 ) AS all_matches
-                GROUP BY id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at
+                ORDER BY id, score DESC
+            ),
+            final_candidates AS (
+                SELECT *
+                FROM ranked_matches
+                ORDER BY score DESC
+                LIMIT 20
             )
-            SELECT id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at
-            FROM combined
-            ORDER BY max_score DESC
-            LIMIT 20
+            SELECT id, user_id, title, is_starred, model_id, agent_id, created_at, updated_at,
+                   message_id, source,
+                   CASE
+                       WHEN source = 'message' THEN ts_headline(
+                           'english',
+                           COALESCE(content_text, ''),
+                           plainto_tsquery('english', ${query}),
+                           'StartSel=**, StopSel=**, MaxFragments=2, MaxWords=24, MinWords=6'
+                       )
+                       ELSE ts_headline(
+                           'english',
+                           COALESCE(title, ''),
+                           plainto_tsquery('english', ${query}),
+                           'StartSel=**, StopSel=**, MaxFragments=1, MaxWords=12, MinWords=1'
+                       )
+                   END AS headline
+            FROM final_candidates
+            ORDER BY score DESC
         `)
 
-        return results.map((row: any) => ({
-            id: row.id,
-            userId: row.user_id,
-            title: row.title,
-            isStarred: row.is_starred,
-            modelId: row.model_id,
-            agentId: row.agent_id,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-        }))
+        const rows = results as unknown as ChatSearchRow[]
+
+        return rows.map((row) => {
+            const parts = highlightPartsFromHeadline(row.headline)
+            return {
+                id: row.id,
+                userId: row.user_id,
+                title: row.title,
+                isStarred: row.is_starred,
+                modelId: row.model_id,
+                agentId: row.agent_id,
+                isDeleted: false,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
+                snippet: parts.length
+                    ? {
+                          source: row.source === 'message' ? 'message' : 'title',
+                          messageId: row.message_id ?? null,
+                          parts,
+                      }
+                    : null,
+            }
+        })
     }
 }
 
@@ -277,7 +374,9 @@ export class ChatMessageRepository {
             SELECT * FROM walk_up ORDER BY message_seq_num
         `)
 
-        return result.map((row: any) => ({
+        const rows = result as unknown as ChatMessageRow[]
+
+        return rows.map((row) => ({
             id: row.id,
             chatId: row.chat_id,
             parentId: row.parent_id,
@@ -296,7 +395,7 @@ export class ChatMessageRepository {
     async deleteByChat(chatId: string): Promise<number> {
         const result = await this.db.delete(chatMessages).where(eq(chatMessages.chatId, chatId))
 
-        return result.rowCount
+        return (result as unknown as { rowCount: number }).rowCount
     }
 }
 

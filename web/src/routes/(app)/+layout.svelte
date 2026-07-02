@@ -9,7 +9,6 @@
         SidebarHeader,
         SidebarGroup,
         SidebarGroupContent,
-        SidebarGroupLabel,
         SidebarMenu,
         SidebarMenuItem,
         SidebarMenuButton,
@@ -34,21 +33,22 @@
         StarOff,
         Pencil,
         Trash2,
-        Search,
-        X,
         Bot,
     } from '@lucide/svelte'
     import { onMount, type Snippet } from 'svelte'
+    import type { SerializedChat } from '$lib/types/chat'
     import { cn } from '$lib/utils'
     import { page } from '$app/state'
     import { invalidate, invalidateAll, goto, afterNavigate } from '$app/navigation'
     import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
     import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
+    import ChatHistorySearch from '$lib/components/chat-history-search.svelte'
     import type { Chat } from '$lib/server/db/schema'
 
     import { themeStore } from '$lib/themes/store.svelte'
     import { applyTheme } from '$lib/themes/engine'
     import ThemePicker from '$lib/components/theme-picker.svelte'
+    import { formatDate } from '$lib/utils/datetime'
 
     interface Props {
         data: LayoutData
@@ -57,16 +57,27 @@
 
     let { data, children }: Props = $props()
 
-    let searchQuery = $state('')
-    let searchResults = $state<Chat[]>([])
-    let isSearching = $state(false)
-    let searchTimeout: ReturnType<typeof setTimeout> | undefined
+    type SidebarChat = Chat | SerializedChat
+    type ChatDateGroup = { key: string; label: string; items: SidebarChat[] }
+    type ChatHistoryResponse = {
+        items: SerializedChat[]
+        nextOffset: number | null
+        hasMore: boolean
+    }
+    type PendingChatAction =
+        | { type: 'rename'; chat: SidebarChat }
+        | { type: 'delete'; chat: SidebarChat }
 
-    type PendingChatAction = { type: 'rename'; chat: Chat } | { type: 'delete'; chat: Chat }
+    const RECENT_CHATS_PAGE_SIZE = 20
 
-    let deleteTargetChat = $state<Chat | null>(null)
+    let additionalRecentChats = $state<SerializedChat[]>([])
+    let additionalRecentHasMore = $state<boolean | null>(null)
+    let recentLoadingMore = $state(false)
+    let recentLoadError = $state('')
+
+    let deleteTargetChat = $state<SidebarChat | null>(null)
     let deleteTargetTitle = $state('')
-    let renameTargetChat = $state<Chat | null>(null)
+    let renameTargetChat = $state<SidebarChat | null>(null)
     let renameValue = $state('')
     let pendingChatAction = $state<PendingChatAction | null>(null)
 
@@ -77,13 +88,92 @@
 
     let currentChatTitle = $derived(
         optimisticTitle ??
-            (page.url.pathname.startsWith('/chat') ? (page.data as any).chat?.title : null),
+            (page.url.pathname.startsWith('/chat')
+                ? (page.data as { chat?: { title?: string | null } }).chat?.title
+                : null),
     )
+    let recentChats = $derived<SidebarChat[]>([...data.recentChats, ...additionalRecentChats])
+    let recentHasMore = $derived(additionalRecentHasMore ?? data.recentChatsHasMore)
+    let recentChatGroups = $derived(groupChatsByDate(recentChats, data.user.configuration.timezone))
+
+    function toDate(value: Date | string): Date {
+        return value instanceof Date ? value : new Date(value)
+    }
+
+    function dayKey(date: Date, zone?: string | null): string {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            timeZone: zone || undefined,
+        }).formatToParts(date)
+        const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
+        return `${get('year')}-${get('month')}-${get('day')}`
+    }
+
+    function groupLabel(date: Date, zone?: string | null): string {
+        const today = new Date()
+        const yesterday = new Date(today)
+        yesterday.setDate(today.getDate() - 1)
+
+        const key = dayKey(date, zone)
+        if (key === dayKey(today, zone)) return 'Today'
+        if (key === dayKey(yesterday, zone)) return 'Yesterday'
+        return formatDate(date, zone)
+    }
+
+    function groupChatsByDate(items: SidebarChat[], zone?: string | null): ChatDateGroup[] {
+        const groups: ChatDateGroup[] = []
+
+        for (const chat of items) {
+            const date = toDate(chat.updatedAt)
+            const key = dayKey(date, zone)
+            let group = groups[groups.length - 1]
+            if (!group || group.key !== key) {
+                group = { key, label: groupLabel(date, zone), items: [] }
+                groups.push(group)
+            }
+            group.items.push(chat)
+        }
+
+        return groups
+    }
 
     afterNavigate(() => {
         isEditingHeaderTitle = false
         optimisticTitle = null
     })
+
+    $effect(() => {
+        const recentRevision = `${data.recentChats.map((chat) => chat.id).join(',')}:${data.recentChatsHasMore}`
+        if (!recentRevision) return
+
+        additionalRecentChats = []
+        additionalRecentHasMore = null
+        recentLoadError = ''
+    })
+
+    async function loadMoreRecentChats() {
+        if (recentLoadingMore || !recentHasMore) return
+
+        recentLoadingMore = true
+        recentLoadError = ''
+
+        try {
+            const response = await fetch(
+                `/api/chat/history?limit=${RECENT_CHATS_PAGE_SIZE}&offset=${recentChats.length}&isStarred=false`,
+            )
+            if (!response.ok) throw new Error('Failed to load more chats')
+
+            const data = (await response.json()) as ChatHistoryResponse
+            additionalRecentChats = [...additionalRecentChats, ...data.items]
+            additionalRecentHasMore = data.hasMore
+        } catch (error) {
+            recentLoadError = error instanceof Error ? error.message : 'Failed to load more chats'
+        } finally {
+            recentLoadingMore = false
+        }
+    }
 
     async function saveHeaderTitle() {
         const trimmed = headerTitleValue.trim()
@@ -104,38 +194,7 @@
 
     // logout is handled inside SidebarUserMenu
 
-    function handleSearchInput(value: string) {
-        searchQuery = value
-        clearTimeout(searchTimeout)
-
-        if (!value.trim()) {
-            searchResults = []
-            isSearching = false
-            return
-        }
-
-        isSearching = true
-        searchTimeout = setTimeout(async () => {
-            try {
-                const res = await fetch(`/api/chat/search?q=${encodeURIComponent(value.trim())}`)
-                if (res.ok) {
-                    searchResults = await res.json()
-                }
-            } catch {
-                // silently fail
-            } finally {
-                isSearching = false
-            }
-        }, 300)
-    }
-
-    function clearSearch() {
-        searchQuery = ''
-        searchResults = []
-        isSearching = false
-    }
-
-    async function toggleStar(chat: Chat) {
+    async function toggleStar(chat: SidebarChat) {
         await fetch(`/api/chat/${chat.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
@@ -172,7 +231,7 @@
         invalidate('app:recent_chats')
     }
 
-    function openRenameDialog(chat: Chat) {
+    function openRenameDialog(chat: SidebarChat) {
         renameTargetChat = chat
         renameValue = chat.title || ''
     }
@@ -191,9 +250,6 @@
         deleteTargetChat = action.chat
         deleteTargetTitle = action.chat.title || 'Untitled'
     }
-
-    const displayedChats = $derived(searchQuery.trim() ? searchResults : [])
-    const showSearchResults = $derived(searchQuery.trim().length > 0)
 
     async function saveDetectedTimezoneIfMissing() {
         if (data.user.configuration.timezone) return
@@ -326,94 +382,65 @@
                     <span class="group-data-[collapsible=icon]:hidden">New Chat</span>
                 </Button>
 
-                <!-- Search input -->
-                <div class="relative my-1 group-data-[collapsible=icon]:hidden">
-                    <Search
-                        class="text-muted-foreground pointer-events-none absolute top-1/2 left-2 h-4 w-4 -translate-y-1/2" />
-                    <Input
-                        type="text"
-                        placeholder="Search chats..."
-                        value={searchQuery}
-                        oninput={(e) => handleSearchInput(e.currentTarget.value)}
-                        class="bg-card h-8 pr-8 pl-8 text-xs" />
-                    {#if searchQuery}
-                        <button
-                            class="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 cursor-pointer"
-                            onclick={clearSearch}>
-                            <X class="h-3.5 w-3.5" />
-                        </button>
-                    {/if}
+                <!-- Chat history search -->
+                <div class="my-1 group-data-[collapsible=icon]:hidden">
+                    <ChatHistorySearch
+                        currentChatId={page.params.chatId}
+                        timeZone={data.user.configuration.timezone} />
                 </div>
 
                 <SidebarGroupContent>
-                    {#if showSearchResults}
-                        <!-- Search results -->
+                    <!-- Starred chats -->
+                    {#if data.starredChats.length > 0}
                         <p
                             class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
-                            {isSearching
-                                ? 'Searching...'
-                                : `${displayedChats.length} result${displayedChats.length !== 1 ? 's' : ''}`}
+                            Starred
                         </p>
                         <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
-                            {#each displayedChats as chat (chat.id)}
-                                <SidebarMenuItem>
-                                    <SidebarMenuButton
-                                        class={cn(
-                                            page.params.chatId === chat.id &&
-                                                'bg-sidebar-accent text-sidebar-accent-foreground',
-                                        )}>
-                                        {#snippet child({ props })}
-                                            <a
-                                                href="/chat/{chat.id}"
-                                                {...props}
-                                                onclick={clearSearch}>
-                                                <div class="flex items-center gap-1.5 truncate">
-                                                    {#if chat.agentId}
-                                                        <Bot
-                                                            class="text-muted-foreground h-3.5 w-3.5 shrink-0" />
-                                                    {:else if chat.isStarred}
-                                                        <Star
-                                                            class="h-3 w-3 shrink-0 fill-current" />
-                                                    {/if}
-                                                    {chat.title || 'Untitled'}
-                                                </div>
-                                            </a>
-                                        {/snippet}
-                                    </SidebarMenuButton>
-                                </SidebarMenuItem>
+                            {#each data.starredChats as chat (chat.id)}
+                                {@render chatItem(chat)}
                             {/each}
                         </SidebarMenu>
-                    {:else}
-                        <!-- Starred chats -->
-                        {#if data.starredChats.length > 0}
+                    {/if}
+
+                    <!-- Recent chats -->
+                    <p
+                        class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
+                        Recent chats
+                    </p>
+                    {#if recentChats.length > 0}
+                        {#each recentChatGroups as group (group.key)}
                             <p
-                                class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
-                                Starred
+                                class="text-muted-foreground mt-2 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
+                                {group.label}
                             </p>
                             <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
-                                {#each data.starredChats as chat (chat.id)}
+                                {#each group.items as chat (chat.id)}
                                     {@render chatItem(chat)}
                                 {/each}
                             </SidebarMenu>
+                        {/each}
+                        {#if recentHasMore}
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                class="mt-2 w-full cursor-pointer group-data-[collapsible=icon]:hidden"
+                                disabled={recentLoadingMore}
+                                onclick={loadMoreRecentChats}>
+                                {recentLoadingMore ? 'Loading...' : 'Load more'}
+                            </Button>
                         {/if}
-
-                        <!-- Recent chats -->
-                        <p
-                            class="text-muted-foreground mt-4 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
-                            Recent chats
-                        </p>
-                        <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
-                            {#if data.recentChats.length > 0}
-                                {#each data.recentChats as chat (chat.id)}
-                                    {@render chatItem(chat)}
-                                {/each}
-                            {:else if data.starredChats.length === 0}
-                                <div
-                                    class="text-muted-foreground px-3 py-4 text-center text-sm group-data-[collapsible=icon]:hidden">
-                                    No chats yet
-                                </div>
-                            {/if}
-                        </SidebarMenu>
+                        {#if recentLoadError}
+                            <p
+                                class="text-destructive px-2 py-1 text-xs group-data-[collapsible=icon]:hidden">
+                                {recentLoadError}
+                            </p>
+                        {/if}
+                    {:else if data.starredChats.length === 0}
+                        <div
+                            class="text-muted-foreground px-3 py-4 text-center text-sm group-data-[collapsible=icon]:hidden">
+                            No chats yet
+                        </div>
                     {/if}
                 </SidebarGroupContent>
             </SidebarGroup>
@@ -482,7 +509,7 @@
     </div>
 </SidebarProvider>
 
-{#snippet chatItem(chat: Chat)}
+{#snippet chatItem(chat: SidebarChat)}
     <SidebarMenuItem>
         <SidebarMenuButton
             class={cn(
