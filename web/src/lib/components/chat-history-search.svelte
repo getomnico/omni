@@ -7,16 +7,17 @@
     import { cn } from '$lib/utils'
     import { formatChatTimestamp } from '$lib/utils/datetime'
     import { Bot, Search, Star, MessageCircle } from '@lucide/svelte'
+    import { onDestroy } from 'svelte'
 
-    type SerializedChat = Omit<Chat, 'createdAt' | 'updatedAt'> & {
-        createdAt: string
-        updatedAt: string
+    type ChatListItem = Omit<Chat, 'createdAt' | 'updatedAt'> & {
+        createdAt: Date | string
+        updatedAt: Date | string
     }
 
     type HighlightPart = { text: string; match: boolean }
 
-    type SerializedChatSearchHit = {
-        chat: SerializedChat
+    type ChatSearchListItem = {
+        chat: ChatListItem
         titleParts: HighlightPart[]
         snippet: {
             source: 'title' | 'message'
@@ -25,26 +26,37 @@
         } | null
     }
 
-    type SearchResponse = SerializedChatSearchHit[]
+    type SearchResponse = ChatSearchListItem[]
 
     interface Props {
         currentChatId?: string
+        recentChats?: ChatListItem[]
         timeZone?: string | null
     }
 
-    let { currentChatId, timeZone }: Props = $props()
+    let { currentChatId, recentChats = [], timeZone }: Props = $props()
 
     let open = $state(false)
     let query = $state('')
     let inputRef: HTMLInputElement | null = $state(null)
 
-    let searchResults = $state<SerializedChatSearchHit[]>([])
+    let searchResults = $state<ChatSearchListItem[]>([])
     let searchLoading = $state(false)
     let searchError = $state('')
     let selectedIndex = $state(0)
+    let searchTimeout: ReturnType<typeof setTimeout> | null = null
+    let searchController: AbortController | null = null
 
     let trimmedQuery = $derived(query.trim())
-    let activeItems = $derived<SerializedChat[]>(searchResults.map((hit) => hit.chat))
+    let recentItems = $derived<ChatSearchListItem[]>(
+        recentChats.map((chat) => ({
+            chat,
+            titleParts: [{ text: chat.title || 'Untitled', match: false }],
+            snippet: null,
+        })),
+    )
+    let visibleItems = $derived(trimmedQuery ? searchResults : recentItems)
+    let activeItems = $derived<ChatListItem[]>(visibleItems.map((hit) => hit.chat))
 
     async function navigateToChat(chatId: string) {
         open = false
@@ -52,7 +64,17 @@
         await goto(`/chat/${chatId}`)
     }
 
+    function cancelSearch() {
+        if (searchTimeout) {
+            clearTimeout(searchTimeout)
+            searchTimeout = null
+        }
+        searchController?.abort()
+        searchController = null
+    }
+
     function resetSearchState() {
+        cancelSearch()
         query = ''
         searchResults = []
         searchError = ''
@@ -63,15 +85,57 @@
     function handleOpenChange(nextOpen: boolean) {
         open = nextOpen
         resetSearchState()
+    }
 
-        if (nextOpen) {
-            requestAnimationFrame(() => inputRef?.focus())
+    function scheduleSearch(nextQuery: string) {
+        cancelSearch()
+
+        const current = nextQuery.trim()
+        if (!open || !current) {
+            searchResults = []
+            searchError = ''
+            searchLoading = false
+            return
         }
+
+        searchResults = []
+        searchError = ''
+        searchLoading = false
+
+        searchTimeout = setTimeout(async () => {
+            searchTimeout = null
+            searchLoading = true
+            const controller = new AbortController()
+            searchController = controller
+
+            try {
+                const response = await fetch(`/api/chat/search?q=${encodeURIComponent(current)}`, {
+                    signal: controller.signal,
+                })
+                if (!response.ok) throw new Error('Search failed')
+
+                searchResults = (await response.json()) as SearchResponse
+                selectedIndex = 0
+            } catch (error) {
+                if (!controller.signal.aborted) {
+                    searchError = error instanceof Error ? error.message : 'Search failed'
+                    searchResults = []
+                }
+            } finally {
+                if (!controller.signal.aborted) {
+                    searchLoading = false
+                }
+                if (searchController === controller) {
+                    searchController = null
+                }
+            }
+        }, 250)
     }
 
     function handleQueryInput(event: Event) {
         query = (event.currentTarget as HTMLInputElement).value
         selectedIndex = 0
+        scheduleSearch(query)
     }
 
     function handleKeydown(event: KeyboardEvent) {
@@ -94,46 +158,7 @@
         }
     }
 
-    $effect(() => {
-        const current = trimmedQuery
-
-        if (!open || !current) {
-            searchResults = []
-            searchError = ''
-            searchLoading = false
-            return
-        }
-
-        searchLoading = true
-        searchError = ''
-
-        const controller = new AbortController()
-        const timeout = setTimeout(async () => {
-            try {
-                const response = await fetch(`/api/chat/search?q=${encodeURIComponent(current)}`, {
-                    signal: controller.signal,
-                })
-                if (!response.ok) throw new Error('Search failed')
-
-                searchResults = (await response.json()) as SearchResponse
-                selectedIndex = 0
-            } catch (error) {
-                if (!controller.signal.aborted) {
-                    searchError = error instanceof Error ? error.message : 'Search failed'
-                    searchResults = []
-                }
-            } finally {
-                if (!controller.signal.aborted) {
-                    searchLoading = false
-                }
-            }
-        }, 250)
-
-        return () => {
-            clearTimeout(timeout)
-            controller.abort()
-        }
-    })
+    onDestroy(cancelSearch)
 </script>
 
 <Popover.Root {open} onOpenChange={handleOpenChange}>
@@ -178,11 +203,7 @@
                         </div>
 
                         <div class="min-h-0 flex-1 overflow-y-auto p-2">
-                            {#if !trimmedQuery}
-                                <div class="text-muted-foreground px-4 py-8 text-center text-sm">
-                                    Start typing to search chats.
-                                </div>
-                            {:else if searchLoading}
+                            {#if searchLoading}
                                 <div class="text-muted-foreground px-4 py-8 text-center text-sm">
                                     Searching…
                                 </div>
@@ -190,16 +211,20 @@
                                 <div class="text-destructive px-4 py-8 text-center text-sm">
                                     {searchError}
                                 </div>
-                            {:else if searchResults.length === 0}
+                            {:else if visibleItems.length === 0}
                                 <div class="text-muted-foreground px-4 py-8 text-center text-sm">
-                                    No chats found for “{trimmedQuery}”.
+                                    {trimmedQuery
+                                        ? `No chats found for “${trimmedQuery}”.`
+                                        : 'No recent chats yet.'}
                                 </div>
                             {:else}
                                 <div
                                     class="space-y-1"
                                     role="listbox"
-                                    aria-label="Chat search results">
-                                    {#each searchResults as hit, index (hit.chat.id)}
+                                    aria-label={trimmedQuery
+                                        ? 'Chat search results'
+                                        : 'Recent chats'}>
+                                    {#each visibleItems as hit, index (hit.chat.id)}
                                         <button
                                             type="button"
                                             role="option"

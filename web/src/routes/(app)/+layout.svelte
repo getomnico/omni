@@ -393,6 +393,7 @@
                 <!-- Chat history search -->
                 <ChatHistorySearch
                     currentChatId={page.params.chatId}
+                    recentChats={data.recentChats}
                     timeZone={data.user.configuration.timezone} />
 
                 <SidebarGroupContent>

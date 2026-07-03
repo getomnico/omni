@@ -136,6 +136,8 @@ test('sidebar loads older recent chats and spotlight searches starred chats', as
             Math.abs(popoverBox!.y + popoverBox!.height / 2 - viewport!.height / 2),
         ).toBeLessThanOrEqual(2)
         expect(Math.abs(popoverBox!.height - viewport!.height / 3)).toBeLessThanOrEqual(2)
+        await expect(page.getByRole('option', { name: /^History Chat 1\b/i })).toBeVisible()
+        await expect(page.getByText('Start typing to search chats.')).toHaveCount(0)
 
         await page.getByPlaceholder('Search chats...').fill('spotlightstar')
         await expect(
