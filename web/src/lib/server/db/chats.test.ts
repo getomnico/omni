@@ -4,7 +4,7 @@ import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
 import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { startTestDb, stopTestDb, createTestUser, createTestChat } from './test-setup'
-import { ChatMessageRepository, ChatRepository } from './chats'
+import { ChatMessageRepository, ChatRepository, highlightPartsFromHeadline } from './chats'
 import * as schema from './schema'
 
 let db: PostgresJsDatabase<typeof schema>
@@ -65,7 +65,7 @@ describe('ChatMessageRepository branching', () => {
         const root = await repo.create(chatId, userMsg('hello'))
         const a = await repo.create(chatId, assistantMsg('hi'), root.id)
         const b = await repo.create(chatId, userMsg('option 1'), a.id)
-        const c = await repo.create(chatId, assistantMsg('response 1'), b.id)
+        await repo.create(chatId, assistantMsg('response 1'), b.id)
         const bPrime = await repo.create(chatId, userMsg('option 2'), a.id)
         const cPrime = await repo.create(chatId, assistantMsg('response 2'), bPrime.id)
 
@@ -80,7 +80,7 @@ describe('ChatMessageRepository branching', () => {
         const b = await repo.create(chatId, userMsg('option 1'), a.id)
         const c = await repo.create(chatId, assistantMsg('response 1'), b.id)
         const bPrime = await repo.create(chatId, userMsg('option 2'), a.id)
-        const cPrime = await repo.create(chatId, assistantMsg('response 2'), bPrime.id)
+        await repo.create(chatId, assistantMsg('response 2'), bPrime.id)
 
         // Add D as child of C (the non-active branch) — this should shift the active path
         const d = await repo.create(chatId, userMsg('follow up'), c.id)
@@ -104,6 +104,94 @@ describe('ChatMessageRepository branching', () => {
         const path = await repo.getActivePath(chatId)
 
         expect(path.map((m) => m.id)).toEqual([root.id, a.id, bPrime.id])
+    })
+})
+
+describe('ChatRepository history and search', () => {
+    it('getByUserId() paginates full history and includes starred chats unless filtered', async () => {
+        const older = chatId
+        const starred = await createTestChat(db, userId, 'starred middle')
+        const newest = await createTestChat(db, userId, 'newest chat')
+
+        await db
+            .update(schema.chats)
+            .set({ updatedAt: new Date('2026-01-01T00:00:00.000Z') })
+            .where(eq(schema.chats.id, older))
+        await db
+            .update(schema.chats)
+            .set({ updatedAt: new Date('2026-01-02T00:00:00.000Z'), isStarred: true })
+            .where(eq(schema.chats.id, starred))
+        await db
+            .update(schema.chats)
+            .set({ updatedAt: new Date('2026-01-03T00:00:00.000Z') })
+            .where(eq(schema.chats.id, newest))
+
+        const secondPage = await chatRepo.getByUserId(userId, { limit: 2, offset: 1 })
+        expect(secondPage.map((chat) => chat.id)).toEqual([starred, older])
+
+        const unstarred = await chatRepo.getByUserId(userId, { isStarred: false })
+        expect(unstarred.map((chat) => chat.id)).toContain(newest)
+        expect(unstarred.map((chat) => chat.id)).toContain(older)
+        expect(unstarred.map((chat) => chat.id)).not.toContain(starred)
+    })
+
+    it('search() includes starred chats', async () => {
+        const starred = await createTestChat(db, userId, 'Unique Narwhal Roadmap')
+        await db.update(schema.chats).set({ isStarred: true }).where(eq(schema.chats.id, starred))
+
+        const results = await chatRepo.search(userId, 'narwhal')
+
+        expect(results.map((hit) => hit.chat.id)).toContain(starred)
+        expect(results.find((hit) => hit.chat.id === starred)?.chat.isStarred).toBe(true)
+    })
+
+    it('search() shows chat content preview when the title matches', async () => {
+        const titleMatch = await createTestChat(db, userId, 'Unique Narwhal Roadmap')
+        const preview = await repo.create(
+            titleMatch,
+            userMsg('Discuss Q3 launch risks, customer rollout sequencing, and owner follow-ups.'),
+        )
+
+        const results = await chatRepo.search(userId, 'narwhal')
+        const result = results.find((hit) => hit.chat.id === titleMatch)
+
+        expect(result?.titleParts.some((part) => part.match && /narwhal/i.test(part.text))).toBe(
+            true,
+        )
+        expect(result?.snippet?.source).toBe('title')
+        expect(result?.snippet?.messageId).toBe(preview.id)
+        expect(result?.snippet?.parts.map((part) => part.text).join('')).toContain(
+            'Discuss Q3 launch risks',
+        )
+    })
+
+    it('search() returns the best matching message snippet with safe highlight parts', async () => {
+        const searchChat = await createTestChat(db, userId, 'Kitchen planning')
+        await repo.create(searchChat, userMsg('This mentions dragonfruit once.'))
+        const bestMessage = await repo.create(
+            searchChat,
+            assistantMsg('dragonfruit dragonfruit dragonfruit shows the best matching context.'),
+        )
+
+        const results = await chatRepo.search(userId, 'dragonfruit')
+        const result = results.find((hit) => hit.chat.id === searchChat)
+
+        expect(result).toBeDefined()
+        expect(result?.snippet?.source).toBe('message')
+        expect(result?.snippet?.messageId).toBe(bestMessage.id)
+        expect(
+            result?.snippet?.parts.some((part) => part.match && /dragonfruit/i.test(part.text)),
+        ).toBe(true)
+    })
+
+    it('highlightPartsFromHeadline() converts marker output to structured non-HTML parts', () => {
+        expect(
+            highlightPartsFromHeadline('alpha \u0002bravo\u0003 <script>charlie</script>'),
+        ).toEqual([
+            { text: 'alpha ', match: false },
+            { text: 'bravo', match: true },
+            { text: ' <script>charlie</script>', match: false },
+        ])
     })
 })
 

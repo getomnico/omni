@@ -13,15 +13,24 @@ export const load: LayoutServerLoad = async ({ locals, depends }) => {
     }
 
     depends('app:recent_chats')
-    const [starredChats, recentChats] = await Promise.all([
+    const recentChatsLimit = 20
+    const [starredChats, recentChatRows] = await Promise.all([
         chatRepository.getByUserId(locals.user.id, { isStarred: true }),
-        chatRepository.getByUserId(locals.user.id, { limit: 20, isStarred: false }),
+        chatRepository.getByUserId(locals.user.id, {
+            limit: recentChatsLimit + 1,
+            isStarred: false,
+        }),
     ])
+    const recentChatsHasMore = recentChatRows.length > recentChatsLimit
+    const recentChats = recentChatsHasMore
+        ? recentChatRows.slice(0, recentChatsLimit)
+        : recentChatRows
 
     return {
         user: locals.user,
         starredChats,
         recentChats,
+        recentChatsHasMore,
         agentsEnabled: env.AGENTS_ENABLED === 'true',
         memoryEnabled: env.MEMORY_ENABLED === 'true',
     }

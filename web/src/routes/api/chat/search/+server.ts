@@ -5,6 +5,10 @@ import { chatRepository } from '$lib/server/db/chats'
 export const GET: RequestHandler = async ({ url, locals }) => {
     const logger = locals.logger.child('chat-search')
 
+    if (!locals.user) {
+        return json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const query = url.searchParams.get('q')?.trim()
     if (!query) {
         return json({ error: 'Query parameter "q" is required' }, { status: 400 })
