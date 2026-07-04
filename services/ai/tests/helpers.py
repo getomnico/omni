@@ -4,6 +4,7 @@ Provides reusable DB data factories and mock LLM event generators
 so that individual test files don't duplicate boilerplate.
 """
 
+import asyncio
 import json
 from typing import Any
 from unittest.mock import AsyncMock
@@ -277,3 +278,229 @@ def create_mock_llm_multi(
     provider.stream_response = stream_response
     provider.health_check.return_value = True
     return provider
+
+
+# =============================================================================
+# SSE streaming helpers
+# =============================================================================
+
+
+async def stream_sse(
+    client,
+    chat_id: str,
+    headers: dict[str, str] | None = None,
+):
+    """Async generator yielding (event_type, data, sse_id) triples from the
+    chat SSE endpoint using httpx streaming, so the caller can react to events
+    as they arrive (e.g. fire a POST /cancel mid-stream).
+
+    Usage::
+
+        async for event_type, data, sse_id in stream_sse(client, chat_id):
+            if event_type == "message":
+                payload = json.loads(data)
+                if payload.get("type") == "message_stop":
+                    break
+
+    Args:
+        client: An ``httpx.AsyncClient`` (with ``ASGITransport`` wired to the
+            test app).
+        chat_id: The chat ID.
+        headers: Optional request headers (e.g. ``{"Last-Event-ID": "1234-0"}``).
+
+    Yields:
+        ``(event_type: str | None, data: str, sse_id: str | None)``. The
+        ``sse_id`` is the ``id:`` prefix from the consumer's Redis-stream
+        entry (``None`` for heartbeats and synthetic events).
+    """
+    url = f"/chat/{chat_id}/stream"
+    async with client.stream("GET", url, headers=headers) as response:
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        lines: list[str] = []
+        sse_id: str | None = None
+        async for raw_line in response.aiter_lines():
+            line = raw_line.rstrip("\r")
+            if line == "":
+                if not lines:
+                    continue
+                event_type: str | None = None
+                data_parts: list[str] = []
+                for ln in lines:
+                    if ln.startswith("id: "):
+                        sse_id = ln[4:].strip()
+                    elif ln.startswith("event: "):
+                        event_type = ln[7:].strip()
+                    elif ln.startswith("data: "):
+                        data_parts.append(ln[6:])
+                data = "\n".join(data_parts)
+                yield (event_type, data, sse_id)
+                lines = []
+                continue
+            lines.append(line)
+
+
+async def collect_sse_events(
+    client,
+    chat_id: str,
+    headers: dict[str, str] | None = None,
+    timeout: float = 30,
+) -> list[tuple[str | None, str, str | None]]:
+    """Convenience helper: read all SSE events from the stream until a
+    terminal event (``end_of_stream``, ``stream_error``, ``not_resumable``) is
+    encountered, then return the complete list.
+
+    Use this for simple assertion-based tests that don't need to interleave
+    other actions (like ``POST /cancel``) while the stream is active.
+    """
+    events: list[tuple[str | None, str, str | None]] = []
+    async for event_type, data, sse_id in stream_sse(client, chat_id, headers=headers):
+        events.append((event_type, data, sse_id))
+        if event_type in ("end_of_stream", "stream_error", "not_resumable"):
+            break
+    return events
+
+
+def assert_sse_wire(events: list[tuple[str | None, str, str | None]]) -> None:
+    """Validate the SSE wire format of a list of consumer events.
+
+    Checks:
+    * Every event from the Redis stream carries a non-None ``sse_id``.
+      Heartbeats (spontaneous without an ``id:`` line) are exempt because
+      ``_consume_run`` yields them directly, not from a Redis stream entry.
+    * ``sse_id`` values are strictly increasing (when present).
+    * Every event has at least an ``event_type`` and a ``data`` value.
+    """
+    seen_ids: list[str] = []
+    for idx, (event_type, data, sse_id) in enumerate(events):
+        assert event_type is not None, (
+            f"Event {idx} is missing event: field. data={data!r}"
+        )
+        assert data is not None, (
+            f"Event {idx} (type={event_type}) has no data: line"
+        )
+        if event_type == "heartbeat":
+            # Heartbeats are synthetic and don't carry an id: line.
+            continue
+        assert (
+            sse_id is not None
+        ), f"Event {idx} (type={event_type}) missing id: line. data={data!r}"
+        seen_ids.append(sse_id)
+    # Verify monotonic ordering
+    for i in range(1, len(seen_ids)):
+        assert seen_ids[i] > seen_ids[i - 1], (
+            f"sse_id not strictly increasing at position {i}: "
+            f"{seen_ids[i - 1]} -> {seen_ids[i]}"
+        )
+
+
+# =============================================================================
+# Gated mock LLM
+# =============================================================================
+
+
+class GatedRecordingLLM:
+    """Mock LLMProvider that records every call's kwargs and can be gated with
+    ``asyncio.Event`` per call.
+
+    Each response entry follows the same convention as ``create_mock_llm_multi``:
+
+    * ``("text", "response string")``
+    * ``("tool_call", {"name": ..., "input": ..., "id": ...})``
+
+    Gates are **open by default** (the call proceeds immediately).  Call
+    ``hold(call_idx, at="pre")`` *before starting the stream* to close the
+    gate for a specific call index; ``release(call_idx)`` opens it again.
+
+    ``at="pre"`` blocks before yielding any SDK events; ``at="post"`` blocks
+    after yielding all events.  ``at="pre"`` is what you want to make the LLM
+    "hang" at the start of generation; ``at="post"`` is useful for idle-window
+    scenarios where you need the agent loop to pause after a turn.
+    """
+
+    PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
+    model_name = "gated-test"
+    provider_type = "test"
+
+    def __init__(
+        self,
+        responses: list[tuple[str, Any]],
+        model_record_id: str,
+        *,
+        inter_event_delay: float = 0.0,
+        fail_on_call: int | None = None,
+        fail_exc: BaseException | None = None,
+    ) -> None:
+        self.responses = responses
+        self.model_record_id = model_record_id
+        self._inter_event_delay = inter_event_delay
+        self._fail_on_call = fail_on_call
+        self._fail_exc = fail_exc or Exception("GatedRecordingLLM simulated failure")
+        # Recorded kwargs for every call to stream_response.
+        self.calls: list[dict[str, Any]] = []
+        # call_idx -> "pre" | "post"
+        self._held: dict[int, str] = {}
+        self._gates: dict[int, asyncio.Event] = {}
+
+    def hold(self, call_idx: int, at: str = "pre") -> None:
+        """Gate the call at ``call_idx`` so it blocks at ``at``.
+
+        Must be called **before** the stream starts (or at least before the
+        gate is awaited by the producer).
+        """
+        self._held[call_idx] = at
+
+    def release(self, call_idx: int) -> None:
+        """Open the gate for the call, letting it proceed."""
+        gate = self._gates.get(call_idx)
+        if gate is not None:
+            gate.set()
+
+    async def stream_response(self, **kwargs):
+        call_idx = len(self.calls)
+        # Record BEFORE the fail check so the retry counter is accurate
+        captured = {}
+        for k, v in kwargs.items():
+            if isinstance(v, (list, dict)):
+                captured[k] = json.loads(json.dumps(v))
+            else:
+                captured[k] = v
+        self.calls.append(captured)
+        if call_idx == self._fail_on_call:
+            raise self._fail_exc
+
+        if call_idx in self._held and self._held[call_idx] == "pre":
+            gate = asyncio.Event()
+            self._gates[call_idx] = gate
+            await gate.wait()
+
+        idx = min(call_idx, len(self.responses) - 1)
+        kind, payload = self.responses[idx]
+        if kind == "tool_call":
+            for event in tool_call_events(
+                payload["input"],
+                tool_name=payload.get("name", "search_documents"),
+                tool_id=payload.get("id", f"toolu_{call_idx}"),
+            ):
+                yield event
+                if self._inter_event_delay:
+                    await asyncio.sleep(self._inter_event_delay)
+        else:
+            for event in text_response_events(payload):
+                yield event
+                if self._inter_event_delay:
+                    await asyncio.sleep(self._inter_event_delay)
+
+        if call_idx in self._held and self._held[call_idx] == "post":
+            gate = asyncio.Event()
+            self._gates[call_idx] = gate
+            await gate.wait()
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def get_context_window_tokens(self):
+        from providers import ContextWindowInfo, SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS
+
+        return ContextWindowInfo(
+            tokens=SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS, source="safe_default"
+        )
