@@ -1270,15 +1270,15 @@
         // often dead without an 'error' event firing. If we're still streaming,
         // reconnect from the last offset and resume.
         const handleVisibility = () => {
-            if (
-                document.visibilityState === 'visible' &&
-                isStreaming &&
-                activeStreamChatId === data.chat.id &&
-                (!eventSource || eventSource.readyState === EventSource.CLOSED) &&
-                !reconnectTimer
-            ) {
-                reconnectStream?.()
-            }
+            if (document.visibilityState !== 'visible') return
+            if (!isStreaming || activeStreamChatId !== data.chat.id) return
+            if (reconnectTimer) return
+            // The socket is usually dead on return without ever firing 'error'
+            // (it can even still report readyState OPEN). Reconnect if it isn't
+            // open or no event/heartbeat arrived within the stall window.
+            const stalled = Date.now() - lastStreamEventAt > STREAM_STALL_MS
+            const notOpen = !eventSource || eventSource.readyState !== EventSource.OPEN
+            if (stalled || notOpen) reconnectStream?.()
         }
         document.addEventListener('visibilitychange', handleVisibility)
 
@@ -1536,6 +1536,10 @@
                 { withCredentials: true },
             )
 
+            // Each (re)connect gets a fresh stall window so the watchdog below
+            // doesn't fire while a new connection is still being established.
+            lastStreamEventAt = Date.now()
+
             eventSource.addEventListener('message_id', (event) => {
                 if (!isCurrentStream()) return
                 streamLastEventId = event.lastEventId || streamLastEventId
@@ -1571,6 +1575,7 @@
             eventSource.addEventListener('heartbeat', () => {
                 if (!isCurrentStream()) return
                 lastStreamEventAt = Date.now()
+                reconnectAttempts = 0
             })
 
             eventSource.addEventListener('message', (event) => {
@@ -1866,12 +1871,12 @@
         if (streamWatchdog) clearInterval(streamWatchdog)
         streamWatchdog = setInterval(() => {
             if (!isStreaming || streamCompleted || activeStreamChatId !== chatId) return
-            const stalled = Date.now() - lastStreamEventAt > STREAM_STALL_MS
-            if (stalled && !reconnectTimer) {
-                eventSource?.close()
-                eventSource = null
-                reconnectStream?.()
-            }
+            if (reconnectTimer) return
+            // Heartbeats arrive ~every 15s while the run is alive, so no event within
+            // the stall window means the socket is dead — even if the browser
+            // still reports it OPEN (the half-open socket left by a backgrounded
+            // tab). Reconnect from the last offset regardless of readyState.
+            if (Date.now() - lastStreamEventAt > STREAM_STALL_MS) reconnectStream?.()
         }, 5000)
     }
 

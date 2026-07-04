@@ -140,6 +140,9 @@ _CANCEL_TTL = 300
 _CANCEL_CHECK_INTERVAL_SECONDS = 1.0
 
 _background_run_tasks: set[asyncio.Task] = set()
+# Producer tasks keyed by chat so an explicit Stop can cancel the right run
+# immediately in-process. The Redis cancel flag handles cross-worker stops.
+_run_tasks_by_chat: dict[str, asyncio.Task] = {}
 
 
 def _stream_key(chat_id: str) -> str:
@@ -380,6 +383,17 @@ async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
                 approximate=True,
             )
             await redis_client.expire(lock_key, _RUN_LOCK_TTL)
+    except asyncio.CancelledError:
+        # Explicit Stop cancelled this producer task. Emit a terminal event so
+        # any still-attached consumer ends cleanly instead of seeing the lock
+        # disappear and reporting "Generation ended unexpectedly".
+        try:
+            await redis_client.xadd(
+                stream_key, {"e": "event: end_of_stream\ndata: Stopped\n\n"}
+            )
+        except Exception:
+            pass
+        raise
     except Exception as e:
         logger.error(f"Producer failed for chat {chat_id}: {e}", exc_info=True)
         try:
@@ -2119,7 +2133,16 @@ async def stream_chat(
         )
     )
     _background_run_tasks.add(task)
-    task.add_done_callback(_background_run_tasks.discard)
+    _run_tasks_by_chat[chat_id] = task
+
+    def _cleanup_run_task(t: asyncio.Task, cid: str = chat_id) -> None:
+        _background_run_tasks.discard(t)
+        # Only clear the registry slot if it still points at this task; a new run
+        # for the same chat may have already claimed it.
+        if _run_tasks_by_chat.get(cid) is t:
+            del _run_tasks_by_chat[cid]
+
+    task.add_done_callback(_cleanup_run_task)
 
     return StreamingResponse(
         _consume_run(redis_client, chat_id, "0"),
@@ -2132,13 +2155,24 @@ async def stream_chat(
 async def cancel_chat_stream(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
-    """Explicit Stop: signal the background run to stop at its next checkpoint."""
-    redis_client = request.app.state.redis_client
+    """Explicit Stop: end the background run now.
+
+    Sets a Redis cancel flag (the cross-worker signal the producer checks at its
+    next checkpoint) and, if the producer task lives in this process, cancels it
+    directly so generation stops immediately — even mid-message or during a slow
+    tool call, where the next checkpoint could be far off.
+    """
+    redis_client = getattr(request.app.state, "redis_client", None)
     if redis_client is not None:
         try:
             await redis_client.set(_cancel_key(chat_id), "1", ex=_CANCEL_TTL)
         except Exception as e:
             logger.error(f"Failed to set cancel flag for chat {chat_id}: {e}")
+
+    task = _run_tasks_by_chat.get(chat_id)
+    if task is not None and not task.done():
+        task.cancel()
+
     return {"status": "cancelling"}
 
 
