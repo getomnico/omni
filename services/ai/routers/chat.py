@@ -140,7 +140,6 @@ _STREAM_MAXLEN = 5000  # cap buffered events per run
 _CANCEL_TTL = 300
 _CANCEL_CHECK_INTERVAL_SECONDS = 1.0
 
-_background_run_tasks: set[asyncio.Task] = set()
 # Producer tasks keyed by chat so an explicit Stop can cancel the right run
 # immediately in-process. The Redis cancel flag handles cross-worker stops.
 _run_tasks_by_chat: dict[str, asyncio.Task] = {}
@@ -1605,6 +1604,7 @@ async def stream_chat(
             # Initialized here so the error/cancel handlers below can always
             # reference whatever content was accumulated before the failure.
             content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+            content_blocks_finalized = False
 
             if pending or pending_oauth:
                 if pending_oauth:
@@ -1791,6 +1791,7 @@ async def stream_chat(
 
                 logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
                 content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+                content_blocks_finalized = False
                 provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
 
                 # Rebuild the per-turn tool list. The set of loaded connector
@@ -2002,6 +2003,7 @@ async def stream_chat(
 
                 # Send complete message to omni-web for database persistence
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
+                content_blocks_finalized = True
 
                 if parse_errors:
                     tool_result_message = MessageParam(
@@ -2158,10 +2160,13 @@ async def stream_chat(
             # early-persisted assistant row is updated (not deleted) by
             # _persist_and_transform.  This mirrors the except Exception
             # block below.
-            partial = _partial_assistant_message(content_blocks)
-            if partial is not None:
-                conversation_messages.append(partial)
-                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
+            # Only emit if the current content blocks haven't already been
+            # finalized via the normal per-iteration save.
+            if not content_blocks_finalized:
+                partial = _partial_assistant_message(content_blocks)
+                if partial is not None:
+                    conversation_messages.append(partial)
+                    yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
             raise
         except Exception as e:
             logger.error(
@@ -2169,10 +2174,13 @@ async def stream_chat(
             )
             # Finalize whatever partial assistant content was accumulated before
             # the failure, so the early-persisted row is not left empty.
-            partial = _partial_assistant_message(content_blocks)
-            if partial is not None:
-                conversation_messages.append(partial)
-                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
+            # Only emit if the current content blocks haven't already been
+            # finalized via the normal per-iteration save.
+            if not content_blocks_finalized:
+                partial = _partial_assistant_message(content_blocks)
+                if partial is not None:
+                    conversation_messages.append(partial)
+                    yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
             yield _sse_event("stream_error", _chat_error_payload(e))
 
     parent_id = chat_messages[-1].id if chat_messages else None
@@ -2206,11 +2214,9 @@ async def stream_chat(
             redis_client, chat_id, stream_generator(), messages_repo, parent_id
         )
     )
-    _background_run_tasks.add(task)
     _run_tasks_by_chat[chat_id] = task
 
     def _cleanup_run_task(t: asyncio.Task, cid: str = chat_id) -> None:
-        _background_run_tasks.discard(t)
         # Only clear the registry slot if it still points at this task; a new run
         # for the same chat may have already claimed it.
         if _run_tasks_by_chat.get(cid) is t:

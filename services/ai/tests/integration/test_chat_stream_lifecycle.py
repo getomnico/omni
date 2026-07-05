@@ -484,6 +484,68 @@ class TestCancel:
             f"Got: {text!r}"
         )
 
+    @pytest.mark.asyncio
+    async def test_redis_flag_cancel_finalizes_partial_assistant(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Cross-worker Stop via the Redis cancel flag finalizes the
+        partial assistant content through the ``if cancelled: yield
+        save_message`` checkpoint path (not the ``task.cancel()`` path).
+
+        Strategy: LLM with inter-event delay yields text_delta events
+        slowly so content_blocks accumulates content.  After text has
+        started flowing, set the Redis cancel flag.  The event-loop
+        cancel check (every ``_CANCEL_CHECK_INTERVAL_SECONDS``) detects
+        it and finalizes via the checkpoint path.
+        """
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "Partial content to persist via Redis flag.")],
+            model_id,
+            inter_event_delay=0.3,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            stream_task = asyncio.create_task(
+                collect_sse_events(client, chat_id)
+            )
+
+            # Wait for text_delta to be processed (content_blocks accumulates)
+            await asyncio.sleep(0.8)
+
+            # Set the Redis cancel flag (simulates cross-worker Stop)
+            await redis_client.set(
+                f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL
+            )
+
+            events = await stream_task
+
+        # The stream must terminate cleanly (not with stream_error)
+        assert any(
+            et == "end_of_stream" for et, _, _ in events
+        ), f"Expected end_of_stream after Redis-flag cancel. Events: {[et for et, _, _ in events]}"
+
+        # The partial assistant message must be persisted
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert assistant_msgs, (
+            "No assistant message persisted after Redis-flag cancel. "
+            "The partial content was lost!"
+        )
+        latest_asst = assistant_msgs[-1].message
+        content = latest_asst["content"]
+        text_blocks = [
+            b for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        assert text_blocks, "No text block in persisted assistant message"
+        text = " ".join(b["text"] for b in text_blocks)
+        assert "Partial content" in text, (
+            f"Partial assistant text missing after Redis-flag cancel. "
+            f"Got: {text!r}"
+        )
+
 
 # =============================================================================
 # /chat/{id}/stream/status
@@ -1049,6 +1111,142 @@ class TestCancelEarly:
                 for b in blocks:
                     assert b.get("type") != "tool_result", (
                         "tool_result found in user message despite cancel before execution"
+                    )
+
+
+# =============================================================================
+# Cancel mid-tool-call (immediate Stop during tool execution)
+# =============================================================================
+
+
+class TestCancelMidToolCall:
+    """Immediate Stop (``task.cancel()``) while a tool is executing.
+
+    Pins #362's stated goal: stopping mid-tool-call must end generation
+    promptly without running further tools or LLM calls, and the prior
+    turn's assistant message (with the tool_use block) must be finalized.
+    """
+
+    MOCK_SEARCH_RESPONSE = SearchResponse(
+        results=[
+            SearchResult(
+                document=Document(
+                    id="doc_1", title="Result", content_type="text",
+                    url="", source_type="test",
+                ),
+                highlights=["test highlight"],
+                source_type="test",
+            ),
+        ],
+        total_count=1,
+        query_time_ms=5,
+    )
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_mid_tool_call_ends_promptly(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """``task.cancel()`` during tool execution → no further LLM calls
+        (no second turn), the prior turn's assistant message (with tool_use)
+        is persisted.
+
+        Strategy: multi-turn LLM (tool_call then text), gated searcher that
+        blocks until released.  Start the stream, wait for the tool to start
+        executing (blocked on the gate), then cancel the producer task.
+        """
+
+        chat_id, _user_id, model_id = seeded_chat
+
+        # Gated searcher: blocks until cancelled/never released
+        searcher_gate = asyncio.Event()
+
+        async def gated_handle(_request):
+            await searcher_gate.wait()
+            return self.MOCK_SEARCH_RESPONSE
+
+        gated_searcher = AsyncMock(spec=SearcherTool)
+        gated_searcher.handle = gated_handle
+        gated_searcher.client = AsyncMock()
+
+        # Multi-turn LLM: tool_call then text (second call should NOT happen)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "test"},
+                        "id": "toolu_mt_cancel",
+                    },
+                ),
+                ("text", "This should NOT be reached."),
+            ],
+            model_id,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        app.state.searcher_tool = gated_searcher
+
+        async with _client(app) as client:
+            stream_task = asyncio.create_task(
+                collect_sse_events(client, chat_id)
+            )
+
+            # Wait for the LLM to emit tool_use and the router to start
+            # executing the tool (which blocks on searcher_gate)
+            await asyncio.sleep(0.5)
+
+            # Cancel the producer task (immediate Stop)
+            task = chat_module._run_tasks_by_chat.get(chat_id)
+            assert task is not None, "Producer task not found"
+            task.cancel()
+
+            events = await stream_task
+
+        # No further LLM calls beyond the first (tool_call) turn
+        assert len(llm.calls) == 1, (
+            f"Expected exactly 1 LLM call (tool_call), "
+            f"got {len(llm.calls)}. A second turn was not prevented!"
+        )
+
+        # The stream terminated (end_of_stream from the cancel path)
+        assert any(
+            et == "end_of_stream" for et, _, _ in events
+        ), f"No end_of_stream after mid-tool-call cancel. Events: {[et for et, _, _ in events]}"
+
+        # The prior turn's assistant message with tool_use is persisted
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert assistant_msgs, (
+            "No assistant message persisted after mid-tool-call cancel."
+        )
+        latest_asst = assistant_msgs[-1].message
+        blocks = latest_asst.get("content", [])
+        tool_use_blocks = [
+            b for b in blocks
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        ]
+        assert tool_use_blocks, (
+            "Prior turn's tool_use was not persisted after mid-tool-call cancel."
+        )
+
+        # Exactly one assistant message — no duplicate rows from a
+        # late CancelledError handler re-saving the same content_blocks.
+        assert len(assistant_msgs) == 1, (
+            f"Expected exactly 1 assistant message after mid-tool-call cancel, "
+            f"got {len(assistant_msgs)}. A duplicate save was not prevented!"
+        )
+
+        # No tool_result should be present because the tool was never
+        # executed to completion
+        user_msgs = [m for m in db_msgs if m.message["role"] == "user"]
+        for um in user_msgs:
+            blocks = um.message.get("content", [])
+            if isinstance(blocks, list):
+                for b in blocks:
+                    assert b.get("type") != "tool_result", (
+                        "tool_result found in user message despite "
+                        "tool being cancelled mid-execution"
                     )
 
 
