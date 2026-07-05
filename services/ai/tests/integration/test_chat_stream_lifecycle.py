@@ -62,10 +62,15 @@ _FAST_TTL = 10              # stream TTL seconds (was 300)
 @pytest.fixture
 def _patch_timing(monkeypatch):
     """Shrink all timing constants so consumers/producers fail fast."""
+    monkeypatch.setattr("streaming.run._RUN_LOCK_TTL", _FAST_LOCK_TTL)
     monkeypatch.setattr("routers.chat._RUN_LOCK_TTL", _FAST_LOCK_TTL)
-    monkeypatch.setattr("routers.chat._STREAM_HEARTBEAT_MS", _FAST_HEARTBEAT_MS)
-    monkeypatch.setattr("routers.chat._STREAM_TTL", _FAST_TTL)
-    monkeypatch.setattr("routers.chat._CANCEL_CHECK_INTERVAL_SECONDS", 0.5)
+    monkeypatch.setattr("streaming.run._STREAM_HEARTBEAT_MS", _FAST_HEARTBEAT_MS)
+    monkeypatch.setattr("streaming.run._STREAM_TTL", _FAST_TTL)
+    # _CANCEL_CHECK_INTERVAL_SECONDS and _RUN_LOCK_TTL are imported by name
+    # in multiple modules; patch each local binding so monkeypatched values
+    # take effect everywhere.
+    monkeypatch.setattr("streaming.run._CANCEL_CHECK_INTERVAL_SECONDS", 0.5)
+    monkeypatch.setattr("streaming.generate._CANCEL_CHECK_INTERVAL_SECONDS", 0.5)
 
 
 # =============================================================================
@@ -675,7 +680,8 @@ class TestLockAndHeartbeat:
         chat_id, _user_id, model_id = seeded_chat
         # Override the _patch_timing values for this test: fast refresh so
         # the lock is renewed well within its short TTL.
-        monkeypatch.setattr("routers.chat._LOCK_REFRESH_INTERVAL", 2)
+        monkeypatch.setattr("streaming.run._LOCK_REFRESH_INTERVAL", 2)
+        monkeypatch.setattr("streaming.run._RUN_LOCK_TTL", 5)
         monkeypatch.setattr("routers.chat._RUN_LOCK_TTL", 5)
 
         llm = GatedRecordingLLM([("text", "OK.")], model_id)
@@ -743,6 +749,43 @@ class TestLockAndHeartbeat:
         # Lock should be cleaned up after the crash
         exists = await redis_client.exists(lock_key)
         assert exists == 0, "Lock was not cleaned up after crash"
+
+    @pytest.mark.asyncio
+    async def test_provider_error_stream_error_includes_metadata(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """ProviderError stream_error payloads keep provider/model/status details."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "unused")],
+            model_id,
+            fail_on_call=0,
+            fail_exc=ProviderError(
+                "Rate limited",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=429,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        stream_errors = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "stream_error"
+        ]
+        assert stream_errors, f"Expected stream_error, got events: {events}"
+        assert stream_errors[-1] == {
+            "message": "Failed to generate response: Rate limited",
+            "provider": "anthropic",
+            "model": model_id,
+            "statusCode": 429,
+        }
 
 
 # =============================================================================
@@ -822,7 +865,7 @@ class TestPartialAssistant:
     def test_partial_assistant_strips_empty_text_blocks(self):
         """Empty text blocks are removed; non-empty text blocks are kept.
         Tool inputs with string JSON are parsed to dict."""
-        from routers.chat import _partial_assistant_message
+        from streaming.persist import partial_assistant_message as _partial_assistant_message
         from anthropic.types import TextBlockParam, ToolUseBlockParam
 
         blocks: list[TextBlockParam | ToolUseBlockParam] = [
@@ -846,7 +889,7 @@ class TestPartialAssistant:
 
     def test_partial_assistant_returns_none_when_all_blocks_empty(self):
         """All-empty blocks → returns None."""
-        from routers.chat import _partial_assistant_message
+        from streaming.persist import partial_assistant_message as _partial_assistant_message
         from anthropic.types import TextBlockParam
 
         result = _partial_assistant_message([
@@ -857,7 +900,7 @@ class TestPartialAssistant:
 
     def test_partial_assistant_parses_empty_tool_input(self):
         """Empty string tool input becomes empty dict."""
-        from routers.chat import _partial_assistant_message
+        from streaming.persist import partial_assistant_message as _partial_assistant_message
         from anthropic.types import ToolUseBlockParam
 
         result = _partial_assistant_message([
