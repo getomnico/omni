@@ -45,6 +45,8 @@ from tests.helpers import (
     stream_sse,
 )
 
+import routers.chat as chat_module
+
 pytestmark = pytest.mark.integration
 
 
@@ -420,6 +422,67 @@ class TestCancel:
         cancel_key = f"chat:cancel:{chat_id}"
         exists = await redis_client.exists(cancel_key)
         assert exists == 0, "Cancel key was not cleaned up by producer"
+
+    @pytest.mark.asyncio
+    async def test_task_cancel_mid_stream_persists_partial(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """``task.cancel()`` (immediate Stop) mid-token-stream persists the
+        partial assistant text in the database, so the row survives a page
+        reload.
+
+        Strategy: LLM with inter-event delay yields events slowly.  After the
+        text_delta is processed (content_blocks has the partial text), cancel
+        the producer task directly.  The fixed ``except CancelledError`` handler
+        yields ``save_message``, which ``_persist_and_transform`` uses to update
+        the early-persisted row instead of deleting it.
+        """
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "Partial content after task cancel.")],
+            model_id,
+            inter_event_delay=0.3,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            stream_task = asyncio.create_task(
+                collect_sse_events(client, chat_id)
+            )
+
+            # Wait for the LLM to yield text_delta (content accumulated)
+            # With inter_event_delay=0.3:
+            #   t=0.0 message_start, t=0.3 content_block_start, t=0.6 text_delta
+            await asyncio.sleep(0.8)
+
+            # Cancel the producer task directly (immediate Stop)
+            task = chat_module._run_tasks_by_chat.get(chat_id)
+            assert task is not None, "Producer task not found"
+            task.cancel()
+
+            events = await stream_task
+
+        # The stream must terminate with end_of_stream (clean stop, not error)
+        assert any(
+            et == "end_of_stream" for et, _, _ in events
+        ), f"Expected end_of_stream after task.cancel(). Events: {[et for et, _, _ in events]}"
+
+        # The partial assistant message must be persisted with its content
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert assistant_msgs, (
+            "No assistant message persisted after task.cancel(). "
+            "The partial content was lost!"
+        )
+        latest_asst = assistant_msgs[-1].message
+        content = latest_asst["content"]
+        text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        assert text_blocks, "No text block in persisted assistant message"
+        text = " ".join(b["text"] for b in text_blocks)
+        assert "Partial content" in text, (
+            f"Partial assistant text missing after task.cancel(). "
+            f"Got: {text!r}"
+        )
 
 
 # =============================================================================

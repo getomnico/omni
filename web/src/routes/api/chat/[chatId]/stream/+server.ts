@@ -264,10 +264,17 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
 
         logger.info('Chat stream started successfully', { chatId })
 
-        // Create a transformed stream that:
-        // 1. Intercepts save_message events for database writes
-        // 2. Filters out save_message events from client
-        // 3. Triggers title generation after completion
+        // Create a transformed stream that enriches or redacts selected events
+        // before forwarding them to the browser. The AI service's
+        // _persist_and_transform has already converted internal save_message
+        // events (the producer's single writer) into message_id or
+        // update_message_content events, so they never reach this proxy.
+        //
+        // Transformations performed here:
+        // 1. oauth_required – enrich with provider_configured / source_display_name
+        // 2. message (tool_result) – redact search highlights and truncate text
+        // 3. Forward approval_required and all others as-is
+        // 4. Trigger title generation after the initial connection
         const reader = response.body?.getReader()
 
         if (!reader) {

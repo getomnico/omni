@@ -4,7 +4,8 @@ import logging
 import pathlib
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, TypedDict, cast
+from enum import Enum
+from typing import Any, NotRequired, TypedDict, cast
 
 import httpx
 from anthropic import AsyncStream, MessageStreamEvent
@@ -104,8 +105,8 @@ def _chat_error_message(exc: Exception) -> str:
     return "Failed to generate response. Please try again."
 
 
-def _chat_error_payload(exc: Exception) -> dict[str, object]:
-    payload: dict[str, object] = {"message": _chat_error_message(exc)}
+def _chat_error_payload(exc: Exception) -> "StreamErrorEvent":
+    payload: StreamErrorEvent = {"message": _chat_error_message(exc)}
     if isinstance(exc, ProviderError):
         payload["provider"] = exc.provider_type
         payload["model"] = exc.model
@@ -178,6 +179,67 @@ def _sse_event_data(event_str: str) -> str:
         if line.startswith("data:"):
             return line[len("data:") :].strip()
     return ""
+
+
+class EndOfStreamReason(str, Enum):
+    """Typed reason for an ``end_of_stream`` terminal event."""
+
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    APPROVAL_REQUIRED = "approval_required"
+    OAUTH_REQUIRED = "oauth_required"
+    NO_NEW_MESSAGE = "no_new_message"
+
+
+class EndOfStreamEvent(TypedDict):
+    reason: EndOfStreamReason
+    message: NotRequired[str]
+
+
+class StreamErrorEvent(TypedDict):
+    message: str
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    statusCode: NotRequired[int | None]
+
+
+class OAuthRequiredEvent(TypedDict):
+    tool_call_id: str
+    tool_name: str
+    source_id: str
+    source_type: str
+    provider: str
+    oauth_start_url: str
+
+
+def _oauth_event(
+    tool_call_id: str,
+    tool_name: str,
+    source_id: str,
+    source_type: str,
+    provider: str,
+    oauth_start_url: str,
+) -> OAuthRequiredEvent:
+    return {
+        "tool_call_id": tool_call_id,
+        "tool_name": tool_name,
+        "source_id": source_id,
+        "source_type": source_type,
+        "provider": provider,
+        "oauth_start_url": oauth_start_url,
+    }
+
+
+def _stream_error_event(exc: Exception) -> StreamErrorEvent:
+    return _chat_error_payload(exc)
+
+
+def _end_of_stream(reason: EndOfStreamReason, *, message: str | None = None) -> str:
+    """Build a typed ``end_of_stream`` SSE event string."""
+    payload: EndOfStreamEvent = {"reason": reason}
+    if message is not None:
+        payload["message"] = message
+    return _sse_event("end_of_stream", payload)
 
 
 def _partial_assistant_message(
@@ -389,7 +451,7 @@ async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
         # disappear and reporting "Generation ended unexpectedly".
         try:
             await redis_client.xadd(
-                stream_key, {"e": "event: end_of_stream\ndata: Stopped\n\n"}
+                stream_key, {"e": _end_of_stream(EndOfStreamReason.STOPPED)}
             )
         except Exception:
             pass
@@ -399,7 +461,7 @@ async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
         try:
             await redis_client.xadd(
                 stream_key,
-                {"e": _sse_event("stream_error", {"message": _chat_error_message(e)})},
+                {"e": _sse_event("stream_error", _stream_error_event(e))},
             )
         except Exception:
             pass
@@ -423,7 +485,12 @@ async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
 async def _consume_run(redis_client, chat_id, start_id):
     """Thin consumer: tail the Redis Stream from `start_id`, prefixing each event
     with its Redis id (SSE `id:`) for Last-Event-ID resume. Emits heartbeats
-    while idle and a terminal event if the producer vanished."""
+    while idle and a terminal event if the producer vanished.
+
+    Important id: invariant: no producer may template an ``id:`` line into its
+    own event body because this function prepends ``id: {entry_id}`` (the Redis
+    stream entry id) unconditionally. Heartbeats and synthetic terminal events
+    intentionally lack an id so they don't advance the resume position."""
     stream_key = _stream_key(chat_id)
     lock_key = _run_lock_key(chat_id)
     last = start_id or "0"
@@ -451,7 +518,7 @@ async def _consume_run(redis_client, chat_id, start_id):
         if not await redis_client.exists(lock_key):
             # Producer is gone but never wrote a terminal event we forwarded.
             yield _sse_event(
-                "stream_error", {"message": "Generation ended unexpectedly."}
+                "stream_error", StreamErrorEvent(message="Generation ended unexpectedly.")
             )
             return
         yield _sse_event("heartbeat", {})
@@ -1468,7 +1535,7 @@ async def stream_chat(
         )
 
         async def empty_generator():
-            yield b"event: end_of_stream\ndata: No new user message to process.\n\n"
+            yield _end_of_stream(EndOfStreamReason.NO_NEW_MESSAGE, message="No new user message to process.").encode()
 
         return StreamingResponse(
             empty_generator(),
@@ -1543,16 +1610,16 @@ async def stream_chat(
                 if pending_oauth:
                     intervention = pending_oauth[0]
                     logger.info(f"Resuming from pending oauth for chat {chat_id}")
-                    oauth_event = {
-                        "tool_call_id": intervention.tool_call_id,
-                        "tool_name": intervention.tool_name,
-                        "source_id": intervention.source_id,
-                        "source_type": intervention.source_type,
-                        "provider": intervention.provider,
-                        "oauth_start_url": intervention.oauth_start_url,
-                    }
+                    oauth_event = _oauth_event(
+                        intervention.tool_call_id,
+                        intervention.tool_name,
+                        intervention.source_id,
+                        intervention.source_type,
+                        intervention.provider,
+                        intervention.oauth_start_url,
+                    )
                     yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                    yield "event: end_of_stream\ndata: OAuth required\n\n"
+                    yield _end_of_stream(EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required")
                     return
 
                 logger.info(f"Resuming from pending approval batch for chat {chat_id}")
@@ -1561,7 +1628,7 @@ async def stream_chat(
                     for approval in pending
                 ):
                     yield f"event: approval_required\ndata: {json.dumps(_approval_required_event(pending))}\n\n"
-                    yield "event: end_of_stream\ndata: Approval required\n\n"
+                    yield _end_of_stream(EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required")
                     return
 
                 approvals_by_tool_call_id = {
@@ -1634,14 +1701,14 @@ async def stream_chat(
                             logger.info(
                                 f"Saved pending oauth approval {saved_oauth_approval.id} for chat {chat_id}"
                             )
-                            oauth_event = {
-                                "tool_call_id": tool_call["id"],
-                                "tool_name": tool_call["name"],
-                                "source_id": payload.source_id,
-                                "source_type": payload.source_type,
-                                "provider": payload.provider,
-                                "oauth_start_url": payload.oauth_start_url,
-                            }
+                            oauth_event = _oauth_event(
+                                tool_call["id"],
+                                tool_call["name"],
+                                payload.source_id,
+                                payload.source_type,
+                                payload.provider,
+                                payload.oauth_start_url,
+                            )
                             if tool_results:
                                 tool_result_message = MessageParam(
                                     role="user", content=tool_results
@@ -1655,7 +1722,7 @@ async def stream_chat(
                                     chat.user_id,
                                 )
                             yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                            yield "event: end_of_stream\ndata: OAuth required\n\n"
+                            yield _end_of_stream(EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required")
                             return
                         tool_result = ToolResultBlockParam(
                             type="tool_result",
@@ -1988,7 +2055,7 @@ async def stream_chat(
                         f"Pausing stream for {len(approval_required)} approval-required tool call(s)"
                     )
                     yield f"event: approval_required\ndata: {json.dumps(_approval_required_event(approval_required))}\n\n"
-                    yield "event: end_of_stream\ndata: Approval required\n\n"
+                    yield _end_of_stream(EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required")
                     return
 
                 tool_results: list[ToolResultBlockParam] = []
@@ -2014,16 +2081,16 @@ async def stream_chat(
                         logger.info(
                             f"Saved pending oauth approval {oauth_approval.id} for chat {chat_id}"
                         )
-                        oauth_event = {
-                            "tool_call_id": tool_call["id"],
-                            "tool_name": tool_name,
-                            "source_id": payload.source_id,
-                            "source_type": payload.source_type,
-                            "provider": payload.provider,
-                            "oauth_start_url": payload.oauth_start_url,
-                        }
+                        oauth_event = _oauth_event(
+                            tool_call["id"],
+                            tool_name,
+                            payload.source_id,
+                            payload.source_type,
+                            payload.provider,
+                            payload.oauth_start_url,
+                        )
                         yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                        yield "event: end_of_stream\ndata: OAuth required\n\n"
+                        yield _end_of_stream(EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required")
                         return
 
                     tool_result = ToolResultBlockParam(
@@ -2083,18 +2150,25 @@ async def stream_chat(
                 except Exception as e:
                     logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
 
-            yield "event: end_of_stream\ndata: Stream ended\n\n"
+            yield _end_of_stream(EndOfStreamReason.COMPLETED, message="Stream ended")
 
         except asyncio.CancelledError:
             logger.info(f"Stream cancelled for chat {chat_id}")
-            raise  # Re-raise to let FastAPI handle cleanup
+            # Finalize partial content before re-raising so the
+            # early-persisted assistant row is updated (not deleted) by
+            # _persist_and_transform.  This mirrors the except Exception
+            # block below.
+            partial = _partial_assistant_message(content_blocks)
+            if partial is not None:
+                conversation_messages.append(partial)
+                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
+            raise
         except Exception as e:
             logger.error(
                 f"Failed to generate AI response with tools: {e}", exc_info=True
             )
             # Finalize whatever partial assistant content was accumulated before
-            # the failure, so the early-persisted row is not left empty. The
-            # cancel path above does the same; this mirrors it for errors.
+            # the failure, so the early-persisted row is not left empty.
             partial = _partial_assistant_message(content_blocks)
             if partial is not None:
                 conversation_messages.append(partial)
@@ -2162,15 +2236,18 @@ async def cancel_chat_stream(
     directly so generation stops immediately — even mid-message or during a slow
     tool call, where the next checkpoint could be far off.
     """
-    redis_client = getattr(request.app.state, "redis_client", None)
-    if redis_client is not None:
-        try:
-            await redis_client.set(_cancel_key(chat_id), "1", ex=_CANCEL_TTL)
-        except Exception as e:
-            logger.error(f"Failed to set cancel flag for chat {chat_id}: {e}")
+    redis_client = request.app.state.redis_client
+    try:
+        await redis_client.set(_cancel_key(chat_id), "1", ex=_CANCEL_TTL)
+    except Exception as e:
+        logger.error(f"Failed to set cancel flag for chat {chat_id}: {e}")
 
     task = _run_tasks_by_chat.get(chat_id)
     if task is not None and not task.done():
+        # In-process cancel (task.cancel()) is best-effort in multi-worker
+        # deployments without sticky sessions: the Stop request may land on
+        # a worker that does not own the producer task.  The Redis cancel
+        # flag above provides the fallback cross-worker checkpoint.
         task.cancel()
 
     return {"status": "cancelling"}
