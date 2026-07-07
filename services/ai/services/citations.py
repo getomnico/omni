@@ -5,32 +5,32 @@ non-Anthropic providers via the CitationProcessor class.
 """
 
 import re
-from dataclasses import dataclass
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import cast
 
-from services.stream import StreamProcessor
-
 from anthropic.types import (
-    MessageStreamEvent,
-    MessageParam,
-    TextBlockParam,
-    TextCitationParam,
-    CitationCharLocationParam,
-    CitationPageLocationParam,
-    CitationContentBlockLocationParam,
-    CitationSearchResultLocationParam,
-    CitationWebSearchResultLocationParam,
-    CitationsDelta,
-    CitationsSearchResultLocation,
     CitationCharLocation,
-    TextDelta,
+    CitationCharLocationParam,
+    CitationContentBlockLocationParam,
+    CitationPageLocationParam,
+    CitationsDelta,
+    CitationSearchResultLocationParam,
+    CitationsSearchResultLocation,
+    CitationWebSearchResultLocationParam,
     DocumentBlockParam,
+    MessageParam,
+    MessageStreamEvent,
     PlainTextSourceParam,
     RawContentBlockDeltaEvent,
     SearchResultBlockParam,
+    TextBlockParam,
+    TextCitationParam,
+    TextDelta,
     ToolResultBlockParam,
 )
+
+from services.stream import StreamProcessor
 
 # Matches [citation:1], [citation:9, 3, 4], [citation:1,2], etc.
 _CITATION_PATTERN = re.compile(r"\[citation:([\d,\s]+)\]")

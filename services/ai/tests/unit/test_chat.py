@@ -1,12 +1,13 @@
 """Unit tests for citation logic."""
 
+import pytest
 from anthropic.types import (
     RawContentBlockDeltaEvent,
     RawContentBlockStopEvent,
     TextDelta,
 )
 
-from services.citations import CitationProcessor, CitationStreamProcessor, CitableRef
+from services.citations import CitableRef, CitationProcessor, CitationStreamProcessor
 
 
 def test_synthetic_citations_end_to_end():
@@ -141,6 +142,7 @@ async def _async_iter(events):
         yield e
 
 
+@pytest.mark.asyncio
 async def test_citation_stream_processor():
     """CitationStreamProcessor strips markers from text deltas and emits citation events inline."""
     citable_index = {

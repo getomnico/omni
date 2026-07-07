@@ -12,14 +12,8 @@ import logging
 from collections.abc import AsyncIterator, Iterable
 from typing import cast
 
-from anthropic import AsyncStream, MessageStreamEvent
+from anthropic import MessageStreamEvent
 from anthropic.types import (
-    CitationCharLocationParam,
-    CitationContentBlockLocationParam,
-    CitationPageLocationParam,
-    CitationsDelta,
-    CitationSearchResultLocationParam,
-    CitationWebSearchResultLocationParam,
     ContentBlockParam,
     MessageParam,
     TextBlockParam,
@@ -38,6 +32,12 @@ from db.tool_approvals import ToolApproval, ToolApprovalStatus, ToolApprovalType
 from db.usage import UsageRepository
 from memory import MemoryMode
 from providers import LLMProvider, ProviderError
+from services.citations import (
+    CITATION_INSTRUCTION,
+    CitableRef,
+    CitationProcessor,
+    CitationStreamProcessor,
+)
 from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker
 from streaming.persist import (
@@ -48,7 +48,6 @@ from streaming.persist import (
     oauth_event,
     parse_tool_call_inputs,
     partial_assistant_message,
-    sse_event,
     stream_error_sse,
 )
 from streaming.run import _CANCEL_CHECK_INTERVAL_SECONDS, is_run_cancelled
@@ -97,18 +96,35 @@ async def event_stream_with_context_retry(
                 chat_id=chat_id,
             ),
         )
-        raw_stream: AsyncStream[MessageStreamEvent] = llm_provider.stream_response(
+        provider_messages = conversation_messages
+        provider_system_prompt = system_prompt
+        citable_index: dict[int, CitableRef] = {}
+        if not llm_provider.supports_citations:
+            citable_index = CitationProcessor.build_citable_index(conversation_messages)
+            if citable_index:
+                provider_messages = CitationProcessor.prepare_messages(
+                    conversation_messages, citable_index
+                )
+                provider_system_prompt = (system_prompt or "") + CITATION_INSTRUCTION
+
+        raw_stream = llm_provider.stream_response(
             prompt="",
-            messages=conversation_messages,
+            messages=provider_messages,
             tools=turn_tools,
             max_tokens=DEFAULT_MAX_TOKENS,
             temperature=DEFAULT_TEMPERATURE,
             top_p=DEFAULT_TOP_P,
-            system_prompt=system_prompt,
+            system_prompt=provider_system_prompt,
         )
+        processed_stream = tracker.wrap_stream(raw_stream)
+        if citable_index:
+            processed_stream = CitationStreamProcessor(citable_index).process(
+                processed_stream
+            )
+
         emitted_event = False
         try:
-            async for wrapped_event in tracker.wrap_stream(raw_stream):
+            async for wrapped_event in processed_stream:
                 emitted_event = True
                 yield wrapped_event
             tracker.save()
@@ -291,57 +307,6 @@ def drop_empty_assistant_messages(
                 continue
         kept.append(message)
     return kept
-
-
-def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
-    citation = citation_delta.citation
-    if citation.type == "char_location":
-        return CitationCharLocationParam(
-            type="char_location",
-            start_char_index=citation.start_char_index,
-            end_char_index=citation.end_char_index,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "page_location":
-        return CitationPageLocationParam(
-            type="page_location",
-            start_page_number=citation.start_page_number,
-            end_page_number=citation.end_page_number,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "content_block_location":
-        return CitationContentBlockLocationParam(
-            type="content_block_location",
-            start_block_index=citation.start_block_index,
-            end_block_index=citation.end_block_index,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "search_result_location":
-        return CitationSearchResultLocationParam(
-            type="search_result_location",
-            start_block_index=citation.start_block_index,
-            end_block_index=citation.end_block_index,
-            search_result_index=citation.search_result_index,
-            title=citation.title,
-            source=citation.source,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "web_search_result_location":
-        return CitationWebSearchResultLocationParam(
-            type="web_search_result_location",
-            url=citation.url,
-            title=citation.title,
-            encrypted_index=citation.encrypted_index,
-            cited_text=citation.cited_text,
-        )
-    else:
-        raise ValueError(f"Unknown citation type: {citation.type}")
 
 
 def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None:
@@ -640,7 +605,9 @@ async def stream_generator(
                             citations = cast(
                                 list[TextCitationParam], text_block["citations"]
                             )
-                            citations.append(convert_citation_to_param(event.delta))
+                            citations.append(
+                                CitationProcessor.convert_delta_to_param(event.delta)
+                            )
 
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
