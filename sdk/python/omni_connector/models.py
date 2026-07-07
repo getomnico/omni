@@ -227,10 +227,19 @@ class ConnectorManifest(BaseModel):
     extra_schema: dict | None = None
     attributes_schema: dict | None = None
     mcp_enabled: bool = False
+    mcp_catalog_loaded: bool = False
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
     skills: list[ConnectorSkillDefinition] = Field(default_factory=list)
     oauth: OAuthManifestConfig | None = None
+
+
+class OAuthCredentialReadyRequest(BaseModel):
+    source_id: str
+    user_id: str | None = None
+    provider: str
+    flow: str
+    credentials: dict[str, Any] = Field(default_factory=dict)
 
 
 class SkillRequest(BaseModel):

@@ -103,6 +103,8 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             expiresAt,
         })
 
+        await notifyOAuthCredentialReady(flow.sourceId)
+
         try {
             await fetch(`/api/sources/${flow.sourceId}/sync`, {
                 method: 'POST',
@@ -116,24 +118,31 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         throw redirect(302, flow.returnTo ?? '/admin/settings/integrations?success=connected')
     }
 
-    const bootstrapClickUpMcp = async (sourceId: string, userId: string) => {
-        if (config.provider !== 'clickup') return
+    const notifyOAuthCredentialReady = async (sourceId: string, userId?: string) => {
         try {
             const cmUrl = getConfig().services.connectorManagerUrl
-            const resp = await fetch(`${cmUrl}/mcp/bootstrap`, {
+            const resp = await fetch(`${cmUrl}/oauth/credential-ready`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ source_id: sourceId, user_id: userId }),
+                body: JSON.stringify({
+                    source_id: sourceId,
+                    user_id: userId ?? null,
+                    provider: config.provider,
+                    flow: flow.type === 'user_write' ? 'user_write' : 'user_read',
+                }),
             })
             if (!resp.ok) {
-                logger.warn('ClickUp MCP bootstrap failed after OAuth', {
+                logger.warn('OAuth credential-ready notification failed', {
                     sourceId,
                     status: resp.status,
                     body: await resp.text(),
                 })
             }
         } catch (err) {
-            logger.warn('ClickUp MCP bootstrap failed after OAuth', { sourceId, err: String(err) })
+            logger.warn('OAuth credential-ready notification failed', {
+                sourceId,
+                err: String(err),
+            })
         }
     }
 
@@ -157,7 +166,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             config: { granted_scopes: effectiveGrantedScopes },
             expiresAt,
         })
-        await bootstrapClickUpMcp(flow.sourceId, user.id)
+        await notifyOAuthCredentialReady(flow.sourceId, user.id)
         if (flow.returnTo) {
             throw redirect(302, flow.returnTo)
         }

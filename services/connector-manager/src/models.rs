@@ -113,6 +113,15 @@ pub struct BootstrapMcpRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialReadyRequest {
+    pub source_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    pub provider: String,
+    pub flow: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkSourceSyncConfigResponse {
     pub config: JsonValue,
     pub credentials: JsonValue,

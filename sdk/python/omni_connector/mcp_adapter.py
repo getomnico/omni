@@ -174,6 +174,14 @@ class McpAdapter:
         self._catalog_cached_at = float(cached_at)
         return True
 
+    @property
+    def _has_cached_catalog(self) -> bool:
+        return (
+            self._cached_actions is not None
+            or self._cached_resources is not None
+            or self._cached_prompts is not None
+        )
+
     def _save_catalog_cache(self, path: Path) -> None:
         cached_at = self._catalog_cached_at or time.time()
         path.parent.mkdir(parents=True, exist_ok=True)

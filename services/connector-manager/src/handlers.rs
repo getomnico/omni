@@ -2,8 +2,8 @@ use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionContext, ActionRequest, BootstrapMcpRequest, ConnectorInfo, ExecuteActionRequest,
     ExecutePromptRequest, ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials,
-    PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress,
-    TriggerSyncRequest, TriggerSyncResponse, TriggerType,
+    OAuthCredentialReadyRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
+    SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
@@ -1009,6 +1009,122 @@ pub async fn bootstrap_mcp(
     Ok(Json(manifest))
 }
 
+/// Generic OAuth credential-ready notification from omni-web after a user
+/// completes an OAuth flow. Connector-manager resolves the just-stored
+/// credential and forwards it to the connector so it can react (e.g. refresh
+/// its authenticated MCP catalog).
+pub async fn oauth_credential_ready(
+    State(state): State<AppState>,
+    Json(request): Json<OAuthCredentialReadyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!(
+        "OAuth credential-ready for source {} (user={:?}, provider={}, flow={})",
+        request.source_id, request.user_id, request.provider, request.flow
+    );
+
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source.source_type
+            ))
+        })?;
+
+    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let creds = match resolve_credentials(
+        &creds_repo,
+        &request.source_id,
+        request.user_id.as_deref(),
+        false,
+    )
+    .await?
+    {
+        CredentialResolution::Resolved(creds) => creds,
+        CredentialResolution::NeedsUserAuth { provider } => {
+            warn!(
+                "OAuth credential-ready for {}: user OAuth required for provider {:?}",
+                request.source_id, provider
+            );
+            return Ok(Json(json!({"status": "missing_credentials"})));
+        }
+        CredentialResolution::NoCredentials => {
+            warn!(
+                "OAuth credential-ready for {}: no credentials found",
+                request.source_id
+            );
+            return Ok(Json(json!({"status": "no_credentials"})));
+        }
+    };
+
+    let credentials = serde_json::to_value(McpCredentials::from_service_credential(&creds))
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Build a request for the connector that includes resolved credentials.
+    let connector_req = OAuthCredentialReadyRequest {
+        source_id: request.source_id.clone(),
+        user_id: request.user_id.clone(),
+        provider: request.provider.clone(),
+        flow: request.flow.clone(),
+    };
+
+    let client = ConnectorClient::new();
+    match client
+        .oauth_credential_ready(&connector_url, &connector_req)
+        .await
+    {
+        Ok(Some(manifest)) => {
+            if let Err(e) = validate_connector_manifest_action_schemas(&manifest) {
+                warn!("OAuth credential-ready returned invalid manifest: {}", e);
+                return Ok(Json(json!({"status": "invalid_manifest"})));
+            }
+            let manifest_json =
+                serde_json::to_string(&manifest).map_err(|e| ApiError::Internal(e.to_string()))?;
+            let key = format!("connector:manifest:{}", manifest.connector_id);
+            let mut conn = state
+                .redis_client
+                .get_multiplexed_async_connection()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+            let _: () = conn
+                .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
+            info!(
+                "OAuth credential-ready updated manifest for {}",
+                manifest.connector_id
+            );
+            Ok(Json(
+                json!({"status": "completed", "catalog_updated": true}),
+            ))
+        }
+        Ok(None) => {
+            info!(
+                "OAuth credential-ready delivered for {} (no manifest change)",
+                request.source_id
+            );
+            Ok(Json(
+                json!({"status": "delivered", "catalog_updated": false}),
+            ))
+        }
+        Err(e) => {
+            warn!(
+                "OAuth credential-ready delivery failed for {}: {}",
+                request.source_id, e
+            );
+            Ok(Json(json!({"status": "delivery_failed"})))
+        }
+    }
+}
+
 pub async fn list_skills(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -1391,6 +1507,53 @@ pub async fn sdk_register(
 
     if let Ok(json) = serde_json::to_string(&all_operators) {
         let _: Result<(), _> = conn.set("search:operators", json).await;
+    }
+
+    // Recovery: if the connector is MCP-enabled but has no catalog loaded, try
+    // to find an existing OAuth credential for one of its source types and
+    // replay the credential-ready notification. This covers the case where the
+    // connector was unavailable when OAuth completed.
+    if manifest.mcp_enabled && !manifest.mcp_catalog_loaded {
+        if let Some(provider) = manifest
+            .oauth
+            .as_ref()
+            .and_then(|o| o.get("provider").and_then(|v| v.as_str().map(String::from)))
+        {
+            let source_type_strs: Vec<String> = manifest
+                .source_types
+                .iter()
+                .filter_map(|t| {
+                    serde_json::to_value(t)
+                        .ok()
+                        .and_then(|v| v.as_str().map(String::from))
+                })
+                .collect();
+            let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+            let repo = creds_repo;
+            if let Ok(Some((source_id, user_id))) = repo
+                .find_any_user_oauth_for_provider(&source_type_strs, &provider)
+                .await
+            {
+                info!(
+                    "Recovery: found OAuth credential for {} / {} to refresh missing MCP catalog",
+                    source_id, provider
+                );
+                // Fire and forget: replay the notification best-effort.
+                let recovery_request = OAuthCredentialReadyRequest {
+                    source_id,
+                    user_id: Some(user_id),
+                    provider: provider.clone(),
+                    flow: "user_write".to_string(),
+                };
+                if let Err(e) = client
+                    .oauth_credential_ready(&manifest.connector_url, &recovery_request)
+                    .await
+                {
+                    warn!("Recovery credential-ready delivery failed: {}", e);
+                }
+            }
+        }
     }
 
     Ok(Json(SdkStatusResponse {
@@ -2566,6 +2729,7 @@ mod tests {
             extra_schema: None,
             attributes_schema: None,
             mcp_enabled: false,
+            mcp_catalog_loaded: false,
             resources: Vec::new(),
             prompts: Vec::new(),
             skills: Vec::new(),

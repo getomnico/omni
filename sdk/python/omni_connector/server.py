@@ -16,6 +16,7 @@ from .models import (
     BootstrapMcpRequest,
     CancelRequest,
     CancelResponse,
+    OAuthCredentialReadyRequest,
     PromptRequest,
     ResourceRequest,
     SkillRequest,
@@ -115,6 +116,33 @@ def create_app(connector: "Connector") -> FastAPI:
         except Exception as e:
             logger.warning("MCP bootstrap manifest registration failed: %s", e)
         return JSONResponse(status_code=status.HTTP_200_OK, content=m.model_dump())
+
+    @app.post("/oauth/credential-ready")
+    async def oauth_credential_ready(
+        request: OAuthCredentialReadyRequest,
+    ) -> JSONResponse:
+        """
+        Generic notification when a new OAuth credential has been stored.
+        The connector may use the credential to refresh its MCP catalog or
+        perform other provider-specific setup.
+        """
+        # Include resolved credentials from the request so the connector hook
+        # can use them without re-resolving.
+        changed = await connector.oauth_credential_ready(request)
+        if changed:
+            m = await connector.get_manifest(connector_url=connector_url)
+            try:
+                await server.sdk_client.register(m.model_dump())
+            except Exception as e:
+                logger.warning(
+                    "OAuth credential-ready manifest registration failed: %s",
+                    e,
+                )
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content=m.model_dump(),
+            )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/sync/{sync_run_id}")
     async def sync_status(sync_run_id: str) -> dict[str, bool]:

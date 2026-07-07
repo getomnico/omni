@@ -9,6 +9,7 @@ from omni_connector import (
     ActionResponse,
     Connector,
     HttpMcpServer,
+    OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
     SearchOperator,
@@ -192,6 +193,22 @@ class ClickUpConnector(Connector):
             return
         logger.info("Bootstrapping ClickUp MCP catalog with authenticated OAuth credentials")
         await super().bootstrap_mcp(dict(credentials))
+
+    async def oauth_credential_ready(
+        self,
+        request: OAuthCredentialReadyRequest,
+    ) -> bool:
+        if not self._mcp_access_token(dict(request.credentials)):
+            logger.debug(
+                "ClickUp oauth_credential_ready: no OAuth access_token present"
+            )
+            return False
+        logger.info(
+            "ClickUp OAuth credential ready: refreshing MCP catalog for source %s",
+            request.source_id,
+        )
+        await self.bootstrap_mcp({"credentials": dict(request.credentials)})
+        return True
 
     async def execute_action(
         self,

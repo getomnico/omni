@@ -171,6 +171,7 @@ pub trait Connector: Send + Sync + 'static {
             extra_schema: self.extra_schema(),
             attributes_schema: self.attributes_schema(),
             mcp_enabled: self.mcp_server().is_some(),
+            mcp_catalog_loaded: false,
             resources: vec![],
             prompts: vec![],
             skills: self.skills(),

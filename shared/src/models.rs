@@ -837,6 +837,8 @@ pub struct ConnectorManifest {
     #[serde(default)]
     pub mcp_enabled: bool,
     #[serde(default)]
+    pub mcp_catalog_loaded: bool,
+    #[serde(default)]
     pub resources: Vec<McpResourceDefinition>,
     #[serde(default)]
     pub prompts: Vec<McpPromptDefinition>,

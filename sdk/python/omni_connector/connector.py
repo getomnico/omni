@@ -14,6 +14,7 @@ from .models import (
     ActionResponse,
     ConnectorManifest,
     ConnectorSkillDefinition,
+    OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     SearchOperator,
 )
@@ -203,6 +204,19 @@ class Connector(ABC):
         except Exception:
             logger.warning("MCP bootstrap failed", exc_info=True)
 
+    async def oauth_credential_ready(
+        self, request: "OAuthCredentialReadyRequest"
+    ) -> bool:
+        """React to a new OAuth credential being stored for this connector.
+
+        Override this to perform provider-specific setup when a user completes
+        an OAuth flow (e.g., refresh an authenticated MCP catalog). Return True
+        if the connector manifest has changed and should be re-registered.
+
+        The default implementation no-ops and returns False.
+        """
+        return False
+
     async def _get_all_actions(self) -> list[ActionDefinition]:
         """Merge manually-defined actions with MCP-derived actions."""
         manual_actions = self.actions
@@ -263,6 +277,7 @@ class Connector(ABC):
             actions=await self._get_all_actions(),
             search_operators=self.search_operators,
             mcp_enabled=adapter is not None,
+            mcp_catalog_loaded=adapter._has_cached_catalog if adapter is not None else False,
             resources=resources,
             prompts=prompts,
             skills=skills,

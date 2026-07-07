@@ -302,6 +302,7 @@ where
     // If MCP is configured, layer the cached tools/resources/prompts from the
     // adapter on top of any actions the connector defined manually.
     if let Some(adapter) = state.mcp_adapter() {
+        manifest.mcp_catalog_loaded = adapter.has_cached_catalog();
         match adapter.get_action_definitions(None, None).await {
             Ok(mcp_actions) => {
                 let manual: std::collections::HashSet<String> =
