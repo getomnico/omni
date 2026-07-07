@@ -87,6 +87,8 @@
     let headerTitleValue = $state('')
     let headerTitleInputRef: HTMLInputElement | undefined = $state()
     let optimisticTitle = $state<string | null>(null)
+    let sidebarContentRef: HTMLDivElement | null = $state(null)
+    let sidebarContentScrolled = $state(false)
 
     let currentChatTitle = $derived(
         optimisticTitle ??
@@ -145,6 +147,10 @@
         }
     }
 
+    function updateSidebarScrollState() {
+        sidebarContentScrolled = (sidebarContentRef?.scrollTop ?? 0) > 0
+    }
+
     afterNavigate(() => {
         isEditingHeaderTitle = false
         optimisticTitle = null
@@ -159,6 +165,13 @@
         additionalRecentChats = []
         additionalRecentHasMore = null
         recentLoadError = ''
+    })
+
+    $effect(() => {
+        const sidebarListKey = `${recentChats.length}:${data.starredChats.length}`
+        requestAnimationFrame(() => {
+            if (sidebarListKey) updateSidebarScrollState()
+        })
     })
 
     async function loadMoreRecentChats() {
@@ -281,6 +294,7 @@
     }
 
     onMount(() => {
+        updateSidebarScrollState()
         saveDetectedTimezoneIfMissing().catch(() => {
             // Timezone auto-detection is best-effort; users can still set it manually.
         })
@@ -370,7 +384,11 @@
                 </TooltipProvider>
             </div>
         </SidebarHeader>
-        <SidebarGroup class="shrink-0">
+        <SidebarGroup
+            class={cn(
+                'shrink-0 border-b border-transparent transition-[border-color,box-shadow]',
+                sidebarContentScrolled && 'border-sidebar-border shadow-xs',
+            )}>
             {#if data.agentsEnabled}
                 <Button
                     href="/agents"
@@ -396,7 +414,7 @@
                 recentChats={data.recentChats}
                 timeZone={data.user.configuration.timezone} />
         </SidebarGroup>
-        <SidebarContent>
+        <SidebarContent bind:ref={sidebarContentRef} onscroll={updateSidebarScrollState}>
             <SidebarGroup>
                 <SidebarGroupContent>
                     <!-- Starred chats -->
