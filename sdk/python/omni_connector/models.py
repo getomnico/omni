@@ -208,9 +208,31 @@ class OAuthManifestConfig(BaseModel):
     extra_auth_params: dict[str, str] = Field(default_factory=dict)
     scope_separator: str = " "
     enrich_endpoint: str | None = None
-    registration_endpoint: str | None = None
-    token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = "client_secret_post"
-    resource: str | None = None
+    registration_endpoint: str | None = Field(
+        default=None,
+        description=(
+            "OAuth Dynamic Client Registration endpoint. Set this for providers "
+            "where Omni should auto-create a client instead of asking admins "
+            "to configure one manually."
+        ),
+    )
+    token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = Field(
+        default="client_secret_post",
+        description=(
+            "OAuth token endpoint client authentication method. Public DCR "
+            "clients usually use 'none', which tells Omni not to require or "
+            "send a client secret and to treat the provider as auto-managed "
+            "when registration_endpoint is also present."
+        ),
+    )
+    resource: str | None = Field(
+        default=None,
+        description=(
+            "Optional OAuth resource indicator (RFC 8707) sent on auth/token "
+            "requests for providers that bind tokens to a specific resource, "
+            "such as a remote MCP server."
+        ),
+    )
 
 
 class ConnectorManifest(BaseModel):

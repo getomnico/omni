@@ -132,12 +132,22 @@ class ClickUpConnector(Connector):
     @property
     def search_operators(self) -> list[SearchOperator]:
         return [
-            SearchOperator(operator="status", attribute_key="status", value_type="text"),
-            SearchOperator(operator="priority", attribute_key="priority", value_type="text"),
-            SearchOperator(operator="assignee", attribute_key="assignee", value_type="person"),
+            SearchOperator(
+                operator="status", attribute_key="status", value_type="text"
+            ),
+            SearchOperator(
+                operator="priority", attribute_key="priority", value_type="text"
+            ),
+            SearchOperator(
+                operator="assignee", attribute_key="assignee", value_type="person"
+            ),
             SearchOperator(operator="tag", attribute_key="tags", value_type="text"),
-            SearchOperator(operator="space", attribute_key="space_name", value_type="text"),
-            SearchOperator(operator="list", attribute_key="list_name", value_type="text"),
+            SearchOperator(
+                operator="space", attribute_key="space_name", value_type="text"
+            ),
+            SearchOperator(
+                operator="list", attribute_key="list_name", value_type="text"
+            ),
         ]
 
     def oauth_config(self) -> OAuthManifestConfig | None:
@@ -161,7 +171,9 @@ class ClickUpConnector(Connector):
             resource=CLICKUP_OAUTH_RESOURCE,
         )
 
-    def _extract_credentials_blob(self, credentials: Mapping[str, object]) -> Mapping[str, object]:
+    def _extract_credentials_blob(
+        self, credentials: Mapping[str, object]
+    ) -> Mapping[str, object]:
         raw = credentials.get("credentials", credentials)
         if isinstance(raw, Mapping):
             return raw
@@ -189,9 +201,13 @@ class ClickUpConnector(Connector):
 
     async def bootstrap_mcp(self, credentials: Mapping[str, object]) -> None:
         if not self._mcp_access_token(credentials):
-            logger.debug("Skipping ClickUp MCP bootstrap: no OAuth access_token present")
+            logger.warning(
+                "Skipping ClickUp MCP bootstrap: no OAuth access_token present in credential payload"
+            )
             return
-        logger.info("Bootstrapping ClickUp MCP catalog with authenticated OAuth credentials")
+        logger.info(
+            "Bootstrapping ClickUp MCP catalog with authenticated OAuth credentials"
+        )
         await super().bootstrap_mcp(dict(credentials))
 
     async def oauth_credential_ready(
@@ -207,7 +223,7 @@ class ClickUpConnector(Connector):
             "ClickUp OAuth credential ready: refreshing MCP catalog for source %s",
             request.source_id,
         )
-        await self.bootstrap_mcp({"credentials": dict(request.credentials)})
+        await self.bootstrap_mcp(dict(request.credentials))
         return True
 
     async def execute_action(
@@ -220,15 +236,19 @@ class ClickUpConnector(Connector):
             return await self._search_spaces(params, credentials)
         return await super().execute_action(action, dict(params), dict(credentials))
 
-    async def _search_spaces(self, params: Mapping[str, object], credentials: Mapping[str, object]):
+    async def _search_spaces(
+        self, params: Mapping[str, object], credentials: Mapping[str, object]
+    ):
         token = self._rest_api_token(credentials)
         if not token:
-            return ActionResponse.failure("Missing ClickUp token for searching spaces").to_response(
-                status_code=400
-            )
+            return ActionResponse.failure(
+                "Missing ClickUp token for searching spaces"
+            ).to_response(status_code=400)
 
         query = str(params.get("query") or "").strip().lower()
-        api_url = params.get("api_url") if isinstance(params.get("api_url"), str) else None
+        api_url = (
+            params.get("api_url") if isinstance(params.get("api_url"), str) else None
+        )
         client = ClickUpClient(token=token, base_url=api_url)
         spaces: list[dict[str, str]] = []
 
@@ -260,9 +280,9 @@ class ClickUpConnector(Connector):
                 status_code=401
             )
         except ClickUpError as e:
-            return ActionResponse.failure(f"Failed to search ClickUp spaces: {e}").to_response(
-                status_code=502
-            )
+            return ActionResponse.failure(
+                f"Failed to search ClickUp spaces: {e}"
+            ).to_response(status_code=502)
         finally:
             await client.close()
 
@@ -302,10 +322,15 @@ class ClickUpConnector(Connector):
             return
 
         logger.info(
-            "Starting ClickUp %s sync across %d workspace(s)", ctx.sync_mode.value, len(workspaces)
+            "Starting ClickUp %s sync across %d workspace(s)",
+            ctx.sync_mode.value,
+            len(workspaces),
         )
         if config.space_filters:
-            logger.info("ClickUp sync limited to %d selected space(s)", len(config.space_filters))
+            logger.info(
+                "ClickUp sync limited to %d selected space(s)",
+                len(config.space_filters),
+            )
 
         try:
             # Persist a run-scoped checkpoint immediately. This prevents a resumed
@@ -320,7 +345,9 @@ class ClickUpConnector(Connector):
 
                 team_id = str(workspace["id"])
                 team_name = workspace.get("name", team_id)
-                base_state = sync_checkpoint.workspaces.get(team_id, WorkspaceSyncState())
+                base_state = sync_checkpoint.workspaces.get(
+                    team_id, WorkspaceSyncState()
+                )
 
                 logger.info("Syncing workspace '%s' (id=%s)", team_name, team_id)
 
@@ -369,7 +396,9 @@ class ClickUpConnector(Connector):
                     latest_task_updated_ts=task_result.latest_task_updated_ts,
                     latest_doc_updated_ts=latest_doc_updated_ts,
                 )
-                sync_checkpoint = sync_checkpoint.with_workspace(team_id, completed_state)
+                sync_checkpoint = sync_checkpoint.with_workspace(
+                    team_id, completed_state
+                )
                 await ctx.save_checkpoint(sync_checkpoint.to_json())
                 emitted_since_checkpoint = 0
 
@@ -411,22 +440,34 @@ class ClickUpConnector(Connector):
                 emitted_since_checkpoint=emitted_since_checkpoint,
             )
 
-        resume_tasks = progress is not None and progress.phase == WorkspaceSyncPhase.TASKS
+        resume_tasks = (
+            progress is not None and progress.phase == WorkspaceSyncPhase.TASKS
+        )
         page = progress.task_page if resume_tasks else 0
         start_offset = progress.task_offset if resume_tasks else 0
         latest_task_updated_ts = (
-            progress.latest_task_updated_ts if resume_tasks else base_state.last_task_updated_ts
+            progress.latest_task_updated_ts
+            if resume_tasks
+            else base_state.last_task_updated_ts
         )
         date_updated_gt = (
-            base_state.last_task_updated_ts if ctx.sync_mode == SyncMode.INCREMENTAL else None
+            base_state.last_task_updated_ts
+            if ctx.sync_mode == SyncMode.INCREMENTAL
+            else None
         )
 
         while True:
-            tasks = await client.list_tasks_page(team_id, page, date_updated_gt=date_updated_gt)
+            tasks = await client.list_tasks_page(
+                team_id, page, date_updated_gt=date_updated_gt
+            )
             if not tasks:
                 break
 
-            offset = start_offset if page == (progress.task_page if resume_tasks else 0) else 0
+            offset = (
+                start_offset
+                if page == (progress.task_page if resume_tasks else 0)
+                else 0
+            )
             for index in range(offset, len(tasks)):
                 if ctx.is_cancelled():
                     await ctx.fail("Cancelled by user")
@@ -447,7 +488,9 @@ class ClickUpConnector(Connector):
                     comments = await client.get_task_comments(task["id"])
                     content = generate_task_content(task, comments, hierarchy)
                     content_id = await ctx.content_storage.save(content, "text/plain")
-                    doc = map_task_to_document(task, comments, content_id, team_id, hierarchy)
+                    doc = map_task_to_document(
+                        task, comments, content_id, team_id, hierarchy
+                    )
                     await ctx.emit(doc)
                     emitted_since_checkpoint += 1
 
@@ -519,10 +562,14 @@ class ClickUpConnector(Connector):
         cursor = progress.doc_cursor if resume_docs else None
         start_offset = progress.doc_offset if resume_docs else 0
         latest_doc_updated_ts = (
-            progress.latest_doc_updated_ts if resume_docs else base_state.last_doc_updated_ts
+            progress.latest_doc_updated_ts
+            if resume_docs
+            else base_state.last_doc_updated_ts
         )
         date_updated_gt = (
-            base_state.last_doc_updated_ts if ctx.sync_mode == SyncMode.INCREMENTAL else None
+            base_state.last_doc_updated_ts
+            if ctx.sync_mode == SyncMode.INCREMENTAL
+            else None
         )
 
         while True:
@@ -530,7 +577,11 @@ class ClickUpConnector(Connector):
             if not docs:
                 break
 
-            offset = start_offset if cursor == (progress.doc_cursor if resume_docs else None) else 0
+            offset = (
+                start_offset
+                if cursor == (progress.doc_cursor if resume_docs else None)
+                else 0
+            )
             for index in range(offset, len(docs)):
                 if ctx.is_cancelled():
                     await ctx.fail("Cancelled by user")
@@ -616,7 +667,9 @@ class ClickUpConnector(Connector):
         base_state: WorkspaceSyncState,
         progress: WorkspaceProgress,
     ) -> ClickUpSyncCheckpoint:
-        checkpoint = checkpoint.with_workspace(team_id, base_state.with_progress(progress))
+        checkpoint = checkpoint.with_workspace(
+            team_id, base_state.with_progress(progress)
+        )
         await ctx.save_checkpoint(checkpoint.to_json())
         return checkpoint
 
@@ -697,7 +750,9 @@ class ClickUpConnector(Connector):
                         space_id=space.id,
                     )
         except ClickUpError as e:
-            logger.warning("Failed to build full hierarchy for workspace %s: %s", team_id, e)
+            logger.warning(
+                "Failed to build full hierarchy for workspace %s: %s", team_id, e
+            )
 
         return hierarchy, parsed_spaces
 

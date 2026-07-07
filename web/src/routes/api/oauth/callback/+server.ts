@@ -4,6 +4,7 @@ import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
 import { ulid } from 'ulid'
 import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
+import { OAuthStateManager } from '$lib/server/oauth/state'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { decryptConfig } from '$lib/server/crypto/encryption'
 import { logger } from '$lib/server/logger'
@@ -11,6 +12,24 @@ import { getConfig } from '$lib/server/config'
 import { getSourceById, getSourcesByType } from '$lib/server/db/sources'
 import { getSourceDisplayName } from '$lib/utils/icons'
 import { SourceType } from '$lib/types'
+
+function isSafeLocalPath(value: string): boolean {
+    return value.startsWith('/') && !value.startsWith('//')
+}
+
+function withErrorParam(path: string, errorCode: string): string {
+    const separator = path.includes('?') ? '&' : '?'
+    return `${path}${separator}error=${encodeURIComponent(errorCode)}`
+}
+
+function returnToFromStateMetadata(metadata: Record<string, unknown> | undefined): string | null {
+    const flow = metadata?.flow
+    if (!flow || typeof flow !== 'object' || Array.isArray(flow)) {
+        return null
+    }
+    const returnTo = (flow as { returnTo?: unknown }).returnTo
+    return typeof returnTo === 'string' && isSafeLocalPath(returnTo) ? returnTo : null
+}
 
 /// Unified OAuth callback. Provider-agnostic — dispatches based on the flow
 /// stored in the OAuth state.
@@ -32,12 +51,29 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         throw error(400, 'Missing code or state')
     }
 
+    let failureReturnTo: string | null = null
+    try {
+        const pendingState = await OAuthStateManager.getState(stateToken)
+        if (pendingState?.user_id === user.id) {
+            failureReturnTo = returnToFromStateMetadata(pendingState.metadata)
+        }
+    } catch (err) {
+        logger.warn('Failed to read OAuth state for failure redirect', { err: String(err) })
+    }
+
     let exchange
     try {
-        exchange = await exchangeCodeAndIdentify(code, stateToken)
+        exchange = await exchangeCodeAndIdentify(code, stateToken, {
+            principalEmailOverrides: {
+                clickup: user.email,
+            },
+        })
     } catch (err) {
         logger.error('OAuth exchange failed', { err: String(err) })
-        throw redirect(302, '/settings/integrations?error=oauth_failed')
+        throw redirect(
+            302,
+            withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_failed'),
+        )
     }
 
     const { tokens, state, principalEmail, config, clientCreds } = exchange
@@ -57,6 +93,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     // OAuth token responses may omit `scope` when the granted scopes match the
     // request. Treat omission as the requested scopes for validation/storage.
     const effectiveGrantedScopes = grantedScopes.length > 0 ? grantedScopes : requiredScopes
+    const storedGrantedScopes = flow.type === 'user_read' ? requiredScopes : effectiveGrantedScopes
     if (state.metadata.strictScopeCheck && flow.type === 'user_write') {
         const missing = requiredScopes.filter((s) => !effectiveGrantedScopes.includes(s))
         if (missing.length > 0) {
@@ -78,6 +115,34 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         ...(clientCreds.clientSecret ? { client_secret: clientCreds.clientSecret } : {}),
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
     })
+
+    const notifyOAuthCredentialReady = async (sourceId: string, userId?: string) => {
+        try {
+            const cmUrl = getConfig().services.connectorManagerUrl
+            const resp = await fetch(`${cmUrl}/oauth/credential-ready`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    source_id: sourceId,
+                    user_id: userId ?? null,
+                    provider: config.provider,
+                    flow: flow.type === 'user_write' ? 'user_write' : 'user_read',
+                }),
+            })
+            if (!resp.ok) {
+                logger.warn('OAuth credential-ready notification failed', {
+                    sourceId,
+                    status: resp.status,
+                    body: await resp.text(),
+                })
+            }
+        } catch (err) {
+            logger.warn('OAuth credential-ready notification failed', {
+                sourceId,
+                err: String(err),
+            })
+        }
+    }
 
     if (flow.type === 'org_source') {
         if (user.role !== 'admin') {
@@ -118,34 +183,6 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         throw redirect(302, flow.returnTo ?? '/admin/settings/integrations?success=connected')
     }
 
-    const notifyOAuthCredentialReady = async (sourceId: string, userId?: string) => {
-        try {
-            const cmUrl = getConfig().services.connectorManagerUrl
-            const resp = await fetch(`${cmUrl}/oauth/credential-ready`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({
-                    source_id: sourceId,
-                    user_id: userId ?? null,
-                    provider: config.provider,
-                    flow: flow.type === 'user_write' ? 'user_write' : 'user_read',
-                }),
-            })
-            if (!resp.ok) {
-                logger.warn('OAuth credential-ready notification failed', {
-                    sourceId,
-                    status: resp.status,
-                    body: await resp.text(),
-                })
-            }
-        } catch (err) {
-            logger.warn('OAuth credential-ready notification failed', {
-                sourceId,
-                err: String(err),
-            })
-        }
-    }
-
     if (flow.type === 'user_read' || flow.type === 'user_write') {
         const existing = await serviceCredentialsRepository.getByUserAndSource(
             flow.sourceId,
@@ -163,7 +200,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 ...existingCredentials,
                 ...credentialsWithRefreshFallback(existingCredentials),
             },
-            config: { granted_scopes: effectiveGrantedScopes },
+            config: { granted_scopes: storedGrantedScopes },
             expiresAt,
         })
         await notifyOAuthCredentialReady(flow.sourceId, user.id)

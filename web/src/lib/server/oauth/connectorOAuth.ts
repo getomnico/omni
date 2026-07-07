@@ -1,10 +1,13 @@
 import { createHash, randomBytes } from 'crypto'
 import { app, getConfig } from '../config'
 import { getConnectorConfig, upsertConnectorConfig } from '../db/connector-configs'
+import { createLogger } from '../logger'
 import { OAuthStateManager } from './state'
 import type { OAuthError, OAuthTokens } from './types'
 
 export type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none'
+
+const logger = createLogger('connector-oauth')
 
 function isOAuthTokenEndpointAuthMethod(value: unknown): value is OAuthTokenEndpointAuthMethod {
     return value === 'client_secret_post' || value === 'client_secret_basic' || value === 'none'
@@ -428,11 +431,19 @@ export interface ExchangeResult {
     clientCreds: ClientCreds
 }
 
+export interface ExchangeCodeOptions {
+    /// Provider-scoped identity overrides for providers whose OAuth token cannot
+    /// be used with their REST userinfo endpoint. Values must come from an
+    /// already-authenticated Omni user, never from request input.
+    principalEmailOverrides?: Record<string, string>
+}
+
 /// Exchange an authorization code for tokens, validate state, fetch
-/// principal email, and (optionally) call the connector's enrich endpoint.
+/// principal email unless a trusted provider-specific override is supplied.
 export async function exchangeCodeAndIdentify(
     code: string,
     stateToken: string,
+    options: ExchangeCodeOptions = {},
 ): Promise<ExchangeResult> {
     const state = (await OAuthStateManager.validateAndConsumeState(
         stateToken,
@@ -479,17 +490,55 @@ export async function exchangeCodeAndIdentify(
     }
 
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
+    logger.info('Starting connector OAuth token exchange', {
+        provider: config.provider,
+        flow: state.metadata.flow.type,
+        tokenEndpoint,
+        tokenEndpointAuthMethod: creds.tokenEndpointAuthMethod,
+        clientIdPrefix: creds.clientId.slice(0, 12),
+        redirectUri: callbackUrl(),
+        hasPkceVerifier: Boolean(state.metadata.codeVerifier),
+        resource: config.resource ?? null,
+        requestedScopes: state.metadata.requiredScopes,
+    })
     const tokenResp = await fetch(tokenEndpoint, {
         method: 'POST',
         headers: tokenHeaders,
         body: tokenParams.toString(),
     })
-    const tokenData = await tokenResp.json()
+    const tokenData = (await tokenResp.json().catch(() => ({}))) as OAuthTokens | OAuthError
     if (!tokenResp.ok) {
         const err = tokenData as OAuthError
+        logger.warn('Connector OAuth token exchange failed', {
+            provider: config.provider,
+            flow: state.metadata.flow.type,
+            status: tokenResp.status,
+            tokenEndpoint,
+            tokenEndpointAuthMethod: creds.tokenEndpointAuthMethod,
+            clientIdPrefix: creds.clientId.slice(0, 12),
+            resource: config.resource ?? null,
+            error: err.error,
+            errorDescription: err.error_description,
+        })
         throw new Error(`OAuth token exchange failed: ${err.error} - ${err.error_description}`)
     }
     const tokens = tokenData as OAuthTokens
+    logger.info('Connector OAuth token exchange succeeded', {
+        provider: config.provider,
+        flow: state.metadata.flow.type,
+        tokenType: tokens.token_type,
+        expiresIn: tokens.expires_in,
+        grantedScope: tokens.scope ?? null,
+    })
+
+    const principalEmailOverride = options.principalEmailOverrides?.[config.provider]
+    if (principalEmailOverride) {
+        logger.info('Using authenticated Omni user as connector OAuth principal', {
+            provider: config.provider,
+            flow: state.metadata.flow.type,
+        })
+        return { tokens, state, config, principalEmail: principalEmailOverride, clientCreds: creds }
+    }
 
     const userinfoResp = await fetch(config.userinfo_endpoint, {
         headers: {
@@ -498,11 +547,25 @@ export async function exchangeCodeAndIdentify(
         },
     })
     if (!userinfoResp.ok) {
+        const body = await userinfoResp.text().catch(() => '')
+        logger.warn('Connector OAuth userinfo fetch failed', {
+            provider: config.provider,
+            flow: state.metadata.flow.type,
+            status: userinfoResp.status,
+            userinfoEndpoint: config.userinfo_endpoint,
+            body: body.slice(0, 500),
+        })
         throw new Error(`Failed to fetch userinfo: ${userinfoResp.status}`)
     }
     const profile = (await userinfoResp.json()) as unknown
     const email = extractEmailFromUserinfo(profile, config.userinfo_email_field)
     if (!email) {
+        logger.warn('Connector OAuth userinfo response missing email field', {
+            provider: config.provider,
+            flow: state.metadata.flow.type,
+            userinfoEmailField: config.userinfo_email_field,
+            profileKeys: isUserinfoObject(profile) ? Object.keys(profile) : null,
+        })
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }
 

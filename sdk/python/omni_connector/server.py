@@ -135,7 +135,8 @@ def create_app(connector: "Connector") -> FastAPI:
                 await server.sdk_client.register(m.model_dump())
             except Exception as e:
                 logger.warning(
-                    "OAuth credential-ready manifest registration failed: %s",
+                    "OAuth credential-ready manifest registration failed: %s: %r",
+                    type(e).__name__,
                     e,
                 )
             return JSONResponse(

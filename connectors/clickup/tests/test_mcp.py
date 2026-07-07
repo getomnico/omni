@@ -7,7 +7,12 @@ import pytest
 
 from clickup_connector import ClickUpConnector
 from clickup_connector.config import CLICKUP_MCP_URL, CLICKUP_OAUTH_RESOURCE
-from omni_connector import ActionDefinition, ActionResponse, HttpMcpServer
+from omni_connector import (
+    ActionDefinition,
+    ActionResponse,
+    HttpMcpServer,
+    OAuthCredentialReadyRequest,
+)
 
 
 class FakeMcpAdapter:
@@ -94,7 +99,9 @@ def test_mcp_server_points_at_clickup_remote_http() -> None:
 def test_prepare_mcp_headers_uses_access_token(credentials: dict[str, Any]) -> None:
     connector = ClickUpConnector()
 
-    assert connector.prepare_mcp_headers(credentials) == {"Authorization": "Bearer tok_123"}
+    assert connector.prepare_mcp_headers(credentials) == {
+        "Authorization": "Bearer tok_123"
+    }
 
 
 def test_prepare_mcp_headers_rejects_missing_access_token() -> None:
@@ -145,7 +152,44 @@ async def test_authenticated_bootstrap_discovers_and_persists_catalog(
 
     assert fake.discovered is True
     assert fake.headers_seen == {"Authorization": "Bearer tok_boot"}
-    assert json.loads(cache_path.read_text())["catalog"]["actions"][0]["name"] == "create_task"
+    assert (
+        json.loads(cache_path.read_text())["catalog"]["actions"][0]["name"]
+        == "create_task"
+    )
+
+
+async def test_oauth_credential_ready_bootstraps_with_forwarded_credentials(
+    tmp_path, monkeypatch
+) -> None:
+    cache_path = tmp_path / "clickup.mcp-catalog.json"
+    monkeypatch.setenv("CATALOG_CACHE_DIR", str(tmp_path))
+    connector = ClickUpConnector()
+    fake = FakeMcpAdapter()
+    connector._mcp_adapter = fake  # noqa: SLF001 - deliberate test seam
+    connector._mcp_catalog_cache_loaded = True  # noqa: SLF001
+
+    changed = await connector.oauth_credential_ready(
+        OAuthCredentialReadyRequest(
+            source_id="src_clickup",
+            user_id="user_1",
+            provider="clickup",
+            flow="user_write",
+            credentials={
+                "credentials": {"access_token": "tok_ready"},
+                "config": {"granted_scopes": ["read", "write"]},
+                "auth_type": "oauth",
+                "principal_email": "user@example.com",
+            },
+        )
+    )
+
+    assert changed is True
+    assert fake.discovered is True
+    assert fake.headers_seen == {"Authorization": "Bearer tok_ready"}
+    assert (
+        json.loads(cache_path.read_text())["catalog"]["actions"][0]["name"]
+        == "create_task"
+    )
 
 
 async def test_execute_action_delegates_to_mcp_with_bearer_header(monkeypatch) -> None:
