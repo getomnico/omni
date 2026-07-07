@@ -7,6 +7,7 @@
         Sidebar,
         SidebarContent,
         SidebarHeader,
+        SidebarFooter,
         SidebarGroup,
         SidebarGroupContent,
         SidebarMenu,
@@ -86,6 +87,8 @@
     let headerTitleValue = $state('')
     let headerTitleInputRef: HTMLInputElement | undefined = $state()
     let optimisticTitle = $state<string | null>(null)
+    let sidebarContentRef: HTMLDivElement | null = $state(null)
+    let sidebarContentScrolled = $state(false)
 
     let currentChatTitle = $derived(
         optimisticTitle ??
@@ -144,6 +147,10 @@
         }
     }
 
+    function updateSidebarScrollState() {
+        sidebarContentScrolled = (sidebarContentRef?.scrollTop ?? 0) > 0
+    }
+
     afterNavigate(() => {
         isEditingHeaderTitle = false
         optimisticTitle = null
@@ -158,6 +165,13 @@
         additionalRecentChats = []
         additionalRecentHasMore = null
         recentLoadError = ''
+    })
+
+    $effect(() => {
+        const sidebarListKey = `${recentChats.length}:${data.starredChats.length}`
+        requestAnimationFrame(() => {
+            if (sidebarListKey) updateSidebarScrollState()
+        })
     })
 
     async function loadMoreRecentChats() {
@@ -280,6 +294,7 @@
     }
 
     onMount(() => {
+        updateSidebarScrollState()
         saveDetectedTimezoneIfMissing().catch(() => {
             // Timezone auto-detection is best-effort; users can still set it manually.
         })
@@ -369,33 +384,38 @@
                 </TooltipProvider>
             </div>
         </SidebarHeader>
-        <SidebarContent class="flex flex-col">
-            <SidebarGroup class="flex-1">
-                {#if data.agentsEnabled}
-                    <Button
-                        href="/agents"
-                        class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
-                        variant="ghost">
-                        <Bot />
-                        <span class="group-data-[collapsible=icon]:hidden">Agents</span>
-                    </Button>
-                    <hr />
-                {/if}
-
+        <SidebarGroup
+            class={cn(
+                'shrink-0 border-b border-transparent transition-[border-color,box-shadow]',
+                sidebarContentScrolled && 'border-sidebar-border shadow-xs',
+            )}>
+            {#if data.agentsEnabled}
                 <Button
-                    href="/"
-                    class="mt-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                    href="/agents"
+                    class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                     variant="ghost">
-                    <MessageCircle />
-                    <span class="group-data-[collapsible=icon]:hidden">New Chat</span>
+                    <Bot />
+                    <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                 </Button>
+                <hr />
+            {/if}
 
-                <!-- Chat history search -->
-                <ChatHistorySearch
-                    currentChatId={page.params.chatId}
-                    recentChats={data.recentChats}
-                    timeZone={data.user.configuration.timezone} />
+            <Button
+                href="/"
+                class="mt-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                variant="ghost">
+                <MessageCircle />
+                <span class="group-data-[collapsible=icon]:hidden">New Chat</span>
+            </Button>
 
+            <!-- Chat history search -->
+            <ChatHistorySearch
+                currentChatId={page.params.chatId}
+                recentChats={data.recentChats}
+                timeZone={data.user.configuration.timezone} />
+        </SidebarGroup>
+        <SidebarContent bind:ref={sidebarContentRef} onscroll={updateSidebarScrollState}>
+            <SidebarGroup>
                 <SidebarGroupContent>
                     <!-- Starred chats -->
                     {#if data.starredChats.length > 0}
@@ -451,13 +471,13 @@
                     {/if}
                 </SidebarGroupContent>
             </SidebarGroup>
-            <SidebarGroup>
-                <SidebarUserMenu
-                    email={data.user.email}
-                    isAdmin={data.user.role === 'admin'}
-                    memoryEnabled={data.memoryEnabled} />
-            </SidebarGroup>
         </SidebarContent>
+        <SidebarFooter>
+            <SidebarUserMenu
+                email={data.user.email}
+                isAdmin={data.user.role === 'admin'}
+                memoryEnabled={data.memoryEnabled} />
+        </SidebarFooter>
         <SidebarRail />
     </Sidebar>
 

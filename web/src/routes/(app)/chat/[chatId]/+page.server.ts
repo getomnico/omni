@@ -19,18 +19,30 @@ function collectActivePathToolCallIds(messages: ChatMessage[]): Set<string> {
     return ids
 }
 
+type OmniUploadSource = {
+    type: 'omni_upload'
+    upload_id: string
+}
+
+function isOmniUploadSource(source: unknown): source is OmniUploadSource {
+    if (typeof source !== 'object' || source === null) return false
+
+    const candidate = source as Record<string, unknown>
+    return candidate.type === 'omni_upload' && typeof candidate.upload_id === 'string'
+}
+
 function collectUploadIds(messages: ChatMessage[]): Set<string> {
     const ids = new Set<string>()
     for (const msg of messages) {
         const content = msg.message.content
         if (typeof content === 'string') continue
         for (const block of content) {
+            const source: unknown = 'source' in block ? block.source : null
             if (
                 (block.type === 'document' || block.type === 'image') &&
-                'source' in block &&
-                (block.source as { type: string }).type === 'omni_upload'
+                isOmniUploadSource(source)
             ) {
-                ids.add((block.source as { upload_id: string }).upload_id)
+                ids.add(source.upload_id)
             }
         }
     }
@@ -56,12 +68,14 @@ async function resolveUploadFilenames(
     return result
 }
 
-export const load = async ({ params, locals, fetch }) => {
+export const load = async ({ params, locals, fetch, depends }) => {
     const chat = await chatRepository.get(params.chatId)
     if (!chat) {
         // throw 404
         error(404, 'Chat not found')
     }
+
+    depends(`app:chat:${params.chatId}`)
 
     // Agent chats: fetch agent info and enforce admin access
     let agent: { id: string; name: string; agentType: string } | null = null
