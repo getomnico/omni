@@ -229,6 +229,115 @@ def parse_space(raw: Mapping[str, object]) -> ClickUpSpace:
     )
 
 
+# ── ClickUp API response types ────────────────────────────────────
+# TypedDicts for raw JSON responses from the ClickUp REST API. These are the
+# shapes used by client.py and mappers.py. Not all API fields are modelled;
+# only the ones the connector actually accesses are listed.
+
+
+class ClickUpApiWorkspace(TypedDict, total=False):
+    id: str
+    name: str
+
+
+class ClickUpApiSpace(TypedDict, total=False):
+    id: str
+    name: str
+    private: bool
+    members: list[dict[str, object]]
+
+
+class ClickUpApiFolder(TypedDict, total=False):
+    id: str
+    name: str
+
+
+class ClickUpApiList(TypedDict, total=False):
+    id: str
+    name: str
+    orderindex: int
+    space: dict[str, object]
+    folder: dict[str, object]
+
+
+class ClickUpApiUser(TypedDict, total=False):
+    id: int
+    username: str
+    email: str
+
+
+class ClickUpApiPriority(TypedDict, total=False):
+    priority: str
+    color: str
+
+
+class ClickUpApiStatus(TypedDict, total=False):
+    status: str
+    color: str
+    type: str
+
+
+class ClickUpApiCreator(TypedDict, total=False):
+    id: int
+    username: str
+    email: str
+
+
+class ClickUpApiAssignee(TypedDict, total=False):
+    id: int
+    username: str
+    email: str
+
+
+class ClickUpApiTag(TypedDict, total=False):
+    name: str
+
+
+class ClickUpApiCustomField(TypedDict, total=False):
+    id: str
+    name: str
+    value: object
+
+
+class ClickUpApiTask(TypedDict, total=False):
+    id: str
+    name: str
+    description: str
+    text_content: str
+    url: str
+    status: ClickUpApiStatus
+    priority: ClickUpApiPriority
+    creator: ClickUpApiCreator
+    assignees: list[ClickUpApiAssignee]
+    tags: list[ClickUpApiTag]
+    parent: str | None
+    date_created: str
+    date_updated: str
+    due_date: str | None
+    list: ClickUpApiList
+    custom_fields: list[dict[str, object]]
+
+
+class ClickUpApiComment(TypedDict, total=False):
+    id: str
+    comment_text: str
+    user: ClickUpApiUser
+    date: int
+
+
+class ClickUpApiDoc(TypedDict, total=False):
+    id: str
+    name: str
+    date_created: int
+    date_updated: int
+
+
+class ClickUpApiDocPage(TypedDict, total=False):
+    id: str
+    name: str
+    content: str
+
+
 def _int_value(value: object) -> int:
     if isinstance(value, bool):
         return 0

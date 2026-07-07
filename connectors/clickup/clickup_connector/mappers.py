@@ -6,6 +6,12 @@ from typing import Any
 from omni_connector import Document, DocumentMetadata, DocumentPermissions
 
 from .config import MAX_CONTENT_LENGTH
+from .models import (
+    ClickUpApiComment,
+    ClickUpApiDoc,
+    ClickUpApiDocPage,
+    ClickUpApiTask,
+)
 
 
 # ── Hierarchy lookup ────────────────────────────────────────────────
@@ -69,8 +75,8 @@ class HierarchyLookup:
 
 
 def map_task_to_document(
-    task: dict[str, Any],
-    comments: list[dict[str, Any]],
+    task: ClickUpApiTask,
+    comments: list[ClickUpApiComment],
     content_id: str,
     team_id: str,
     hierarchy: HierarchyLookup,
@@ -136,8 +142,8 @@ def map_task_to_document(
 
 
 def generate_task_content(
-    task: dict[str, Any],
-    comments: list[dict[str, Any]],
+    task: ClickUpApiTask,
+    comments: list[ClickUpApiComment],
     hierarchy: HierarchyLookup,
 ) -> str:
     list_info = hierarchy.get(task.get("list", {}).get("id", ""))
@@ -209,7 +215,7 @@ def generate_task_content(
 
 
 def map_doc_to_document(
-    doc: dict[str, Any],
+    doc: ClickUpApiDoc,
     pages_content: str,
     content_id: str,
     team_id: str,
@@ -236,7 +242,7 @@ def map_doc_to_document(
     )
 
 
-def generate_doc_content(doc: dict[str, Any], pages: list[dict[str, Any]]) -> str:
+def generate_doc_content(doc: ClickUpApiDoc, pages: list[ClickUpApiDocPage]) -> str:
     lines: list[str] = []
     lines.append(f"Doc: {doc.get('name', 'Untitled')}")
     lines.append("")

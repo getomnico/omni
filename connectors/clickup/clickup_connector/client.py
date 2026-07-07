@@ -8,6 +8,17 @@ from typing import Any
 
 import httpx
 
+from .models import (
+    ClickUpApiComment,
+    ClickUpApiDoc,
+    ClickUpApiDocPage,
+    ClickUpApiFolder,
+    ClickUpApiList,
+    ClickUpApiSpace,
+    ClickUpApiTask,
+    ClickUpApiWorkspace,
+)
+
 from .config import (
     DOCS_PER_PAGE,
     INITIAL_BACKOFF_SECONDS,
@@ -78,26 +89,26 @@ class ClickUpClient:
 
     # ── Workspaces / Teams ──────────────────────────────────────────
 
-    async def get_workspaces(self) -> list[dict[str, Any]]:
+    async def get_workspaces(self) -> list[ClickUpApiWorkspace]:
         """List authorized workspaces. Also validates the token."""
         data = await self._request("GET", "/api/v2/team")
         return data.get("teams", [])
 
     # ── Hierarchy (for name lookups) ────────────────────────────────
 
-    async def list_spaces(self, team_id: str) -> list[dict[str, Any]]:
+    async def list_spaces(self, team_id: str) -> list[ClickUpApiSpace]:
         data = await self._request("GET", f"/api/v2/team/{team_id}/space")
         return data.get("spaces", [])
 
-    async def list_folders(self, space_id: str) -> list[dict[str, Any]]:
+    async def list_folders(self, space_id: str) -> list[ClickUpApiFolder]:
         data = await self._request("GET", f"/api/v2/space/{space_id}/folder")
         return data.get("folders", [])
 
-    async def list_lists_in_folder(self, folder_id: str) -> list[dict[str, Any]]:
+    async def list_lists_in_folder(self, folder_id: str) -> list[ClickUpApiList]:
         data = await self._request("GET", f"/api/v2/folder/{folder_id}/list")
         return data.get("lists", [])
 
-    async def list_folderless_lists(self, space_id: str) -> list[dict[str, Any]]:
+    async def list_folderless_lists(self, space_id: str) -> list[ClickUpApiList]:
         data = await self._request("GET", f"/api/v2/space/{space_id}/list")
         return data.get("lists", [])
 
@@ -111,7 +122,7 @@ class ClickUpClient:
         include_closed: bool = True,
         subtasks: bool = True,
         date_updated_gt: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ClickUpApiTask]:
         """Fetch one page of tasks from the workspace endpoint."""
         params: dict[str, Any] = {
             "page": page,
@@ -131,7 +142,7 @@ class ClickUpClient:
         include_closed: bool = True,
         subtasks: bool = True,
         date_updated_gt: int | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
+    ) -> AsyncIterator[ClickUpApiTask]:
         """Paginate through tasks in a workspace via the filtered team endpoint."""
         page = 0
         while True:
@@ -149,14 +160,14 @@ class ClickUpClient:
                 break
             page += 1
 
-    async def get_task(self, task_id: str) -> dict[str, Any]:
+    async def get_task(self, task_id: str) -> ClickUpApiTask:
         return await self._request("GET", f"/api/v2/task/{task_id}")
 
     # ── Comments ────────────────────────────────────────────────────
 
-    async def get_task_comments(self, task_id: str) -> list[dict[str, Any]]:
+    async def get_task_comments(self, task_id: str) -> list[ClickUpApiComment]:
         """Fetch comments for a task, capped at MAX_COMMENT_COUNT."""
-        comments: list[dict[str, Any]] = []
+        comments: list[ClickUpApiComment] = []
         start: int | None = None
         start_id: str | None = None
 
@@ -187,7 +198,7 @@ class ClickUpClient:
 
     async def list_docs_page(
         self, workspace_id: str, cursor: str | None = None
-    ) -> tuple[list[dict[str, Any]], str | None]:
+    ) -> tuple[list[ClickUpApiDoc], str | None]:
         """Fetch one cursor page of docs from the v3 API."""
         params: dict[str, Any] = {"limit": DOCS_PER_PAGE}
         if cursor is not None:
@@ -196,7 +207,7 @@ class ClickUpClient:
         next_cursor = data.get("next_cursor")
         return data.get("docs", []), next_cursor if isinstance(next_cursor, str) else None
 
-    async def list_docs(self, workspace_id: str) -> AsyncIterator[dict[str, Any]]:
+    async def list_docs(self, workspace_id: str) -> AsyncIterator[ClickUpApiDoc]:
         """List docs in a workspace via the v3 cursor-paginated API."""
         cursor: str | None = None
         while True:
@@ -207,7 +218,7 @@ class ClickUpClient:
                 break
             cursor = next_cursor
 
-    async def get_doc_pages(self, workspace_id: str, doc_id: str) -> list[dict[str, Any]]:
+    async def get_doc_pages(self, workspace_id: str, doc_id: str) -> list[ClickUpApiDocPage]:
         data = await self._request("GET", f"/api/v3/workspaces/{workspace_id}/docs/{doc_id}/pages")
         return data.get("pages", [])
 
