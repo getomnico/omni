@@ -9,6 +9,27 @@ import { isProviderConfigured } from '$lib/server/oauth/connectorOAuth.js'
 import { getSourceDisplayName } from '$lib/utils/icons.js'
 import { SourceType } from '$lib/types.js'
 import type { OAuthRequiredAIEvent } from '$lib/types/message.js'
+import type { Logger } from '$lib/server/logger.js'
+import type { SearchResultBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
+
+/** Wire shape of the ``title`` SSE event emitted by the proxy after a title
+ *  generation completes on first connect. */
+type TitleEvent = {
+    title: string
+}
+
+/** An Omni extension of the SDK SearchResultBlockParam that includes the
+ *  internal source_type field, which the AI service attaches for rendering
+ *  but strips before forwarding to external LLM APIs. */
+type OmniSearchResultBlockParam = SearchResultBlockParam & {
+    source_type?: string | null
+}
+
+/** Any content block inside a tool_result's content array. */
+type ToolResultContentBlock =
+    | TextBlockParam
+    | OmniSearchResultBlockParam
+    | (Record<string, unknown> & { type: string })
 
 function sseEvent(eventType: string, data: object): string {
     return `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`
@@ -154,7 +175,10 @@ function replayStreamResponse(sampleStream: string, chatId: string): Response {
     })
 }
 
-async function triggerTitleGeneration(chatId: string, logger: any): Promise<TitleGenerationResult> {
+async function triggerTitleGeneration(
+    chatId: string,
+    logger: Logger,
+): Promise<TitleGenerationResult> {
     try {
         // First check if title already exists
         const chat = await chatRepository.get(chatId)
@@ -197,7 +221,7 @@ async function triggerTitleGeneration(chatId: string, logger: any): Promise<Titl
             return { status: 'failed', message }
         }
     } catch (error) {
-        logger.warn('Error during title generation', error, { chatId })
+        logger.warn('Error during title generation', { error, chatId })
         const message = error instanceof Error ? error.message : 'Failed to generate chat title'
         return { status: 'failed', message }
     }
@@ -264,10 +288,17 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
 
         logger.info('Chat stream started successfully', { chatId })
 
-        // Create a transformed stream that:
-        // 1. Intercepts save_message events for database writes
-        // 2. Filters out save_message events from client
-        // 3. Triggers title generation after completion
+        // Create a transformed stream that enriches or redacts selected events
+        // before forwarding them to the browser. The AI service's
+        // _persist_and_transform has already converted internal save_message
+        // events (the producer's single writer) into message_id or
+        // update_message_content events, so they never reach this proxy.
+        //
+        // Transformations performed here:
+        // 1. oauth_required – enrich with provider_configured / source_display_name
+        // 2. message (tool_result) – redact search highlights and truncate text
+        // 3. Forward approval_required and all others as-is
+        // 4. Trigger title generation after the initial connection
         const reader = response.body?.getReader()
 
         if (!reader) {
@@ -290,10 +321,9 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                         `Generated title for chat ${chatId}: ${result.title}`,
                                     )
                                     try {
+                                        const titleEvent: TitleEvent = { title: result.title }
                                         controller.enqueue(
-                                            encoder.encode(
-                                                sseEvent('title', { title: result.title }),
-                                            ),
+                                            encoder.encode(sseEvent('title', titleEvent)),
                                         )
                                     } catch {
                                         // The browser may have disconnected while title generation ran.
@@ -396,51 +426,61 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                             // Special handling for certain events
                             if (eventType === 'message' && data) {
                                 try {
-                                    const parsedData = JSON.parse(data)
+                                    const parsedData: Record<string, unknown> = JSON.parse(data)
                                     // Redact tool result content before forwarding to client
                                     // Check if this is a tool_result block
                                     if (
                                         parsedData.type === 'tool_result' &&
                                         Array.isArray(parsedData.content)
                                     ) {
+                                        const content =
+                                            parsedData.content as ToolResultContentBlock[]
+
                                         // Separate search results from other content types
-                                        const hasSearchResults = parsedData.content.some(
-                                            (item: any) => item.type === 'search_result',
+                                        const hasSearchResults = content.some(
+                                            (item): item is OmniSearchResultBlockParam =>
+                                                item.type === 'search_result',
                                         )
 
-                                        let redactedContent
+                                        let redactedContent: ToolResultContentBlock[]
                                         if (hasSearchResults) {
                                             // Redact search result content (keep title/source, remove highlights)
-                                            redactedContent = parsedData.content
+                                            redactedContent = content
                                                 .filter(
-                                                    (item: any) => item.type === 'search_result',
+                                                    (item): item is OmniSearchResultBlockParam =>
+                                                        item.type === 'search_result',
                                                 )
-                                                .map((searchResult: any) => ({
-                                                    type: 'search_result',
-                                                    title: searchResult.title,
-                                                    source: searchResult.source,
-                                                    source_type: searchResult.source_type ?? null,
-                                                    content: [], // Redact the highlights
-                                                }))
+                                                .map(
+                                                    (searchResult): OmniSearchResultBlockParam => ({
+                                                        type: 'search_result',
+                                                        title: searchResult.title,
+                                                        source: searchResult.source,
+                                                        source_type:
+                                                            searchResult.source_type ?? null,
+                                                        content: [], // Redact the highlights
+                                                    }),
+                                                )
                                         } else {
                                             // For non-search results (connector actions, sandbox, etc.)
                                             // Forward text content as-is (truncated for safety)
-                                            redactedContent = parsedData.content.map(
-                                                (item: any) => {
-                                                    if (
-                                                        item.type === 'text' &&
-                                                        item.text?.length > 5000
-                                                    ) {
+                                            redactedContent = content.map((item) => {
+                                                if (
+                                                    item.type === 'text' &&
+                                                    typeof (item as TextBlockParam).text ===
+                                                        'string'
+                                                ) {
+                                                    const textBlock = item as TextBlockParam
+                                                    if (textBlock.text.length > 5000) {
                                                         return {
-                                                            ...item,
+                                                            ...textBlock,
                                                             text:
-                                                                item.text.substring(0, 5000) +
+                                                                textBlock.text.substring(0, 5000) +
                                                                 '\n... (truncated)',
                                                         }
                                                     }
-                                                    return item
-                                                },
-                                            )
+                                                }
+                                                return item
+                                            })
                                         }
 
                                         const redactedData = {

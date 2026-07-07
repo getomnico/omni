@@ -1,24 +1,24 @@
+"""Chat streaming API routes.
+
+Thin router extracted from the historical monolith.  Orchestrates request
+setup (chat lookup, registry build, compaction, provider resolution) and
+delegates the heavy streaming work to ``services/ai/streaming/`` modules.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import pathlib
-from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 import httpx
-from anthropic import AsyncStream, MessageStreamEvent
 from anthropic.types import (
-    CitationCharLocationParam,
-    CitationContentBlockLocationParam,
-    CitationPageLocationParam,
-    CitationsDelta,
-    CitationSearchResultLocationParam,
-    CitationWebSearchResultLocationParam,
     ContentBlockParam,
     MessageParam,
     TextBlockParam,
-    TextCitationParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
@@ -57,12 +57,37 @@ from memory import (
     user_key,
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
-from providers import LLMProvider, LLMProviderStreamError
-from providers import ProviderError
+from providers import LLMProvider
 from services.compaction import ConversationCompactor
 from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
+from streaming.generate import (
+    active_path_tool_call_ids,
+    drop_empty_assistant_messages,
+    message_content_blocks,
+    repair_interrupted_tool_calls,
+    stream_generator,
+    tool_use_blocks,
+)
+from streaming.persist import (
+    EndOfStreamReason,
+    end_of_stream,
+    persist_and_transform,
+)
+from streaming.run import (
+    SSE_HEADERS,
+    _CANCEL_TTL,
+    _RUN_LOCK_TTL,
+    _run_tasks_by_chat,
+    cancel_key,
+    clear_producer_task,
+    consume_run,
+    run_lock_key,
+    run_producer,
+    set_producer_task,
+    stream_key,
+)
 from tools import (
     ConnectorToolHandler,
     DocumentToolHandler,
@@ -90,377 +115,12 @@ router = APIRouter(tags=["chat"])
 logger = logging.getLogger(__name__)
 
 
-def _chat_error_message(exc: Exception) -> str:
-    if isinstance(exc, ProviderError) and exc.message:
-        return f"Failed to generate response: {exc.message}"
-
-    if isinstance(exc, LLMProviderStreamError) and exc.message:
-        return f"Failed to generate response: {exc.message}"
-
-    message = str(exc).strip()
-    if message:
-        return f"Failed to generate response: {message}"
-
-    return "Failed to generate response. Please try again."
-
-
-def _chat_error_payload(exc: Exception) -> dict[str, object]:
-    payload: dict[str, object] = {"message": _chat_error_message(exc)}
-    if isinstance(exc, ProviderError):
-        payload["provider"] = exc.provider_type
-        payload["model"] = exc.model
-        payload["statusCode"] = exc.status_code
-    return payload
-
-
-def _sse_event(event_type: str, data: object) -> str:
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-
-
-# --- Decoupled streaming run (survives client disconnect; supports resume) ---
-# The agent loop runs as a background "producer" that writes each SSE event into
-# a per-chat Redis Stream. HTTP requests are thin "consumers" that tail that
-# stream from an offset (SSE Last-Event-ID), so a client that backgrounds/
-# reconnects resumes without interrupting generation. The producer is the single
-# DB writer of the streaming path (persists messages before client-visible
-# message events), which keeps replays free of duplicate writes.
-
-SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
-
-_STREAM_HEARTBEAT_MS = 15000  # idle ping interval (keeps proxies from timing out)
-_RUN_LOCK_TTL = (
-    300  # seconds; refreshed on every produced event and by the heartbeat below
-)
-_LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a long
-# silent gap in the agent loop (e.g. a slow tool call with no intermediate SSE
-# events) can't let the lock expire while the producer is still running.
-_STREAM_TTL = 300  # seconds a finished stream stays replayable
-_STREAM_MAXLEN = 5000  # cap buffered events per run
-_CANCEL_TTL = 300
-_CANCEL_CHECK_INTERVAL_SECONDS = 1.0
-
-_background_run_tasks: set[asyncio.Task] = set()
-# Producer tasks keyed by chat so an explicit Stop can cancel the right run
-# immediately in-process. The Redis cancel flag handles cross-worker stops.
-_run_tasks_by_chat: dict[str, asyncio.Task] = {}
-
-
-def _stream_key(chat_id: str) -> str:
-    return f"chat:stream:{chat_id}"
-
-
-def _run_lock_key(chat_id: str) -> str:
-    return f"chat:runlock:{chat_id}"
-
-
-def _cancel_key(chat_id: str) -> str:
-    return f"chat:cancel:{chat_id}"
-
-
-async def _is_run_cancelled(redis_client, chat_id: str) -> bool:
-    if redis_client is None:
-        return False
-    try:
-        return bool(await redis_client.exists(_cancel_key(chat_id)))
-    except Exception:
-        return False
-
-
-def _sse_event_type(event_str: str) -> str:
-    for line in event_str.split("\n"):
-        if line.startswith("event:"):
-            return line[len("event:") :].strip()
-    return "message"
-
-
-def _sse_event_data(event_str: str) -> str:
-    for line in event_str.split("\n"):
-        if line.startswith("data:"):
-            return line[len("data:") :].strip()
-    return ""
-
-
-def _partial_assistant_message(
-    content_blocks: list[TextBlockParam | ToolUseBlockParam],
-) -> MessageParam | None:
-    persisted_blocks: list[TextBlockParam | ToolUseBlockParam] = []
-    for block in content_blocks:
-        if block["type"] == "text":
-            text_block = cast(TextBlockParam, block)
-            if text_block["text"].strip():
-                persisted_blocks.append(cast(TextBlockParam, dict(text_block)))
-            continue
-
-        tool_block = cast(ToolUseBlockParam, dict(block))
-        raw_input = tool_block.get("input")
-        if isinstance(raw_input, str):
-            try:
-                tool_block["input"] = json.loads(raw_input) if raw_input else {}
-            except json.JSONDecodeError:
-                tool_block["input"] = {}
-        persisted_blocks.append(tool_block)
-
-    if not persisted_blocks:
-        return None
-
-    return MessageParam(role="assistant", content=persisted_blocks)
-
-
-def _parse_tool_call_inputs(
-    tool_calls: list[ToolUseBlockParam],
-) -> list[ToolResultBlockParam]:
-    parse_errors: list[ToolResultBlockParam] = []
-    for tool_call in tool_calls:
-        raw_input = cast(str, tool_call["input"])
-        try:
-            tool_call["input"] = json.loads(raw_input)
-        except json.JSONDecodeError as e:
-            logger.warning(
-                "Failed to parse tool call input for %s: %s. Raw input: %s",
-                tool_call["name"],
-                e,
-                raw_input,
-            )
-            raw_input_preview = raw_input[:4000]
-            if len(raw_input) > len(raw_input_preview):
-                raw_input_preview += "... [truncated]"
-            tool_call["input"] = {}
-            parse_errors.append(
-                ToolResultBlockParam(
-                    type="tool_result",
-                    tool_use_id=tool_call["id"],
-                    content=[
-                        {
-                            "type": "text",
-                            "text": (
-                                f"Invalid JSON in tool input: {e}. "
-                                "The tool was not executed. Retry with valid JSON.\n\n"
-                                f"Raw tool input:\n{raw_input_preview}"
-                            ),
-                        }
-                    ],
-                    is_error=True,
-                )
-            )
-    return parse_errors
-
-
-async def _persist_and_transform(gen, chat_id, messages_repo, parent_id):
-    """Persist streamed messages before exposing them to the client.
-
-    Assistant rows are created as soon as the provider emits message_start, so
-    the browser can use a durable chat_messages.id for the streaming bubble from
-    the beginning. Tool-result rows are persisted before their tool_result events
-    are forwarded. This keeps frontend render identities and future parent_id
-    values database-backed even if the run is cancelled mid-stream.
-    """
-    current_assistant_message_id: str | None = None
-    buffered_tool_result_events: list[str] = []
-
-    async for event_str in gen:
-        event_type = _sse_event_type(event_str)
-        event_data = _sse_event_data(event_str)
-
-        if event_type == "message":
-            try:
-                message_event = json.loads(event_data)
-            except json.JSONDecodeError:
-                yield event_str
-                continue
-
-            if message_event.get("type") == "message_start":
-                try:
-                    provider_message = message_event.get("message", {})
-                    assistant_message = {
-                        "role": provider_message.get("role", "assistant"),
-                        "content": provider_message.get("content") or [],
-                    }
-                    created = await messages_repo.create(
-                        chat_id, assistant_message, parent_id=parent_id
-                    )
-                    current_assistant_message_id = created.id
-                    parent_id = created.id
-                    message_event.setdefault("message", {})["id"] = created.id
-                    event_str = _sse_event("message", message_event)
-                except Exception as e:
-                    logger.error(
-                        f"Failed to pre-persist assistant message for chat {chat_id}: {e}",
-                        exc_info=True,
-                    )
-                yield event_str
-                continue
-
-            if message_event.get("type") == "tool_result":
-                buffered_tool_result_events.append(event_str)
-                continue
-
-            yield event_str
-            continue
-
-        if event_type == "save_message":
-            try:
-                message = json.loads(event_data)
-                if message.get("role") == "assistant" and current_assistant_message_id:
-                    await messages_repo.update_message_content(
-                        current_assistant_message_id, message
-                    )
-                    await messages_repo.update_content_text(
-                        current_assistant_message_id, message
-                    )
-                    current_assistant_message_id = None
-                    continue
-
-                created = await messages_repo.create(
-                    chat_id, message, parent_id=parent_id
-                )
-                parent_id = created.id
-
-                if message.get("role") == "user" and buffered_tool_result_events:
-                    for buffered_event in buffered_tool_result_events:
-                        try:
-                            tool_result_event = json.loads(_sse_event_data(buffered_event))
-                            tool_result_event["message_id"] = created.id
-                            yield _sse_event("message", tool_result_event)
-                        except json.JSONDecodeError:
-                            yield buffered_event
-                    buffered_tool_result_events = []
-                else:
-                    yield f"event: message_id\ndata: {created.id}\n\n"
-            except Exception as e:
-                logger.error(
-                    f"Failed to persist streamed message for chat {chat_id}: {e}",
-                    exc_info=True,
-                )
-            continue
-
-        yield event_str
-
-    # If the generator ended (cancel/error/client disconnect) without a
-    # matching save_message, the early-persisted assistant row was never
-    # finalized. With partial content the generator emits save_message itself;
-    # reaching here with the id still set means no content was ever committed,
-    # so delete the empty row rather than leave an invalid assistant message
-    # that would poison the next request's history.
-    if current_assistant_message_id is not None:
-        try:
-            await messages_repo.delete(current_assistant_message_id)
-            logger.info(
-                f"Deleted unfinalized assistant message "
-                f"{current_assistant_message_id} for chat {chat_id}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Failed to delete unfinalized assistant message "
-                f"{current_assistant_message_id} for chat {chat_id}: {e}"
-            )
-        current_assistant_message_id = None
-
-
-async def _refresh_lock_periodically(redis_client, lock_key):
-    """Keep the run lock alive independently of event production, so a long
-    silent gap in the agent loop doesn't let it expire mid-run."""
-    while True:
-        await asyncio.sleep(_LOCK_REFRESH_INTERVAL)
-        await redis_client.expire(lock_key, _RUN_LOCK_TTL)
-
-
-async def _run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
-    """Background task: drive the agent loop to completion independently of any
-    client connection, buffering every SSE event in a Redis Stream."""
-    stream_key = _stream_key(chat_id)
-    lock_key = _run_lock_key(chat_id)
-    refresh_task = asyncio.create_task(
-        _refresh_lock_periodically(redis_client, lock_key)
-    )
-    try:
-        async for event_str in _persist_and_transform(
-            gen, chat_id, messages_repo, parent_id
-        ):
-            await redis_client.xadd(
-                stream_key,
-                {"e": event_str},
-                maxlen=_STREAM_MAXLEN,
-                approximate=True,
-            )
-            await redis_client.expire(lock_key, _RUN_LOCK_TTL)
-    except asyncio.CancelledError:
-        # Explicit Stop cancelled this producer task. Emit a terminal event so
-        # any still-attached consumer ends cleanly instead of seeing the lock
-        # disappear and reporting "Generation ended unexpectedly".
-        try:
-            await redis_client.xadd(
-                stream_key, {"e": "event: end_of_stream\ndata: Stopped\n\n"}
-            )
-        except Exception:
-            pass
-        raise
-    except Exception as e:
-        logger.error(f"Producer failed for chat {chat_id}: {e}", exc_info=True)
-        try:
-            await redis_client.xadd(
-                stream_key,
-                {"e": _sse_event("stream_error", {"message": _chat_error_message(e)})},
-            )
-        except Exception:
-            pass
-    finally:
-        refresh_task.cancel()
-        try:
-            await refresh_task
-        except asyncio.CancelledError:
-            pass
-        for coro in (
-            redis_client.expire(stream_key, _STREAM_TTL),
-            redis_client.delete(lock_key),
-            redis_client.delete(_cancel_key(chat_id)),
-        ):
-            try:
-                await coro
-            except Exception:
-                pass
-
-
-async def _consume_run(redis_client, chat_id, start_id):
-    """Thin consumer: tail the Redis Stream from `start_id`, prefixing each event
-    with its Redis id (SSE `id:`) for Last-Event-ID resume. Emits heartbeats
-    while idle and a terminal event if the producer vanished."""
-    stream_key = _stream_key(chat_id)
-    lock_key = _run_lock_key(chat_id)
-    last = start_id or "0"
-    while True:
-        resp = await redis_client.xread(
-            {stream_key: last}, block=_STREAM_HEARTBEAT_MS, count=200
-        )
-        if resp:
-            for _key, entries in resp:
-                for entry_id, fields in entries:
-                    last = entry_id
-                    event_str = fields.get("e", "")
-                    yield f"id: {entry_id}\n{event_str}"
-                    if _sse_event_type(event_str) in ("end_of_stream", "stream_error"):
-                        return
-            continue
-        # Idle: no new events within the heartbeat window.
-        if not await redis_client.exists(stream_key):
-            if await redis_client.exists(lock_key):
-                # Producer just started and hasn't written its first event yet.
-                yield _sse_event("heartbeat", {})
-                continue
-            yield "event: not_resumable\ndata: \n\n"
-            return
-        if not await redis_client.exists(lock_key):
-            # Producer is gone but never wrote a terminal event we forwarded.
-            yield _sse_event(
-                "stream_error", {"message": "Generation ended unexpectedly."}
-            )
-            return
-        yield _sse_event("heartbeat", {})
+# ---------------------------------------------------------------------------
+# Provider resolution helpers
+# ---------------------------------------------------------------------------
 
 
 def _resolve_provider(state: AppState, model_id: str | None) -> LLMProvider:
-    """Resolve a model by ID, returning the provider.
-    Priority: requested model -> default model -> first available.
-    """
     models = state.models
     if not models:
         raise HTTPException(status_code=503, detail="No models configured")
@@ -473,73 +133,21 @@ def _resolve_provider(state: AppState, model_id: str | None) -> LLMProvider:
 
 
 def _resolve_llm_provider(state: AppState, chat: Chat) -> LLMProvider:
-    """Resolve which LLM provider to use for a chat."""
     return _resolve_provider(state, chat.model_id)
 
 
 def _resolve_secondary_provider(state: AppState) -> LLMProvider:
-    """Resolve the secondary (lightweight) model provider.
-    Used for title generation, suggested questions, compaction, etc.
-    """
     return _resolve_provider(state, state.secondary_model_id or state.default_model_id)
 
 
-def convert_citation_to_param(citation_delta: CitationsDelta) -> TextCitationParam:
-    citation = citation_delta.citation
-    if citation.type == "char_location":
-        return CitationCharLocationParam(
-            type="char_location",
-            start_char_index=citation.start_char_index,
-            end_char_index=citation.end_char_index,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "page_location":
-        return CitationPageLocationParam(
-            type="page_location",
-            start_page_number=citation.start_page_number,
-            end_page_number=citation.end_page_number,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "content_block_location":
-        return CitationContentBlockLocationParam(
-            type="content_block_location",
-            start_block_index=citation.start_block_index,
-            end_block_index=citation.end_block_index,
-            document_title=citation.document_title,
-            document_index=citation.document_index,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "search_result_location":
-        return CitationSearchResultLocationParam(
-            type="search_result_location",
-            start_block_index=citation.start_block_index,
-            end_block_index=citation.end_block_index,
-            search_result_index=citation.search_result_index,
-            title=citation.title,
-            source=citation.source,
-            cited_text=citation.cited_text,
-        )
-    elif citation.type == "web_search_result_location":
-        return CitationWebSearchResultLocationParam(
-            type="web_search_result_location",
-            url=citation.url,
-            title=citation.title,
-            encrypted_index=citation.encrypted_index,
-            cited_text=citation.cited_text,
-        )
-    else:
-        raise ValueError(f"Unknown citation type: {citation.type}")
+# ---------------------------------------------------------------------------
+# Registry building helpers
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class RegistryResult:
     registry: ToolRegistry
-    # Handlers whose tools are always exposed in the LLM's per-turn tool list
-    # (built-ins + meta-tools). Connector tools are handled separately.
     always_on_handlers: list[ToolHandler]
     connector_handler: ConnectorToolHandler | None
     toolsets: list[ToolsetSummary]
@@ -550,12 +158,11 @@ class RegistryResult:
 def _loaded_tools_from_history(
     messages: list[MessageParam], connector_handler: ConnectorToolHandler
 ) -> set[str]:
-    """Rebuild loaded connector tool names from successful meta-tool calls."""
     tool_calls: dict[str, ToolUseBlockParam] = {}
     loaded: set[str] = set()
 
     for message in messages:
-        for block in _message_content_blocks(message):
+        for block in message_content_blocks(message):
             match block["type"]:
                 case "tool_use":
                     tool_use = cast(ToolUseBlockParam, block)
@@ -576,150 +183,6 @@ def _loaded_tools_from_history(
                     continue
 
     return loaded
-
-
-def _message_content_blocks(message: MessageParam) -> list[ContentBlockParam]:
-    content = message["content"]
-    if isinstance(content, str):
-        return []
-    return list(cast(Iterable[ContentBlockParam], content))
-
-
-def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockParam:
-    return ToolResultBlockParam(
-        type="tool_result",
-        tool_use_id=tool_use["id"],
-        content=[
-            {
-                "type": "text",
-                "text": (
-                    f"Tool call {tool_use['name']} did not complete because the previous response was interrupted. "
-                    "Treat this tool call as failed and retry it if the result is still needed."
-                ),
-            }
-        ],
-        is_error=True,
-    )
-
-
-def _tool_use_blocks(message: MessageParam) -> list[ToolUseBlockParam]:
-    if message.get("role") != "assistant":
-        return []
-    return [
-        cast(ToolUseBlockParam, block)
-        for block in _message_content_blocks(message)
-        if block["type"] == "tool_use"
-    ]
-
-
-def _tool_result_ids(message: MessageParam) -> set[str]:
-    if message.get("role") != "user":
-        return set()
-    return {
-        cast(ToolResultBlockParam, block)["tool_use_id"]
-        for block in _message_content_blocks(message)
-        if block["type"] == "tool_result"
-    }
-
-
-def _repair_interrupted_tool_calls(
-    messages: list[MessageParam],
-) -> tuple[list[MessageParam], int]:
-    repaired: list[MessageParam] = []
-    repair_count = 0
-
-    for idx, message in enumerate(messages):
-        tool_uses = _tool_use_blocks(message)
-        if not tool_uses:
-            repaired.append(message)
-            continue
-
-        next_message = messages[idx + 1] if idx + 1 < len(messages) else None
-        answered_ids = _tool_result_ids(next_message) if next_message else set()
-        missing = [
-            tool_use for tool_use in tool_uses if tool_use["id"] not in answered_ids
-        ]
-
-        repaired.append(message)
-        if not missing:
-            continue
-
-        missing_results = [_interrupted_tool_result(tool_use) for tool_use in missing]
-        if answered_ids and next_message is not None:
-            content = next_message["content"]
-            if isinstance(content, list):
-                next_message = cast(MessageParam, dict(next_message))
-                next_message["content"] = [*content, *missing_results]
-                messages[idx + 1] = next_message
-                repair_count += len(missing_results)
-                continue
-
-        repaired.append(MessageParam(role="user", content=missing_results))
-        repair_count += len(missing_results)
-
-    return repaired, repair_count
-
-
-def _drop_empty_assistant_messages(
-    messages: list[MessageParam],
-) -> list[MessageParam]:
-    """Remove assistant messages that have no content and no tool_use blocks.
-
-    A streamed assistant row that was early-persisted at message_start but never
-    finalized (stream cancelled/errored before any content block) can be left as
-    {"role": "assistant", "content": []}. Providers reject such messages
-    ("content or tool_calls must be set"), so drop them from the history before
-    sending. They contribute nothing to the conversation.
-    """
-    kept: list[MessageParam] = []
-    for message in messages:
-        if message.get("role") == "assistant":
-            blocks = _message_content_blocks(message)
-            has_tool_use = any(b.get("type") == "tool_use" for b in blocks)
-            has_content = bool(blocks) and any(
-                b.get("type") == "text" and b.get("text") for b in blocks
-            )
-            if not has_tool_use and not has_content:
-                continue
-        kept.append(message)
-    return kept
-
-
-def _extract_text_for_title(
-    content: str | list[ContentBlockParam] | None,
-) -> str | None:
-    if isinstance(content, str):
-        text = content.strip()
-        return text if text else None
-
-    if not isinstance(content, list):
-        return None
-
-    parts: list[str] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") != "text":
-            continue
-        text = block.get("text")
-        if isinstance(text, str) and text.strip():
-            parts.append(text.strip())
-
-    if not parts:
-        return None
-    return "\n".join(parts)
-
-
-def _loaded_source_ids(
-    loaded_tool_names: set[str], connector_handler: ConnectorToolHandler | None
-) -> set[str]:
-    if connector_handler is None:
-        return set()
-    return {
-        action.source_id
-        for tool_name, action in connector_handler.actions.items()
-        if tool_name in loaded_tool_names
-    }
 
 
 def _loaded_tools_from_meta_call(
@@ -749,21 +212,19 @@ def _loaded_tools_from_meta_call(
     return set()
 
 
-def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None:
-    """Copy provider-declared sidecar fields off a Pydantic content_block
-    instance onto its persisted TypedDict block.
-
-    The set of keys is owned by each ``LLMProvider`` subclass via
-    ``PERSISTED_BLOCK_EXTRAS`` — chat.py stays provider-agnostic.
-    """
-    for key in keys:
-        value = getattr(src, key, None)
-        if value is not None:
-            dst[key] = value  # type: ignore[typeddict-unknown-key]
+def _loaded_source_ids(
+    loaded_tool_names: set[str], connector_handler: ConnectorToolHandler | None
+) -> set[str]:
+    if connector_handler is None:
+        return set()
+    return {
+        action.source_id
+        for tool_name, action in connector_handler.actions.items()
+        if tool_name in loaded_tool_names
+    }
 
 
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
-    """Fetch all sources from the connector manager. Returns None on failure."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
@@ -774,6 +235,10 @@ async def _fetch_sources_from_connector_manager() -> list[Source] | None:
         return None
 
 
+async def _noop_on_load(_: set[str]) -> None:
+    return None
+
+
 async def _build_registry(
     request: Request,
     chat: Chat,
@@ -781,18 +246,9 @@ async def _build_registry(
     loaded_toolsets: set[str],
     on_load: OnLoad | None = None,
 ) -> RegistryResult:
-    """Build a ToolRegistry with all available handlers.
-
-    Connector tools are registered for *dispatch* but not for *exposure*: the
-    chat router rebuilds the per-turn LLM tool list from `always_on_handlers`
-    plus `connector_handler.filtered_tools(loaded_toolsets)` so the model only
-    sees connector actions it has explicitly loaded via `load_tool` or
-    `load_tool_set` (issue #203).
-    """
     registry = ToolRegistry()
     always_on_handlers: list[ToolHandler] = []
 
-    # Fetch sources from connector manager once, share with all handlers
     sources = await _fetch_sources_from_connector_manager() or []
 
     connector_handler: ConnectorToolHandler | None = None
@@ -809,7 +265,6 @@ async def _build_registry(
         is_admin=is_admin,
     )
     await connector_handler._ensure_initialized()
-    # Register for dispatch / requires_approval; tool exposure is filtered per-turn.
     registry.register(connector_handler)
 
     if connector_handler.actions:
@@ -818,9 +273,6 @@ async def _build_registry(
     if connector_handler.search_operators:
         search_operators = connector_handler.search_operators
 
-    # Meta-tools: discoverable as always-on so the LLM can opt in to specific
-    # connector tools. Only register when there's actually a connector handler
-    # with toolsets to advertise.
     if connector_handler is not None and toolsets:
         meta_handler = MetaToolHandler(
             connector_handler=connector_handler,
@@ -843,7 +295,6 @@ async def _build_registry(
         registry.register(mcp_handler)
         always_on_handlers.append(mcp_handler)
 
-    # Fetch dynamic operator values for enriched search tool description
     active_sources = [s for s in sources if s.is_active and not s.is_deleted]
     connected_source_types = list({s.source_type for s in active_sources})
     operator_values: dict[str, list[str]] = {}
@@ -854,7 +305,6 @@ async def _build_registry(
             redis_client=request.app.state.redis_client,
         )
 
-    # Register search tools (with dynamic operators from connector manifests)
     search_handler = SearchToolHandler(
         searcher_tool=request.app.state.searcher_tool,
         search_operators=search_operators,
@@ -873,12 +323,10 @@ async def _build_registry(
         registry.register(web_handler)
         always_on_handlers.append(web_handler)
 
-    # Register people search tool
     people_handler = PeopleSearchHandler(searcher_tool=request.app.state.searcher_tool)
     registry.register(people_handler)
     always_on_handlers.append(people_handler)
 
-    # Register document handler (unified read_document tool)
     content_storage = getattr(request.app.state, "content_storage", None)
     document_handler = DocumentToolHandler(
         content_storage=content_storage,
@@ -889,13 +337,11 @@ async def _build_registry(
     registry.register(document_handler)
     always_on_handlers.append(document_handler)
 
-    # Register sandbox tools if sandbox service is configured
     if SANDBOX_URL:
         sandbox_handler = SandboxToolHandler(sandbox_url=SANDBOX_URL)
         registry.register(sandbox_handler)
         always_on_handlers.append(sandbox_handler)
 
-    # Register skill loader (load_skill tool)
     skills_dir = pathlib.Path(__file__).resolve().parent.parent / "skills"
     skill_handler = SkillHandler(
         skills_dir=skills_dir,
@@ -918,20 +364,9 @@ async def _build_registry(
     )
 
 
-async def _noop_on_load(_: set[str]) -> None:
-    """Default on_load when no persistence is wired up (e.g. agent chat)."""
-    return None
-
-
 async def _build_agent_chat_registry(
     request: Request, agent: Agent, is_admin: bool
 ) -> RegistryResult:
-    """Build a read-only ToolRegistry for agent chat sessions.
-
-    Uses the agent's own permissions (matching the background executor):
-    org agents read across everything; user agents are scoped by allowed_sources.
-    Write/connector-action tools are intentionally not registered — agent chats are read-only.
-    """
     registry = ToolRegistry()
     always_on_handlers: list[ToolHandler] = []
 
@@ -939,7 +374,6 @@ async def _build_agent_chat_registry(
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
 
-    # We still need connector handler for search operators, but won't register it
     search_operators: list[SearchOperator] = []
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
@@ -1035,52 +469,39 @@ async def _build_agent_chat_registry(
     )
 
 
-class ApprovalRequiredEventItem(TypedDict):
-    approval_id: str
-    tool_name: str
-    tool_input: dict[str, Any]
-    tool_call_id: str | None
-    source_id: str | None
-    source_type: str | None
+# ---------------------------------------------------------------------------
+# Title-generation helper
+# ---------------------------------------------------------------------------
 
 
-class ApprovalRequiredEvent(ApprovalRequiredEventItem):
-    approvals: list[ApprovalRequiredEventItem]
+def _extract_text_for_title(
+    content: str | list[ContentBlockParam] | None,
+) -> str | None:
+    if isinstance(content, str):
+        text = content.strip()
+        return text if text else None
+
+    if not isinstance(content, list):
+        return None
+
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text.strip())
+
+    if not parts:
+        return None
+    return "\n".join(parts)
 
 
-async def _active_path_tool_call_ids(
-    messages_repo: MessagesRepository, chat_id: str
-) -> set[str]:
-    active_path = await messages_repo.get_active_path(chat_id)
-    return {
-        tool_use["id"]
-        for message in active_path
-        for tool_use in _tool_use_blocks(MessageParam(**message.message))
-    }
-
-
-def _approval_required_event(approvals: list[ToolApproval]) -> ApprovalRequiredEvent:
-    first = approvals[0]
-    event: ApprovalRequiredEvent = {
-        "approval_id": first.id,
-        "tool_name": first.tool_name,
-        "tool_input": first.tool_input,
-        "tool_call_id": first.tool_call_id,
-        "source_id": first.source_id,
-        "source_type": first.source_type,
-        "approvals": [
-            {
-                "approval_id": approval.id,
-                "tool_name": approval.tool_name,
-                "tool_input": approval.tool_input,
-                "tool_call_id": approval.tool_call_id,
-                "source_id": approval.source_id,
-                "source_type": approval.source_type,
-            }
-            for approval in approvals
-        ],
-    }
-    return event
+# ---------------------------------------------------------------------------
+# Route: stream status
+# ---------------------------------------------------------------------------
 
 
 @router.get("/chat/{chat_id}/stream/status")
@@ -1090,13 +511,13 @@ async def stream_status(
     redis_client = getattr(request.app.state, "redis_client", None)
     messages_repo = MessagesRepository()
     approvals_repo = ToolApprovalsRepository()
-    active_tool_call_ids = await _active_path_tool_call_ids(messages_repo, chat_id)
+    active_tool_call_ids_set = await active_path_tool_call_ids(messages_repo, chat_id)
     pending_approval = bool(
         await approvals_repo.list_for_chat(
             chat_id=chat_id,
             approval_type=ToolApprovalType.APPROVAL,
             statuses={ToolApprovalStatus.PENDING},
-            active_tool_call_ids=active_tool_call_ids,
+            active_tool_call_ids=active_tool_call_ids_set,
         )
     )
     pending_oauth = bool(
@@ -1104,19 +525,510 @@ async def stream_status(
             chat_id=chat_id,
             approval_type=ToolApprovalType.OAUTH,
             statuses={ToolApprovalStatus.PENDING},
-            active_tool_call_ids=active_tool_call_ids,
+            active_tool_call_ids=active_tool_call_ids_set,
         )
     )
     if redis_client is None:
         raise HTTPException(status_code=500, detail="Redis client is not initialized")
 
     return {
-        "running": bool(await redis_client.exists(_run_lock_key(chat_id))),
-        "resumable": bool(await redis_client.exists(_stream_key(chat_id))),
+        "running": bool(await redis_client.exists(run_lock_key(chat_id))),
+        "resumable": bool(await redis_client.exists(stream_key(chat_id))),
         "pending_approval": pending_approval,
         "pending_oauth": pending_oauth,
     }
 
+
+# ---------------------------------------------------------------------------
+# Route: stream chat (main handler)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Stream chat handler
+# ---------------------------------------------------------------------------
+
+class StreamChatHandler:
+    def __init__(self, request: Request, chat_id: str, auto_start: bool) -> None:
+        self.request = request
+        self.chat_id = chat_id
+        self.auto_start = auto_start
+
+    async def handle(self) -> StreamingResponse:
+        """Stream AI response for a chat thread using Server-Sent Events"""
+        request = self.request
+        chat_id = self.chat_id
+        auto_start = self.auto_start
+
+        if not request.app.state.searcher_tool:
+            raise HTTPException(status_code=500, detail="Searcher tool not initialized")
+
+        chats_repo = ChatsRepository()
+        chat = await chats_repo.get(chat_id)
+        if not chat:
+            raise HTTPException(status_code=404, detail="Chat thread not found")
+
+        llm_provider = _resolve_llm_provider(request.app.state, chat)
+        redis_client = request.app.state.redis_client
+
+        # Reconnect/resume fast path
+        last_event_id = request.headers.get("last-event-id") or request.query_params.get(
+            "last_event_id"
+        )
+        if redis_client is not None:
+            run_active = await redis_client.exists(run_lock_key(chat_id))
+            if run_active:
+                return StreamingResponse(
+                    consume_run(redis_client, chat_id, last_event_id or "0"),
+                    media_type="text/event-stream",
+                    headers=SSE_HEADERS,
+                )
+
+            if last_event_id is not None:
+                if await redis_client.exists(stream_key(chat_id)):
+                    return StreamingResponse(
+                        consume_run(redis_client, chat_id, last_event_id),
+                        media_type="text/event-stream",
+                        headers=SSE_HEADERS,
+                    )
+
+                async def _not_resumable_response():
+                    yield "event: not_resumable\ndata: \n\n"
+
+                return StreamingResponse(
+                    _not_resumable_response(),
+                    media_type="text/event-stream",
+                    headers=SSE_HEADERS,
+                )
+
+        messages_repo = MessagesRepository()
+        approvals_repo = ToolApprovalsRepository()
+        chat_messages = await messages_repo.get_active_path(chat_id)
+
+        # Shared state scoped to this request
+        memory_provider = None
+        effective_mode = MemoryMode.OFF
+        memories: list[str] = []
+        memory_write_key: str | None = None
+        pending: list[ToolApproval] = []
+        pending_oauth: list[ToolApproval] = []
+
+        if chat.agent_id:
+            # ---- Agent chat setup ----
+            agent_repo = AgentRepository()
+            agent = await agent_repo.get_agent(chat.agent_id)
+            if not agent:
+                raise HTTPException(status_code=404, detail="Agent not found")
+
+            users_repo = UsersRepository()
+            chat_user = await users_repo.find_by_id(chat.user_id)
+            if not chat_user:
+                raise HTTPException(status_code=404, detail="Chat user not found")
+
+            if agent.agent_type == "org":
+                if chat_user.role != "admin":
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Admin access required for org agent chats",
+                    )
+            elif agent.user_id != chat.user_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only the agent owner can chat with this agent",
+                )
+
+            is_org_agent = agent.agent_type == "org"
+            tool_user_id = None if is_org_agent else agent.user_id
+            tool_skip_perm = is_org_agent
+
+            user_email = chat_user.email
+            user_name = chat_user.full_name
+            user_configuration = chat_user.configuration
+
+            if not chat_messages:
+                if auto_start:
+                    chat_messages = []
+                else:
+                    raise HTTPException(
+                        status_code=404, detail="No messages found for chat"
+                    )
+
+            build_result = await _build_agent_chat_registry(
+                request, agent, is_admin=chat_user.role == "admin"
+            )
+            registry = build_result.registry
+            loaded_toolsets: set[str] = set()
+            pending = []
+            pending_oauth = []
+
+            run_repo = AgentRunRepository()
+            runs = await run_repo.list_runs(agent.id, limit=20)
+            active_sources = [
+                s for s in build_result.sources if s.is_active and not s.is_deleted
+            ]
+
+            memory_provider = request.app.state.memory_provider
+            effective_mode = MemoryMode.OFF
+            memories = []
+            if memory_provider is not None:
+                config_repo = ConfigurationRepository()
+                org_default = (
+                    await config_repo.get_global_configuration()
+                ).memory_mode_default
+                if is_org_agent:
+                    effective_mode = org_default
+                elif user_configuration is not None:
+                    effective_mode = resolve_memory_mode(
+                        user_configuration.memory_mode, org_default
+                    )
+                memory_namespace = agent_key(agent.id)
+                if effective_mode >= MemoryMode.CHAT and chat_messages:
+                    last_user_text = ""
+                    for msg in reversed(chat_messages):
+                        m = msg.message
+                        if m.get("role") == "user":
+                            content = m.get("content", "")
+                            if isinstance(content, str):
+                                last_user_text = content
+                            elif isinstance(content, list):
+                                last_user_text = " ".join(
+                                    b.get("text", "")
+                                    for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            break
+                    if last_user_text:
+                        hits = await memory_provider.search(
+                            query=last_user_text, key=memory_namespace, limit=5
+                        )
+                        memories = [h.record.text for h in hits if h.record.text]
+
+            system_prompt = build_agent_chat_system_prompt(
+                agent,
+                runs,
+                active_sources,
+                user_name=user_name,
+                user_email=user_email,
+                memories=memories if memories else None,
+                user_configuration=user_configuration,
+                include_web_search=getattr(request.app.state, "web_search_provider", None)
+                is not None,
+                include_fetch_web_page=getattr(
+                    request.app.state, "web_fetch_provider", None
+                )
+                is not None,
+            )
+
+            messages: list[MessageParam] = [
+                MessageParam(**msg.message) for msg in chat_messages
+            ]
+            needs_start = not messages or messages[-1].get("role") != "user"
+            if auto_start and needs_start:
+                messages.append(MessageParam(role="user", content="Go."))
+
+        else:
+            # ---- Regular chat setup ----
+            tool_user_id = chat.user_id
+            tool_skip_perm = False
+            user_email: str | None = None
+            user_name: str | None = None
+            user_configuration: UserConfiguration | None = None
+            is_admin = False
+            if chat.user_id:
+                users_repo = UsersRepository()
+                user = await users_repo.find_by_id(chat.user_id)
+                if user:
+                    user_email = user.email
+                    user_name = user.full_name
+                    user_configuration = user.configuration
+                    is_admin = user.role == "admin"
+
+            if not chat_messages:
+                raise HTTPException(status_code=404, detail="No messages found for chat")
+
+            messages = [MessageParam(**msg.message) for msg in chat_messages]
+
+            loaded_toolsets = set()
+
+            build_result = await _build_registry(
+                request,
+                chat,
+                is_admin=is_admin,
+                loaded_toolsets=loaded_toolsets,
+            )
+            if build_result.connector_handler is not None:
+                loaded_toolsets.update(
+                    _loaded_tools_from_history(messages, build_result.connector_handler)
+                )
+            registry = build_result.registry
+
+            active_tool_call_ids_set = {
+                tool_use["id"]
+                for message in messages
+                for tool_use in tool_use_blocks(message)
+            }
+            pending = await approvals_repo.list_for_chat(
+                chat_id=chat_id,
+                approval_type=ToolApprovalType.APPROVAL,
+                statuses={
+                    ToolApprovalStatus.PENDING,
+                    ToolApprovalStatus.APPROVED,
+                    ToolApprovalStatus.DENIED,
+                },
+                active_tool_call_ids=active_tool_call_ids_set,
+            )
+            pending_oauth = await approvals_repo.list_for_chat(
+                chat_id=chat_id,
+                approval_type=ToolApprovalType.OAUTH,
+                statuses={ToolApprovalStatus.PENDING},
+                active_tool_call_ids=active_tool_call_ids_set,
+            )
+
+            active_sources = [
+                s for s in build_result.sources if s.is_active and not s.is_deleted
+            ]
+
+            memory_provider = request.app.state.memory_provider
+            memories = []
+            effective_mode = MemoryMode.OFF
+            if memory_provider is not None and chat.user_id:
+                memory_write_key = user_key(chat.user_id)
+                config_repo = ConfigurationRepository()
+                org_default = (
+                    await config_repo.get_global_configuration()
+                ).memory_mode_default
+                user_memory_mode = (
+                    user_configuration.memory_mode if user_configuration else None
+                )
+                effective_mode = resolve_memory_mode(user_memory_mode, org_default)
+                if effective_mode >= MemoryMode.CHAT:
+                    last_user_text = ""
+                    for msg in reversed(chat_messages):
+                        m = msg.message
+                        if m.get("role") == "user":
+                            content = m.get("content", "")
+                            if isinstance(content, str):
+                                last_user_text = content
+                            elif isinstance(content, list):
+                                last_user_text = " ".join(
+                                    b.get("text", "")
+                                    for b in content
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            break
+                    if last_user_text:
+                        hits = await memory_provider.search(
+                            query=last_user_text,
+                            key=user_key(chat.user_id),
+                            limit=5,
+                        )
+                        memories = [h.record.text for h in hits if h.record.text]
+
+            loaded_source_ids = _loaded_source_ids(
+                loaded_toolsets, build_result.connector_handler
+            )
+            system_prompt = build_chat_system_prompt(
+                active_sources,
+                toolsets=build_result.toolsets,
+                loaded_source_ids=loaded_source_ids,
+                user_name=user_name,
+                user_email=user_email,
+                memories=memories if memories else None,
+                user_configuration=user_configuration,
+                include_web_search=getattr(request.app.state, "web_search_provider", None)
+                is not None,
+                include_fetch_web_page=getattr(
+                    request.app.state, "web_fetch_provider", None
+                )
+                is not None,
+            )
+
+        # ---- Common setup (repair, compaction, etc.) ----
+        if not pending and not pending_oauth:
+            messages, repaired_tool_calls = repair_interrupted_tool_calls(messages)
+            if repaired_tool_calls:
+                logger.warning(
+                    f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
+                )
+            before = len(messages)
+            messages = drop_empty_assistant_messages(messages)
+            dropped = before - len(messages)
+            if dropped:
+                logger.warning(
+                    f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
+                )
+
+        storage = request.app.state.content_storage
+        if storage is not None:
+            messages = await expand_uploads(
+                messages,
+                chat_id=chat_id,
+                storage=storage,
+                uploads_repo=UploadsRepository(),
+                sandbox_url=SANDBOX_URL,
+            )
+
+        last_message_role = messages[-1].get("role") if messages else None
+        if not pending and not pending_oauth and last_message_role != "user":
+            logger.info(
+                f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
+            )
+
+            async def empty_generator():
+                yield end_of_stream(
+                    EndOfStreamReason.NO_NEW_MESSAGE,
+                    message="No new user message to process.",
+                ).encode()
+
+            return StreamingResponse(
+                empty_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
+        # Compaction
+        secondary_provider = _resolve_secondary_provider(request.app.state)
+
+        def _on_compaction_usage(usage):
+            track_usage(
+                UsageRepository(),
+                UsageContext(
+                    user_id=chat.user_id,
+                    model_id=secondary_provider.model_record_id,
+                    model_name=secondary_provider.model_name,
+                    provider_type=secondary_provider.provider_type,
+                    purpose=UsagePurpose.COMPACTION,
+                    chat_id=chat_id,
+                ),
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_creation_tokens=usage.cache_creation_tokens,
+            )
+
+        compactor = ConversationCompactor(
+            llm_provider=secondary_provider,
+            on_usage=_on_compaction_usage,
+        )
+        initial_tools = build_turn_tools(
+            build_result.always_on_handlers,
+            build_result.connector_handler,
+            loaded_toolsets,
+        )
+
+        prepared = await compactor.prepare_chat_conversation(
+            chat_id=chat_id,
+            chat_messages=chat_messages,
+            messages=messages,
+            compactions_repo=CompactionsRepository(),
+            target_provider=llm_provider,
+            tools=initial_tools,
+            system_prompt=system_prompt,
+            max_output_tokens=DEFAULT_MAX_TOKENS,
+        )
+        messages = prepared.messages
+        latest_compaction = prepared.latest_compaction
+        summarizer_context = prepared.summarizer_context
+        logger.info(
+            "Resolved context windows for chat %s: model=%s (%s), summarizer=%s (%s)",
+            chat_id,
+            prepared.model_context.tokens,
+            prepared.model_context.source,
+            summarizer_context.tokens,
+            summarizer_context.source,
+        )
+
+        # Extract first user message for caching
+        original_user_query = None
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    original_user_query = content
+                    break
+                elif isinstance(content, list):
+                    text_parts = [
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    if text_parts:
+                        original_user_query = " ".join(text_parts)
+                        break
+
+        parent_id = chat_messages[-1].id if chat_messages else None
+
+        # ---- Build and run the generator ----
+        gen = stream_generator(
+            chat_id,
+            redis_client,
+            messages,
+            llm_provider,
+            chat.user_id,
+            tool_user_id=tool_user_id,
+            user_email=user_email,
+            user_configuration=user_configuration,
+            tool_skip_perm=tool_skip_perm,
+            system_prompt=system_prompt,
+            registry=registry,
+            always_on_handlers=build_result.always_on_handlers,
+            connector_handler=build_result.connector_handler,
+            loaded_toolsets=loaded_toolsets,
+            compactor=compactor,
+            latest_compaction_summary=latest_compaction.summary if latest_compaction else None,
+            summarizer_context_window_tokens=summarizer_context.tokens,
+            memory_provider=memory_provider,
+            memory_write_key=memory_write_key,
+            effective_mode=effective_mode,
+            approvals_repo=approvals_repo,
+            pending=pending,
+            pending_oauth=pending_oauth,
+            original_user_query=original_user_query,
+        )
+
+        if redis_client is None:
+            return StreamingResponse(
+                persist_and_transform(gen, chat_id, messages_repo, parent_id),
+                media_type="text/event-stream",
+                headers=SSE_HEADERS,
+            )
+
+        # Single producer per chat
+        got_lock = await redis_client.set(
+            run_lock_key(chat_id), "1", nx=True, ex=_RUN_LOCK_TTL
+        )
+        if not got_lock:
+            return StreamingResponse(
+                consume_run(redis_client, chat_id, last_event_id or "0"),
+                media_type="text/event-stream",
+                headers=SSE_HEADERS,
+            )
+
+        await redis_client.delete(stream_key(chat_id))
+        await redis_client.delete(cancel_key(chat_id))
+        task = asyncio.create_task(
+            run_producer(redis_client, chat_id, gen, messages_repo, parent_id)
+        )
+        set_producer_task(chat_id, task)
+
+        def _cleanup_run_task(
+            t: asyncio.Task, cid: str = chat_id  # type: ignore[assignment]
+        ) -> None:
+            if _run_tasks_by_chat.get(cid) is t:
+                clear_producer_task(cid, t)
+
+        task.add_done_callback(_cleanup_run_task)
+
+        return StreamingResponse(
+            consume_run(redis_client, chat_id, "0"),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Route: stream chat
+# ---------------------------------------------------------------------------
 
 @router.get("/chat/{chat_id}/stream")
 async def stream_chat(
@@ -1126,1065 +1038,44 @@ async def stream_chat(
         False, description="Auto-inject initial message for agent chats"
     ),
 ):
-    """Stream AI response for a chat thread using Server-Sent Events"""
-    if not request.app.state.searcher_tool:
-        raise HTTPException(status_code=500, detail="Searcher tool not initialized")
+    return await StreamChatHandler(request, chat_id, auto_start).handle()
 
-    # Retrieve chat and messages from database
-    chats_repo = ChatsRepository()
-    chat = await chats_repo.get(chat_id)
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat thread not found")
 
-    llm_provider = _resolve_llm_provider(request.app.state, chat)
-    redis_client = request.app.state.redis_client
-
-    # Reconnect/resume fast path: if a buffered run already exists for this chat,
-    # attach to it (tail from the client's offset) and skip all (re)setup so we
-    # never re-run registry build / compaction / tools on a reconnect.
-    last_event_id = request.headers.get("last-event-id") or request.query_params.get(
-        "last_event_id"
-    )
-    if redis_client is not None:
-        run_active = await redis_client.exists(_run_lock_key(chat_id))
-        if run_active:
-            # A run is in progress for this chat: attach to it instead of starting
-            # a fresh generation. Replay the buffered run from the client's offset,
-            # or from the beginning when (as on a full page reload) no offset is
-            # available. This keeps a reconnect that arrives without a Last-Event-ID
-            # from falling through to fresh-generation setup and bailing out with
-            # "No new user message to process".
-            return StreamingResponse(
-                _consume_run(redis_client, chat_id, last_event_id or "0"),
-                media_type="text/event-stream",
-                headers=SSE_HEADERS,
-            )
-
-        if last_event_id is not None:
-            if await redis_client.exists(_stream_key(chat_id)):
-                # The run has ended but its buffer is still live: replay the tail
-                # so the client receives any final events it missed, then the
-                # terminal end_of_stream/stream_error already in the buffer.
-                return StreamingResponse(
-                    _consume_run(redis_client, chat_id, last_event_id),
-                    media_type="text/event-stream",
-                    headers=SSE_HEADERS,
-                )
-            # No active run and the buffer is gone/expired. Starting a new
-            # generation would produce a duplicate response — tell the client to
-            # reload from the database instead.
-            async def _not_resumable_response():
-                yield "event: not_resumable\ndata: \n\n"
-
-            return StreamingResponse(
-                _not_resumable_response(),
-                media_type="text/event-stream",
-                headers=SSE_HEADERS,
-            )
-
-    messages_repo = MessagesRepository()
-    approvals_repo = ToolApprovalsRepository()
-    chat_messages = await messages_repo.get_active_path(chat_id)
-
-    # Memory state — populated in both agent and regular chat branches
-    memory_provider = None
-    effective_mode = MemoryMode.OFF
-    memories: list[str] = []
-    memory_write_key: str | None = (
-        None  # None = no write (e.g. agent chats are read-only)
-    )
-    pending: list[ToolApproval] = []
-    pending_oauth: list[ToolApproval] = []
-
-    if chat.agent_id:
-        # --- Agent chat setup ---
-        agent_repo = AgentRepository()
-        agent = await agent_repo.get_agent(chat.agent_id)
-        if not agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        users_repo = UsersRepository()
-        chat_user = await users_repo.find_by_id(chat.user_id)
-        if not chat_user:
-            raise HTTPException(status_code=404, detail="Chat user not found")
-
-        if agent.agent_type == "org":
-            if chat_user.role != "admin":
-                raise HTTPException(
-                    status_code=403, detail="Admin access required for org agent chats"
-                )
-        elif agent.user_id != chat.user_id:
-            raise HTTPException(
-                status_code=403, detail="Only the agent owner can chat with this agent"
-            )
-
-        is_org_agent = agent.agent_type == "org"
-        tool_user_id = None if is_org_agent else agent.user_id
-        tool_skip_perm = is_org_agent
-
-        user_email = chat_user.email
-        user_name = chat_user.full_name
-        user_configuration = chat_user.configuration
-
-        # Handle auto_start: inject ephemeral message when no messages exist
-        if not chat_messages:
-            if auto_start:
-                chat_messages = []
-            else:
-                raise HTTPException(
-                    status_code=404, detail="No messages found for chat"
-                )
-
-        build_result = await _build_agent_chat_registry(
-            request, agent, is_admin=chat_user.role == "admin"
-        )
-        registry = build_result.registry
-        # Agent chats are read-only; no connector handler, so the per-turn
-        # builder collapses to just the always-on handlers.
-        loaded_toolsets: set[str] = set()
-        pending = []  # no approval flow for agent chats
-
-        # Build agent chat system prompt with run history
-        run_repo = AgentRunRepository()
-        runs = await run_repo.list_runs(agent.id, limit=20)
-        active_sources = [
-            s for s in build_result.sources if s.is_active and not s.is_deleted
-        ]
-
-        # Memory: fetch agent-scoped memories (same scoping as background executor)
-        memory_provider = request.app.state.memory_provider
-        effective_mode = MemoryMode.OFF
-        memories = []
-        if memory_provider is not None:
-            config_repo = ConfigurationRepository()
-            org_default = (
-                await config_repo.get_global_configuration()
-            ).memory_mode_default
-            if is_org_agent:
-                effective_mode = org_default
-            elif user_configuration is not None:
-                effective_mode = resolve_memory_mode(
-                    user_configuration.memory_mode, org_default
-                )
-            memory_namespace = agent_key(agent.id)
-            if effective_mode >= MemoryMode.CHAT and chat_messages:
-                last_user_text = ""
-                for msg in reversed(chat_messages):
-                    m = msg.message
-                    if m.get("role") == "user":
-                        content = m.get("content", "")
-                        if isinstance(content, str):
-                            last_user_text = content
-                        elif isinstance(content, list):
-                            last_user_text = " ".join(
-                                b.get("text", "")
-                                for b in content
-                                if isinstance(b, dict) and b.get("type") == "text"
-                            )
-                        break
-                if last_user_text:
-                    hits = await memory_provider.search(
-                        query=last_user_text, key=memory_namespace, limit=5
-                    )
-                    memories = [h.record.text for h in hits if h.record.text]
-
-        system_prompt = build_agent_chat_system_prompt(
-            agent,
-            runs,
-            active_sources,
-            user_name=user_name,
-            user_email=user_email,
-            memories=memories if memories else None,
-            user_configuration=user_configuration,
-            include_web_search=getattr(request.app.state, "web_search_provider", None)
-            is not None,
-            include_fetch_web_page=getattr(
-                request.app.state, "web_fetch_provider", None
-            )
-            is not None,
-        )
-
-        # Build messages, injecting ephemeral start message if needed
-        messages: list[MessageParam] = [
-            MessageParam(**msg.message) for msg in chat_messages
-        ]
-        needs_start = not messages or messages[-1].get("role") != "user"
-        if auto_start and needs_start:
-            messages.append(MessageParam(role="user", content="Go."))
-
-    else:
-        # --- Regular chat setup ---
-        tool_user_id = chat.user_id
-        tool_skip_perm = False
-        user_email: str | None = None
-        user_name: str | None = None
-        user_configuration: UserConfiguration | None = None
-        is_admin = False
-        if chat.user_id:
-            users_repo = UsersRepository()
-            user = await users_repo.find_by_id(chat.user_id)
-            if user:
-                user_email = user.email
-                user_name = user.full_name
-                user_configuration = user.configuration
-                is_admin = user.role == "admin"
-
-        if not chat_messages:
-            raise HTTPException(status_code=404, detail="No messages found for chat")
-
-        messages: list[MessageParam] = [
-            MessageParam(**msg.message) for msg in chat_messages
-        ]
-
-        # Rebuild loaded connector sources from prior meta-tool calls/results.
-        # Tool discovery is part of the conversation, not chat-session state.
-        loaded_toolsets: set[str] = set()
-
-        build_result = await _build_registry(
-            request,
-            chat,
-            is_admin=is_admin,
-            loaded_toolsets=loaded_toolsets,
-        )
-        if build_result.connector_handler is not None:
-            loaded_toolsets.update(
-                _loaded_tools_from_history(messages, build_result.connector_handler)
-            )
-        registry = build_result.registry
-
-        # Check for pending approval / OAuth resume flow from durable state.
-        active_tool_call_ids = {
-            tool_use["id"]
-            for message in messages
-            for tool_use in _tool_use_blocks(message)
-        }
-        pending = await approvals_repo.list_for_chat(
-            chat_id=chat_id,
-            approval_type=ToolApprovalType.APPROVAL,
-            statuses={
-                ToolApprovalStatus.PENDING,
-                ToolApprovalStatus.APPROVED,
-                ToolApprovalStatus.DENIED,
-            },
-            active_tool_call_ids=active_tool_call_ids,
-        )
-        pending_oauth = await approvals_repo.list_for_chat(
-            chat_id=chat_id,
-            approval_type=ToolApprovalType.OAUTH,
-            statuses={ToolApprovalStatus.PENDING},
-            active_tool_call_ids=active_tool_call_ids,
-        )
-
-        active_sources = [
-            s for s in build_result.sources if s.is_active and not s.is_deleted
-        ]
-
-        # Memory: resolve mode and fetch relevant memories
-        memory_provider = request.app.state.memory_provider
-        memories = []
-        effective_mode = MemoryMode.OFF
-        if memory_provider is not None and chat.user_id:
-            memory_write_key = user_key(chat.user_id)
-            config_repo = ConfigurationRepository()
-            org_default = (
-                await config_repo.get_global_configuration()
-            ).memory_mode_default
-            user_memory_mode = (
-                user_configuration.memory_mode if user_configuration else None
-            )
-            effective_mode = resolve_memory_mode(user_memory_mode, org_default)
-            if effective_mode >= MemoryMode.CHAT:
-                last_user_text = ""
-                for msg in reversed(chat_messages):
-                    m = msg.message
-                    if m.get("role") == "user":
-                        content = m.get("content", "")
-                        if isinstance(content, str):
-                            last_user_text = content
-                        elif isinstance(content, list):
-                            last_user_text = " ".join(
-                                b.get("text", "")
-                                for b in content
-                                if isinstance(b, dict) and b.get("type") == "text"
-                            )
-                        break
-                if last_user_text:
-                    hits = await memory_provider.search(
-                        query=last_user_text,
-                        key=user_key(chat.user_id),
-                        limit=5,
-                    )
-                    memories = [h.record.text for h in hits if h.record.text]
-
-        loaded_source_ids = _loaded_source_ids(
-            loaded_toolsets, build_result.connector_handler
-        )
-        system_prompt = build_chat_system_prompt(
-            active_sources,
-            toolsets=build_result.toolsets,
-            loaded_source_ids=loaded_source_ids,
-            user_name=user_name,
-            user_email=user_email,
-            memories=memories if memories else None,
-            user_configuration=user_configuration,
-            include_web_search=getattr(request.app.state, "web_search_provider", None)
-            is not None,
-            include_fetch_web_page=getattr(
-                request.app.state, "web_fetch_provider", None
-            )
-            is not None,
-        )
-
-    if not pending and not pending_oauth:
-        messages, repaired_tool_calls = _repair_interrupted_tool_calls(messages)
-        if repaired_tool_calls:
-            logger.warning(
-                f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
-            )
-        before = len(messages)
-        messages = _drop_empty_assistant_messages(messages)
-        dropped = before - len(messages)
-        if dropped:
-            logger.warning(
-                f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
-            )
-
-    # Expand any omni_upload content blocks (inline small text, stage larger/binary in sandbox).
-    storage = request.app.state.content_storage
-    if storage is not None:
-        messages = await expand_uploads(
-            messages,
-            chat_id=chat_id,
-            storage=storage,
-            uploads_repo=UploadsRepository(),
-            sandbox_url=SANDBOX_URL,
-        )
-
-    # Check if we need to process - only if last message is from user (or resuming from approval / OAuth)
-    last_message_role = messages[-1].get("role") if messages else None
-    if not pending and not pending_oauth and last_message_role != "user":
-        logger.info(
-            f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
-        )
-
-        async def empty_generator():
-            yield b"event: end_of_stream\ndata: No new user message to process.\n\n"
-
-        return StreamingResponse(
-            empty_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-        )
-
-    # Check if conversation needs compaction
-    secondary_provider = _resolve_secondary_provider(request.app.state)
-
-    def _on_compaction_usage(usage):
-        track_usage(
-            UsageRepository(),
-            UsageContext(
-                user_id=chat.user_id,
-                model_id=secondary_provider.model_record_id,
-                model_name=secondary_provider.model_name,
-                provider_type=secondary_provider.provider_type,
-                purpose=UsagePurpose.COMPACTION,
-                chat_id=chat_id,
-            ),
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            cache_read_tokens=usage.cache_read_tokens,
-            cache_creation_tokens=usage.cache_creation_tokens,
-        )
-
-    compactor = ConversationCompactor(
-        llm_provider=secondary_provider,
-        on_usage=_on_compaction_usage,
-    )
-    # Compaction sees the *current* per-turn tool list — connector tools the
-    # chat hasn't loaded don't count against the budget, which is the whole
-    # point of lazy loading.
-    initial_tools = build_turn_tools(
-        build_result.always_on_handlers,
-        build_result.connector_handler,
-        loaded_toolsets,
-    )
-
-    prepared = await compactor.prepare_chat_conversation(
-        chat_id=chat_id,
-        chat_messages=chat_messages,
-        messages=messages,
-        compactions_repo=CompactionsRepository(),
-        target_provider=llm_provider,
-        tools=initial_tools,
-        system_prompt=system_prompt,
-        max_output_tokens=DEFAULT_MAX_TOKENS,
-    )
-    messages = prepared.messages
-    latest_compaction = prepared.latest_compaction
-    summarizer_context = prepared.summarizer_context
-    logger.info(
-        "Resolved context windows for chat %s: model=%s (%s), summarizer=%s (%s)",
-        chat_id,
-        prepared.model_context.tokens,
-        prepared.model_context.source,
-        summarizer_context.tokens,
-        summarizer_context.source,
-    )
-
-    # Stream AI response with tool calling
-    async def stream_generator():
-        try:
-            conversation_messages = messages.copy()
-            # Initialized here so the error/cancel handlers below can always
-            # reference whatever content was accumulated before the failure.
-            content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
-
-            if pending or pending_oauth:
-                if pending_oauth:
-                    intervention = pending_oauth[0]
-                    logger.info(f"Resuming from pending oauth for chat {chat_id}")
-                    oauth_event = {
-                        "tool_call_id": intervention.tool_call_id,
-                        "tool_name": intervention.tool_name,
-                        "source_id": intervention.source_id,
-                        "source_type": intervention.source_type,
-                        "provider": intervention.provider,
-                        "oauth_start_url": intervention.oauth_start_url,
-                    }
-                    yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                    yield "event: end_of_stream\ndata: OAuth required\n\n"
-                    return
-
-                logger.info(f"Resuming from pending approval batch for chat {chat_id}")
-                if any(
-                    approval.status == ToolApprovalStatus.PENDING
-                    for approval in pending
-                ):
-                    yield f"event: approval_required\ndata: {json.dumps(_approval_required_event(pending))}\n\n"
-                    yield "event: end_of_stream\ndata: Approval required\n\n"
-                    return
-
-                approvals_by_tool_call_id = {
-                    approval.tool_call_id: approval
-                    for approval in pending
-                    if approval.tool_call_id is not None
-                }
-                answered_ids = (
-                    _tool_result_ids(conversation_messages[-1])
-                    if conversation_messages
-                    else set()
-                )
-                tool_calls_to_resume: list[ToolUseBlockParam] = []
-                for message in reversed(conversation_messages):
-                    tool_uses = _tool_use_blocks(message)
-                    if not tool_uses:
-                        answered_ids.update(_tool_result_ids(message))
-                        continue
-                    tool_calls_to_resume = [
-                        tool_use
-                        for tool_use in tool_uses
-                        if tool_use["id"] not in answered_ids
-                    ]
-                    break
-
-                context = ToolContext(
-                    chat_id=chat_id,
-                    user_id=tool_user_id,
-                    user_email=user_email,
-                    user_configuration=user_configuration,
-                    skip_permission_check=tool_skip_perm,
-                )
-                tool_results: list[ToolResultBlockParam] = []
-                completed_approval_ids: list[str] = []
-                for tool_call in tool_calls_to_resume:
-                    approval = approvals_by_tool_call_id.get(tool_call["id"])
-                    if approval and approval.status == ToolApprovalStatus.DENIED:
-                        tool_result = ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call["id"],
-                            content=[
-                                {
-                                    "type": "text",
-                                    "text": "The user denied approval for this tool call.",
-                                }
-                            ],
-                            is_error=True,
-                        )
-                        completed_approval_ids.append(approval.id)
-                    else:
-                        result = await registry.execute(
-                            tool_call["name"], tool_call["input"], context
-                        )
-                        if result.oauth_required is not None:
-                            payload = result.oauth_required
-                            if approval:
-                                completed_approval_ids.append(approval.id)
-                            saved_oauth_approval = await approvals_repo.create_pending(
-                                chat_id=chat_id,
-                                user_id=chat.user_id,
-                                tool_name=tool_call["name"],
-                                tool_input=tool_call["input"],
-                                tool_call_id=tool_call["id"],
-                                approval_type=ToolApprovalType.OAUTH,
-                                source_id=payload.source_id,
-                                source_type=payload.source_type,
-                                provider=payload.provider,
-                                oauth_start_url=payload.oauth_start_url,
-                            )
-                            logger.info(
-                                f"Saved pending oauth approval {saved_oauth_approval.id} for chat {chat_id}"
-                            )
-                            oauth_event = {
-                                "tool_call_id": tool_call["id"],
-                                "tool_name": tool_call["name"],
-                                "source_id": payload.source_id,
-                                "source_type": payload.source_type,
-                                "provider": payload.provider,
-                                "oauth_start_url": payload.oauth_start_url,
-                            }
-                            if tool_results:
-                                tool_result_message = MessageParam(
-                                    role="user", content=tool_results
-                                )
-                                conversation_messages.append(tool_result_message)
-                                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-                            for approval_id in completed_approval_ids:
-                                await approvals_repo.update_status(
-                                    approval_id,
-                                    ToolApprovalStatus.COMPLETED,
-                                    chat.user_id,
-                                )
-                            yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                            yield "event: end_of_stream\ndata: OAuth required\n\n"
-                            return
-                        tool_result = ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call["id"],
-                            content=result.content,
-                            is_error=result.is_error,
-                        )
-                        if approval:
-                            completed_approval_ids.append(approval.id)
-
-                    tool_results.append(tool_result)
-                    yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
-                if tool_results:
-                    tool_result_message = MessageParam(
-                        role="user", content=tool_results
-                    )
-                    conversation_messages.append(tool_result_message)
-                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-                for approval_id in completed_approval_ids:
-                    await approvals_repo.update_status(
-                        approval_id, ToolApprovalStatus.COMPLETED, chat.user_id
-                    )
-
-            logger.info(
-                f"Starting conversation with {len(conversation_messages)} initial messages"
-            )
-
-            # Extract the first user message query for caching purposes
-            original_user_query = None
-            for msg in conversation_messages:
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, str):
-                        original_user_query = content
-                        break
-                    elif isinstance(content, list):
-                        text_parts = [
-                            block.get("text", "")
-                            for block in content
-                            if isinstance(block, dict) and block.get("type") == "text"
-                        ]
-                        if text_parts:
-                            original_user_query = " ".join(text_parts)
-                            break
-
-            context = ToolContext(
-                chat_id=chat_id,
-                user_id=tool_user_id,
-                user_email=user_email,
-                user_configuration=user_configuration,
-                original_user_query=original_user_query,
-                skip_permission_check=tool_skip_perm,
-            )
-
-            usage_repo = UsageRepository()
-            assistant_message: MessageParam | None = None
-
-            for iteration in range(AGENT_MAX_ITERATIONS):
-                # Stop only on an explicit user cancel (Stop button). The run is
-                # decoupled from the client connection, so a backgrounded tab no
-                # longer aborts generation.
-                if await _is_run_cancelled(redis_client, chat_id):
-                    logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
-                    break
-
-                logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
-                content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
-                provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
-
-                # Rebuild the per-turn tool list. The set of loaded connector
-                # loaded connector tools may have grown during the previous iteration via the
-                # load_tool / load_tool_set meta-tools.
-                turn_tools = build_turn_tools(
-                    build_result.always_on_handlers,
-                    build_result.connector_handler,
-                    loaded_toolsets,
-                )
-
-                logger.info("Sending request to LLM provider")
-                logger.debug(
-                    f"Messages being sent: {json.dumps(conversation_messages, indent=2)}"
-                )
-                logger.debug(
-                    f"Tools available: {[tool['name'] for tool in turn_tools]}"
-                )
-
-                async def _event_stream_with_context_retry(
-                    turn_tools_for_attempt=turn_tools,
-                ):
-                    nonlocal conversation_messages
-                    for llm_attempt in range(2):
-                        tracker = UsageTracker(
-                            usage_repo,
-                            UsageContext(
-                                user_id=chat.user_id,
-                                model_id=llm_provider.model_record_id,
-                                model_name=llm_provider.model_name,
-                                provider_type=llm_provider.provider_type,
-                                purpose=UsagePurpose.CHAT,
-                                chat_id=chat_id,
-                            ),
-                        )
-                        raw_stream: AsyncStream[MessageStreamEvent] = (
-                            llm_provider.stream_response(
-                                prompt="",  # Not used when messages provided
-                                messages=conversation_messages,
-                                tools=turn_tools_for_attempt,
-                                max_tokens=DEFAULT_MAX_TOKENS,
-                                temperature=DEFAULT_TEMPERATURE,
-                                top_p=DEFAULT_TOP_P,
-                                system_prompt=system_prompt,
-                            )
-                        )
-                        emitted_event = False
-                        try:
-                            async for wrapped_event in tracker.wrap_stream(raw_stream):
-                                emitted_event = True
-                                yield wrapped_event
-                            tracker.save()
-                            return
-                        except ProviderError as e:
-                            if (
-                                e.is_context_overflow
-                                and llm_attempt == 0
-                                and not emitted_event
-                            ):
-                                logger.warning(
-                                    "Chat %s hit provider context limit; retrying once after forced compaction",
-                                    chat_id,
-                                )
-                                conversation_messages = (
-                                    await compactor.compact_conversation(
-                                        chat_id,
-                                        conversation_messages,
-                                        previous_summary=(
-                                            latest_compaction.summary
-                                            if latest_compaction
-                                            else None
-                                        ),
-                                        summarizer_context_window_tokens=summarizer_context.tokens,
-                                    )
-                                )
-                                continue
-                            raise
-
-                stream = _event_stream_with_context_retry()
-
-                event_index = 0
-                message_stop_received = False
-                cancelled = False
-                last_cancel_check_at = 0.0
-                async for event in stream:
-                    logger.debug(f"Received event: {event} (index: {event_index})")
-                    event_index += 1
-
-                    now = asyncio.get_running_loop().time()
-                    if now - last_cancel_check_at >= _CANCEL_CHECK_INTERVAL_SECONDS:
-                        last_cancel_check_at = now
-                        if await _is_run_cancelled(redis_client, chat_id):
-                            cancelled = True
-                            break
-
-                    if event.type == "message_start":
-                        logger.info("Message start received.")
-
-                    if event.type == "content_block_delta":
-                        logger.debug(
-                            f"Content block delta received at index {event.index}: {event.delta}"
-                        )
-                        if event.delta.type == "text_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received text delta for unknown content block index {event.index}, creating new text block"
-                                )
-                                content_blocks.append(
-                                    TextBlockParam(type="text", text="")
-                                )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            text_block["text"] += event.delta.text
-                        elif event.delta.type == "input_json_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
-                                )
-                                content_blocks.append(
-                                    ToolUseBlockParam(
-                                        type="tool_use", id="", name="", input=""
-                                    )
-                                )
-                            tool_use_block = cast(
-                                ToolUseBlockParam, content_blocks[event.index]
-                            )
-                            tool_use_block["input"] = (
-                                cast(str, tool_use_block["input"])
-                                + event.delta.partial_json
-                            )
-                        elif event.delta.type == "citations_delta":
-                            if event.index >= len(content_blocks):
-                                logger.warning(
-                                    f"Received citations delta for unknown content block index {event.index}, creating new citations block"
-                                )
-                                content_blocks.append(
-                                    TextBlockParam(type="text", text="", citations=[])
-                                )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            if (
-                                "citations" not in text_block
-                                or not text_block["citations"]
-                            ):
-                                text_block["citations"] = []
-                            citations = cast(
-                                list[TextCitationParam], text_block["citations"]
-                            )
-                            citations.append(convert_citation_to_param(event.delta))
-                    elif event.type == "content_block_start":
-                        if event.content_block.type == "text":
-                            logger.info(f"Text block start: {event.content_block.text}")
-                            text_block: TextBlockParam = TextBlockParam(
-                                type="text", text=event.content_block.text
-                            )
-                            _copy_provider_extras(
-                                event.content_block, text_block, provider_extras
-                            )
-                            content_blocks.append(text_block)
-                        elif event.content_block.type == "tool_use":
-                            logger.info(
-                                f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
-                            )
-                            tool_block: ToolUseBlockParam = ToolUseBlockParam(
-                                type="tool_use",
-                                id=event.content_block.id,
-                                name=event.content_block.name,
-                                input="",
-                            )
-                            _copy_provider_extras(
-                                event.content_block, tool_block, provider_extras
-                            )
-                            content_blocks.append(tool_block)
-                    elif event.type == "citation":
-                        logger.info(f"Citation received: {event.citation}")
-                    elif event.type == "message_stop":
-                        logger.info("Message stop received.")
-                        message_stop_received = True
-
-                    logger.debug(
-                        f"Yielding event to client: {event.to_json(indent=None)}"
-                    )
-                    yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
-
-                    if message_stop_received:
-                        break
-
-                if cancelled:
-                    assistant_message = _partial_assistant_message(content_blocks)
-                    if assistant_message is not None:
-                        conversation_messages.append(assistant_message)
-                        yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
-                    break
-
-                # Parse tool call inputs. Convert to JSON. If the provider emits
-                # malformed JSON, do not execute the tool with `{}`; feed the
-                # parse error back to the model so it can retry.
-                tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
-                parse_errors = _parse_tool_call_inputs(
-                    cast(list[ToolUseBlockParam], tool_calls)
-                )
-
-                assistant_message = MessageParam(
-                    role="assistant", content=content_blocks
-                )
-                conversation_messages.append(assistant_message)
-
-                # Send complete message to omni-web for database persistence
-                yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
-
-                if parse_errors:
-                    tool_result_message = MessageParam(
-                        role="user", content=parse_errors
-                    )
-                    conversation_messages.append(tool_result_message)
-                    for parse_error in parse_errors:
-                        yield f"event: message\ndata: {json.dumps(parse_error)}\n\n"
-                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-                    continue
-
-                # If no tool calls, we're done
-                if not tool_calls:
-                    logger.info(
-                        f"No tool calls in iteration {iteration + 1}, completing response"
-                    )
-                    break
-
-                logger.info(f"Processing {len(tool_calls)} tool calls")
-
-                # Stop before expensive tool execution if the user cancelled.
-                if await _is_run_cancelled(redis_client, chat_id):
-                    logger.info(
-                        f"Run cancelled before tool execution for chat {chat_id}"
-                    )
-                    break
-
-                approval_required: list[ToolApproval] = []
-                for tool_call in tool_calls:
-                    tool_name = tool_call["name"]
-                    tool_input = tool_call["input"]
-                    if registry.requires_approval(tool_name):
-                        logger.info(f"Tool {tool_name} requires approval")
-                        approval = await approvals_repo.create_pending(
-                            chat_id=chat_id,
-                            user_id=chat.user_id,
-                            tool_name=tool_name,
-                            tool_input=tool_input,
-                            tool_call_id=tool_call["id"],
-                            approval_type=ToolApprovalType.APPROVAL,
-                            source_id=tool_input.get("source_id"),
-                            source_type=tool_input.get("source_type"),
-                        )
-                        logger.info(
-                            f"Saved pending approval {approval.id} for chat {chat_id}"
-                        )
-                        approval_required.append(approval)
-
-                if approval_required:
-                    logger.info(
-                        f"Pausing stream for {len(approval_required)} approval-required tool call(s)"
-                    )
-                    yield f"event: approval_required\ndata: {json.dumps(_approval_required_event(approval_required))}\n\n"
-                    yield "event: end_of_stream\ndata: Approval required\n\n"
-                    return
-
-                tool_results: list[ToolResultBlockParam] = []
-                for tool_call in tool_calls:
-                    tool_name = tool_call["name"]
-                    tool_input = tool_call["input"]
-
-                    result = await registry.execute(tool_name, tool_input, context)
-                    if result.oauth_required is not None:
-                        payload = result.oauth_required
-                        oauth_approval = await approvals_repo.create_pending(
-                            chat_id=chat_id,
-                            user_id=chat.user_id,
-                            tool_name=tool_name,
-                            tool_input=tool_input,
-                            tool_call_id=tool_call["id"],
-                            approval_type=ToolApprovalType.OAUTH,
-                            source_id=payload.source_id,
-                            source_type=payload.source_type,
-                            provider=payload.provider,
-                            oauth_start_url=payload.oauth_start_url,
-                        )
-                        logger.info(
-                            f"Saved pending oauth approval {oauth_approval.id} for chat {chat_id}"
-                        )
-                        oauth_event = {
-                            "tool_call_id": tool_call["id"],
-                            "tool_name": tool_name,
-                            "source_id": payload.source_id,
-                            "source_type": payload.source_type,
-                            "provider": payload.provider,
-                            "oauth_start_url": payload.oauth_start_url,
-                        }
-                        yield f"event: oauth_required\ndata: {json.dumps(oauth_event)}\n\n"
-                        yield "event: end_of_stream\ndata: OAuth required\n\n"
-                        return
-
-                    tool_result = ToolResultBlockParam(
-                        type="tool_result",
-                        tool_use_id=tool_call["id"],
-                        content=result.content,
-                        is_error=result.is_error,
-                    )
-                    tool_results.append(tool_result)
-                    yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
-                tool_result_message = MessageParam(role="user", content=tool_results)
-                conversation_messages.append(tool_result_message)
-                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-
-            # Memory write (fire-and-forget)
-            if (
-                memory_provider is not None
-                and memory_write_key
-                and effective_mode >= MemoryMode.CHAT
-            ):
-                try:
-                    last_user_content = None
-                    for msg in reversed(conversation_messages):
-                        m = msg if isinstance(msg, dict) else dict(msg)
-                        if m.get("role") == "user":
-                            raw = m.get("content", "")
-                            if isinstance(raw, list):
-                                # Extract text blocks only — skip image/tool_result blocks
-                                # so the provider never sees non-text content blocks.
-                                raw = " ".join(
-                                    b.get("text", "")
-                                    for b in raw
-                                    if isinstance(b, dict) and b.get("type") == "text"
-                                )
-                            if not raw:
-                                # Tool-result messages have no text — keep scanning back.
-                                continue
-                            last_user_content = raw
-                            break
-                    if last_user_content and assistant_message:
-                        assistant_content = "".join(
-                            b.get("text", "")
-                            for b in assistant_message.get("content", [])
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                        if assistant_content:
-                            turn = [
-                                MessageParam(role="user", content=last_user_content),
-                                MessageParam(
-                                    role="assistant", content=assistant_content
-                                ),
-                            ]
-                            asyncio.create_task(
-                                memory_provider.add(messages=turn, key=memory_write_key)
-                            )
-                except Exception as e:
-                    logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
-
-            yield "event: end_of_stream\ndata: Stream ended\n\n"
-
-        except asyncio.CancelledError:
-            logger.info(f"Stream cancelled for chat {chat_id}")
-            raise  # Re-raise to let FastAPI handle cleanup
-        except Exception as e:
-            logger.error(
-                f"Failed to generate AI response with tools: {e}", exc_info=True
-            )
-            # Finalize whatever partial assistant content was accumulated before
-            # the failure, so the early-persisted row is not left empty. The
-            # cancel path above does the same; this mirrors it for errors.
-            partial = _partial_assistant_message(content_blocks)
-            if partial is not None:
-                conversation_messages.append(partial)
-                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
-            yield _sse_event("stream_error", _chat_error_payload(e))
-
-    parent_id = chat_messages[-1].id if chat_messages else None
-
-    if redis_client is None:
-        # No Redis: run inline (no resume), still persisting via the producer wrapper.
-        return StreamingResponse(
-            _persist_and_transform(
-                stream_generator(), chat_id, messages_repo, parent_id
-            ),
-            media_type="text/event-stream",
-            headers=SSE_HEADERS,
-        )
-
-    # Single producer per chat: the lock winner starts the background run; a
-    # racing connect attaches to it instead of starting a duplicate.
-    got_lock = await redis_client.set(
-        _run_lock_key(chat_id), "1", nx=True, ex=_RUN_LOCK_TTL
-    )
-    if not got_lock:
-        return StreamingResponse(
-            _consume_run(redis_client, chat_id, last_event_id or "0"),
-            media_type="text/event-stream",
-            headers=SSE_HEADERS,
-        )
-
-    await redis_client.delete(_stream_key(chat_id))
-    await redis_client.delete(_cancel_key(chat_id))
-    task = asyncio.create_task(
-        _run_producer(
-            redis_client, chat_id, stream_generator(), messages_repo, parent_id
-        )
-    )
-    _background_run_tasks.add(task)
-    _run_tasks_by_chat[chat_id] = task
-
-    def _cleanup_run_task(t: asyncio.Task, cid: str = chat_id) -> None:
-        _background_run_tasks.discard(t)
-        # Only clear the registry slot if it still points at this task; a new run
-        # for the same chat may have already claimed it.
-        if _run_tasks_by_chat.get(cid) is t:
-            del _run_tasks_by_chat[cid]
-
-    task.add_done_callback(_cleanup_run_task)
-
-    return StreamingResponse(
-        _consume_run(redis_client, chat_id, "0"),
-        media_type="text/event-stream",
-        headers=SSE_HEADERS,
-    )
+# Route: cancel
+# ---------------------------------------------------------------------------
 
 
 @router.post("/chat/{chat_id}/cancel")
 async def cancel_chat_stream(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
-    """Explicit Stop: end the background run now.
-
-    Sets a Redis cancel flag (the cross-worker signal the producer checks at its
-    next checkpoint) and, if the producer task lives in this process, cancels it
-    directly so generation stops immediately — even mid-message or during a slow
-    tool call, where the next checkpoint could be far off.
-    """
-    redis_client = getattr(request.app.state, "redis_client", None)
-    if redis_client is not None:
-        try:
-            await redis_client.set(_cancel_key(chat_id), "1", ex=_CANCEL_TTL)
-        except Exception as e:
-            logger.error(f"Failed to set cancel flag for chat {chat_id}: {e}")
+    redis_client = request.app.state.redis_client
+    try:
+        await redis_client.set(cancel_key(chat_id), "1", ex=_CANCEL_TTL)
+    except Exception as e:
+        logger.error(f"Failed to set cancel flag for chat {chat_id}: {e}")
 
     task = _run_tasks_by_chat.get(chat_id)
     if task is not None and not task.done():
+        # Best-effort immediate stop for this worker. The Redis cancel flag above
+        # is the cross-worker mechanism when Stop lands on a different process.
         task.cancel()
 
     return {"status": "cancelling"}
+
+
+# ---------------------------------------------------------------------------
+# Route: generate title
+# ---------------------------------------------------------------------------
 
 
 @router.post("/chat/{chat_id}/generate_title")
 async def generate_chat_title(
     request: Request, chat_id: str = Path(..., description="Chat thread ID")
 ):
-    """Generate a title for a chat thread based on its first messages"""
     logger.info(f"Generating title for chat: {chat_id}")
 
     try:
-        # Get chat from database
         chats_repo = ChatsRepository()
         chat = await chats_repo.get(chat_id)
         if not chat:
@@ -2192,12 +1083,10 @@ async def generate_chat_title(
 
         llm_provider = _resolve_secondary_provider(request.app.state)
 
-        # Check if title already exists
         if chat.title:
             logger.info(f"Chat already has a title: {chat.title}")
             return {"title": chat.title, "status": "existing"}
 
-        # Get messages from database
         messages_repo = MessagesRepository()
         chat_messages = await messages_repo.get_by_chat(chat_id)
         if not chat_messages:
@@ -2205,7 +1094,6 @@ async def generate_chat_title(
                 status_code=400, detail="Not enough messages to generate title"
             )
 
-        # Use only the user's first text-bearing message to generate the title.
         conversation_text = ""
         for msg in chat_messages:
             role = msg.message.get("role", "unknown")
@@ -2225,7 +1113,6 @@ async def generate_chat_title(
             return {"status": "skipped", "reason": "no_user_text"}
 
         logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")
-        logger.debug(f"Conversation text: {conversation_text[:200]}...")
 
         title_result = await generate_title_for_conversation(
             llm_provider,
@@ -2253,7 +1140,6 @@ async def generate_chat_title(
 
         logger.info(f"Generated title: {title}")
 
-        # Update chat with the new title
         updated_chat = await chats_repo.update_title(chat_id, title)
         if not updated_chat:
             raise HTTPException(status_code=500, detail="Failed to update chat title")
@@ -2272,13 +1158,17 @@ async def generate_chat_title(
         )
 
 
+# ---------------------------------------------------------------------------
+# Route: download artifact
+# ---------------------------------------------------------------------------
+
+
 @router.get("/chat/{chat_id}/artifacts/{path:path}")
 async def download_artifact(
     request: Request,
     chat_id: str = Path(..., description="Chat thread ID"),
     path: str = Path(..., description="Relative file path in the sandbox"),
 ):
-    """Proxy artifact downloads from the sandbox service."""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
@@ -2305,3 +1195,9 @@ async def download_artifact(
     except Exception as e:
         logger.error(f"Artifact download error: {e}")
         raise HTTPException(status_code=500, detail="Internal error fetching artifact")
+
+
+# Re-exports for backward compatibility with tests.
+# The canonical homes are in ``services/ai/streaming/``.
+from streaming.persist import partial_assistant_message as _partial_assistant_message  # noqa: E402, F401
+from streaming.run import _run_tasks_by_chat  # noqa: E402, F401

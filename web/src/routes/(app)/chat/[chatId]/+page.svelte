@@ -40,7 +40,6 @@
         ApprovalRequiredEvent,
         OAuthRequired,
         OAuthRequiredEvent,
-        ToolResultReplacedEvent,
         OmniUploadBlock,
     } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
@@ -1568,10 +1567,6 @@
                 invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
             })
 
-            eventSource.addEventListener('title_error', () => {
-                // Title generation is best-effort; answer streaming should not surface its failures.
-            })
-
             eventSource.addEventListener('heartbeat', () => {
                 if (!isCurrentStream()) return
                 lastStreamEventAt = Date.now()
@@ -1598,9 +1593,7 @@
                         // self-cycle (id === parentId) that hangs getDisplayPath. Adopt
                         // the existing row as the streaming target and let the replayed
                         // content deltas rebuild it in place instead.
-                        const existingIndex = chatMessages.findIndex(
-                            (m) => m.id === messageId,
-                        )
+                        const existingIndex = chatMessages.findIndex((m) => m.id === messageId)
                         if (existingIndex !== -1) {
                             const existing = chatMessages[existingIndex]
                             chatMessages = [
@@ -1727,45 +1720,6 @@
                     requestAnimationFrame(() => recalcBottomPadding())
                 } catch (err) {
                     console.error('Failed to parse oauth_required event:', err)
-                }
-            })
-
-            eventSource.addEventListener('tool_result_replaced', (event) => {
-                if (!isCurrentStream()) return
-                try {
-                    const data: ToolResultReplacedEvent = JSON.parse(event.data)
-                    // Find the user-role chat message that holds the placeholder
-                    // tool_result block and replace it with the real result. The
-                    // envelope text is gone, so processMessages will stop
-                    // producing the OAuth card on the next derivation tick.
-                    for (const cm of chatMessages) {
-                        if (cm.message.role !== 'user') continue
-                        const content = cm.message.content
-                        if (!Array.isArray(content)) continue
-                        let replaced = false
-                        const next: ContentBlockParam[] = content.map((b) => {
-                            if (b.type === 'tool_result' && b.tool_use_id === data.tool_use_id) {
-                                replaced = true
-                                const replacement: ToolResultBlockParam = {
-                                    type: 'tool_result',
-                                    tool_use_id: data.tool_use_id,
-                                    content: data.content as ToolResultBlockParam['content'],
-                                    is_error: data.is_error,
-                                }
-                                return replacement
-                            }
-                            return b
-                        })
-                        if (replaced) {
-                            cm.message = { ...cm.message, content: next }
-                            delete oauthEventByToolCallId[data.tool_use_id]
-                            chatMessages = [...chatMessages]
-                            markChatMessagesChanged()
-                            break
-                        }
-                    }
-                } catch (err) {
-                    console.error('Failed to parse tool_result_replaced event:', err)
                 }
             })
 
@@ -2827,8 +2781,8 @@
                             chat: 'Ask a follow-up...',
                             search: 'Search for something else...',
                         }}
-                        isStreaming={isStreaming}
-                        stopInProgress={stopInProgress}
+                        {isStreaming}
+                        {stopInProgress}
                         onStop={handleStop}
                         maxWidth="max-w-4xl" />
                 </div>

@@ -94,12 +94,6 @@ export type OAuthRequiredEvent = OAuthRequiredAIEvent & {
     provider_configured: boolean
 }
 
-export type ToolResultReplacedEvent = {
-    tool_use_id: string
-    content: unknown
-    is_error: boolean
-}
-
 export type ToolName = 'search_documents' | 'read_document' | string
 
 export type UploadMessageContent = {
