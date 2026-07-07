@@ -7,6 +7,7 @@
         Sidebar,
         SidebarContent,
         SidebarHeader,
+        SidebarFooter,
         SidebarGroup,
         SidebarGroupContent,
         SidebarMenu,
@@ -369,33 +370,34 @@
                 </TooltipProvider>
             </div>
         </SidebarHeader>
-        <SidebarContent class="flex flex-col">
-            <SidebarGroup class="flex-1">
-                {#if data.agentsEnabled}
-                    <Button
-                        href="/agents"
-                        class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
-                        variant="ghost">
-                        <Bot />
-                        <span class="group-data-[collapsible=icon]:hidden">Agents</span>
-                    </Button>
-                    <hr />
-                {/if}
-
+        <SidebarGroup class="shrink-0">
+            {#if data.agentsEnabled}
                 <Button
-                    href="/"
-                    class="mt-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                    href="/agents"
+                    class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
                     variant="ghost">
-                    <MessageCircle />
-                    <span class="group-data-[collapsible=icon]:hidden">New Chat</span>
+                    <Bot />
+                    <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                 </Button>
+                <hr />
+            {/if}
 
-                <!-- Chat history search -->
-                <ChatHistorySearch
-                    currentChatId={page.params.chatId}
-                    recentChats={data.recentChats}
-                    timeZone={data.user.configuration.timezone} />
+            <Button
+                href="/"
+                class="mt-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                variant="ghost">
+                <MessageCircle />
+                <span class="group-data-[collapsible=icon]:hidden">New Chat</span>
+            </Button>
 
+            <!-- Chat history search -->
+            <ChatHistorySearch
+                currentChatId={page.params.chatId}
+                recentChats={data.recentChats}
+                timeZone={data.user.configuration.timezone} />
+        </SidebarGroup>
+        <SidebarContent>
+            <SidebarGroup>
                 <SidebarGroupContent>
                     <!-- Starred chats -->
                     {#if data.starredChats.length > 0}
@@ -451,13 +453,13 @@
                     {/if}
                 </SidebarGroupContent>
             </SidebarGroup>
-            <SidebarGroup>
-                <SidebarUserMenu
-                    email={data.user.email}
-                    isAdmin={data.user.role === 'admin'}
-                    memoryEnabled={data.memoryEnabled} />
-            </SidebarGroup>
         </SidebarContent>
+        <SidebarFooter>
+            <SidebarUserMenu
+                email={data.user.email}
+                isAdmin={data.user.role === 'admin'}
+                memoryEnabled={data.memoryEnabled} />
+        </SidebarFooter>
         <SidebarRail />
     </Sidebar>
 

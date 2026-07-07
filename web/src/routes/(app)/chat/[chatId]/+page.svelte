@@ -27,6 +27,7 @@
         ChevronLeft,
         ChevronRight,
         RotateCcw,
+        ArrowDown,
     } from '@lucide/svelte'
     import { marked } from 'marked'
     import { onDestroy, onMount } from 'svelte'
@@ -112,7 +113,6 @@
             editingMessageId = null
             uploadFilenames = { ...data.uploadFilenames }
             pendingApproval = pendingApprovalFromData()
-            markChatMessagesChanged()
         }
     })
 
@@ -455,26 +455,12 @@
     // Tracks user's branch choices: parentId -> chosen childId
     let branchSelections = $state<Record<string, string>>({})
     let activeStreamingMessageId = $state<string | null>(null)
-    let userHasScrolled = $state(false)
+    let isAwayFromBottom = $state(false)
     let showTopShadow = $state(false)
     let bottomPadding = $state(80)
 
-    let processedMessages = $state<ProcessedMessage[]>(processMessages(chatMessages))
-    let processedMessagesRefreshScheduled = false
+    let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
-
-    function refreshProcessedMessages() {
-        processedMessages = processMessages(chatMessages)
-    }
-
-    function scheduleProcessedMessagesRefresh() {
-        if (processedMessagesRefreshScheduled) return
-        processedMessagesRefreshScheduled = true
-        requestAnimationFrame(() => {
-            processedMessagesRefreshScheduled = false
-            refreshProcessedMessages()
-        })
-    }
 
     function hashString(value: string): string {
         let hash = 2166136261
@@ -509,10 +495,6 @@
                 return `${block.type}:${index}`
             })
             .join('|')
-    }
-
-    function markChatMessagesChanged() {
-        scheduleProcessedMessagesRefresh()
     }
 
     async function copyMessageToClipboard(message: ProcessedMessage) {
@@ -751,7 +733,6 @@
         activeStreamingMessageId = null
         // Clear downstream selections so we follow the default (active) path from here
         clearDownstreamSelections(siblings[newIdx].id)
-        refreshProcessedMessages()
     }
 
     function clearDownstreamSelections(fromId: string) {
@@ -810,7 +791,6 @@
         clearDownstreamSelections(messageId)
         pendingApproval = null
         oauthEventByToolCallId = {}
-        markChatMessagesChanged()
 
         streamResponse(data.chat.id)
     }
@@ -1235,6 +1215,13 @@
         bottomPadding = Math.max(48, userMsgTop + containerHeight - contentHeight)
     }
 
+    function updateScrollState() {
+        if (!chatContainerRef) return
+        const { scrollTop, scrollHeight, clientHeight } = chatContainerRef
+        isAwayFromBottom = scrollTop + clientHeight < scrollHeight - 100
+        showTopShadow = scrollTop > 0
+    }
+
     function scrollUserMessageToTop() {
         requestAnimationFrame(() => {
             recalcBottomPadding()
@@ -1253,16 +1240,14 @@
             void resumeActiveStreamIfNeeded()
         }
 
-        const handleScroll = () => {
-            if (!chatContainerRef) return
-            const { scrollTop, scrollHeight, clientHeight } = chatContainerRef
-            const isNearBottom = scrollTop + clientHeight >= scrollHeight - 100
-            userHasScrolled = !isNearBottom
-            showTopShadow = scrollTop > 0
-        }
+        const handleScroll = () => updateScrollState()
         chatContainerRef?.addEventListener('scroll', handleScroll)
+        updateScrollState()
 
-        const resizeObserver = new ResizeObserver(() => recalcBottomPadding())
+        const resizeObserver = new ResizeObserver(() => {
+            recalcBottomPadding()
+            updateScrollState()
+        })
         if (chatContentRef) resizeObserver.observe(chatContentRef)
 
         // When returning to a backgrounded/frozen tab, the SSE connection is
@@ -1363,7 +1348,6 @@
                     message,
                     ...chatMessages.slice(replaceIndex + 1),
                 ]
-                markChatMessagesChanged()
             }
 
             const existingBlocks = Array.isArray(lastMessage.message.content)
@@ -1505,7 +1489,6 @@
                     chatMessages = [...chatMessages, toolResultMessage]
                     activeStreamingMessageId = toolResultMessage.id
                     selectBranch(toolResultMessage.parentId, toolResultMessage.id)
-                    markChatMessagesChanged()
                 }
 
                 return
@@ -1554,7 +1537,6 @@
                 isStreaming = false
                 stopInProgress = false
                 activeStreamingMessageId = null
-                refreshProcessedMessages()
                 stopThinkingText()
                 eventSource?.close()
                 eventSource = null
@@ -1564,7 +1546,9 @@
             })
 
             eventSource.addEventListener('title', () => {
-                invalidate('app:recent_chats') // This will force a re-fetch of recent chats and update the title in the sidebar
+                if (!isCurrentStream()) return
+                void invalidate('app:recent_chats')
+                void invalidate(`app:chat:${chatId}`)
             })
 
             eventSource.addEventListener('heartbeat', () => {
@@ -1608,7 +1592,6 @@
                                 ...chatMessages.slice(existingIndex + 1),
                             ]
                             activeStreamingMessageId = messageId
-                            markChatMessagesChanged()
                             return
                         }
                         // Find the last message in current display path to use as parent
@@ -1632,7 +1615,6 @@
                         chatMessages = [...chatMessages, startedMessage]
                         activeStreamingMessageId = startedMessage.id
                         selectBranch(startedMessage.parentId, startedMessage.id)
-                        markChatMessagesChanged()
                     } else if (data.type === 'content_block_start') {
                         if (data.content_block.type === 'tool_use') {
                             collectStreamingResponse(data.content_block, data.index)
@@ -1681,7 +1663,7 @@
                         collectStreamingResponse(data)
                     }
 
-                    if (!userHasScrolled) scrollToBottom()
+                    updateScrollState()
                 } catch (err) {
                     console.error('Failed to parse SSE data:', event.data, err)
                 } finally {
@@ -1698,7 +1680,6 @@
                     isStreaming = false
                     stopInProgress = false
                     activeStreamingMessageId = null
-                    refreshProcessedMessages()
                     stopThinkingText()
                     requestAnimationFrame(() => recalcBottomPadding())
                 } catch (err) {
@@ -1715,7 +1696,6 @@
                     isStreaming = false
                     stopInProgress = false
                     activeStreamingMessageId = null
-                    refreshProcessedMessages()
                     stopThinkingText()
                     requestAnimationFrame(() => recalcBottomPadding())
                 } catch (err) {
@@ -1730,7 +1710,6 @@
                 isStreaming = false
                 stopInProgress = false
                 activeStreamingMessageId = null
-                refreshProcessedMessages()
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
                 userInputRef?.focus()
@@ -1758,7 +1737,6 @@
                 isStreaming = false
                 stopInProgress = false
                 activeStreamingMessageId = null
-                refreshProcessedMessages()
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
                 userInputRef?.focus()
@@ -1800,7 +1778,6 @@
                 isStreaming = false
                 stopInProgress = false
                 activeStreamingMessageId = null
-                refreshProcessedMessages()
                 stopThinkingText()
                 requestAnimationFrame(() => recalcBottomPadding())
                 userInputRef?.focus()
@@ -1923,7 +1900,6 @@
                     }
                     chatMessages = [...chatMessages, denialMessage]
                     selectBranch(parentMessage.id, denialMessage.id)
-                    markChatMessagesChanged()
                 }
             }
 
@@ -2023,10 +1999,9 @@
         }
         chatMessages = [...chatMessages, newUserMessage]
         selectBranch(newUserMessage.parentId, newUserMessage.id)
-        markChatMessagesChanged()
 
         pendingUploads = []
-        userHasScrolled = false
+        isAwayFromBottom = false
 
         scrollUserMessageToTop()
         streamResponse(data.chat.id)
@@ -2759,6 +2734,21 @@
 
             <!-- Input -->
             <div class="bg-background sticky bottom-0 flex flex-col items-center pb-4">
+                {#if isAwayFromBottom}
+                    <div
+                        class="pointer-events-none absolute inset-x-0 -top-12 z-20 mx-auto flex w-full max-w-4xl justify-end px-4">
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="icon"
+                            class="bg-background pointer-events-auto h-9 w-9 cursor-pointer rounded-full shadow-md"
+                            aria-label="Scroll to bottom"
+                            title="Scroll to bottom"
+                            onclick={scrollToBottom}>
+                            <ArrowDown class="h-4 w-4" />
+                        </Button>
+                    </div>
+                {/if}
                 <div class="w-full max-w-4xl">
                     <input
                         bind:this={uploadInputEl}
