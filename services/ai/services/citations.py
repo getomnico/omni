@@ -52,6 +52,7 @@ class CitableRef:
     """Tracks a citable content block (search result or document) for synthetic citation generation."""
 
     index: int
+    citation_index: int
     title: str
     source: str
     cited_text: str
@@ -131,6 +132,8 @@ class CitationProcessor:
         """
         index_map: dict[int, CitableRef] = {}
         counter = 1
+        search_result_counter = 0
+        document_counter = 0
         for msg in messages:
             content = msg["content"]
             if isinstance(content, str):
@@ -150,23 +153,27 @@ class CitationProcessor:
                         sr = cast(SearchResultBlockParam, sub_block)
                         index_map[counter] = CitableRef(
                             index=counter,
+                            citation_index=search_result_counter,
                             title=sr["title"],
                             source=sr["source"],
                             cited_text=_extract_text_from_search_result(sr)[:500],
                             ref_type="search_result",
                         )
                         counter += 1
+                        search_result_counter += 1
 
                     elif sub_block.get("type") == "document":
                         doc = cast(DocumentBlockParam, sub_block)
                         index_map[counter] = CitableRef(
                             index=counter,
+                            citation_index=document_counter,
                             title=doc.get("title", ""),
                             source=doc.get("title", ""),
                             cited_text=_extract_data_from_document(doc)[:500],
                             ref_type="document",
                         )
                         counter += 1
+                        document_counter += 1
 
         return index_map
 
@@ -225,7 +232,7 @@ class CitationProcessor:
                     continue
 
                 has_citable = any(
-                    isinstance(sb, dict) and sb["type"] in ("search_result", "document")
+                    isinstance(sb, dict) and sb.get("type") in ("search_result", "document")
                     for sb in tool_content
                 )
 
@@ -234,12 +241,13 @@ class CitationProcessor:
                     continue
 
                 has_changes = True
-                new_sub_blocks: list[TextBlockParam] = []
+                new_sub_blocks: list[object] = []
                 for sb in tool_content:
                     if not isinstance(sb, dict):
+                        new_sub_blocks.append(sb)
                         continue
 
-                    sb_type = sb["type"]
+                    sb_type = sb.get("type")
                     if sb_type == "search_result":
                         sr = cast(SearchResultBlockParam, sb)
                         ref = citable_index.get(counter)
@@ -267,12 +275,15 @@ class CitationProcessor:
                         counter += 1
 
                     else:
-                        new_sub_blocks.append(cast(TextBlockParam, sb))
+                        new_sub_blocks.append(sb)
 
-                new_block: ToolResultBlockParam = {
-                    **tool_block,
-                    "content": new_sub_blocks,
-                }
+                new_block = cast(
+                    ToolResultBlockParam,
+                    {
+                        **tool_block,
+                        "content": new_sub_blocks,
+                    },
+                )
                 new_content.append(new_block)
 
             if has_changes:
@@ -316,7 +327,7 @@ class CitationProcessor:
                             type="search_result_location",
                             start_block_index=0,
                             end_block_index=0,
-                            search_result_index=ref.index - 1,  # 0-based
+                            search_result_index=ref.citation_index,
                             title=ref.title,
                             source=ref.source,
                             cited_text=ref.cited_text[:200],
@@ -326,7 +337,7 @@ class CitationProcessor:
                     citations.append(
                         CitationCharLocationParam(
                             type="char_location",
-                            document_index=ref.index - 1,  # 0-based
+                            document_index=ref.citation_index,
                             document_title=ref.title,
                             start_char_index=0,
                             end_char_index=0,
@@ -402,6 +413,11 @@ class CitationStreamProcessor(StreamProcessor):
 
             elif event.type == "content_block_stop":
                 for out in self._flush_buffer(event.index):
+                    yield out
+                yield event
+
+            elif event.type == "message_stop":
+                for out in self._flush_buffer(self._current_index):
                     yield out
                 yield event
 
@@ -533,7 +549,7 @@ class CitationStreamProcessor(StreamProcessor):
         if ref.ref_type == "search_result":
             citation_obj = CitationsSearchResultLocation(
                 type="search_result_location",
-                search_result_index=ref.index - 1,
+                search_result_index=ref.citation_index,
                 start_block_index=0,
                 end_block_index=0,
                 title=ref.title,
@@ -543,7 +559,7 @@ class CitationStreamProcessor(StreamProcessor):
         else:
             citation_obj = CitationCharLocation(
                 type="char_location",
-                document_index=ref.index - 1,
+                document_index=ref.citation_index,
                 document_title=ref.title,
                 start_char_index=0,
                 end_char_index=0,

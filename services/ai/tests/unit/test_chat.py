@@ -4,6 +4,7 @@ import pytest
 from anthropic.types import (
     RawContentBlockDeltaEvent,
     RawContentBlockStopEvent,
+    RawMessageStopEvent,
     TextDelta,
 )
 
@@ -131,6 +132,102 @@ def test_synthetic_citations_end_to_end():
     assert "search_result_location" in event_json
 
 
+def test_citable_refs_use_per_source_type_indices():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": [
+                        {
+                            "type": "search_result",
+                            "title": "Search A",
+                            "source": "http://example.com/a",
+                            "content": [{"type": "text", "text": "search a"}],
+                        },
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "text",
+                                "media_type": "text/plain",
+                                "data": "document a",
+                            },
+                            "title": "Document A",
+                        },
+                        {
+                            "type": "search_result",
+                            "title": "Search B",
+                            "source": "http://example.com/b",
+                            "content": [{"type": "text", "text": "search b"}],
+                        },
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "text",
+                                "media_type": "text/plain",
+                                "data": "document b",
+                            },
+                            "title": "Document B",
+                        },
+                    ],
+                }
+            ],
+        }
+    ]
+
+    index = CitationProcessor.build_citable_index(messages)
+    assert [index[i].index for i in range(1, 5)] == [1, 2, 3, 4]
+    assert [index[i].citation_index for i in range(1, 5)] == [0, 0, 1, 1]
+
+    _, citations = CitationProcessor.extract_citations(
+        "A [citation:1] B [citation:2] C [citation:3] D [citation:4]", index
+    )
+    assert citations[0]["search_result_index"] == 0
+    assert citations[1]["document_index"] == 0
+    assert citations[2]["search_result_index"] == 1
+    assert citations[3]["document_index"] == 1
+
+    stream_event = CitationStreamProcessor(index)._build_citation_event(0, 3)
+    assert stream_event is not None
+    assert stream_event.delta.citation.search_result_index == 1
+
+
+def test_prepare_messages_preserves_non_citable_tool_result_content():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": [
+                        {"type": "text", "text": "intro"},
+                        "raw detail",
+                        {
+                            "type": "search_result",
+                            "title": "Search A",
+                            "source": "http://example.com/a",
+                            "content": [{"type": "text", "text": "search a"}],
+                        },
+                        {"type": "text", "text": "outro"},
+                    ],
+                }
+            ],
+        }
+    ]
+
+    index = CitationProcessor.build_citable_index(messages)
+    transformed = CitationProcessor.prepare_messages(messages, index)
+    content = transformed[0]["content"][0]["content"]
+    assert content[0] == {"type": "text", "text": "intro"}
+    assert content[1] == "raw detail"
+    assert content[2]["type"] == "text"
+    assert content[2]["text"].startswith("[1] Search A")
+    assert content[3] == {"type": "text", "text": "outro"}
+
+
 async def _collect(stream) -> list:
     """Helper to collect an async iterator into a list."""
     return [event async for event in stream]
@@ -148,6 +245,7 @@ async def test_citation_stream_processor():
     citable_index = {
         1: CitableRef(
             index=1,
+            citation_index=0,
             title="Doc A",
             source="http://a.com",
             cited_text="content a",
@@ -155,6 +253,7 @@ async def test_citation_stream_processor():
         ),
         2: CitableRef(
             index=2,
+            citation_index=0,
             title="Doc B",
             source="http://b.com",
             cited_text="content b",
@@ -226,3 +325,13 @@ async def test_citation_stream_processor():
     )
     text5 = "".join(e.delta.text for e in out5 if e.delta.type == "text_delta")
     assert "[" in text5
+
+    # Flush before message_stop when a provider omits content_block_stop
+    out6 = await _collect(
+        CitationStreamProcessor(citable_index).process(
+            _async_iter([td(0, "text ["), RawMessageStopEvent(type="message_stop")])
+        )
+    )
+    assert out6[-1].type == "message_stop"
+    assert out6[-2].type == "content_block_delta"
+    assert "".join(e.delta.text for e in out6[:-1] if e.delta.type == "text_delta") == "text ["
