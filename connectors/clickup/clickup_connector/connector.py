@@ -1,10 +1,7 @@
 """Main ClickUpConnector class."""
 
-import json
 import logging
-import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Mapping
 
 from omni_connector import (
@@ -18,8 +15,6 @@ from omni_connector import (
     SyncContext,
     SyncMode,
 )
-from omni_connector.mcp_adapter import McpAdapter
-
 from .client import AuthenticationError, ClickUpClient, ClickUpError
 from .config import (
     CHECKPOINT_INTERVAL,
@@ -84,16 +79,6 @@ def _timestamp_ms(value: object) -> int:
 class ClickUpConnector(Connector):
     """ClickUp connector for Omni."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._mcp_catalog_loaded = False
-        self._mcp_catalog_cache_path = Path(
-            os.environ.get(
-                "CLICKUP_MCP_CATALOG_CACHE",
-                "/tmp/omni-clickup-mcp-catalog.json",
-            )
-        )
-
     @property
     def name(self) -> str:
         return "clickup"
@@ -121,13 +106,6 @@ class ClickUpConnector(Connector):
     @property
     def mcp_server(self) -> HttpMcpServer:
         return HttpMcpServer(url=CLICKUP_MCP_URL)
-
-    @property
-    def mcp_adapter(self) -> McpAdapter | None:
-        adapter = super().mcp_adapter
-        if adapter is not None and not self._mcp_catalog_loaded:
-            self._load_mcp_catalog_cache(adapter)
-        return adapter
 
     @property
     def actions(self) -> list[ActionDefinition]:
@@ -209,37 +187,11 @@ class ClickUpConnector(Connector):
         return None
 
     async def bootstrap_mcp(self, credentials: Mapping[str, object]) -> None:
-        adapter = self.mcp_adapter
-        if adapter is None:
-            return
         if not self._mcp_access_token(credentials):
             logger.debug("Skipping ClickUp MCP bootstrap: no OAuth access_token present")
             return
-        auth = self._prepare_mcp_auth(credentials)
         logger.info("Bootstrapping ClickUp MCP catalog with authenticated OAuth credentials")
-        await adapter.discover(**auth)
-        self._save_mcp_catalog_cache(adapter)
-
-    def _load_mcp_catalog_cache(self, adapter: McpAdapter) -> None:
-        self._mcp_catalog_loaded = True
-        try:
-            if not self._mcp_catalog_cache_path.exists():
-                return
-            catalog = json.loads(self._mcp_catalog_cache_path.read_text())
-            adapter.import_catalog(catalog)
-            logger.info(
-                "Loaded ClickUp MCP catalog cache from %s",
-                self._mcp_catalog_cache_path,
-            )
-        except Exception:
-            logger.warning("Failed to load ClickUp MCP catalog cache", exc_info=True)
-
-    def _save_mcp_catalog_cache(self, adapter: McpAdapter) -> None:
-        try:
-            self._mcp_catalog_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self._mcp_catalog_cache_path.write_text(json.dumps(adapter.export_catalog()))
-        except Exception:
-            logger.warning("Failed to save ClickUp MCP catalog cache", exc_info=True)
+        await super().bootstrap_mcp(dict(credentials))
 
     async def execute_action(
         self,

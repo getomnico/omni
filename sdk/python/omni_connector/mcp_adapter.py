@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, AsyncIterator, Union
 
 from mcp.client.session import ClientSession
@@ -61,6 +64,7 @@ class McpAdapter:
         self._cached_actions: list[ActionDefinition] | None = None
         self._cached_resources: list[McpResourceDefinition] | None = None
         self._cached_prompts: list[McpPromptDefinition] | None = None
+        self._catalog_cached_at: float | None = None
 
     @asynccontextmanager
     async def _open_session(
@@ -117,7 +121,7 @@ class McpAdapter:
         async with self._open_session(env, headers) as session:
             return await callback(session)
 
-    def export_catalog(self) -> dict[str, Any]:
+    def _export_catalog(self) -> dict[str, Any]:
         """Return the cached MCP catalog as JSON-serializable data."""
         return {
             "actions": [a.model_dump() for a in self._cached_actions or []],
@@ -125,7 +129,7 @@ class McpAdapter:
             "prompts": [p.model_dump() for p in self._cached_prompts or []],
         }
 
-    def import_catalog(self, catalog: dict[str, Any]) -> None:
+    def _import_catalog(self, catalog: dict[str, Any]) -> None:
         """Restore a previously discovered MCP catalog."""
         self._cached_actions = [
             ActionDefinition(**item) for item in catalog.get("actions", [])
@@ -136,6 +140,52 @@ class McpAdapter:
         self._cached_prompts = [
             McpPromptDefinition(**item) for item in catalog.get("prompts", [])
         ]
+
+    def _clear_catalog_cache(self) -> None:
+        self._cached_actions = None
+        self._cached_resources = None
+        self._cached_prompts = None
+        self._catalog_cached_at = None
+
+    def _catalog_cache_expired(self, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0 or self._catalog_cached_at is None:
+            return False
+        return time.time() - self._catalog_cached_at > ttl_seconds
+
+    def _clear_catalog_cache_if_expired(self, ttl_seconds: int) -> bool:
+        if not self._catalog_cache_expired(ttl_seconds):
+            return False
+        self._clear_catalog_cache()
+        return True
+
+    def _load_catalog_cache(self, path: Path, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0 or not path.exists():
+            return False
+        raw = json.loads(path.read_text())
+        if not isinstance(raw, dict):
+            return False
+        cached_at = raw.get("cached_at")
+        catalog = raw.get("catalog")
+        if not isinstance(cached_at, int | float) or not isinstance(catalog, dict):
+            return False
+        if time.time() - cached_at > ttl_seconds:
+            return False
+        self._import_catalog(catalog)
+        self._catalog_cached_at = float(cached_at)
+        return True
+
+    def _save_catalog_cache(self, path: Path) -> None:
+        cached_at = self._catalog_cached_at or time.time()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "cached_at": cached_at,
+                    "catalog": self._export_catalog(),
+                }
+            )
+        )
 
     async def discover(
         self,
@@ -150,6 +200,7 @@ class McpAdapter:
             self._cached_prompts = await self._fetch_prompts(session)
 
         await self._run(_discover, env=env, headers=headers)
+        self._catalog_cached_at = time.time()
         logger.info(
             "MCP discovery complete: %d tools, %d resources, %d prompts",
             len(self._cached_actions or []),

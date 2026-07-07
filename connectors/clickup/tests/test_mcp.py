@@ -19,7 +19,7 @@ class FakeMcpAdapter:
         self.headers_seen = auth.get("headers")
         self.discovered = True
 
-    def export_catalog(self) -> dict[str, Any]:
+    def _export_catalog(self) -> dict[str, Any]:
         return {
             "actions": [
                 ActionDefinition(
@@ -32,6 +32,20 @@ class FakeMcpAdapter:
             "resources": [],
             "prompts": [],
         }
+
+    def _save_catalog_cache(self, path: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"version": 1, "cached_at": 1, "catalog": self._export_catalog()}
+            )
+        )
+
+    def _catalog_cache_expired(self, ttl_seconds: int) -> bool:
+        return False
+
+    def _clear_catalog_cache_if_expired(self, ttl_seconds: int) -> bool:
+        return False
 
     async def get_action_definitions(self, **auth: Any) -> list[ActionDefinition]:
         self.headers_seen = auth.get("headers")
@@ -106,8 +120,7 @@ def test_oauth_config_declares_clickup_mcp_public_pkce() -> None:
 async def test_manifest_does_not_discover_without_authenticated_bootstrap(
     tmp_path, monkeypatch
 ) -> None:
-    cache_path = tmp_path / "catalog.json"
-    monkeypatch.setenv("CLICKUP_MCP_CATALOG_CACHE", str(cache_path))
+    monkeypatch.setenv("CATALOG_CACHE_DIR", str(tmp_path))
     connector = ClickUpConnector()
 
     manifest = await connector.get_manifest("http://connector")
@@ -121,25 +134,25 @@ async def test_manifest_does_not_discover_without_authenticated_bootstrap(
 async def test_authenticated_bootstrap_discovers_and_persists_catalog(
     tmp_path, monkeypatch
 ) -> None:
-    cache_path = tmp_path / "catalog.json"
-    monkeypatch.setenv("CLICKUP_MCP_CATALOG_CACHE", str(cache_path))
+    cache_path = tmp_path / "clickup.mcp-catalog.json"
+    monkeypatch.setenv("CATALOG_CACHE_DIR", str(tmp_path))
     connector = ClickUpConnector()
     fake = FakeMcpAdapter()
     connector._mcp_adapter = fake  # noqa: SLF001 - deliberate test seam
-    connector._mcp_catalog_loaded = True  # noqa: SLF001
+    connector._mcp_catalog_cache_loaded = True  # noqa: SLF001
 
     await connector.bootstrap_mcp({"credentials": {"access_token": "tok_boot"}})
 
     assert fake.discovered is True
     assert fake.headers_seen == {"Authorization": "Bearer tok_boot"}
-    assert json.loads(cache_path.read_text())["actions"][0]["name"] == "create_task"
+    assert json.loads(cache_path.read_text())["catalog"]["actions"][0]["name"] == "create_task"
 
 
 async def test_execute_action_delegates_to_mcp_with_bearer_header(monkeypatch) -> None:
     connector = ClickUpConnector()
     fake = FakeMcpAdapter()
     connector._mcp_adapter = fake  # noqa: SLF001 - deliberate test seam
-    connector._mcp_catalog_loaded = True  # noqa: SLF001
+    connector._mcp_catalog_cache_loaded = True  # noqa: SLF001
 
     response = await connector.execute_action(
         "create_task",
