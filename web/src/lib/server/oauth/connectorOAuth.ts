@@ -26,8 +26,6 @@ export interface OAuthManifestConfig {
     enrich_endpoint?: string | null
     registration_endpoint?: string | null
     token_endpoint_auth_method?: OAuthTokenEndpointAuthMethod
-    client_secret_required?: boolean
-    pkce_required?: boolean
     resource?: string | null
 }
 
@@ -195,8 +193,7 @@ export function isAutoManagedOAuthProvider(
 ): boolean {
     return Boolean(
         manifestConfig?.registration_endpoint &&
-        manifestConfig.token_endpoint_auth_method === 'none' &&
-        manifestConfig.client_secret_required === false,
+        manifestConfig.token_endpoint_auth_method === 'none',
     )
 }
 
@@ -394,7 +391,7 @@ export async function generateAuthUrlForUserWrite(args: {
 function pkceForConfig(
     config: OAuthManifestConfig,
 ): { verifier: string; challenge: string } | null {
-    if (!config.pkce_required) return null
+    if (config.token_endpoint_auth_method !== 'none') return null
     const verifier = randomBytes(32).toString('base64url')
     const challenge = createHash('sha256').update(verifier).digest('base64url')
     return { verifier, challenge }

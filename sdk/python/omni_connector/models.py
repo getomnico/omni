@@ -210,8 +210,6 @@ class OAuthManifestConfig(BaseModel):
     enrich_endpoint: str | None = None
     registration_endpoint: str | None = None
     token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = "client_secret_post"
-    client_secret_required: bool = True
-    pkce_required: bool = False
     resource: str | None = None
 
 
@@ -287,6 +285,10 @@ class ActionRequest(BaseModel):
 
 
 class BootstrapMcpRequest(BaseModel):
+    """Carries resolved credentials from the connector-manager to the connector
+    so the connector can perform authenticated MCP catalog discovery after an
+    OAuth credential has been stored for a source."""
+
     credentials: dict[str, Any] = Field(default_factory=dict)
 
 

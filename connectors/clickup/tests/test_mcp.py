@@ -101,8 +101,6 @@ def test_oauth_config_declares_clickup_mcp_public_pkce() -> None:
     assert oauth.extra_auth_params["resource"] == CLICKUP_OAUTH_RESOURCE
     assert oauth.registration_endpoint == "https://mcp.clickup.com/oauth/register"
     assert oauth.token_endpoint_auth_method == "none"
-    assert oauth.client_secret_required is False
-    assert oauth.pkce_required is True
 
 
 async def test_manifest_does_not_discover_without_authenticated_bootstrap(

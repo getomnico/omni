@@ -17,8 +17,6 @@ const baseManifest: OAuthManifestConfig = {
     extra_auth_params: {},
     scope_separator: ' ',
     token_endpoint_auth_method: 'client_secret_post',
-    client_secret_required: true,
-    pkce_required: false,
 }
 
 describe('OAuth connector helpers', () => {
@@ -28,7 +26,6 @@ describe('OAuth connector helpers', () => {
                 ...baseManifest,
                 registration_endpoint: 'https://example.com/oauth/register',
                 token_endpoint_auth_method: 'none',
-                client_secret_required: false,
             }),
         ).toBe(true)
 
@@ -37,7 +34,6 @@ describe('OAuth connector helpers', () => {
                 ...baseManifest,
                 registration_endpoint: 'https://example.com/oauth/register',
                 token_endpoint_auth_method: 'client_secret_post',
-                client_secret_required: true,
             }),
         ).toBe(false)
     })
