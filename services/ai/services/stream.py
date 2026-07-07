@@ -18,7 +18,7 @@ class StreamProcessor(ABC):
     """
 
     @abstractmethod
-    async def process(
+    def process(
         self, stream: AsyncIterator[MessageStreamEvent]
     ) -> AsyncIterator[MessageStreamEvent]:
         """Consume the input stream and yield transformed events.
