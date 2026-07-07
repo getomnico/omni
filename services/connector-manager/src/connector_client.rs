@@ -1,13 +1,14 @@
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, PromptRequest,
-    ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, OAuthCredentialReadyRequest,
+    PromptRequest, ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
+use serde_json::json;
 use shared::models::SyncType;
 use shared::{RateLimiter, RetryableError};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 const SYNC_TRIGGER_RETRY_LIMIT: u32 = 3;
 const SYNC_TRIGGER_RETRY_RPS: u32 = 1_000;
@@ -268,6 +269,81 @@ impl ConnectorClient {
         // Return the raw response regardless of status code so the handler
         // can proxy status, headers, and body verbatim.
         Ok(response)
+    }
+
+    pub async fn bootstrap_mcp(
+        &self,
+        connector_url: &str,
+        credentials: &serde_json::Value,
+    ) -> Result<ConnectorManifest, ClientError> {
+        let url = format!("{}/mcp/bootstrap", connector_url);
+        debug!("Bootstrapping MCP catalog at {}", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&json!({"credentials": credentials}))
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            error!("Failed to bootstrap MCP: {} - {}", status, body);
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
+    }
+
+    /// Notify a connector that a new OAuth credential has been stored.
+    /// The connector may use the credential to refresh its authenticated MCP
+    /// catalog and return an updated manifest.
+    pub async fn oauth_credential_ready(
+        &self,
+        connector_url: &str,
+        request: &OAuthCredentialReadyRequest,
+    ) -> Result<Option<ConnectorManifest>, ClientError> {
+        let url = format!("{}/oauth/credential-ready", connector_url);
+        debug!("Notifying connector of OAuth credential-ready at {}", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            // 404 means the connector doesn't implement the endpoint (old SDK).
+            // 4xx/5xx means delivery failed; don't propagate, just return None.
+            info!(
+                "oauth_credential_ready returned {}: connector may not support the endpoint",
+                response.status()
+            );
+            return Err(ClientError::ConnectorError {
+                status: response.status().as_u16(),
+                message: response.text().await.unwrap_or_default(),
+            });
+        }
+
+        // If connector returns no body (204) or empty, no manifest update.
+        let body = response.text().await.unwrap_or_default();
+        if body.is_empty() {
+            return Ok(None);
+        }
+        match serde_json::from_str::<ConnectorManifest>(&body) {
+            Ok(manifest) => Ok(Some(manifest)),
+            Err(_) => Ok(None),
+        }
     }
 
     pub async fn read_resource(

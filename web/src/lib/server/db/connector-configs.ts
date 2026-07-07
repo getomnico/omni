@@ -51,7 +51,7 @@ export async function getAllConnectorConfigsPublic(): Promise<ConnectorConfigPub
 export async function upsertConnectorConfig(
     provider: string,
     config: Record<string, unknown>,
-    updatedBy: string,
+    updatedBy: string | null,
 ): Promise<ConnectorConfig> {
     const [row] = await db
         .insert(connectorConfigs)

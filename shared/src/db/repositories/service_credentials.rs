@@ -175,6 +175,39 @@ impl ServiceCredentialsRepo {
         Ok(())
     }
 
+    /// Find any per-user OAuth credential for sources matching the given
+    /// source types and provider. Used for recovering a missing MCP catalog
+    /// when a connector registers with `mcp_catalog_loaded: false`.
+    pub async fn find_any_user_oauth_for_provider(
+        &self,
+        source_types: &[String],
+        provider: &str,
+    ) -> Result<Option<(String, String)>> {
+        // Returns (source_id, user_id) for the most recently updated
+        // per-user OAuth credential matching the criteria.
+        // sqlx doesn't support array_agg -> text easily, so we use ANY(..) with
+        // a typed PostgreSQL array.
+        let result: Option<(String, String)> = sqlx::query_as(
+            r#"
+            SELECT sc.source_id, sc.user_id
+            FROM service_credentials sc
+            JOIN sources s ON s.id = sc.source_id AND NOT s.is_deleted
+            WHERE sc.user_id IS NOT NULL
+              AND sc.auth_type = 'oauth'
+              AND sc.provider = $1
+              AND s.source_type = ANY($2::text[])
+            ORDER BY sc.updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(provider)
+        .bind(source_types)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result)
+    }
+
     pub async fn encrypt_existing_credentials(&self) -> Result<usize> {
         let mut count = 0;
 

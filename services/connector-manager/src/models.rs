@@ -106,6 +106,26 @@ pub struct ExecuteActionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootstrapMcpRequest {
+    pub source_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialReadyRequest {
+    pub source_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    pub provider: String,
+    pub flow: String,
+    /// Resolved credential payload forwarded to the connector. Web callers omit
+    /// this; connector-manager fills it after resolving stored credentials.
+    #[serde(default)]
+    pub credentials: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkSourceSyncConfigResponse {
     pub config: JsonValue,
     pub credentials: JsonValue,

@@ -1,6 +1,7 @@
 """Tests for the MCP adapter (stdio + Streamable HTTP transports)."""
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
@@ -133,6 +134,23 @@ class TestStdioAdapter:
         assert len(resources) == 1
         prompts = await adapter.get_prompt_definitions()
         assert len(prompts) == 1
+
+    async def test_catalog_file_cache_respects_ttl(self, adapter: McpAdapter, tmp_path):
+        await adapter.discover(env=TEST_ENV)
+        cache_path = tmp_path / "catalog.json"
+        adapter._save_catalog_cache(cache_path)
+
+        fresh = McpAdapter(TEST_STDIO_SERVER)
+        assert fresh._load_catalog_cache(cache_path, ttl_seconds=60) is True
+        assert len(await fresh.get_action_definitions()) == 2
+
+        data = json.loads(cache_path.read_text())
+        data["cached_at"] = 1
+        cache_path.write_text(json.dumps(data))
+
+        stale = McpAdapter(TEST_STDIO_SERVER)
+        assert stale._load_catalog_cache(cache_path, ttl_seconds=1) is False
+        assert await stale.get_action_definitions() == []
 
     async def test_no_auth_no_cache_returns_empty(self, adapter: McpAdapter):
         """Without auth and without cache, returns empty lists."""

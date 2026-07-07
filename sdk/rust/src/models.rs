@@ -44,6 +44,31 @@ pub struct OAuthManifestConfig {
     /// `{credentials_extra?, config_extra?}` to be merged into the row.
     #[serde(default)]
     pub enrich_endpoint: Option<String>,
+    /// OAuth Dynamic Client Registration endpoint. Set this for providers where
+    /// Omni should auto-create an OAuth client instead of asking admins to
+    /// configure one manually.
+    #[serde(default)]
+    pub registration_endpoint: Option<String>,
+    /// OAuth token endpoint client authentication method. Public DCR clients
+    /// usually use `none`, which tells Omni not to require or send a client
+    /// secret and to treat the provider as auto-managed when
+    /// `registration_endpoint` is also present.
+    #[serde(default)]
+    pub token_endpoint_auth_method: OAuthTokenEndpointAuthMethod,
+    /// Optional OAuth resource indicator (RFC 8707) sent on auth/token requests
+    /// for providers that bind tokens to a specific resource, such as a remote
+    /// MCP server.
+    #[serde(default)]
+    pub resource: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthTokenEndpointAuthMethod {
+    #[default]
+    ClientSecretPost,
+    ClientSecretBasic,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

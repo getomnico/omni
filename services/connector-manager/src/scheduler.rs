@@ -16,7 +16,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use time::{Duration as TimeDuration, OffsetDateTime};
-use tokio::time::{Duration, interval, sleep, timeout};
+use tokio::time::{interval, sleep, timeout, Duration};
 use tracing::{debug, error, info, warn};
 
 const SCHEDULER_PHASE_TIMEOUT: Duration = Duration::from_secs(300);

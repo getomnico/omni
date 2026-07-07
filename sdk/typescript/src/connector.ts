@@ -4,6 +4,7 @@ import type {
   ConnectorManifest,
   ActionDefinition,
   SearchOperator,
+  OAuthManifestConfig,
 } from './models.js';
 import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
@@ -40,6 +41,16 @@ export abstract class Connector<
   readonly searchOperators: SearchOperator[] = [];
   readonly extraSchema?: Record<string, unknown>;
   readonly attributesSchema?: Record<string, unknown>;
+
+  /**
+   * Return declarative OAuth2 config if this connector supports Omni-managed
+   * OAuth. DCR/public-client providers should set `registration_endpoint` and
+   * `token_endpoint_auth_method: 'none'`; set `resource` only when the provider
+   * requires an OAuth resource indicator for the target API/MCP server.
+   */
+  get oauthConfig(): OAuthManifestConfig | undefined {
+    return undefined;
+  }
 
   /**
    * Return MCP server config (stdio or Streamable HTTP) if this connector
@@ -131,6 +142,7 @@ export abstract class Connector<
       mcp_enabled: adapter !== undefined,
       resources: adapter ? await adapter.getResourceDefinitions() : [],
       prompts: adapter ? await adapter.getPromptDefinitions() : [],
+      oauth: this.oauthConfig,
     };
   }
 

@@ -107,6 +107,56 @@ export const McpPromptDefinitionSchema = z.object({
 });
 export type McpPromptDefinition = z.infer<typeof McpPromptDefinitionSchema>;
 
+export const OAuthScopeSetSchema = z.object({
+  read: z.array(z.string()).default([]),
+  write: z.array(z.string()).default([]),
+});
+export type OAuthScopeSet = z.infer<typeof OAuthScopeSetSchema>;
+
+export const OAuthTokenEndpointAuthMethodSchema = z.enum([
+  'client_secret_post',
+  'client_secret_basic',
+  'none',
+]);
+export type OAuthTokenEndpointAuthMethod = z.infer<
+  typeof OAuthTokenEndpointAuthMethodSchema
+>;
+
+export const OAuthManifestConfigSchema = z.object({
+  provider: z.string(),
+  auth_endpoint: z.string(),
+  token_endpoint: z.string(),
+  userinfo_endpoint: z.string(),
+  userinfo_email_field: z.string().default('email'),
+  identity_scopes: z.array(z.string()).default([]),
+  scopes: z.record(OAuthScopeSetSchema).default({}),
+  extra_auth_params: z.record(z.string()).default({}),
+  scope_separator: z.string().default(' '),
+  enrich_endpoint: z.string().nullable().optional(),
+  /**
+   * OAuth Dynamic Client Registration endpoint. Set this for providers where
+   * Omni should auto-create an OAuth client instead of asking admins to
+   * configure one manually.
+   */
+  registration_endpoint: z.string().nullable().optional(),
+  /**
+   * OAuth token endpoint client authentication method. Public DCR clients
+   * usually use `none`, which tells Omni not to require or send a client
+   * secret and to treat the provider as auto-managed when
+   * `registration_endpoint` is also present.
+   */
+  token_endpoint_auth_method: OAuthTokenEndpointAuthMethodSchema.default(
+    'client_secret_post'
+  ),
+  /**
+   * Optional OAuth resource indicator (RFC 8707) sent on auth/token requests
+   * for providers that bind tokens to a specific resource, such as a remote
+   * MCP server.
+   */
+  resource: z.string().nullable().optional(),
+});
+export type OAuthManifestConfig = z.infer<typeof OAuthManifestConfigSchema>;
+
 export const ConnectorManifestSchema = z.object({
   name: z.string(),
   display_name: z.string(),
@@ -123,6 +173,7 @@ export const ConnectorManifestSchema = z.object({
   mcp_enabled: z.boolean().default(false),
   resources: z.array(McpResourceDefinitionSchema).default([]),
   prompts: z.array(McpPromptDefinitionSchema).default([]),
+  oauth: OAuthManifestConfigSchema.nullable().optional(),
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;
 

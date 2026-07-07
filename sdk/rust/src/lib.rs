@@ -11,8 +11,9 @@ pub use context::SyncContext;
 pub use mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
 pub use models::{
     ActionActor, ActionContext, ActionRequest, ActionResponse, CancelRequest, CancelResponse,
-    McpCredentials, OAuthManifestConfig, OAuthScopeSet, PromptRequest, ResourceRequest,
-    SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
+    McpCredentials, OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod,
+    PromptRequest, ResourceRequest, SkillRequest, SkillResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
 pub use server::{create_router, serve, serve_with_config, serve_with_extra_routes, ServerConfig};
 

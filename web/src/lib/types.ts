@@ -70,6 +70,10 @@ export interface JiraSourceConfig {
     project_filters?: string[]
 }
 
+export interface ClickUpSourceConfig {
+    space_filters?: string[]
+}
+
 export interface GoogleDriveSourceConfig {
     // Future: shared_drive_filters, mime_type_filters, folder_path_filters, etc.
 }

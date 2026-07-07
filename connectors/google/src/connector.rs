@@ -15,8 +15,9 @@ use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, AuthType, Connector, ConnectorSkillDefinition,
-    OAuthManifestConfig, OAuthScopeSet, SearchOperator, ServiceCredential, ServiceProvider, Source,
-    SourceType, SyncContext, SyncRequestValidationError, SyncType,
+    OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod, SearchOperator,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
+    SyncRequestValidationError, SyncType,
 };
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -983,6 +984,9 @@ impl Connector for GoogleConnector {
             extra_auth_params,
             scope_separator: " ".to_string(),
             enrich_endpoint: None,
+            registration_endpoint: None,
+            token_endpoint_auth_method: OAuthTokenEndpointAuthMethod::ClientSecretPost,
+            resource: None,
         })
     }
 

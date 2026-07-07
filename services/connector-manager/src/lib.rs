@@ -56,6 +56,11 @@ pub fn create_app(state: AppState) -> Router {
         .route("/resources", get(handlers::list_resources))
         .route("/prompt", post(handlers::get_prompt))
         .route("/prompts", get(handlers::list_prompts))
+        .route("/mcp/bootstrap", post(handlers::bootstrap_mcp))
+        .route(
+            "/oauth/credential-ready",
+            post(handlers::oauth_credential_ready),
+        )
         .route("/skill", post(handlers::get_skill))
         .route("/skills", get(handlers::list_skills))
         // SDK endpoints - called by connectors

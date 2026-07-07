@@ -39,6 +39,16 @@ export class OAuthStateManager {
         return { stateToken, nonce }
     }
 
+    static async getState(stateToken: string): Promise<OAuthState | null> {
+        const redis = await getRedisClient()
+        const data = await redis.get(`${STATE_PREFIX}:${stateToken}`)
+        if (!data) {
+            return null
+        }
+
+        return JSON.parse(data) as OAuthState
+    }
+
     static async validateAndConsumeState(stateToken: string): Promise<OAuthState | null> {
         const redis = await getRedisClient()
         const key = `${STATE_PREFIX}:${stateToken}`

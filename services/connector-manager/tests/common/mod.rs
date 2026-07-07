@@ -70,6 +70,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
         extra_schema: None,
         attributes_schema: None,
         mcp_enabled: false,
+        mcp_catalog_loaded: false,
         prompts: vec![],
         skills: vec![],
         resources: vec![],
