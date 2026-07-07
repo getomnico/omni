@@ -119,6 +119,10 @@ pub struct OAuthCredentialReadyRequest {
     pub user_id: Option<String>,
     pub provider: String,
     pub flow: String,
+    /// Resolved credential payload forwarded to the connector. Web callers omit
+    /// this; connector-manager fills it after resolving stored credentials.
+    #[serde(default)]
+    pub credentials: JsonValue,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

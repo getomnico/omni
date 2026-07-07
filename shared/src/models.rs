@@ -836,6 +836,9 @@ pub struct ConnectorManifest {
     pub attributes_schema: Option<JsonValue>,
     #[serde(default)]
     pub mcp_enabled: bool,
+    /// True when the connector has MCP tools/resources/prompts available from
+    /// live discovery or a fresh catalog cache. Connector-manager uses this to
+    /// recover missing authenticated MCP catalogs after connector restart.
     #[serde(default)]
     pub mcp_catalog_loaded: bool,
     #[serde(default)]

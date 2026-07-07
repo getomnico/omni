@@ -227,7 +227,14 @@ class ConnectorManifest(BaseModel):
     extra_schema: dict | None = None
     attributes_schema: dict | None = None
     mcp_enabled: bool = False
-    mcp_catalog_loaded: bool = False
+    mcp_catalog_loaded: bool = Field(
+        default=False,
+        description=(
+            "True when the connector has an MCP catalog available in memory, "
+            "usually from live discovery or a fresh disk cache. Connector-manager "
+            "uses this to recover missing authenticated MCP catalogs."
+        ),
+    )
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
     skills: list[ConnectorSkillDefinition] = Field(default_factory=list)
@@ -235,11 +242,24 @@ class ConnectorManifest(BaseModel):
 
 
 class OAuthCredentialReadyRequest(BaseModel):
-    source_id: str
-    user_id: str | None = None
-    provider: str
-    flow: str
-    credentials: dict[str, Any] = Field(default_factory=dict)
+    """Notification sent to a connector after OAuth credentials are stored.
+
+    Connector-manager resolves credentials from its store and includes them here
+    so connectors can run provider-specific post-OAuth setup, such as
+    authenticated MCP catalog discovery.
+    """
+
+    source_id: str = Field(description="Source whose OAuth credential became available.")
+    user_id: str | None = Field(
+        default=None,
+        description="User that owns the OAuth credential, or None for org-source credentials.",
+    )
+    provider: str = Field(description="Service provider identifier for the OAuth credential.")
+    flow: str = Field(description="OAuth flow that stored the credential, such as user_read.")
+    credentials: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Resolved credential payload forwarded by connector-manager.",
+    )
 
 
 class SkillRequest(BaseModel):

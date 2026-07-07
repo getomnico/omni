@@ -55,8 +55,10 @@ class McpAdapter:
     - Streamable HTTP: connects to a remote MCP endpoint per the MCP spec.
 
     Each operation opens a fresh session and tears it down afterwards.
-    Tool/resource/prompt definitions are cached after the first successful
-    discovery so that manifest builds don't require live auth.
+    Tool/resource/prompt definitions are cached in memory after the first
+    successful discovery so manifest builds don't require live auth. The base
+    Connector may also persist that in-memory catalog to disk under
+    CATALOG_CACHE_DIR and reload it on connector startup, subject to TTL.
     """
 
     def __init__(self, server: McpServer) -> None:

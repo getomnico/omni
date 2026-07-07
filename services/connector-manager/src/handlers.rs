@@ -1074,6 +1074,7 @@ pub async fn oauth_credential_ready(
         user_id: request.user_id.clone(),
         provider: request.provider.clone(),
         flow: request.flow.clone(),
+        credentials,
     };
 
     let client = ConnectorClient::new();
@@ -1539,18 +1540,56 @@ pub async fn sdk_register(
                     "Recovery: found OAuth credential for {} / {} to refresh missing MCP catalog",
                     source_id, provider
                 );
-                // Fire and forget: replay the notification best-effort.
-                let recovery_request = OAuthCredentialReadyRequest {
-                    source_id,
-                    user_id: Some(user_id),
-                    provider: provider.clone(),
-                    flow: "user_write".to_string(),
-                };
-                if let Err(e) = client
-                    .oauth_credential_ready(&manifest.connector_url, &recovery_request)
-                    .await
-                {
-                    warn!("Recovery credential-ready delivery failed: {}", e);
+                match resolve_credentials(&repo, &source_id, Some(&user_id), false).await {
+                    Ok(CredentialResolution::Resolved(recovery_creds)) => {
+                        match serde_json::to_value(McpCredentials::from_service_credential(
+                            &recovery_creds,
+                        )) {
+                            Ok(credentials) => {
+                                // Fire and forget: replay the notification best-effort.
+                                let recovery_request = OAuthCredentialReadyRequest {
+                                    source_id,
+                                    user_id: Some(user_id),
+                                    provider: provider.clone(),
+                                    flow: "user_read".to_string(),
+                                    credentials,
+                                };
+                                if let Err(e) = client
+                                    .oauth_credential_ready(
+                                        &manifest.connector_url,
+                                        &recovery_request,
+                                    )
+                                    .await
+                                {
+                                    warn!("Recovery credential-ready delivery failed: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Recovery credential-ready skipped for {}: failed to serialize credentials: {}",
+                                    source_id, e
+                                );
+                            }
+                        }
+                    }
+                    Ok(CredentialResolution::NeedsUserAuth { provider }) => {
+                        warn!(
+                            "Recovery credential-ready skipped for {}: user auth still required for provider {:?}",
+                            source_id, provider
+                        );
+                    }
+                    Ok(CredentialResolution::NoCredentials) => {
+                        warn!(
+                            "Recovery credential-ready skipped for {}: no credentials found",
+                            source_id
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Recovery credential-ready skipped for {}: credential resolution failed: {}",
+                            source_id, e
+                        );
+                    }
                 }
             }
         }
