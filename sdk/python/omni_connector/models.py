@@ -335,14 +335,6 @@ class ActionRequest(BaseModel):
     credentials: dict[str, Any]
 
 
-class BootstrapMcpRequest(BaseModel):
-    """Carries resolved credentials from the connector-manager to the connector
-    so the connector can perform authenticated MCP catalog discovery after an
-    OAuth credential has been stored for a source."""
-
-    credentials: dict[str, Any] = Field(default_factory=dict)
-
-
 class ActionResponse(BaseModel):
     status: str
     result: dict[str, Any] | None = None

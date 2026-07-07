@@ -106,13 +106,6 @@ pub struct ExecuteActionRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BootstrapMcpRequest {
-    pub source_id: String,
-    #[serde(default)]
-    pub user_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthCredentialReadyRequest {
     pub source_id: String,
     #[serde(default)]
