@@ -2736,12 +2736,12 @@
             <div class="bg-background sticky bottom-0 flex flex-col items-center pb-4">
                 {#if isAwayFromBottom}
                     <div
-                        class="pointer-events-none absolute inset-x-0 -top-12 z-20 mx-auto flex w-full max-w-4xl justify-end px-4">
+                        class="pointer-events-none absolute inset-x-0 -top-12 z-20 mx-auto flex w-full max-w-4xl justify-center px-4">
                         <Button
                             type="button"
                             variant="outline"
                             size="icon"
-                            class="bg-background pointer-events-auto h-9 w-9 cursor-pointer rounded-full shadow-md"
+                            class="bg-card pointer-events-auto h-9 w-9 cursor-pointer rounded-full shadow-md"
                             aria-label="Scroll to bottom"
                             title="Scroll to bottom"
                             onclick={scrollToBottom}>
