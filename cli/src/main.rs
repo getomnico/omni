@@ -34,6 +34,10 @@ enum Command {
     Status(StatusArgs),
     /// Show Docker Compose logs.
     Logs(LogsArgs),
+    /// Pull Omni Docker Compose images.
+    Pull(PullArgs),
+    /// Create or update Omni Docker Compose services.
+    Up(UpArgs),
     /// Back up managed deployment files without upgrading.
     Backup(BackupArgs),
     /// Print CLI and deployment version information.
@@ -112,6 +116,28 @@ struct LogsArgs {
 }
 
 #[derive(Debug, Args, Clone)]
+struct PullArgs {
+    #[command(flatten)]
+    install: InstallDirArg,
+    /// Optional services to pull. Defaults to all services in the Compose project.
+    services: Vec<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+struct UpArgs {
+    #[command(flatten)]
+    install: InstallDirArg,
+    /// Optional services to create/update. Defaults to the whole Compose project.
+    services: Vec<String>,
+    /// Run in the foreground instead of detached mode.
+    #[arg(long)]
+    no_detach: bool,
+    /// Do not remove containers for services no longer in the Compose file.
+    #[arg(long)]
+    no_remove_orphans: bool,
+}
+
+#[derive(Debug, Args, Clone)]
 struct BackupArgs {
     #[command(flatten)]
     install: InstallDirArg,
@@ -169,6 +195,8 @@ async fn main() -> Result<()> {
         Command::Env(args) => commands::env::run(args).await,
         Command::Status(args) => commands::status::run(args).await,
         Command::Logs(args) => commands::logs::run(args).await,
+        Command::Pull(args) => commands::pull::run(args).await,
+        Command::Up(args) => commands::up::run(args).await,
         Command::Backup(args) => commands::backup::run(args).await,
         Command::Version(args) => commands::version::run(args).await,
         Command::Compose(args) => commands::compose_passthrough::run(args).await,

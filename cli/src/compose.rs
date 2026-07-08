@@ -1,5 +1,5 @@
 use crate::env_file::EnvFile;
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -30,24 +30,19 @@ impl Deployment {
     pub fn discover(install_dir: Option<PathBuf>) -> Result<Self> {
         let root = match install_dir {
             Some(path) => path,
-            None => find_install_dir(std::env::current_dir().context("failed to read cwd")?)?,
+            None => std::env::current_dir()?,
         };
         let env_file = root.join(".env");
         let env_example = root.join(".env.example");
+        let docker_dir = root.join("docker");
         let compose_file = root.join("docker/docker-compose.yml");
         let local_inference_compose_file = root.join("docker/docker-compose.local-inference.yml");
         let caddyfile = root.join("Caddyfile");
 
-        if !env_file.exists() {
+        if !env_file.exists() || !docker_dir.is_dir() || !compose_file.exists() {
             bail!(
-                "{} not found; run from an Omni Docker Compose install directory or pass --install-dir",
-                env_file.display()
-            );
-        }
-        if !compose_file.exists() {
-            bail!(
-                "{} not found; only Docker Compose deployments are supported",
-                compose_file.display()
+                "{} is not an Omni Docker Compose install directory. Run this command from the directory containing .env and docker/docker-compose.yml, or pass --install-dir PATH.",
+                root.display()
             );
         }
 
@@ -83,7 +78,6 @@ impl Deployment {
         args
     }
 
-    #[cfg(test)]
     pub fn compose_command_string<I, S>(&self, extra_args: I) -> String
     where
         I: IntoIterator<Item = S>,
@@ -185,18 +179,6 @@ fn command_result(program: &str, args: &[OsString], output: Output) -> CommandRe
     }
 }
 
-fn find_install_dir(start: PathBuf) -> Result<PathBuf> {
-    for dir in start.ancestors() {
-        if dir.join(".env").exists() && dir.join("docker/docker-compose.yml").exists() {
-            return Ok(dir.to_path_buf());
-        }
-    }
-    Err(anyhow!(
-        "could not find an Omni Docker Compose install directory from {}",
-        start.display()
-    ))
-}
-
 fn discover_overrides(root: &Path) -> Vec<PathBuf> {
     [
         root.join("docker/docker-compose.override.yml"),
@@ -239,18 +221,12 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn discovers_install_dir_from_child() {
+    fn rejects_non_install_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(tmp.path().join("docker")).unwrap();
-        fs::write(tmp.path().join(".env"), "OMNI_VERSION=latest\n").unwrap();
-        fs::write(
-            tmp.path().join("docker/docker-compose.yml"),
-            "services: {}\n",
-        )
-        .unwrap();
-        fs::create_dir_all(tmp.path().join("a/b")).unwrap();
-        let found = find_install_dir(tmp.path().join("a/b")).unwrap();
-        assert_eq!(found, tmp.path());
+        let error = Deployment::discover(Some(tmp.path().to_path_buf())).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("containing .env and docker/docker-compose.yml"));
     }
 
     #[test]

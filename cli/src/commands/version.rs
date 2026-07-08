@@ -42,28 +42,15 @@ pub async fn run(args: VersionArgs) -> Result<()> {
 }
 
 fn build_report(install_dir: Option<std::path::PathBuf>) -> Result<VersionReport> {
-    match Deployment::discover(install_dir.clone()) {
-        Ok(deployment) => {
-            let running_omni_image_tags = running_omni_image_tags(&deployment).unwrap_or_default();
-            Ok(VersionReport {
-                cli_version: env!("CARGO_PKG_VERSION"),
-                configured_omni_version: deployment.env.value("OMNI_VERSION"),
-                running_omni_image_tags,
-                install_dir: Some(deployment.root.display().to_string()),
-                warning: None,
-            })
-        }
-        Err(error) if install_dir.is_none() => Ok(VersionReport {
-            cli_version: env!("CARGO_PKG_VERSION"),
-            configured_omni_version: None,
-            running_omni_image_tags: Vec::new(),
-            install_dir: None,
-            warning: Some(format!(
-                "could not discover an Omni install directory: {error}"
-            )),
-        }),
-        Err(error) => Err(error),
-    }
+    let deployment = Deployment::discover(install_dir)?;
+    let running_omni_image_tags = running_omni_image_tags(&deployment).unwrap_or_default();
+    Ok(VersionReport {
+        cli_version: env!("CARGO_PKG_VERSION"),
+        configured_omni_version: deployment.env.value("OMNI_VERSION"),
+        running_omni_image_tags,
+        install_dir: Some(deployment.root.display().to_string()),
+        warning: None,
+    })
 }
 
 fn running_omni_image_tags(deployment: &Deployment) -> Result<Vec<String>> {
@@ -101,11 +88,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn version_report_without_install_dir_still_returns_cli_version() {
+    fn version_report_requires_install_dir() {
         let report = build_report(Some(std::path::PathBuf::from("/definitely/missing")));
         assert!(report.is_err());
 
-        let report = build_report(None).unwrap();
-        assert_eq!(report.cli_version, env!("CARGO_PKG_VERSION"));
+        let report = build_report(None);
+        assert!(report.is_err());
     }
 }

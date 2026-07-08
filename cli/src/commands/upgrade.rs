@@ -100,8 +100,10 @@ pub async fn run(args: UpgradeArgs) -> Result<()> {
     println!("\nUpgrade complete.");
     println!("Rollback files are in {}", backup_dir.display());
     println!(
-        "To roll back manually, restore files from that directory, set OMNI_VERSION={} in .env, then run docker compose pull && docker compose up -d.",
-        current_version
+        "To roll back manually, restore files from that directory, ensure OMNI_VERSION={} in .env, then run:\n  {}\n  {}",
+        current_version,
+        refreshed.compose_command_string(["pull"]),
+        refreshed.compose_command_string(["up", "-d", "--remove-orphans"]),
     );
 
     Ok(())
