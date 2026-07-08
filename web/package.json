@@ -85,7 +85,7 @@
         "@grpc/grpc-js": "^1.14.4",
         "protobufjs": "^7.6.3",
         "js-yaml": "^4.3.0",
-        "esbuild": "^0.28.1",
+        "esbuild": "0.25.12",
         "cookie": "0.7.2"
     }
 }
