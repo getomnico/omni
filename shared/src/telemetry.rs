@@ -1,16 +1,19 @@
 use anyhow::Result;
-use opentelemetry::{KeyValue, global, trace::TracerProvider as _};
+use opentelemetry::{global, trace::TracerProvider as _, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{
+    trace::{RandomIdGenerator, Sampler, SdkTracerProvider},
     Resource,
-    trace::{RandomIdGenerator, Sampler, TracerProvider},
 };
 use opentelemetry_semantic_conventions::{
-    SCHEMA_URL,
     resource::{SERVICE_NAME, SERVICE_VERSION},
+    SCHEMA_URL,
 };
-use std::time::Duration;
-use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
+use std::{sync::OnceLock, time::Duration};
+use tracing::warn;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+
+static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 
 pub struct TelemetryConfig {
     pub service_name: String,
@@ -38,15 +41,17 @@ impl TelemetryConfig {
 }
 
 pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
-    let resource = Resource::from_schema_url(
-        [
-            KeyValue::new(SERVICE_NAME, config.service_name.clone()),
-            KeyValue::new(SERVICE_VERSION, config.service_version.clone()),
-            KeyValue::new("deployment.environment", config.environment.clone()),
-            KeyValue::new("deployment.id", config.deployment_id.clone()),
-        ],
-        SCHEMA_URL,
-    );
+    let resource = Resource::builder_empty()
+        .with_schema_url(
+            [
+                KeyValue::new(SERVICE_NAME, config.service_name.clone()),
+                KeyValue::new(SERVICE_VERSION, config.service_version.clone()),
+                KeyValue::new("deployment.environment", config.environment.clone()),
+                KeyValue::new("deployment.id", config.deployment_id.clone()),
+            ],
+            SCHEMA_URL,
+        )
+        .build();
 
     let otlp_endpoint_for_log = config.otlp_endpoint.clone();
 
@@ -57,14 +62,14 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
             .with_timeout(Duration::from_secs(10))
             .build()?;
 
-        TracerProvider::builder()
-            .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
+        SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
             .with_resource(resource)
             .with_sampler(Sampler::AlwaysOn)
             .with_id_generator(RandomIdGenerator::default())
             .build()
     } else {
-        TracerProvider::builder()
+        SdkTracerProvider::builder()
             .with_resource(resource)
             .with_sampler(Sampler::AlwaysOn)
             .with_id_generator(RandomIdGenerator::default())
@@ -72,6 +77,7 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
     };
 
     global::set_tracer_provider(tracer_provider.clone());
+    let _ = TRACER_PROVIDER.set(tracer_provider.clone());
 
     let tracer = tracer_provider.tracer(config.service_name.clone());
     let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
@@ -109,14 +115,19 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
 
 pub async fn shutdown_telemetry() {
     tracing::info!("Shutting down telemetry");
-    global::shutdown_tracer_provider();
+    if let Some(tracer_provider) = TRACER_PROVIDER.get() {
+        if let Err(error) = tracer_provider.shutdown() {
+            warn!(%error, "Failed to shut down tracer provider");
+        }
+    }
 }
 
 pub mod middleware {
     use axum::{extract::Request, http::HeaderMap, middleware::Next, response::Response};
     use opentelemetry::{
-        Context, global,
+        global,
         trace::{SpanKind, TraceContextExt, Tracer},
+        Context,
     };
     use opentelemetry_http::{HeaderExtractor, HeaderInjector};
     use tracing::{Instrument, Span};
@@ -143,7 +154,7 @@ pub mod middleware {
             version = ?request.version(),
         );
 
-        tracing_span.set_parent(context.clone());
+        let _ = tracing_span.set_parent(context.clone());
 
         let request_id = {
             let span = context.span();
