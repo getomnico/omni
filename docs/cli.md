@@ -36,7 +36,7 @@ omni upgrade --to 0.1.7
 
 The upgrade command:
 
-1. downloads the target release's `omni-docker-compose.tar.gz`;
+1. downloads the target release's `omni-docker-compose.tar.gz` and verifies `omni-docker-compose.tar.gz.sha256` when present;
 2. backs up `.env` and managed deployment files under `.omni/backups/<timestamp>/`;
 3. updates managed files such as `docker/docker-compose.yml`, `.env.example`, and `Caddyfile`;
 4. updates `OMNI_VERSION` in `.env` to the release image tag;
@@ -65,6 +65,8 @@ Do not customize `docker/docker-compose.yml` directly. Put local changes in user
 - `docker-compose.override.yml`
 
 The CLI includes these override files in its Compose commands and never overwrites them.
+
+After a successful upgrade, the CLI records hashes for managed files in `.omni/managed-files.json`. On the first CLI-managed upgrade, if that manifest does not exist yet, the CLI compares against the currently configured release when possible and otherwise treats changed existing managed files conservatively as local edits.
 
 ## Environment variables
 

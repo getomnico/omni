@@ -13,11 +13,10 @@ pub async fn run(args: EnvArgs) -> Result<()> {
 async fn diff(args: crate::EnvDiffArgs) -> Result<()> {
     let deployment = Deployment::discover(args.install.install_dir)?;
     let release = releases::resolve_release(args.to.as_deref()).await?;
-    let asset = release.asset(DOCKER_COMPOSE_ASSET)?;
     let temp = tempfile::tempdir().context("failed to create temporary directory")?;
     let archive_path = temp.path().join(DOCKER_COMPOSE_ASSET);
     let extract_dir = temp.path().join("release");
-    releases::download_asset(asset, &archive_path).await?;
+    releases::download_asset_verified(&release, DOCKER_COMPOSE_ASSET, &archive_path).await?;
     releases::extract_docker_compose_archive(&archive_path, &extract_dir)?;
 
     let local = EnvFile::load(&deployment.env_file)?;

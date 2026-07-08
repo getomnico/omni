@@ -19,7 +19,7 @@ pub async fn run(args: UpgradeArgs) -> Result<()> {
         .unwrap_or_else(|| "latest".into());
     let release = releases::resolve_release(args.to.as_deref()).await?;
     let image_tag = image_tag_from_release_tag(&release.tag_name);
-    let asset = release.asset(DOCKER_COMPOSE_ASSET)?;
+    release.asset(DOCKER_COMPOSE_ASSET)?;
 
     println!(
         "Preparing Omni upgrade: {} -> {} (image tag {})",
@@ -33,10 +33,19 @@ pub async fn run(args: UpgradeArgs) -> Result<()> {
     if args.dry_run {
         println!("dry run: downloading release asset for diff only");
     }
-    releases::download_asset(asset, &archive_path).await?;
+    releases::download_asset_verified(&release, DOCKER_COMPOSE_ASSET, &archive_path).await?;
     releases::extract_docker_compose_archive(&archive_path, &extract_dir)?;
 
-    let file_changes = managed_files::analyze(&deployment.root, &extract_dir)?;
+    let mut file_changes = managed_files::analyze(&deployment.root, &extract_dir)?;
+    apply_first_upgrade_local_edit_detection(
+        &deployment,
+        &current_version,
+        &release.tag_name,
+        &extract_dir,
+        temp.path(),
+        &mut file_changes,
+    )
+    .await?;
     let target_env_example = extract_dir.join(".env.example");
     let env_plan = build_env_plan(&deployment.env_file, &target_env_example, &image_tag)?;
 
@@ -105,6 +114,73 @@ fn preflight() -> Result<()> {
             bail!("{} failed: {}", result.command, result.stderr.trim());
         }
     }
+    Ok(())
+}
+
+async fn apply_first_upgrade_local_edit_detection(
+    deployment: &Deployment,
+    current_version: &str,
+    target_release_tag: &str,
+    target_extract_dir: &Path,
+    temp_root: &Path,
+    file_changes: &mut [managed_files::FileChange],
+) -> Result<()> {
+    if managed_files::manifest_exists(&deployment.root) {
+        return Ok(());
+    }
+
+    if current_version == "latest" || current_version == target_release_tag {
+        println!(
+            "No previous managed-file manifest found; treating changed existing managed files as local edits."
+        );
+        managed_files::mark_changed_existing_files_as_local_edits(file_changes);
+        return Ok(());
+    }
+
+    let current_release = match releases::resolve_release(Some(current_version)).await {
+        Ok(release) => release,
+        Err(error) => {
+            eprintln!(
+                "warning: could not fetch current release {current_version} for first-upgrade local edit detection: {error}"
+            );
+            managed_files::mark_changed_existing_files_as_local_edits(file_changes);
+            return Ok(());
+        }
+    };
+
+    if current_release.tag_name == target_release_tag {
+        managed_files::mark_local_edits_against_base(
+            file_changes,
+            &deployment.root,
+            target_extract_dir,
+        )?;
+        return Ok(());
+    }
+
+    let current_archive_path = temp_root.join("current-omni-docker-compose.tar.gz");
+    let current_extract_dir = temp_root.join("current-release");
+    if let Err(error) = releases::download_asset_verified(
+        &current_release,
+        DOCKER_COMPOSE_ASSET,
+        &current_archive_path,
+    )
+    .await
+    .and_then(|_| {
+        releases::extract_docker_compose_archive(&current_archive_path, &current_extract_dir)
+    }) {
+        eprintln!(
+            "warning: could not inspect current release {} for first-upgrade local edit detection: {error}",
+            current_release.tag_name
+        );
+        managed_files::mark_changed_existing_files_as_local_edits(file_changes);
+        return Ok(());
+    }
+
+    managed_files::mark_local_edits_against_base(
+        file_changes,
+        &deployment.root,
+        &current_extract_dir,
+    )?;
     Ok(())
 }
 

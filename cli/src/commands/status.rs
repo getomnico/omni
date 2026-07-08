@@ -5,12 +5,14 @@ use anyhow::Result;
 pub async fn run(args: StatusArgs) -> Result<()> {
     let deployment = Deployment::discover(args.install.install_dir)?;
     let result = deployment.compose_output(["ps", "--format", "json"])?;
+    if !result.success {
+        anyhow::bail!("docker compose ps failed: {}", result.stderr.trim());
+    }
+
     if args.json {
         print_json_or_raw(&result.stdout)?;
-    } else if result.success {
-        deployment.compose_stream(["ps"])?;
     } else {
-        eprintln!("{}", result.stderr.trim());
+        deployment.compose_stream(["ps"])?;
     }
     Ok(())
 }

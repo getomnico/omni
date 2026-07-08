@@ -39,7 +39,10 @@ impl Deployment {
         let caddyfile = root.join("Caddyfile");
 
         if !env_file.exists() {
-            bail!("{} not found; run from an Omni Docker Compose install directory or pass --install-dir", env_file.display());
+            bail!(
+                "{} not found; run from an Omni Docker Compose install directory or pass --install-dir",
+                env_file.display()
+            );
         }
         if !compose_file.exists() {
             bail!(
@@ -302,10 +305,13 @@ mod tests {
 
         let old_path = std::env::var_os("PATH").unwrap_or_default();
         let new_path = format!("{}:{}", fake_bin.display(), old_path.to_string_lossy());
-        std::env::set_var("PATH", new_path);
+        // SAFETY: This test serializes process environment access with ENV_LOCK
+        // and restores PATH before releasing the lock.
+        unsafe { std::env::set_var("PATH", new_path) };
         let dep = Deployment::discover(Some(tmp.path().join("install"))).unwrap();
         let result = dep.compose_output(["ps"]).unwrap();
-        std::env::set_var("PATH", old_path);
+        // SAFETY: See note above.
+        unsafe { std::env::set_var("PATH", old_path) };
 
         assert!(result.success);
         let args = fs::read_to_string(args_file).unwrap();

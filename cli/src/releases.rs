@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::Path;
@@ -91,16 +92,7 @@ impl GitHubRelease {
 }
 
 pub async fn download_asset(asset: &GitHubAsset, destination: &Path) -> Result<()> {
-    let client = reqwest::Client::builder()
-        .user_agent(format!("omni-cli/{}", env!("CARGO_PKG_VERSION")))
-        .build()?;
-
-    let response = client
-        .get(&asset.browser_download_url)
-        .send()
-        .await?
-        .error_for_status()?;
-    let bytes = response.bytes().await?;
+    let bytes = download_asset_bytes(asset).await?;
 
     let total = if asset.size > 0 {
         asset.size
@@ -117,6 +109,71 @@ pub async fn download_asset(asset: &GitHubAsset, destination: &Path) -> Result<(
     pb.inc(bytes.len() as u64);
     pb.finish_with_message(asset.name.clone());
     Ok(())
+}
+
+pub async fn download_asset_verified(
+    release: &GitHubRelease,
+    asset_name: &str,
+    destination: &Path,
+) -> Result<()> {
+    let asset = release.asset(asset_name)?;
+    download_asset(asset, destination).await?;
+
+    let checksum_name = format!("{asset_name}.sha256");
+    let Some(checksum_asset) = release
+        .assets
+        .iter()
+        .find(|asset| asset.name == checksum_name)
+    else {
+        eprintln!(
+            "warning: release {} does not include {checksum_name}; downloaded asset was not checksum-verified",
+            release.tag_name
+        );
+        return Ok(());
+    };
+
+    let checksum_bytes = download_asset_bytes(checksum_asset).await?;
+    let checksum_text = String::from_utf8_lossy(&checksum_bytes);
+    let expected = parse_sha256_checksum(&checksum_text)
+        .ok_or_else(|| anyhow!("could not parse checksum asset {checksum_name}"))?;
+    verify_sha256_file(destination, &expected)
+        .with_context(|| format!("checksum verification failed for {asset_name}"))?;
+    Ok(())
+}
+
+async fn download_asset_bytes(asset: &GitHubAsset) -> Result<Vec<u8>> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("omni-cli/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    Ok(client
+        .get(&asset.browser_download_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?
+        .to_vec())
+}
+
+fn verify_sha256_file(path: &Path, expected_hex: &str) -> Result<()> {
+    let actual = sha256_hex(&fs::read(path)?);
+    if !actual.eq_ignore_ascii_case(expected_hex) {
+        bail!("expected sha256 {expected_hex}, got {actual}");
+    }
+    Ok(())
+}
+
+fn parse_sha256_checksum(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .next()
+        .filter(|hash| hash.len() == 64 && hash.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(ToString::to_string)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub fn extract_docker_compose_archive(archive_path: &Path, destination: &Path) -> Result<()> {
@@ -170,5 +227,15 @@ mod tests {
             }],
         };
         assert_eq!(release.asset(DOCKER_COMPOSE_ASSET).unwrap().size, 1);
+    }
+
+    #[test]
+    fn parses_sha256sum_output() {
+        let hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            parse_sha256_checksum(&format!("{hash}  file.tar.gz\n")).as_deref(),
+            Some(hash)
+        );
+        assert!(parse_sha256_checksum("not-a-checksum file").is_none());
     }
 }

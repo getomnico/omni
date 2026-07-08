@@ -12,7 +12,7 @@ pub const MANAGED_FILES: &[&str] = &[
     ".env.example",
 ];
 
-const MANIFEST_PATH: &str = ".omni/managed-files.json";
+pub const MANIFEST_PATH: &str = ".omni/managed-files.json";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileChange {
@@ -33,6 +33,35 @@ pub fn analyze(root: &Path, release_root: &Path) -> Result<Vec<FileChange>> {
         .iter()
         .map(|relative| analyze_one(root, release_root, relative, &manifest))
         .collect()
+}
+
+pub fn manifest_exists(root: &Path) -> bool {
+    root.join(MANIFEST_PATH).exists()
+}
+
+pub fn mark_local_edits_against_base(
+    changes: &mut [FileChange],
+    root: &Path,
+    base_root: &Path,
+) -> Result<()> {
+    for change in changes {
+        let local = root.join(&change.path);
+        let base = base_root.join(&change.path);
+        change.local_edit_detected = if local.exists() && base.exists() {
+            fs::read(&local)? != fs::read(&base)?
+        } else {
+            local.exists() != base.exists()
+        };
+    }
+    Ok(())
+}
+
+pub fn mark_changed_existing_files_as_local_edits(changes: &mut [FileChange]) {
+    for change in changes {
+        if change.exists_locally && change.changed {
+            change.local_edit_detected = true;
+        }
+    }
 }
 
 fn analyze_one(
@@ -193,6 +222,28 @@ mod tests {
             fs::read_to_string(tmp.path().join("docker/docker-compose.yml")).unwrap(),
             "new"
         );
-        assert!(tmp.path().join(MANIFEST_PATH).exists());
+        assert!(manifest_exists(tmp.path()));
+    }
+
+    #[test]
+    fn detects_first_upgrade_local_edits_against_base_release() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().unwrap();
+        for dir in [tmp.path(), target.path(), base.path()] {
+            fs::create_dir_all(dir.join("docker")).unwrap();
+        }
+        fs::write(base.path().join("docker/docker-compose.yml"), "old").unwrap();
+        fs::write(
+            tmp.path().join("docker/docker-compose.yml"),
+            "locally edited",
+        )
+        .unwrap();
+        fs::write(target.path().join("docker/docker-compose.yml"), "new").unwrap();
+
+        let mut changes = analyze(tmp.path(), target.path()).unwrap();
+        assert!(!changes[0].local_edit_detected);
+        mark_local_edits_against_base(&mut changes, tmp.path(), base.path()).unwrap();
+        assert!(changes[0].local_edit_detected);
     }
 }

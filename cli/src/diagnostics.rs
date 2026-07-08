@@ -193,7 +193,7 @@ fn check_image_tags(deployment: &Deployment) -> Vec<Check> {
                 .lines()
                 .filter(|image| {
                     image.contains("ghcr.io/getomnico/omni/")
-                        && !image.ends_with(&format!(":{expected}"))
+                        && !managed_image_tag_matches(image, &expected)
                 })
                 .collect();
             if mismatches.is_empty() {
@@ -226,8 +226,10 @@ fn check_internal_health(deployment: &Deployment, verbose: bool) -> Vec<Check> {
     let services = [
         ("searcher", "SEARCHER_PORT"),
         ("indexer", "INDEXER_PORT"),
+        ("ai", "AI_SERVICE_PORT"),
         ("connector-manager", "CONNECTOR_MANAGER_PORT"),
         ("sandbox", "SANDBOX_PORT"),
+        ("docling", "DOCLING_PORT"),
     ];
 
     services
@@ -430,6 +432,16 @@ fn command_check(prefix: &str, result: CommandResult) -> Check {
     }
 }
 
+fn managed_image_tag_matches(image: &str, expected: &str) -> bool {
+    let Some((_, tag)) = image.rsplit_once(':') else {
+        return false;
+    };
+    tag == expected
+        || tag
+            .strip_prefix(expected)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+}
+
 fn text_field(value: &Value, names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| {
         value
@@ -482,5 +494,21 @@ mod tests {
     fn parses_line_compose_ps() {
         let checks = parse_compose_ps("{\"Service\":\"web\",\"State\":\"exited\"}\n");
         assert_eq!(checks[0].status, CheckStatus::Warning);
+    }
+
+    #[test]
+    fn image_tag_match_allows_device_suffixes() {
+        assert!(managed_image_tag_matches(
+            "ghcr.io/getomnico/omni/omni-docling:1.2.3-cuda",
+            "1.2.3"
+        ));
+        assert!(managed_image_tag_matches(
+            "ghcr.io/getomnico/omni/omni-web:1.2.3",
+            "1.2.3"
+        ));
+        assert!(!managed_image_tag_matches(
+            "ghcr.io/getomnico/omni/omni-web:1.2.4",
+            "1.2.3"
+        ));
     }
 }

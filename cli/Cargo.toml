@@ -21,6 +21,7 @@ serde_json.workspace = true
 dotenvy.workspace = true
 tracing.workspace = true
 chrono.workspace = true
+sha2 = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 flate2 = "1.0"
 tar = "0.4"
