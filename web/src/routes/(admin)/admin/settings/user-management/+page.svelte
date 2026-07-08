@@ -201,31 +201,46 @@
                                         <Tooltip.Provider delayDuration={300}>
                                             <Tooltip.Root>
                                                 <Tooltip.Trigger>
-                                                    <form
-                                                        method="POST"
-                                                        action="?/resetPassword"
-                                                        use:enhance={() => {
-                                                            isSubmitting = true
-                                                            return async ({ update }) => {
-                                                                await update()
-                                                            }
-                                                        }}>
-                                                        <input
-                                                            type="hidden"
-                                                            name="userId"
-                                                            value={user.id} />
+                                                    {#if user.id === data.user.id}
                                                         <Button
-                                                            type="submit"
+                                                            type="button"
                                                             variant="ghost"
                                                             size="icon"
                                                             class="h-8 w-8 cursor-pointer"
-                                                            disabled={isSubmitting}>
+                                                            disabled>
                                                             <Key class="h-4 w-4" />
                                                         </Button>
-                                                    </form>
+                                                    {:else}
+                                                        <form
+                                                            method="POST"
+                                                            action="?/resetPassword"
+                                                            use:enhance={() => {
+                                                                isSubmitting = true
+                                                                return async ({ update }) => {
+                                                                    await update()
+                                                                }
+                                                            }}>
+                                                            <input
+                                                                type="hidden"
+                                                                name="userId"
+                                                                value={user.id} />
+                                                            <Button
+                                                                type="submit"
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                class="h-8 w-8 cursor-pointer"
+                                                                disabled={isSubmitting}>
+                                                                <Key class="h-4 w-4" />
+                                                            </Button>
+                                                        </form>
+                                                    {/if}
                                                 </Tooltip.Trigger>
                                                 <Tooltip.Content>
-                                                    <p>Reset password</p>
+                                                    <p>
+                                                        {user.id === data.user.id
+                                                            ? 'Use Change Password from your profile for your own account'
+                                                            : 'Reset password'}
+                                                    </p>
                                                 </Tooltip.Content>
                                             </Tooltip.Root>
                                         </Tooltip.Provider>

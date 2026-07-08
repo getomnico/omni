@@ -61,7 +61,9 @@ export const actions: Actions = {
             const validPassword = await verifyPassword(dbUser.passwordHash, currentPassword)
             if (!validPassword) {
                 return fail(400, {
-                    error: 'Current password is incorrect',
+                    error: user.mustChangePassword
+                        ? 'Temporary password is incorrect'
+                        : 'Current password is incorrect',
                     field: 'currentPassword',
                 })
             }

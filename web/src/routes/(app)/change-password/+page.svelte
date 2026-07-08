@@ -83,7 +83,9 @@
                 }}>
                 <div class="space-y-4">
                     <div class="space-y-2">
-                        <Label for="currentPassword">Current Password</Label>
+                        <Label for="currentPassword">
+                            {data.mustChangePassword ? 'Temporary Password' : 'Current Password'}
+                        </Label>
                         <Input
                             id="currentPassword"
                             name="currentPassword"
