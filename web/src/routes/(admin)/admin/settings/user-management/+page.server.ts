@@ -107,6 +107,13 @@ export const actions: Actions = {
             return fail(400, { error: 'User ID is required', field: 'general' })
         }
 
+        if (userId === currentUser.id) {
+            return fail(400, {
+                error: 'Use Change Password from your profile to update your own password',
+                field: 'general',
+            })
+        }
+
         try {
             const targetUser = await userRepository.findById(userId)
             if (!targetUser) {
