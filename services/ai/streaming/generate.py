@@ -351,21 +351,115 @@ async def stream_generator(
         # ----- Pending approval / OAuth resume ---------------------------------
         if pending or pending_oauth:
             if pending_oauth:
-                intervention = pending_oauth[0]
                 logger.info(f"Resuming from pending oauth for chat {chat_id}")
-                ev = oauth_event(
-                    intervention.tool_call_id,
-                    intervention.tool_name,
-                    intervention.source_id,
-                    intervention.source_type,
-                    intervention.provider,
-                    intervention.oauth_start_url,
+                oauth_by_tool_call_id = {
+                    approval.tool_call_id: approval
+                    for approval in pending_oauth
+                    if approval.tool_call_id is not None
+                }
+                answered_ids = (
+                    tool_result_ids(conversation_messages[-1])
+                    if conversation_messages
+                    else set()
                 )
-                yield f"event: oauth_required\ndata: {json.dumps(ev)}\n\n"
-                yield end_of_stream(
-                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                tool_calls_to_resume: list[ToolUseBlockParam] = []
+                for message in reversed(conversation_messages):
+                    tool_uses = tool_use_blocks(message)
+                    if not tool_uses:
+                        answered_ids.update(tool_result_ids(message))
+                        continue
+                    tool_calls_to_resume = [
+                        tool_use
+                        for tool_use in tool_uses
+                        if tool_use["id"] not in answered_ids
+                    ]
+                    break
+
+                context = ToolContext(
+                    chat_id=chat_id,
+                    user_id=tool_user_id,
+                    user_email=user_email,
+                    user_configuration=user_configuration,
+                    skip_permission_check=tool_skip_perm,
                 )
-                return
+                tool_results: list[ToolResultBlockParam] = []
+                completed_oauth_ids: list[str] = []
+                for tool_call in tool_calls_to_resume:
+                    result = await registry.execute(
+                        tool_call["name"], tool_call["input"], context
+                    )
+                    if result.oauth_required is not None:
+                        payload = result.oauth_required
+                        if tool_results:
+                            tool_result_message = MessageParam(
+                                role="user", content=tool_results
+                            )
+                            conversation_messages.append(tool_result_message)
+                            for tool_result in tool_results:
+                                yield (
+                                    f"event: message\ndata: "
+                                    f"{json.dumps(tool_result)}\n\n"
+                                )
+                            yield (
+                                f"event: save_message\ndata: "
+                                f"{json.dumps(tool_result_message)}\n\n"
+                            )
+                        for aid in completed_oauth_ids:
+                            await approvals_repo.update_status(
+                                aid, ToolApprovalStatus.COMPLETED, chat_user_id
+                            )
+                        yield (
+                            f"event: oauth_required\ndata: "
+                            f"{json.dumps(oauth_event(tool_call['id'], tool_call['name'], payload.source_id, payload.source_type, payload.provider, payload.oauth_start_url))}\n\n"
+                        )
+                        yield end_of_stream(
+                            EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                        )
+                        return
+
+                    tool_results.append(
+                        ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=tool_call["id"],
+                            content=result.content,
+                            is_error=result.is_error,
+                        )
+                    )
+                    approval = oauth_by_tool_call_id.get(tool_call["id"])
+                    if approval:
+                        completed_oauth_ids.append(approval.id)
+
+                if tool_results:
+                    tool_result_message = MessageParam(
+                        role="user", content=tool_results
+                    )
+                    conversation_messages.append(tool_result_message)
+                    for tool_result in tool_results:
+                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
+                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
+
+                for aid in completed_oauth_ids:
+                    await approvals_repo.update_status(
+                        aid, ToolApprovalStatus.COMPLETED, chat_user_id
+                    )
+
+                if tool_results:
+                    pending_oauth = []
+                else:
+                    intervention = pending_oauth[0]
+                    ev = oauth_event(
+                        intervention.tool_call_id,
+                        intervention.tool_name,
+                        intervention.source_id,
+                        intervention.source_type,
+                        intervention.provider,
+                        intervention.oauth_start_url,
+                    )
+                    yield f"event: oauth_required\ndata: {json.dumps(ev)}\n\n"
+                    yield end_of_stream(
+                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                    )
+                    return
 
             logger.info(f"Resuming from pending approval batch for chat {chat_id}")
             if any(
@@ -453,6 +547,11 @@ async def stream_generator(
                                 role="user", content=tool_results
                             )
                             conversation_messages.append(tool_result_message)
+                            for tool_result in tool_results:
+                                yield (
+                                    f"event: message\ndata: "
+                                    f"{json.dumps(tool_result)}\n\n"
+                                )
                             yield (
                                 f"event: save_message\ndata: "
                                 f"{json.dumps(tool_result_message)}\n\n"

@@ -113,6 +113,7 @@
             editingMessageId = null
             uploadFilenames = { ...data.uploadFilenames }
             pendingApproval = pendingApprovalFromData()
+            oauthEventByToolCallId = {}
         }
     })
 
@@ -450,6 +451,21 @@
     // source display name; the persisted envelope on its own can render the
     // card in degraded mode (provider treated as "configured" optimistically).
     let oauthEventByToolCallId = $state<Record<string, OAuthRequiredEvent>>({})
+
+    function oauthRequiredFromEvent(event: OAuthRequiredEvent): OAuthRequired {
+        return {
+            sourceId: event.source_id,
+            sourceType: event.source_type,
+            sourceDisplayName:
+                event.source_display_name ??
+                getSourceDisplayName(event.source_type as SourceType) ??
+                event.source_type,
+            provider: event.provider,
+            providerConfigured: event.provider_configured ?? true,
+            oauthStartUrl: event.oauth_start_url,
+            status: 'pending',
+        }
+    }
     let editingMessageId = $state<string | null>(null)
     let editingContent = $state('')
     // Tracks user's branch choices: parentId -> chosen childId
@@ -936,7 +952,11 @@
             text: string
             isError: boolean
         }) => {
-            updateToolBlock(actionResult.toolUseId, (block) => ({ ...block, actionResult }))
+            updateToolBlock(actionResult.toolUseId, (block) => ({
+                ...block,
+                actionResult,
+                oauthRequired: undefined,
+            }))
         }
 
         const updateOAuthRequired = (toolUseId: string, oauthRequired: OAuthRequired) => {
@@ -1066,7 +1086,10 @@
                                 },
                             }
 
-                            if (
+                            const liveOAuth = oauthEventByToolCallId[block.id]
+                            if (liveOAuth) {
+                                toolMsgContent.oauthRequired = oauthRequiredFromEvent(liveOAuth)
+                            } else if (
                                 data.pendingOAuth &&
                                 data.pendingOAuth.toolCallId === block.id &&
                                 data.pendingOAuth.sourceId &&
@@ -1123,23 +1146,27 @@
                                     envelope.omni_kind === OmniToolResultKind.OauthRequired
                                 ) {
                                     const live = oauthEventByToolCallId[toolUseId]
-                                    updateOAuthRequired(toolUseId, {
-                                        sourceId: envelope.payload.source_id,
-                                        sourceType: envelope.payload.source_type,
-                                        sourceDisplayName:
-                                            live?.source_display_name ??
-                                            getSourceDisplayName(
-                                                envelope.payload.source_type as SourceType,
-                                            ) ??
-                                            envelope.payload.source_type,
-                                        provider: envelope.payload.provider,
-                                        // Optimistic default on refresh; corrected by
-                                        // the live SSE event when present, and the
-                                        // card itself can re-check via /api/oauth/provider-status.
-                                        providerConfigured: live?.provider_configured ?? true,
-                                        oauthStartUrl: envelope.payload.oauth_start_url,
-                                        status: 'pending',
-                                    })
+                                    updateOAuthRequired(
+                                        toolUseId,
+                                        live
+                                            ? oauthRequiredFromEvent(live)
+                                            : {
+                                                  sourceId: envelope.payload.source_id,
+                                                  sourceType: envelope.payload.source_type,
+                                                  sourceDisplayName:
+                                                      getSourceDisplayName(
+                                                          envelope.payload
+                                                              .source_type as SourceType,
+                                                      ) ?? envelope.payload.source_type,
+                                                  provider: envelope.payload.provider,
+                                                  // Optimistic default on refresh; corrected by
+                                                  // the live SSE event when present, and the
+                                                  // card itself can re-check via /api/oauth/provider-status.
+                                                  providerConfigured: true,
+                                                  oauthStartUrl: envelope.payload.oauth_start_url,
+                                                  status: 'pending',
+                                              },
+                                    )
                                     promptHandled = true
                                 } else if (
                                     envelope &&
@@ -1692,7 +1719,10 @@
                 pauseEventReceived = true
                 try {
                     const oauthData: OAuthRequiredEvent = JSON.parse(event.data)
-                    oauthEventByToolCallId[oauthData.tool_call_id] = oauthData
+                    oauthEventByToolCallId = {
+                        ...oauthEventByToolCallId,
+                        [oauthData.tool_call_id]: oauthData,
+                    }
                     isStreaming = false
                     stopInProgress = false
                     activeStreamingMessageId = null

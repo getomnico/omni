@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::admin::AdminClient;
 use crate::auth::{
@@ -23,11 +23,14 @@ use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use std::collections::HashMap;
 use tokio::process::Command;
+use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tracing::debug;
 
 const GWS_COMMAND: &str = "gws";
 const GWS_TIMEOUT: Duration = Duration::from_secs(60);
+const GWS_SCHEMA_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
+const GWS_SCHEMA_CACHE_MAX_ENTRIES: usize = 256;
 const GOOGLE_WORKSPACE_CLI_TOKEN: &str = "GOOGLE_WORKSPACE_CLI_TOKEN";
 const GOOGLE_DRIVE_READ_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const GOOGLE_DRIVE_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
@@ -52,9 +55,21 @@ const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
 
 #[derive(Debug, Deserialize)]
 struct GwsSchemaRequest {
+    #[serde(alias = "method")]
     schema: String,
     #[serde(default)]
     resolve_refs: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct GwsSchemaCacheKey {
+    schema: String,
+    resolve_refs: bool,
+}
+
+struct GwsSchemaCacheEntry {
+    result: JsonValue,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Deserialize)]
@@ -181,6 +196,7 @@ fn find_attachment_part_by_name<'a>(
 pub struct GoogleConnector {
     pub sync_manager: Arc<SyncManager>,
     pub admin_client: Arc<AdminClient>,
+    schema_cache: Arc<RwLock<HashMap<GwsSchemaCacheKey, GwsSchemaCacheEntry>>>,
 }
 
 fn validate_gws_token(value: &str, label: &str) -> Result<()> {
@@ -365,6 +381,7 @@ impl GoogleConnector {
         Self {
             sync_manager,
             admin_client,
+            schema_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -409,19 +426,17 @@ impl GoogleConnector {
         auth.get_fresh_token(principal_email).await
     }
 
-    async fn execute_gws_args(
-        &self,
+    async fn execute_gws_action(
         args: Vec<String>,
-        creds: &ServiceCredential,
-    ) -> Result<Response> {
-        let token = self.gws_token(creds).await?;
+        token: Option<String>,
+    ) -> Result<ActionResponse> {
         debug!("Executing gws with args: {:?}", args);
 
         let mut command = Command::new(GWS_COMMAND);
-        command
-            .args(&args)
-            .env(GOOGLE_WORKSPACE_CLI_TOKEN, token)
-            .kill_on_drop(true);
+        command.args(&args).kill_on_drop(true);
+        if let Some(token) = token {
+            command.env(GOOGLE_WORKSPACE_CLI_TOKEN, token);
+        }
 
         let output = timeout(GWS_TIMEOUT, command.output())
             .await
@@ -440,19 +455,80 @@ impl GoogleConnector {
             output.status.code(),
             &stdout,
             &stderr,
-        )
-        .into_response())
+        ))
     }
 
-    async fn execute_gws_schema(
+    async fn execute_gws_command(
         &self,
-        params: JsonValue,
+        args: Vec<String>,
+        token: Option<String>,
+    ) -> Result<Response> {
+        Ok(Self::execute_gws_action(args, token).await?.into_response())
+    }
+
+    async fn execute_gws_args(
+        &self,
+        args: Vec<String>,
         creds: &ServiceCredential,
     ) -> Result<Response> {
+        let token = self.gws_token(creds).await?;
+        self.execute_gws_command(args, Some(token)).await
+    }
+
+    async fn execute_gws_schema(&self, params: JsonValue) -> Result<Response> {
         let request: GwsSchemaRequest =
             serde_json::from_value(params).context("Invalid google_workspace_schema params")?;
+        let key = GwsSchemaCacheKey {
+            schema: request.schema.clone(),
+            resolve_refs: request.resolve_refs,
+        };
+        let now = Instant::now();
+
+        if let Some(result) = {
+            let cache = self.schema_cache.read().await;
+            cache
+                .get(&key)
+                .filter(|entry| entry.expires_at > now)
+                .map(|entry| entry.result.clone())
+        } {
+            debug!("Using cached gws schema for {}", key.schema);
+            return Ok(ActionResponse::success(result).into_response());
+        }
+
         let args = build_gws_schema_args(&request)?;
-        self.execute_gws_args(args, creds).await
+        let mut cache = self.schema_cache.write().await;
+        cache.retain(|_, entry| entry.expires_at > now);
+        if let Some(result) = cache
+            .get(&key)
+            .filter(|entry| entry.expires_at > now)
+            .map(|entry| entry.result.clone())
+        {
+            debug!("Using cached gws schema for {}", key.schema);
+            return Ok(ActionResponse::success(result).into_response());
+        }
+
+        let response = Self::execute_gws_action(args, None).await?;
+        if response.status == "success" {
+            if let Some(result) = response.result.clone() {
+                if cache.len() >= GWS_SCHEMA_CACHE_MAX_ENTRIES {
+                    if let Some(oldest_key) = cache
+                        .iter()
+                        .min_by_key(|(_, entry)| entry.expires_at)
+                        .map(|(key, _)| key.clone())
+                    {
+                        cache.remove(&oldest_key);
+                    }
+                }
+                cache.insert(
+                    key,
+                    GwsSchemaCacheEntry {
+                        result,
+                        expires_at: now + GWS_SCHEMA_CACHE_TTL,
+                    },
+                );
+            }
+        }
+        Ok(response.into_response())
     }
 
     async fn execute_gws_call(
@@ -1078,7 +1154,7 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
-            "google_workspace_schema" => self.execute_gws_schema(params, &creds).await,
+            "google_workspace_schema" => self.execute_gws_schema(params).await,
             "google_workspace_call" => self.execute_gws_call(params, &creds).await,
             _ => {
                 use axum::http::StatusCode;
@@ -1223,6 +1299,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(args, ["schema", "drive.files.list"]);
+    }
+
+    #[test]
+    fn gws_schema_request_accepts_method_alias() {
+        let request: GwsSchemaRequest =
+            serde_json::from_value(json!({"method": "sheets.spreadsheets.create"})).unwrap();
+
+        assert_eq!(request.schema, "sheets.spreadsheets.create");
+        assert!(!request.resolve_refs);
     }
 
     #[test]

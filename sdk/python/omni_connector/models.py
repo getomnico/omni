@@ -271,13 +271,19 @@ class OAuthCredentialReadyRequest(BaseModel):
     authenticated MCP catalog discovery.
     """
 
-    source_id: str = Field(description="Source whose OAuth credential became available.")
+    source_id: str = Field(
+        description="Source whose OAuth credential became available."
+    )
     user_id: str | None = Field(
         default=None,
         description="User that owns the OAuth credential, or None for org-source credentials.",
     )
-    provider: str = Field(description="Service provider identifier for the OAuth credential.")
-    flow: str = Field(description="OAuth flow that stored the credential, such as user_read.")
+    provider: str = Field(
+        description="Service provider identifier for the OAuth credential."
+    )
+    flow: str = Field(
+        description="OAuth flow that stored the credential, such as user_read."
+    )
     credentials: dict[str, Any] = Field(
         default_factory=dict,
         description="Resolved credential payload forwarded by connector-manager.",
