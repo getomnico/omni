@@ -18,34 +18,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
 
-from unittest.mock import AsyncMock
-
+import db.connection
+import routers.chat as chat_module
 from db import ChatsRepository, MessagesRepository, UsersRepository
 from db.tool_approvals import (
+    ToolApprovalsRepository,
     ToolApprovalStatus,
     ToolApprovalType,
-    ToolApprovalsRepository,
 )
-import db.connection
 from routers import chat_router
 from state import AppState
-from tools import SearchResponse, SearchResult
-from tools.searcher_client import Document
-from tools.searcher_tool import SearcherTool
 from tests.helpers import (
     GatedRecordingLLM,
     assert_sse_wire,
     collect_sse_events,
     stream_sse,
 )
-
-import routers.chat as chat_module
+from tools import SearchResponse, SearchResult, ToolRegistry, ToolResult
+from tools.omni_tool_result import OAuthRequiredPayload
+from tools.searcher_client import Document
+from tools.searcher_tool import SearcherTool
 
 pytestmark = pytest.mark.integration
 
@@ -183,6 +182,96 @@ async def redis_keys(redis_client) -> None:
 
 def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+class ScriptedActionHandler:
+    def __init__(
+        self,
+        *,
+        requires_approval: bool,
+        results: list[ToolResult],
+        tool_name: str = "gmail__send_email",
+    ) -> None:
+        self.tool_name = tool_name
+        self._requires_approval = requires_approval
+        self._results = results
+        self.executions: list[dict] = []
+
+    def get_tools(self):
+        return [
+            {
+                "name": self.tool_name,
+                "description": "Test connector action",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
+
+    def can_handle(self, tool_name: str) -> bool:
+        return tool_name == self.tool_name
+
+    def requires_approval(self, tool_name: str) -> bool:
+        return self._requires_approval and self.can_handle(tool_name)
+
+    async def execute(self, tool_name: str, tool_input: dict, _context) -> ToolResult:
+        self.executions.append(tool_input)
+        result_index = min(len(self.executions) - 1, len(self._results) - 1)
+        return self._results[result_index]
+
+
+class MultiActionHandler:
+    def __init__(self, tool_names: set[str], approval_tool_names: set[str]) -> None:
+        self.tool_names = tool_names
+        self.approval_tool_names = approval_tool_names
+        self.executions: list[str] = []
+
+    def get_tools(self):
+        return [
+            {
+                "name": tool_name,
+                "description": "Test connector action",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+            for tool_name in sorted(self.tool_names)
+        ]
+
+    def can_handle(self, tool_name: str) -> bool:
+        return tool_name in self.tool_names
+
+    def requires_approval(self, tool_name: str) -> bool:
+        return tool_name in self.approval_tool_names
+
+    async def execute(self, tool_name: str, _tool_input: dict, _context) -> ToolResult:
+        self.executions.append(tool_name)
+        return ToolResult(content=[{"type": "text", "text": f"{tool_name} completed"}])
+
+
+def _install_scripted_registry(monkeypatch, handler) -> None:
+    registry = ToolRegistry()
+    registry.register(handler)
+
+    async def build_registry(*_args, **_kwargs):
+        return chat_module.RegistryResult(
+            registry=registry,
+            always_on_handlers=[handler],
+            connector_handler=None,
+            toolsets=[],
+            sources=[],
+            search_operators=[],
+        )
+
+    monkeypatch.setattr(chat_module, "_build_registry", build_registry)
+
+
+async def _interventions(
+    chat_id: str,
+    approval_type: ToolApprovalType,
+    statuses: set[ToolApprovalStatus],
+):
+    return await ToolApprovalsRepository().list_for_chat(
+        chat_id=chat_id,
+        approval_type=approval_type,
+        statuses=statuses,
+    )
 
 
 # =============================================================================
@@ -1573,6 +1662,398 @@ class TestMultiTurn:
             "No user message with tool_result found. "
             "Tool was not executed."
         )
+
+
+# =============================================================================
+# Approval and OAuth intervention resume
+# =============================================================================
+
+
+class TestInterventionResume:
+    @pytest.mark.asyncio
+    async def test_approved_action_executes_once_and_completes_intervention(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        handler = ScriptedActionHandler(
+            requires_approval=True,
+            results=[
+                ToolResult(
+                    content=[{"type": "text", "text": "Email sent"}],
+                    is_error=False,
+                )
+            ],
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": handler.tool_name,
+                        "input": {"to": "person@example.com"},
+                        "id": "toolu_approval",
+                    },
+                ),
+                ("text", "The email was sent."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            paused_events = await collect_sse_events(client, chat_id)
+            assert any(event_type == "approval_required" for event_type, _, _ in paused_events)
+            assert handler.executions == []
+
+            approvals = await _interventions(
+                chat_id,
+                ToolApprovalType.APPROVAL,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert len(approvals) == 1
+            await ToolApprovalsRepository().update_status(
+                approvals[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+
+            resumed_events = await collect_sse_events(client, chat_id)
+
+        assert handler.executions == [{"to": "person@example.com"}]
+        assert any(event_type == "end_of_stream" for event_type, _, _ in resumed_events)
+        completed = await _interventions(
+            chat_id,
+            ToolApprovalType.APPROVAL,
+            {ToolApprovalStatus.COMPLETED},
+        )
+        assert [approval.id for approval in completed] == [approvals[0].id]
+
+        active_path = await MessagesRepository().get_active_path(chat_id)
+        tool_result_messages = [
+            message
+            for message in active_path
+            if message.message["role"] == "user"
+            and isinstance(message.message.get("content"), list)
+            and any(
+                block.get("type") == "tool_result"
+                for block in message.message["content"]
+            )
+        ]
+        assert len(tool_result_messages) == 1
+        assert len(llm.calls) == 2
+        assert llm.calls[1]["messages"][-1] == tool_result_messages[0].message
+
+    @pytest.mark.asyncio
+    async def test_denied_action_is_persisted_without_execution(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        handler = ScriptedActionHandler(
+            requires_approval=True,
+            results=[ToolResult(content=[{"type": "text", "text": "unexpected"}])],
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": handler.tool_name,
+                        "input": {"to": "person@example.com"},
+                        "id": "toolu_denied",
+                    },
+                ),
+                ("text", "The email was not sent."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            await collect_sse_events(client, chat_id)
+            approvals = await _interventions(
+                chat_id,
+                ToolApprovalType.APPROVAL,
+                {ToolApprovalStatus.PENDING},
+            )
+            await ToolApprovalsRepository().update_status(
+                approvals[0].id, ToolApprovalStatus.DENIED, user_id
+            )
+            await collect_sse_events(client, chat_id)
+
+        assert handler.executions == []
+        completed = await _interventions(
+            chat_id,
+            ToolApprovalType.APPROVAL,
+            {ToolApprovalStatus.COMPLETED},
+        )
+        assert [approval.id for approval in completed] == [approvals[0].id]
+        last_model_message = llm.calls[1]["messages"][-1]
+        denial = last_model_message["content"][0]
+        assert denial["type"] == "tool_result"
+        assert denial["tool_use_id"] == "toolu_denied"
+        assert denial["is_error"] is True
+        assert "denied" in denial["content"][0]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_approved_oauth_executes_once_then_completes_intervention(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        oauth_payload = OAuthRequiredPayload(
+            source_id="source-1",
+            source_type="gmail",
+            provider="google",
+            oauth_start_url="/api/oauth/start?source_id=source-1",
+        )
+        handler = ScriptedActionHandler(
+            requires_approval=False,
+            results=[
+                ToolResult(content=[], oauth_required=oauth_payload),
+                ToolResult(content=[{"type": "text", "text": "Email sent"}]),
+            ],
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": handler.tool_name,
+                        "input": {"to": "person@example.com"},
+                        "id": "toolu_oauth",
+                    },
+                ),
+                ("text", "The email was sent."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            paused_events = await collect_sse_events(client, chat_id)
+            oauth_events = [
+                json.loads(data)
+                for event_type, data, _ in paused_events
+                if event_type == "oauth_required"
+            ]
+            oauth_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.OAUTH,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert len(oauth_rows) == 1
+            assert oauth_events[0]["approval_id"] == oauth_rows[0].id
+            await ToolApprovalsRepository().update_status(
+                oauth_rows[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+
+            await collect_sse_events(client, chat_id)
+
+        assert handler.executions == [
+            {"to": "person@example.com"},
+            {"to": "person@example.com"},
+        ]
+        completed = await _interventions(
+            chat_id,
+            ToolApprovalType.OAUTH,
+            {ToolApprovalStatus.COMPLETED},
+        )
+        assert [approval.id for approval in completed] == [oauth_rows[0].id]
+        assert len(llm.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_oauth_still_required_reuses_the_existing_row(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        oauth_payload = OAuthRequiredPayload(
+            source_id="source-1",
+            source_type="gmail",
+            provider="google",
+            oauth_start_url="/api/oauth/start?source_id=source-1",
+        )
+        handler = ScriptedActionHandler(
+            requires_approval=False,
+            results=[ToolResult(content=[], oauth_required=oauth_payload)],
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": handler.tool_name,
+                        "input": {"to": "person@example.com"},
+                        "id": "toolu_oauth_repeat",
+                    },
+                )
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            await collect_sse_events(client, chat_id)
+            oauth_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.OAUTH,
+                {ToolApprovalStatus.PENDING},
+            )
+            await ToolApprovalsRepository().update_status(
+                oauth_rows[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+            resumed_events = await collect_sse_events(client, chat_id)
+
+        oauth_events = [
+            json.loads(data)
+            for event_type, data, _ in resumed_events
+            if event_type == "oauth_required"
+        ]
+        assert oauth_events[0]["approval_id"] == oauth_rows[0].id
+        all_oauth_rows = await _interventions(
+            chat_id,
+            ToolApprovalType.OAUTH,
+            {ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED},
+        )
+        assert [approval.id for approval in all_oauth_rows] == [oauth_rows[0].id]
+        assert len(handler.executions) == 2
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_multi_tool_batch_persists_unblocked_results_then_resumes_only_blocker(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        tool_names = {"test__a", "test__b", "test__c"}
+        handler = MultiActionHandler(tool_names, {"test__b"})
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_calls",
+                    [
+                        {"name": "test__a", "input": {"value": "a"}, "id": "toolu_a"},
+                        {"name": "test__b", "input": {"value": "b"}, "id": "toolu_b"},
+                        {"name": "test__c", "input": {"value": "c"}, "id": "toolu_c"},
+                    ],
+                ),
+                ("text", "All requested actions are complete."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            paused_events = await collect_sse_events(client, chat_id)
+            assert any(event_type == "approval_required" for event_type, _, _ in paused_events)
+            assert handler.executions == ["test__a", "test__c"]
+
+            active_path = await MessagesRepository().get_active_path(chat_id)
+            partial_results = [
+                block
+                for message in active_path
+                if message.message["role"] == "user"
+                and isinstance(message.message.get("content"), list)
+                for block in message.message["content"]
+                if block.get("type") == "tool_result"
+            ]
+            assert {result["tool_use_id"] for result in partial_results} == {
+                "toolu_a",
+                "toolu_c",
+            }
+
+            approvals = await _interventions(
+                chat_id,
+                ToolApprovalType.APPROVAL,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert [approval.tool_call_id for approval in approvals] == ["toolu_b"]
+            await ToolApprovalsRepository().update_status(
+                approvals[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+            await collect_sse_events(client, chat_id)
+
+        assert handler.executions == ["test__a", "test__c", "test__b"]
+        assert len(llm.calls) == 2
+        logical_result_turn = llm.calls[1]["messages"][-1]
+        assert logical_result_turn["role"] == "user"
+        assert {
+            block["tool_use_id"]
+            for block in logical_result_turn["content"]
+            if block.get("type") == "tool_result"
+        } == {"toolu_a", "toolu_b", "toolu_c"}
+
+    @pytest.mark.asyncio
+    async def test_resume_repairs_unrelated_abandoned_call_instead_of_executing_it(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        messages_repo = MessagesRepository()
+        active_path = await messages_repo.get_active_path(chat_id)
+        abandoned = await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_abandoned",
+                        "name": "test__abandoned",
+                        "input": {},
+                    }
+                ],
+            },
+            parent_id=active_path[-1].id,
+        )
+        await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_intervention",
+                        "name": "test__intervention",
+                        "input": {},
+                    }
+                ],
+            },
+            parent_id=abandoned.id,
+        )
+        approval = await ToolApprovalsRepository().create_pending(
+            chat_id=chat_id,
+            user_id=user_id,
+            tool_name="test__intervention",
+            tool_input={},
+            tool_call_id="toolu_intervention",
+        )
+        await ToolApprovalsRepository().update_status(
+            approval.id, ToolApprovalStatus.APPROVED, user_id
+        )
+
+        handler = MultiActionHandler(
+            {"test__abandoned", "test__intervention"}, {"test__intervention"}
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM([("text", "Intervention completed.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            await collect_sse_events(client, chat_id)
+
+        assert handler.executions == ["test__intervention"]
+        model_blocks = [
+            block
+            for message in llm.calls[0]["messages"]
+            if message["role"] == "user" and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result"
+        ]
+        abandoned_result = next(
+            block for block in model_blocks if block["tool_use_id"] == "toolu_abandoned"
+        )
+        assert abandoned_result["is_error"] is True
+        assert "interrupted" in abandoned_result["content"][0]["text"].lower()
 
 
 # =============================================================================

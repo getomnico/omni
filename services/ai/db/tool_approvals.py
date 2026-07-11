@@ -145,8 +145,11 @@ class ToolApprovalsRepository:
                 """
                 UPDATE tool_approvals
                 SET status = $2,
-                    resolved_at = NOW(),
-                    resolved_by = COALESCE($3, resolved_by)
+                    resolved_at = CASE WHEN $2 = 'pending' THEN NULL ELSE NOW() END,
+                    resolved_by = CASE
+                        WHEN $2 = 'pending' THEN NULL
+                        ELSE COALESCE($3, resolved_by)
+                    END
                 WHERE id = $1
                 """,
                 approval_id,

@@ -43,7 +43,14 @@ export type OAuthFlow =
     /// User attaches per-user read creds to a specific org source.
     | { type: 'user_read'; sourceId: string; returnTo?: string }
     /// User attaches per-user read/write action creds to a specific org source.
-    | { type: 'user_write'; sourceId: string; returnTo?: string }
+    | {
+          type: 'user_write'
+          sourceId: string
+          sourceType?: string
+          returnTo?: string
+          approvalId?: string
+          approvalChatId?: string
+      }
 
 export interface ManifestOAuthState {
     user_id?: string
@@ -318,6 +325,8 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
     sourceType: string
     userId: string
     returnTo?: string
+    approvalId?: string
+    approvalChatId?: string
     mode: 'read' | 'write'
 }): Promise<{ url: string; requiredScopes: string[] }> {
     const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
@@ -346,7 +355,12 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
     const flow: OAuthFlow = {
         type: args.mode === 'write' ? 'user_write' : 'user_read',
         sourceId: args.sourceId,
+        ...(args.mode === 'write' ? { sourceType: args.sourceType } : {}),
         returnTo: args.returnTo,
+        ...(args.mode === 'write' && args.approvalId ? { approvalId: args.approvalId } : {}),
+        ...(args.mode === 'write' && args.approvalChatId
+            ? { approvalChatId: args.approvalChatId }
+            : {}),
     }
 
     const pkce = pkceForConfig(manifestConfig)
@@ -387,6 +401,8 @@ export async function generateAuthUrlForUserWrite(args: {
     sourceType: string
     userId: string
     returnTo?: string
+    approvalId?: string
+    approvalChatId?: string
 }): Promise<{ url: string; requiredScopes: string[] }> {
     return generateAuthUrlForExistingSourceUserFlow({ ...args, mode: 'write' })
 }

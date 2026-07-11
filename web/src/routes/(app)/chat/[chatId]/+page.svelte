@@ -454,6 +454,8 @@
 
     function oauthRequiredFromEvent(event: OAuthRequiredEvent): OAuthRequired {
         return {
+            approvalId: event.approval_id,
+            chatId: data.chat.id,
             sourceId: event.source_id,
             sourceType: event.source_type,
             sourceDisplayName:
@@ -1098,6 +1100,8 @@
                                 data.pendingOAuth.oauthStartUrl
                             ) {
                                 toolMsgContent.oauthRequired = {
+                                    approvalId: data.pendingOAuth.id,
+                                    chatId: data.chat.id,
                                     sourceId: data.pendingOAuth.sourceId,
                                     sourceType: data.pendingOAuth.sourceType,
                                     sourceDisplayName:
@@ -1146,28 +1150,34 @@
                                     envelope.omni_kind === OmniToolResultKind.OauthRequired
                                 ) {
                                     const live = oauthEventByToolCallId[toolUseId]
-                                    updateOAuthRequired(
-                                        toolUseId,
-                                        live
-                                            ? oauthRequiredFromEvent(live)
-                                            : {
-                                                  sourceId: envelope.payload.source_id,
-                                                  sourceType: envelope.payload.source_type,
-                                                  sourceDisplayName:
-                                                      getSourceDisplayName(
-                                                          envelope.payload
-                                                              .source_type as SourceType,
-                                                      ) ?? envelope.payload.source_type,
-                                                  provider: envelope.payload.provider,
-                                                  // Optimistic default on refresh; corrected by
-                                                  // the live SSE event when present, and the
-                                                  // card itself can re-check via /api/oauth/provider-status.
-                                                  providerConfigured: true,
-                                                  oauthStartUrl: envelope.payload.oauth_start_url,
-                                                  status: 'pending',
-                                              },
-                                    )
-                                    promptHandled = true
+                                    const persistedApprovalId =
+                                        data.pendingOAuth?.toolCallId === toolUseId
+                                            ? data.pendingOAuth.id
+                                            : null
+                                    const approvalId = live?.approval_id ?? persistedApprovalId
+                                    if (live) {
+                                        updateOAuthRequired(toolUseId, oauthRequiredFromEvent(live))
+                                        promptHandled = true
+                                    } else if (approvalId) {
+                                        updateOAuthRequired(toolUseId, {
+                                            approvalId,
+                                            chatId: data.chat.id,
+                                            sourceId: envelope.payload.source_id,
+                                            sourceType: envelope.payload.source_type,
+                                            sourceDisplayName:
+                                                getSourceDisplayName(
+                                                    envelope.payload.source_type as SourceType,
+                                                ) ?? envelope.payload.source_type,
+                                            provider: envelope.payload.provider,
+                                            // Optimistic default on refresh; corrected by
+                                            // the live SSE event when present, and the
+                                            // card itself can re-check via /api/oauth/provider-status.
+                                            providerConfigured: true,
+                                            oauthStartUrl: envelope.payload.oauth_start_url,
+                                            status: 'pending',
+                                        })
+                                        promptHandled = true
+                                    }
                                 } else if (
                                     envelope &&
                                     envelope.omni_kind === OmniToolResultKind.ApprovalRequired
@@ -1261,7 +1271,7 @@
     // This will trigger the streaming of AI response when the component is mounted
     // If no response is currently being streamed, nothing happens
     onMount(() => {
-        if ((page.state as any).stream) {
+        if ((page.state as any).stream || data.approvedOAuth) {
             streamResponse(data.chat.id)
         } else {
             void resumeActiveStreamIfNeeded()

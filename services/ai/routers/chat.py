@@ -65,10 +65,11 @@ from state import AppState
 from streaming.generate import (
     active_path_tool_call_ids,
     drop_empty_assistant_messages,
+    latest_intervention_tool_batch_ids,
     message_content_blocks,
     repair_interrupted_tool_calls,
     stream_generator,
-    tool_use_blocks,
+    unanswered_tool_calls,
 )
 from streaming.persist import (
     EndOfStreamReason,
@@ -763,9 +764,7 @@ class StreamChatHandler:
             registry = build_result.registry
 
             active_tool_call_ids_set = {
-                tool_use["id"]
-                for message in messages
-                for tool_use in tool_use_blocks(message)
+                tool_use["id"] for tool_use in unanswered_tool_calls(messages)
             }
             pending = await approvals_repo.list_for_chat(
                 chat_id=chat_id,
@@ -780,7 +779,7 @@ class StreamChatHandler:
             pending_oauth = await approvals_repo.list_for_chat(
                 chat_id=chat_id,
                 approval_type=ToolApprovalType.OAUTH,
-                statuses={ToolApprovalStatus.PENDING},
+                statuses={ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED},
                 active_tool_call_ids=active_tool_call_ids_set,
             )
 
@@ -844,19 +843,28 @@ class StreamChatHandler:
             )
 
         # ---- Common setup (repair, compaction, etc.) ----
-        if not pending and not pending_oauth:
-            messages, repaired_tool_calls = repair_interrupted_tool_calls(messages)
-            if repaired_tool_calls:
-                logger.warning(
-                    f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
-                )
-            before = len(messages)
-            messages = drop_empty_assistant_messages(messages)
-            dropped = before - len(messages)
-            if dropped:
-                logger.warning(
-                    f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
-                )
+        intervention_tool_call_ids = {
+            approval.tool_call_id
+            for approval in [*pending, *pending_oauth]
+            if approval.tool_call_id is not None
+        }
+        preserved_batch_ids = latest_intervention_tool_batch_ids(
+            messages, intervention_tool_call_ids
+        )
+        messages, repaired_tool_calls = repair_interrupted_tool_calls(
+            messages, preserve_tool_call_ids=preserved_batch_ids
+        )
+        if repaired_tool_calls:
+            logger.warning(
+                f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
+            )
+        before = len(messages)
+        messages = drop_empty_assistant_messages(messages)
+        dropped = before - len(messages)
+        if dropped:
+            logger.warning(
+                f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
+            )
 
         storage = request.app.state.content_storage
         if storage is not None:

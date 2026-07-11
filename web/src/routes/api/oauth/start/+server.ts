@@ -1,6 +1,7 @@
 import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getSourceById } from '$lib/server/db/sources'
+import { toolApprovalRepository } from '$lib/server/db/tool-approvals'
 import {
     generateAuthUrl,
     generateAuthUrlForOrgSource,
@@ -32,6 +33,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const flow = url.searchParams.get('flow') ?? 'user_write'
     const sourceTypesParam = url.searchParams.get('source_types')
     const returnTo = url.searchParams.get('return_to') ?? undefined
+    const approvalId = url.searchParams.get('approval_id') ?? undefined
+    const approvalChatId = url.searchParams.get('chat_id') ?? undefined
 
     if (sourceId) {
         if (flow !== 'org_source' && flow !== 'user_read' && flow !== 'user_write') {
@@ -59,6 +62,24 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             throw error(412, oauthClientNotConfiguredMessage(config.provider))
         }
 
+        if (approvalId || approvalChatId) {
+            if (!approvalId || !approvalChatId) {
+                throw error(400, 'approval_id and chat_id must be provided together')
+            }
+            if (flow !== 'user_write') {
+                throw error(400, 'OAuth approval requires user_write flow')
+            }
+            const approval = await toolApprovalRepository.getPendingOAuthForUserAndSource(
+                approvalId,
+                locals.user.id,
+                approvalChatId,
+                sourceId,
+                source.sourceType,
+                config.provider,
+            )
+            if (!approval) throw error(400, 'Invalid OAuth approval')
+        }
+
         if (flow === 'org_source') {
             if (locals.user.role !== 'admin') {
                 throw error(403, 'Admin access required')
@@ -79,6 +100,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             sourceType: source.sourceType,
             userId: locals.user.id,
             returnTo,
+            approvalId,
+            approvalChatId,
         })
         throw redirect(302, authUrl)
     }

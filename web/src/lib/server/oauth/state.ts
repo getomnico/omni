@@ -53,14 +53,7 @@ export class OAuthStateManager {
         const redis = await getRedisClient()
         const key = `${STATE_PREFIX}:${stateToken}`
 
-        const data = await redis.get(key)
-        if (!data) {
-            return null
-        }
-
-        // Delete immediately to prevent replay attacks
-        await redis.del(key)
-
-        return JSON.parse(data) as OAuthState
+        const data = await redis.getDel(key)
+        return data ? (JSON.parse(data) as OAuthState) : null
     }
 }

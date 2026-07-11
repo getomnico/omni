@@ -10,6 +10,7 @@ import { decryptConfig } from '$lib/server/crypto/encryption'
 import { logger } from '$lib/server/logger'
 import { getConfig } from '$lib/server/config'
 import { getSourceById, getSourcesByType } from '$lib/server/db/sources'
+import { toolApprovalRepository } from '$lib/server/db/tool-approvals'
 import { getSourceDisplayName } from '$lib/utils/icons'
 import { SourceType } from '$lib/types'
 
@@ -203,11 +204,28 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             config: { granted_scopes: storedGrantedScopes },
             expiresAt,
         })
+        if (flow.type === 'user_write' && flow.approvalId) {
+            if (!flow.approvalChatId || !flow.sourceType) {
+                throw error(400, 'OAuth approval state is incomplete')
+            }
+            const approval = await toolApprovalRepository.approvePendingOAuth(
+                flow.approvalId,
+                user.id,
+                flow.approvalChatId,
+                flow.sourceId,
+                flow.sourceType,
+                config.provider,
+            )
+            if (!approval) throw error(400, 'OAuth approval is no longer pending')
+        }
         await notifyOAuthCredentialReady(flow.sourceId, user.id)
-        if (flow.returnTo) {
+        if (flow.returnTo && !(flow.type === 'user_write' && flow.approvalId)) {
             throw redirect(302, flow.returnTo)
         }
         const params = new URLSearchParams({ ok: 'true', sourceId: flow.sourceId })
+        if (flow.type === 'user_write' && flow.approvalId) {
+            params.set('approvalId', flow.approvalId)
+        }
         throw redirect(302, `/oauth/done?${params}`)
     }
 

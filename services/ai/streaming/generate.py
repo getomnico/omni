@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Iterable
-from typing import Any, cast
+from typing import cast
 
 from anthropic import AsyncStream, MessageStreamEvent
 from anthropic.types import (
@@ -42,6 +42,7 @@ from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker
 from streaming.persist import (
     EndOfStreamReason,
+    OAuthRequiredEvent,
     approval_required_event,
     end_of_stream,
     oauth_event,
@@ -57,7 +58,6 @@ from tools import (
     ToolHandler,
     ToolRegistry,
 )
-from tools.omni_tool_result import OAuthRequiredPayload
 from tools.turn_builder import build_turn_tools
 
 logger = logging.getLogger(__name__)
@@ -161,6 +161,58 @@ def tool_result_ids(message: MessageParam) -> set[str]:
     }
 
 
+def unanswered_tool_calls(messages: list[MessageParam]) -> list[ToolUseBlockParam]:
+    answered_ids = {
+        tool_result_id
+        for message in messages
+        for tool_result_id in tool_result_ids(message)
+    }
+    return [
+        tool_use
+        for message in messages
+        for tool_use in tool_use_blocks(message)
+        if tool_use["id"] not in answered_ids
+    ]
+
+
+def latest_intervention_tool_batch_ids(
+    messages: list[MessageParam], intervention_tool_call_ids: set[str]
+) -> set[str]:
+    for message in reversed(messages):
+        tool_calls = tool_use_blocks(message)
+        tool_call_ids = {tool_call["id"] for tool_call in tool_calls}
+        if tool_call_ids & intervention_tool_call_ids:
+            return tool_call_ids
+    return set()
+
+
+def coalesce_adjacent_tool_result_messages(
+    messages: list[MessageParam],
+) -> list[MessageParam]:
+    coalesced: list[MessageParam] = []
+    for message in messages:
+        blocks = message_content_blocks(message)
+        is_tool_result_message = (
+            message.get("role") == "user"
+            and bool(blocks)
+            and all(block["type"] == "tool_result" for block in blocks)
+        )
+        if is_tool_result_message and coalesced:
+            previous_blocks = message_content_blocks(coalesced[-1])
+            previous_is_tool_result_message = (
+                coalesced[-1].get("role") == "user"
+                and bool(previous_blocks)
+                and all(block["type"] == "tool_result" for block in previous_blocks)
+            )
+            if previous_is_tool_result_message:
+                coalesced[-1] = MessageParam(
+                    role="user", content=[*previous_blocks, *blocks]
+                )
+                continue
+        coalesced.append(message)
+    return coalesced
+
+
 def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockParam:
     return ToolResultBlockParam(
         type="tool_result",
@@ -180,11 +232,13 @@ def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockPara
 
 def repair_interrupted_tool_calls(
     messages: list[MessageParam],
+    preserve_tool_call_ids: set[str] | None = None,
 ) -> tuple[list[MessageParam], int]:
     """Insert ToolResultBlockParam placeholders for tool calls whose
     responses were lost (interrupted stream)."""
     repaired: list[MessageParam] = []
     repair_count = 0
+    preserved_ids = preserve_tool_call_ids or set()
 
     for idx, message in enumerate(messages):
         tool_uses = tool_use_blocks(message)
@@ -195,7 +249,10 @@ def repair_interrupted_tool_calls(
         next_message = messages[idx + 1] if idx + 1 < len(messages) else None
         answered_ids = tool_result_ids(next_message) if next_message else set()
         missing = [
-            tool_use for tool_use in tool_uses if tool_use["id"] not in answered_ids
+            tool_use
+            for tool_use in tool_uses
+            if tool_use["id"] not in answered_ids
+            and tool_use["id"] not in preserved_ids
         ]
 
         repaired.append(message)
@@ -298,11 +355,28 @@ def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None
 
 async def active_path_tool_call_ids(messages_repo, chat_id: str) -> set[str]:
     active_path = await messages_repo.get_active_path(chat_id)
-    return {
-        tool_use["id"]
-        for message in active_path
-        for tool_use in tool_use_blocks(MessageParam(**message.message))
-    }
+    messages = [MessageParam(**message.message) for message in active_path]
+    return {tool_use["id"] for tool_use in unanswered_tool_calls(messages)}
+
+
+def oauth_event_from_approval(approval: ToolApproval) -> OAuthRequiredEvent:
+    if (
+        approval.tool_call_id is None
+        or approval.source_id is None
+        or approval.source_type is None
+        or approval.provider is None
+        or approval.oauth_start_url is None
+    ):
+        raise ValueError(f"OAuth approval {approval.id} is missing required metadata")
+    return oauth_event(
+        approval.id,
+        approval.tool_call_id,
+        approval.tool_name,
+        approval.source_id,
+        approval.source_type,
+        approval.provider,
+        approval.oauth_start_url,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -348,250 +422,62 @@ async def stream_generator(
         content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
         content_blocks_finalized = False
 
-        # ----- Pending approval / OAuth resume ---------------------------------
-        if pending or pending_oauth:
-            if pending_oauth:
-                logger.info(f"Resuming from pending oauth for chat {chat_id}")
-                oauth_by_tool_call_id = {
-                    approval.tool_call_id: approval
-                    for approval in pending_oauth
-                    if approval.tool_call_id is not None
-                }
-                answered_ids = (
-                    tool_result_ids(conversation_messages[-1])
-                    if conversation_messages
-                    else set()
-                )
-                tool_calls_to_resume: list[ToolUseBlockParam] = []
-                for message in reversed(conversation_messages):
-                    tool_uses = tool_use_blocks(message)
-                    if not tool_uses:
-                        answered_ids.update(tool_result_ids(message))
-                        continue
-                    tool_calls_to_resume = [
-                        tool_use
-                        for tool_use in tool_uses
-                        if tool_use["id"] not in answered_ids
-                    ]
-                    break
+        normal_interventions_by_tool_call_id = {
+            approval.tool_call_id: approval
+            for approval in pending or []
+            if approval.tool_call_id is not None
+        }
+        oauth_interventions_by_tool_call_id = {
+            approval.tool_call_id: approval
+            for approval in pending_oauth or []
+            if approval.tool_call_id is not None
+        }
+        unanswered_calls = unanswered_tool_calls(conversation_messages)
+        unanswered_ids = {tool_call["id"] for tool_call in unanswered_calls}
 
-                context = ToolContext(
-                    chat_id=chat_id,
-                    user_id=tool_user_id,
-                    user_email=user_email,
-                    user_configuration=user_configuration,
-                    skip_permission_check=tool_skip_perm,
-                )
-                tool_results: list[ToolResultBlockParam] = []
-                completed_oauth_ids: list[str] = []
-                for tool_call in tool_calls_to_resume:
-                    result = await registry.execute(
-                        tool_call["name"], tool_call["input"], context
-                    )
-                    if result.oauth_required is not None:
-                        payload = result.oauth_required
-                        if tool_results:
-                            tool_result_message = MessageParam(
-                                role="user", content=tool_results
-                            )
-                            conversation_messages.append(tool_result_message)
-                            for tool_result in tool_results:
-                                yield (
-                                    f"event: message\ndata: "
-                                    f"{json.dumps(tool_result)}\n\n"
-                                )
-                            yield (
-                                f"event: save_message\ndata: "
-                                f"{json.dumps(tool_result_message)}\n\n"
-                            )
-                        for aid in completed_oauth_ids:
-                            await approvals_repo.update_status(
-                                aid, ToolApprovalStatus.COMPLETED, chat_user_id
-                            )
-                        yield (
-                            f"event: oauth_required\ndata: "
-                            f"{json.dumps(oauth_event(tool_call['id'], tool_call['name'], payload.source_id, payload.source_type, payload.provider, payload.oauth_start_url))}\n\n"
-                        )
-                        yield end_of_stream(
-                            EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                        )
-                        return
-
-                    tool_results.append(
-                        ToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_call["id"],
-                            content=result.content,
-                            is_error=result.is_error,
-                        )
-                    )
-                    approval = oauth_by_tool_call_id.get(tool_call["id"])
-                    if approval:
-                        completed_oauth_ids.append(approval.id)
-
-                if tool_results:
-                    tool_result_message = MessageParam(
-                        role="user", content=tool_results
-                    )
-                    conversation_messages.append(tool_result_message)
-                    for tool_result in tool_results:
-                        yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-                    yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-
-                for aid in completed_oauth_ids:
-                    await approvals_repo.update_status(
-                        aid, ToolApprovalStatus.COMPLETED, chat_user_id
-                    )
-
-                if tool_results:
-                    pending_oauth = []
-                else:
-                    intervention = pending_oauth[0]
-                    ev = oauth_event(
-                        intervention.tool_call_id,
-                        intervention.tool_name,
-                        intervention.source_id,
-                        intervention.source_type,
-                        intervention.provider,
-                        intervention.oauth_start_url,
-                    )
-                    yield f"event: oauth_required\ndata: {json.dumps(ev)}\n\n"
-                    yield end_of_stream(
-                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                    )
-                    return
-
-            logger.info(f"Resuming from pending approval batch for chat {chat_id}")
-            if any(
-                approval.status == ToolApprovalStatus.PENDING
-                for approval in pending or []
-            ):
-                yield (
-                    f"event: approval_required\ndata: "
-                    f"{json.dumps(approval_required_event(pending or [], tool_use_blocks))}\n\n"
-                )
-                yield end_of_stream(
-                    EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
-                )
-                return
-
-            approvals_by_tool_call_id = {
-                approval.tool_call_id: approval
-                for approval in (pending or [])
-                if approval.tool_call_id is not None
-            }
-            answered_ids = (
-                tool_result_ids(conversation_messages[-1])
-                if conversation_messages
-                else set()
+        blocked_approvals = [
+            approval
+            for tool_call_id, approval in normal_interventions_by_tool_call_id.items()
+            if tool_call_id in unanswered_ids
+            and approval.status == ToolApprovalStatus.PENDING
+        ]
+        if blocked_approvals:
+            yield sse_event(
+                "approval_required",
+                approval_required_event(blocked_approvals, tool_use_blocks),
             )
-            tool_calls_to_resume: list[ToolUseBlockParam] = []
-            for message in reversed(conversation_messages):
-                tool_uses = tool_use_blocks(message)
-                if not tool_uses:
-                    answered_ids.update(tool_result_ids(message))
-                    continue
-                tool_calls_to_resume = [
-                    tool_use
-                    for tool_use in tool_uses
-                    if tool_use["id"] not in answered_ids
-                ]
-                break
-
-            context = ToolContext(
-                chat_id=chat_id,
-                user_id=tool_user_id,
-                user_email=user_email,
-                user_configuration=user_configuration,
-                skip_permission_check=tool_skip_perm,
+            yield end_of_stream(
+                EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
             )
-            tool_results: list[ToolResultBlockParam] = []
-            completed_approval_ids: list[str] = []
-            for tool_call in tool_calls_to_resume:
-                approval = approvals_by_tool_call_id.get(tool_call["id"])
-                if approval and approval.status == ToolApprovalStatus.DENIED:
-                    tool_result = ToolResultBlockParam(
-                        type="tool_result",
-                        tool_use_id=tool_call["id"],
-                        content=[
-                            {
-                                "type": "text",
-                                "text": "The user denied approval for this tool call.",
-                            }
-                        ],
-                        is_error=True,
-                    )
-                    completed_approval_ids.append(approval.id)
-                else:
-                    result = await registry.execute(
-                        tool_call["name"], tool_call["input"], context
-                    )
-                    if result.oauth_required is not None:
-                        payload = result.oauth_required
-                        if approval:
-                            completed_approval_ids.append(approval.id)
-                        await approvals_repo.create_pending(
-                            chat_id=chat_id,
-                            user_id=chat_user_id,
-                            tool_name=tool_call["name"],
-                            tool_input=tool_call["input"],
-                            tool_call_id=tool_call["id"],
-                            approval_type=ToolApprovalType.OAUTH,
-                            source_id=payload.source_id,
-                            source_type=payload.source_type,
-                            provider=payload.provider,
-                            oauth_start_url=payload.oauth_start_url,
-                        )
-                        if tool_results:
-                            tool_result_message = MessageParam(
-                                role="user", content=tool_results
-                            )
-                            conversation_messages.append(tool_result_message)
-                            for tool_result in tool_results:
-                                yield (
-                                    f"event: message\ndata: "
-                                    f"{json.dumps(tool_result)}\n\n"
-                                )
-                            yield (
-                                f"event: save_message\ndata: "
-                                f"{json.dumps(tool_result_message)}\n\n"
-                            )
-                        for aid in completed_approval_ids:
-                            await approvals_repo.update_status(
-                                aid, ToolApprovalStatus.COMPLETED, chat_user_id
-                            )
-                        yield (
-                            f"event: oauth_required\ndata: "
-                            f"{json.dumps(oauth_event(tool_call['id'], tool_call['name'], payload.source_id, payload.source_type, payload.provider, payload.oauth_start_url))}\n\n"
-                        )
-                        yield end_of_stream(
-                            EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                        )
-                        return
+            return
 
-                    tool_result = ToolResultBlockParam(
-                        type="tool_result",
-                        tool_use_id=tool_call["id"],
-                        content=result.content,
-                        is_error=result.is_error,
-                    )
-                    if approval:
-                        completed_approval_ids.append(approval.id)
+        blocked_oauth = next(
+            (
+                approval
+                for tool_call_id, approval in oauth_interventions_by_tool_call_id.items()
+                if tool_call_id in unanswered_ids
+                and approval.status == ToolApprovalStatus.PENDING
+            ),
+            None,
+        )
+        if blocked_oauth is not None:
+            yield sse_event("oauth_required", oauth_event_from_approval(blocked_oauth))
+            yield end_of_stream(
+                EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+            )
+            return
 
-                tool_results.append(tool_result)
-                yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
-            if tool_results:
-                tool_result_message = MessageParam(role="user", content=tool_results)
-                conversation_messages.append(tool_result_message)
-                yield (
-                    f"event: save_message\ndata: "
-                    f"{json.dumps(tool_result_message)}\n\n"
-                )
-            for aid in completed_approval_ids:
-                await approvals_repo.update_status(
-                    aid, ToolApprovalStatus.COMPLETED, chat_user_id
-                )
+        intervention_tool_call_ids = set(normal_interventions_by_tool_call_id) | set(
+            oauth_interventions_by_tool_call_id
+        )
+        resumable_batch_ids = latest_intervention_tool_batch_ids(
+            conversation_messages, intervention_tool_call_ids
+        )
+        resumable_tool_calls = [
+            tool_call
+            for tool_call in unanswered_calls
+            if tool_call["id"] in resumable_batch_ids
+        ]
 
         logger.info(
             f"Starting conversation with {len(conversation_messages)} initial messages"
@@ -625,256 +511,330 @@ async def stream_generator(
             skip_permission_check=tool_skip_perm,
         )
 
-        usage_repo = UsageRepository()
+        if approvals_repo is None:
+            raise ValueError("Tool approvals repository is required")
+
         assistant_message: MessageParam | None = None
 
         # ----- Main agent loop -------------------------------------------------
-        for iteration in range(AGENT_MAX_ITERATIONS):
+        model_iteration = 0
+        loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
+        for _ in range(loop_passes):
             if await is_run_cancelled(redis_client, chat_id):
                 logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
                 break
 
-            logger.info(f"Iteration {iteration + 1}/{AGENT_MAX_ITERATIONS}")
             content_blocks = []
             content_blocks_finalized = False
-            provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
+            parse_errors_by_tool_call_id: dict[str, ToolResultBlockParam] = {}
+            if resumable_tool_calls:
+                tool_calls = resumable_tool_calls
+                resumable_tool_calls = []
+                logger.info("Processing %s resumed tool calls", len(tool_calls))
+            else:
+                model_iteration += 1
+                logger.info(
+                    "Model iteration %s/%s", model_iteration, AGENT_MAX_ITERATIONS
+                )
+                conversation_messages = coalesce_adjacent_tool_result_messages(
+                    conversation_messages
+                )
+                provider_extras = llm_provider.PERSISTED_BLOCK_EXTRAS
 
-            turn_tools = build_turn_tools(
-                always_on_handlers,
-                connector_handler,
-                loaded_toolsets,
-            )
+                turn_tools = build_turn_tools(
+                    always_on_handlers,
+                    connector_handler,
+                    loaded_toolsets,
+                )
 
-            logger.info("Sending request to LLM provider")
+                logger.info("Sending request to LLM provider")
 
-            stream = event_stream_with_context_retry(
-                turn_tools,
-                conversation_messages,
-                llm_provider,
-                chat_user_id,
-                chat_id,
-                system_prompt,
-                compactor,
-                latest_compaction_summary,
-                summarizer_context_window_tokens,
-            )
+                stream = event_stream_with_context_retry(
+                    turn_tools,
+                    conversation_messages,
+                    llm_provider,
+                    chat_user_id,
+                    chat_id,
+                    system_prompt,
+                    compactor,
+                    latest_compaction_summary,
+                    summarizer_context_window_tokens,
+                )
 
-            event_index = 0
-            message_stop_received = False
-            cancelled = False
-            last_cancel_check_at = 0.0
-            async for event in stream:
-                logger.debug(f"Received event: {event} (index: {event_index})")
-                event_index += 1
+                event_index = 0
+                message_stop_received = False
+                cancelled = False
+                last_cancel_check_at = 0.0
+                async for event in stream:
+                    logger.debug(f"Received event: {event} (index: {event_index})")
+                    event_index += 1
 
-                now = asyncio.get_running_loop().time()
-                if now - last_cancel_check_at >= _CANCEL_CHECK_INTERVAL_SECONDS:
-                    last_cancel_check_at = now
-                    if await is_run_cancelled(redis_client, chat_id):
-                        cancelled = True
+                    now = asyncio.get_running_loop().time()
+                    if now - last_cancel_check_at >= _CANCEL_CHECK_INTERVAL_SECONDS:
+                        last_cancel_check_at = now
+                        if await is_run_cancelled(redis_client, chat_id):
+                            cancelled = True
+                            break
+
+                    if event.type == "message_start":
+                        logger.info("Message start received.")
+
+                    if event.type == "content_block_delta":
+                        logger.debug(
+                            f"Content block delta received at index {event.index}: {event.delta}"
+                        )
+                        if event.delta.type == "text_delta":
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received text delta for unknown content block index {event.index}, creating new text block"
+                                )
+                                content_blocks.append(TextBlockParam(type="text", text=""))
+                            text_block = cast(TextBlockParam, content_blocks[event.index])
+                            text_block["text"] += event.delta.text
+                        elif event.delta.type == "input_json_delta":
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
+                                )
+                                content_blocks.append(
+                                    ToolUseBlockParam(
+                                        type="tool_use", id="", name="", input=""
+                                    )
+                                )
+                            tool_use_block = cast(
+                                ToolUseBlockParam, content_blocks[event.index]
+                            )
+                            tool_use_block["input"] = (
+                                cast(str, tool_use_block["input"])
+                                + event.delta.partial_json
+                            )
+                        elif event.delta.type == "citations_delta":
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received citations delta for unknown content block index {event.index}, creating new citations block"
+                                )
+                                content_blocks.append(
+                                    TextBlockParam(type="text", text="", citations=[])
+                                )
+                            text_block = cast(TextBlockParam, content_blocks[event.index])
+                            if "citations" not in text_block or not text_block["citations"]:
+                                text_block["citations"] = []
+                            citations = cast(
+                                list[TextCitationParam], text_block["citations"]
+                            )
+                            citations.append(convert_citation_to_param(event.delta))
+
+                    elif event.type == "content_block_start":
+                        if event.content_block.type == "text":
+                            logger.info(f"Text block start: {event.content_block.text}")
+                            text_block: TextBlockParam = TextBlockParam(
+                                type="text", text=event.content_block.text
+                            )
+                            _copy_provider_extras(
+                                event.content_block, text_block, provider_extras
+                            )
+                            content_blocks.append(text_block)
+                        elif event.content_block.type == "tool_use":
+                            logger.info(
+                                f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
+                            )
+                            tool_block: ToolUseBlockParam = ToolUseBlockParam(
+                                type="tool_use",
+                                id=event.content_block.id,
+                                name=event.content_block.name,
+                                input="",
+                            )
+                            _copy_provider_extras(
+                                event.content_block, tool_block, provider_extras
+                            )
+                            content_blocks.append(tool_block)
+
+                    elif event.type == "citation":
+                        logger.info(f"Citation received: {event.citation}")
+                    elif event.type == "message_stop":
+                        logger.info("Message stop received.")
+                        message_stop_received = True
+
+                    logger.debug(f"Yielding event to client: {event.to_json(indent=None)}")
+                    yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
+
+                    if message_stop_received:
                         break
 
-                if event.type == "message_start":
-                    logger.info("Message start received.")
-
-                if event.type == "content_block_delta":
-                    logger.debug(
-                        f"Content block delta received at index {event.index}: {event.delta}"
-                    )
-                    if event.delta.type == "text_delta":
-                        if event.index >= len(content_blocks):
-                            logger.warning(
-                                f"Received text delta for unknown content block index {event.index}, creating new text block"
-                            )
-                            content_blocks.append(TextBlockParam(type="text", text=""))
-                        text_block = cast(TextBlockParam, content_blocks[event.index])
-                        text_block["text"] += event.delta.text
-                    elif event.delta.type == "input_json_delta":
-                        if event.index >= len(content_blocks):
-                            logger.warning(
-                                f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
-                            )
-                            content_blocks.append(
-                                ToolUseBlockParam(
-                                    type="tool_use", id="", name="", input=""
-                                )
-                            )
-                        tool_use_block = cast(
-                            ToolUseBlockParam, content_blocks[event.index]
-                        )
-                        tool_use_block["input"] = (
-                            cast(str, tool_use_block["input"])
-                            + event.delta.partial_json
-                        )
-                    elif event.delta.type == "citations_delta":
-                        if event.index >= len(content_blocks):
-                            logger.warning(
-                                f"Received citations delta for unknown content block index {event.index}, creating new citations block"
-                            )
-                            content_blocks.append(
-                                TextBlockParam(type="text", text="", citations=[])
-                            )
-                        text_block = cast(TextBlockParam, content_blocks[event.index])
-                        if "citations" not in text_block or not text_block["citations"]:
-                            text_block["citations"] = []
-                        citations = cast(
-                            list[TextCitationParam], text_block["citations"]
-                        )
-                        citations.append(convert_citation_to_param(event.delta))
-
-                elif event.type == "content_block_start":
-                    if event.content_block.type == "text":
-                        logger.info(f"Text block start: {event.content_block.text}")
-                        text_block: TextBlockParam = TextBlockParam(
-                            type="text", text=event.content_block.text
-                        )
-                        _copy_provider_extras(
-                            event.content_block, text_block, provider_extras
-                        )
-                        content_blocks.append(text_block)
-                    elif event.content_block.type == "tool_use":
-                        logger.info(
-                            f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
-                        )
-                        tool_block: ToolUseBlockParam = ToolUseBlockParam(
-                            type="tool_use",
-                            id=event.content_block.id,
-                            name=event.content_block.name,
-                            input="",
-                        )
-                        _copy_provider_extras(
-                            event.content_block, tool_block, provider_extras
-                        )
-                        content_blocks.append(tool_block)
-
-                elif event.type == "citation":
-                    logger.info(f"Citation received: {event.citation}")
-                elif event.type == "message_stop":
-                    logger.info("Message stop received.")
-                    message_stop_received = True
-
-                logger.debug(f"Yielding event to client: {event.to_json(indent=None)}")
-                yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
-
-                if message_stop_received:
+                # ----- Per-iteration post-processing --------------------------------
+                if cancelled:
+                    assistant_message = partial_assistant_message(content_blocks)
+                    if assistant_message is not None:
+                        conversation_messages.append(assistant_message)
+                        yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
 
-            # ----- Per-iteration post-processing --------------------------------
-            if cancelled:
-                assistant_message = partial_assistant_message(content_blocks)
-                if assistant_message is not None:
-                    conversation_messages.append(assistant_message)
-                    yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
-                break
-
-            tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
-            parse_errors = parse_tool_call_inputs(
-                cast(list[ToolUseBlockParam], tool_calls)
-            )
-
-            assistant_message = MessageParam(role="assistant", content=content_blocks)
-            conversation_messages.append(assistant_message)
-            yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
-            content_blocks_finalized = True
-
-            if parse_errors:
-                tool_result_message = MessageParam(role="user", content=parse_errors)
-                conversation_messages.append(tool_result_message)
-                for pe in parse_errors:
-                    yield f"event: message\ndata: {json.dumps(pe)}\n\n"
-                yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
-                continue
-
-            if not tool_calls:
-                logger.info(
-                    f"No tool calls in iteration {iteration + 1}, completing response"
+                tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
+                parse_errors = parse_tool_call_inputs(
+                    cast(list[ToolUseBlockParam], tool_calls)
                 )
-                break
+                parse_errors_by_tool_call_id = {
+                    error["tool_use_id"]: error for error in parse_errors
+                }
 
-            logger.info(f"Processing {len(tool_calls)} tool calls")
+                assistant_message = MessageParam(role="assistant", content=content_blocks)
+                conversation_messages.append(assistant_message)
+                yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
+                content_blocks_finalized = True
+
+                if not tool_calls:
+                    logger.info(
+                        f"No tool calls in iteration {model_iteration}, completing response"
+                    )
+                    break
+
+                logger.info(f"Processing {len(tool_calls)} tool calls")
 
             if await is_run_cancelled(redis_client, chat_id):
                 logger.info(f"Run cancelled before tool execution for chat {chat_id}")
                 break
 
-            # ----- Approval checks before tool execution ------------------------
+            # Preflight the whole batch before executing any tool. Existing
+            # approved/denied interventions are reused on resume.
             approval_required: list[ToolApproval] = []
             for tool_call in tool_calls:
-                tool_name = tool_call["name"]
-                tool_input = tool_call["input"]
-                if registry.requires_approval(tool_name):
-                    logger.info(f"Tool {tool_name} requires approval")
+                if tool_call["id"] in parse_errors_by_tool_call_id:
+                    continue
+                if not registry.requires_approval(tool_call["name"]):
+                    continue
+                approval = normal_interventions_by_tool_call_id.get(tool_call["id"])
+                if approval is None:
+                    tool_input = tool_call["input"]
                     approval = await approvals_repo.create_pending(
                         chat_id=chat_id,
                         user_id=chat_user_id,
-                        tool_name=tool_name,
+                        tool_name=tool_call["name"],
                         tool_input=tool_input,
                         tool_call_id=tool_call["id"],
                         approval_type=ToolApprovalType.APPROVAL,
                         source_id=tool_input.get("source_id"),
                         source_type=tool_input.get("source_type"),
                     )
-                    logger.info(
-                        f"Saved pending approval {approval.id} for chat {chat_id}"
-                    )
+                    normal_interventions_by_tool_call_id[tool_call["id"]] = approval
+                if approval.status == ToolApprovalStatus.PENDING:
                     approval_required.append(approval)
 
+            tool_results: list[ToolResultBlockParam] = []
+            oauth_required: list[ToolApproval] = []
+            completed_intervention_ids: set[str] = set()
+            for tool_call in tool_calls:
+                parse_error = parse_errors_by_tool_call_id.get(tool_call["id"])
+                if parse_error is not None:
+                    tool_results.append(parse_error)
+                    continue
+                normal_intervention = normal_interventions_by_tool_call_id.get(
+                    tool_call["id"]
+                )
+                if (
+                    normal_intervention is not None
+                    and normal_intervention.status == ToolApprovalStatus.PENDING
+                ):
+                    continue
+                if (
+                    normal_intervention is not None
+                    and normal_intervention.status == ToolApprovalStatus.DENIED
+                ):
+                    tool_results.append(
+                        ToolResultBlockParam(
+                            type="tool_result",
+                            tool_use_id=tool_call["id"],
+                            content=[
+                                {
+                                    "type": "text",
+                                    "text": "The user denied approval for this tool call.",
+                                }
+                            ],
+                            is_error=True,
+                        )
+                    )
+                    completed_intervention_ids.add(normal_intervention.id)
+                    continue
+
+                result = await registry.execute(
+                    tool_call["name"], tool_call["input"], context
+                )
+                if result.oauth_required is not None:
+                    payload = result.oauth_required
+                    oauth_intervention = oauth_interventions_by_tool_call_id.get(
+                        tool_call["id"]
+                    )
+                    if oauth_intervention is None:
+                        oauth_intervention = await approvals_repo.create_pending(
+                            chat_id=chat_id,
+                            user_id=chat_user_id,
+                            tool_name=tool_call["name"],
+                            tool_input=tool_call["input"],
+                            tool_call_id=tool_call["id"],
+                            approval_type=ToolApprovalType.OAUTH,
+                            source_id=payload.source_id,
+                            source_type=payload.source_type,
+                            provider=payload.provider,
+                            oauth_start_url=payload.oauth_start_url,
+                        )
+                        oauth_interventions_by_tool_call_id[tool_call["id"]] = (
+                            oauth_intervention
+                        )
+                    elif oauth_intervention.status == ToolApprovalStatus.APPROVED:
+                        await approvals_repo.update_status(
+                            oauth_intervention.id,
+                            ToolApprovalStatus.PENDING,
+                            chat_user_id,
+                        )
+
+                    oauth_required.append(oauth_intervention)
+                    continue
+
+                tool_results.append(
+                    ToolResultBlockParam(
+                        type="tool_result",
+                        tool_use_id=tool_call["id"],
+                        content=result.content,
+                        is_error=result.is_error,
+                    )
+                )
+                if normal_intervention is not None:
+                    completed_intervention_ids.add(normal_intervention.id)
+                oauth_intervention = oauth_interventions_by_tool_call_id.get(
+                    tool_call["id"]
+                )
+                if oauth_intervention is not None:
+                    completed_intervention_ids.add(oauth_intervention.id)
+
+            if tool_results:
+                tool_result_message = MessageParam(role="user", content=tool_results)
+                conversation_messages.append(tool_result_message)
+                for tool_result in tool_results:
+                    yield sse_event("message", tool_result)
+                yield sse_event("save_message", tool_result_message)
+                for approval_id in completed_intervention_ids:
+                    await approvals_repo.update_status(
+                        approval_id, ToolApprovalStatus.COMPLETED, chat_user_id
+                    )
+
             if approval_required:
-                logger.info(
-                    f"Pausing stream for {len(approval_required)} approval-required tool call(s)"
+                yield sse_event(
+                    "approval_required",
+                    approval_required_event(approval_required, tool_use_blocks),
                 )
-                yield (
-                    f"event: approval_required\ndata: "
-                    f"{json.dumps(approval_required_event(approval_required, tool_use_blocks))}\n\n"
+            for oauth_intervention in oauth_required:
+                yield sse_event(
+                    "oauth_required", oauth_event_from_approval(oauth_intervention)
                 )
+            if oauth_required:
+                yield end_of_stream(
+                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                )
+                return
+            if approval_required:
                 yield end_of_stream(
                     EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
                 )
                 return
-
-            # ----- Execute tools -----------------------------------------------
-            tool_results = []
-            for tool_call in tool_calls:
-                tool_name = tool_call["name"]
-                tool_input = tool_call["input"]
-
-                result = await registry.execute(tool_name, tool_input, context)
-                if result.oauth_required is not None:
-                    payload = result.oauth_required
-                    await approvals_repo.create_pending(
-                        chat_id=chat_id,
-                        user_id=chat_user_id,
-                        tool_name=tool_name,
-                        tool_input=tool_input,
-                        tool_call_id=tool_call["id"],
-                        approval_type=ToolApprovalType.OAUTH,
-                        source_id=payload.source_id,
-                        source_type=payload.source_type,
-                        provider=payload.provider,
-                        oauth_start_url=payload.oauth_start_url,
-                    )
-                    logger.info(f"Saved pending oauth approval for chat {chat_id}")
-                    yield (
-                        f"event: oauth_required\ndata: "
-                        f"{json.dumps(oauth_event(tool_call['id'], tool_name, payload.source_id, payload.source_type, payload.provider, payload.oauth_start_url))}\n\n"
-                    )
-                    yield end_of_stream(
-                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                    )
-                    return
-
-                tool_result = ToolResultBlockParam(
-                    type="tool_result",
-                    tool_use_id=tool_call["id"],
-                    content=result.content,
-                    is_error=result.is_error,
-                )
-                tool_results.append(tool_result)
-                yield f"event: message\ndata: {json.dumps(tool_result)}\n\n"
-
-            tool_result_message = MessageParam(role="user", content=tool_results)
-            conversation_messages.append(tool_result_message)
-            yield f"event: save_message\ndata: {json.dumps(tool_result_message)}\n\n"
 
         # ----- Memory write (fire-and-forget) ----------------------------------
         if (

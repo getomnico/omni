@@ -28,6 +28,8 @@ export type ToolApproval = {
 export type OAuthRequiredStatus = 'pending' | 'completed' | 'cancelled'
 
 export type OAuthRequired = {
+    approvalId: string
+    chatId: string
     sourceId: string
     sourceType: string
     sourceDisplayName: string
@@ -81,6 +83,7 @@ export type ApprovalRequiredEvent = ApprovalRequiredItem & {
 // Wire shape emitted by the AI service before the web layer enriches it
 // with provider_configured / source_display_name.
 export type OAuthRequiredAIEvent = {
+    approval_id: string
     tool_call_id: string
     tool_name: string
     source_id: string

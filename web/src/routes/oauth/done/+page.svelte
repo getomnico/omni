@@ -10,6 +10,7 @@
                 type: 'omni:user-auth-result',
                 ok: data.ok,
                 sourceId: data.sourceId,
+                approvalId: data.approvalId,
                 message: data.message,
             })
             ch.close()
