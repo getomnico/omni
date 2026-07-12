@@ -549,6 +549,7 @@ async def stream_status(
 # Stream chat handler
 # ---------------------------------------------------------------------------
 
+
 class StreamChatHandler:
     def __init__(self, request: Request, chat_id: str, auto_start: bool) -> None:
         self.request = request
@@ -573,9 +574,9 @@ class StreamChatHandler:
         redis_client = request.app.state.redis_client
 
         # Reconnect/resume fast path
-        last_event_id = request.headers.get("last-event-id") or request.query_params.get(
-            "last_event_id"
-        )
+        last_event_id = request.headers.get(
+            "last-event-id"
+        ) or request.query_params.get("last_event_id")
         if redis_client is not None:
             run_active = await redis_client.exists(run_lock_key(chat_id))
             if run_active:
@@ -611,8 +612,7 @@ class StreamChatHandler:
         effective_mode = MemoryMode.OFF
         memories: list[str] = []
         memory_write_key: str | None = None
-        pending: list[ToolApproval] = []
-        pending_oauth: list[ToolApproval] = []
+        pending_interventions: list[ToolApproval] = []
 
         if chat.agent_id:
             # ---- Agent chat setup ----
@@ -659,8 +659,7 @@ class StreamChatHandler:
             )
             registry = build_result.registry
             loaded_toolsets: set[str] = set()
-            pending = []
-            pending_oauth = []
+            pending_interventions = []
 
             run_repo = AgentRunRepository()
             runs = await run_repo.list_runs(agent.id, limit=20)
@@ -712,7 +711,9 @@ class StreamChatHandler:
                 user_email=user_email,
                 memories=memories if memories else None,
                 user_configuration=user_configuration,
-                include_web_search=getattr(request.app.state, "web_search_provider", None)
+                include_web_search=getattr(
+                    request.app.state, "web_search_provider", None
+                )
                 is not None,
                 include_fetch_web_page=getattr(
                     request.app.state, "web_fetch_provider", None
@@ -745,7 +746,9 @@ class StreamChatHandler:
                     is_admin = user.role == "admin"
 
             if not chat_messages:
-                raise HTTPException(status_code=404, detail="No messages found for chat")
+                raise HTTPException(
+                    status_code=404, detail="No messages found for chat"
+                )
 
             messages = [MessageParam(**msg.message) for msg in chat_messages]
 
@@ -766,9 +769,8 @@ class StreamChatHandler:
             active_tool_call_ids_set = {
                 tool_use["id"] for tool_use in unanswered_tool_calls(messages)
             }
-            pending = await approvals_repo.list_for_chat(
+            pending_interventions = await approvals_repo.list_for_chat(
                 chat_id=chat_id,
-                approval_type=ToolApprovalType.APPROVAL,
                 statuses={
                     ToolApprovalStatus.PENDING,
                     ToolApprovalStatus.APPROVED,
@@ -776,12 +778,19 @@ class StreamChatHandler:
                 },
                 active_tool_call_ids=active_tool_call_ids_set,
             )
-            pending_oauth = await approvals_repo.list_for_chat(
-                chat_id=chat_id,
-                approval_type=ToolApprovalType.OAUTH,
-                statuses={ToolApprovalStatus.PENDING, ToolApprovalStatus.APPROVED},
-                active_tool_call_ids=active_tool_call_ids_set,
-            )
+            oauth_intervention_statuses = {
+                ToolApprovalStatus.PENDING,
+                ToolApprovalStatus.APPROVED,
+            }
+            pending_interventions = [
+                intervention
+                for intervention in pending_interventions
+                if intervention.approval_type == ToolApprovalType.APPROVAL
+                or (
+                    intervention.approval_type == ToolApprovalType.OAUTH
+                    and intervention.status in oauth_intervention_statuses
+                )
+            ]
 
             active_sources = [
                 s for s in build_result.sources if s.is_active and not s.is_deleted
@@ -834,7 +843,9 @@ class StreamChatHandler:
                 user_email=user_email,
                 memories=memories if memories else None,
                 user_configuration=user_configuration,
-                include_web_search=getattr(request.app.state, "web_search_provider", None)
+                include_web_search=getattr(
+                    request.app.state, "web_search_provider", None
+                )
                 is not None,
                 include_fetch_web_page=getattr(
                     request.app.state, "web_fetch_provider", None
@@ -845,7 +856,7 @@ class StreamChatHandler:
         # ---- Common setup (repair, compaction, etc.) ----
         intervention_tool_call_ids = {
             approval.tool_call_id
-            for approval in [*pending, *pending_oauth]
+            for approval in pending_interventions
             if approval.tool_call_id is not None
         }
         preserved_batch_ids = latest_intervention_tool_batch_ids(
@@ -877,7 +888,7 @@ class StreamChatHandler:
             )
 
         last_message_role = messages[-1].get("role") if messages else None
-        if not pending and not pending_oauth and last_message_role != "user":
+        if not pending_interventions and last_message_role != "user":
             logger.info(
                 f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
             )
@@ -983,14 +994,15 @@ class StreamChatHandler:
             connector_handler=build_result.connector_handler,
             loaded_toolsets=loaded_toolsets,
             compactor=compactor,
-            latest_compaction_summary=latest_compaction.summary if latest_compaction else None,
+            latest_compaction_summary=(
+                latest_compaction.summary if latest_compaction else None
+            ),
             summarizer_context_window_tokens=summarizer_context.tokens,
             memory_provider=memory_provider,
             memory_write_key=memory_write_key,
             effective_mode=effective_mode,
             approvals_repo=approvals_repo,
-            pending=pending,
-            pending_oauth=pending_oauth,
+            pending_interventions=pending_interventions,
             original_user_query=original_user_query,
         )
 
@@ -1037,6 +1049,7 @@ class StreamChatHandler:
 # ---------------------------------------------------------------------------
 # Route: stream chat
 # ---------------------------------------------------------------------------
+
 
 @router.get("/chat/{chat_id}/stream")
 async def stream_chat(
@@ -1207,5 +1220,7 @@ async def download_artifact(
 
 # Re-exports for backward compatibility with tests.
 # The canonical homes are in ``services/ai/streaming/``.
-from streaming.persist import partial_assistant_message as _partial_assistant_message  # noqa: E402, F401
+from streaming.persist import (
+    partial_assistant_message as _partial_assistant_message,
+)  # noqa: E402, F401
 from streaming.run import _run_tasks_by_chat  # noqa: E402, F401

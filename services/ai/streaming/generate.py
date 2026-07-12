@@ -407,8 +407,7 @@ async def stream_generator(
     memory_write_key: str | None = None,
     effective_mode=MemoryMode.OFF,
     approvals_repo=None,
-    pending: list | None = None,
-    pending_oauth: list | None = None,
+    pending_interventions: list[ToolApproval] | None = None,
     original_user_query: str | None = None,
 ) -> AsyncIterator[str]:
     """Core agent loop: yields SSE event strings.
@@ -422,22 +421,24 @@ async def stream_generator(
         content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
         content_blocks_finalized = False
 
-        normal_interventions_by_tool_call_id = {
+        approval_interventions_by_tool_call_id = {
             approval.tool_call_id: approval
-            for approval in pending or []
+            for approval in pending_interventions or []
             if approval.tool_call_id is not None
+            and approval.approval_type == ToolApprovalType.APPROVAL
         }
         oauth_interventions_by_tool_call_id = {
             approval.tool_call_id: approval
-            for approval in pending_oauth or []
+            for approval in pending_interventions or []
             if approval.tool_call_id is not None
+            and approval.approval_type == ToolApprovalType.OAUTH
         }
         unanswered_calls = unanswered_tool_calls(conversation_messages)
         unanswered_ids = {tool_call["id"] for tool_call in unanswered_calls}
 
         blocked_approvals = [
             approval
-            for tool_call_id, approval in normal_interventions_by_tool_call_id.items()
+            for tool_call_id, approval in approval_interventions_by_tool_call_id.items()
             if tool_call_id in unanswered_ids
             and approval.status == ToolApprovalStatus.PENDING
         ]
@@ -467,7 +468,7 @@ async def stream_generator(
             )
             return
 
-        intervention_tool_call_ids = set(normal_interventions_by_tool_call_id) | set(
+        intervention_tool_call_ids = set(approval_interventions_by_tool_call_id) | set(
             oauth_interventions_by_tool_call_id
         )
         resumable_batch_ids = latest_intervention_tool_batch_ids(
@@ -588,8 +589,12 @@ async def stream_generator(
                                 logger.warning(
                                     f"Received text delta for unknown content block index {event.index}, creating new text block"
                                 )
-                                content_blocks.append(TextBlockParam(type="text", text=""))
-                            text_block = cast(TextBlockParam, content_blocks[event.index])
+                                content_blocks.append(
+                                    TextBlockParam(type="text", text="")
+                                )
+                            text_block = cast(
+                                TextBlockParam, content_blocks[event.index]
+                            )
                             text_block["text"] += event.delta.text
                         elif event.delta.type == "input_json_delta":
                             if event.index >= len(content_blocks):
@@ -616,8 +621,13 @@ async def stream_generator(
                                 content_blocks.append(
                                     TextBlockParam(type="text", text="", citations=[])
                                 )
-                            text_block = cast(TextBlockParam, content_blocks[event.index])
-                            if "citations" not in text_block or not text_block["citations"]:
+                            text_block = cast(
+                                TextBlockParam, content_blocks[event.index]
+                            )
+                            if (
+                                "citations" not in text_block
+                                or not text_block["citations"]
+                            ):
                                 text_block["citations"] = []
                             citations = cast(
                                 list[TextCitationParam], text_block["citations"]
@@ -655,7 +665,9 @@ async def stream_generator(
                         logger.info("Message stop received.")
                         message_stop_received = True
 
-                    logger.debug(f"Yielding event to client: {event.to_json(indent=None)}")
+                    logger.debug(
+                        f"Yielding event to client: {event.to_json(indent=None)}"
+                    )
                     yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
 
                     if message_stop_received:
@@ -677,7 +689,9 @@ async def stream_generator(
                     error["tool_use_id"]: error for error in parse_errors
                 }
 
-                assistant_message = MessageParam(role="assistant", content=content_blocks)
+                assistant_message = MessageParam(
+                    role="assistant", content=content_blocks
+                )
                 conversation_messages.append(assistant_message)
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                 content_blocks_finalized = True
@@ -702,7 +716,7 @@ async def stream_generator(
                     continue
                 if not registry.requires_approval(tool_call["name"]):
                     continue
-                approval = normal_interventions_by_tool_call_id.get(tool_call["id"])
+                approval = approval_interventions_by_tool_call_id.get(tool_call["id"])
                 if approval is None:
                     tool_input = tool_call["input"]
                     approval = await approvals_repo.create_pending(
@@ -715,7 +729,7 @@ async def stream_generator(
                         source_id=tool_input.get("source_id"),
                         source_type=tool_input.get("source_type"),
                     )
-                    normal_interventions_by_tool_call_id[tool_call["id"]] = approval
+                    approval_interventions_by_tool_call_id[tool_call["id"]] = approval
                 if approval.status == ToolApprovalStatus.PENDING:
                     approval_required.append(approval)
 
@@ -727,7 +741,7 @@ async def stream_generator(
                 if parse_error is not None:
                     tool_results.append(parse_error)
                     continue
-                normal_intervention = normal_interventions_by_tool_call_id.get(
+                normal_intervention = approval_interventions_by_tool_call_id.get(
                     tool_call["id"]
                 )
                 if (
