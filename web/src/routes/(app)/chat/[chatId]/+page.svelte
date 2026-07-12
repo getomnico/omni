@@ -114,6 +114,7 @@
             uploadFilenames = { ...data.uploadFilenames }
             pendingApproval = pendingApprovalFromData()
             oauthEventByToolCallId = {}
+            oauthBlockerActive = data.pendingOAuth !== null
         }
     })
 
@@ -451,6 +452,7 @@
     // source display name; the persisted envelope on its own can render the
     // card in degraded mode (provider treated as "configured" optimistically).
     let oauthEventByToolCallId = $state<Record<string, OAuthRequiredEvent>>({})
+    let oauthBlockerActive = $state(data.pendingOAuth !== null)
 
     function oauthRequiredFromEvent(event: OAuthRequiredEvent): OAuthRequired {
         return {
@@ -809,6 +811,7 @@
         clearDownstreamSelections(messageId)
         pendingApproval = null
         oauthEventByToolCallId = {}
+        oauthBlockerActive = false
 
         streamResponse(data.chat.id)
     }
@@ -1321,6 +1324,7 @@
         error = null
         errorDetail = null
         startThinkingText()
+        oauthBlockerActive = false
 
         const toolUseStateByIndex = new Map<
             number,
@@ -1733,6 +1737,8 @@
                         ...oauthEventByToolCallId,
                         [oauthData.tool_call_id]: oauthData,
                     }
+                    oauthBlockerActive = true
+                    pendingApproval = null
                     isStreaming = false
                     stopInProgress = false
                     activeStreamingMessageId = null
@@ -2470,7 +2476,7 @@
                                     </Alert.Root>
                                 </div>
                             {/if}
-                            {#if pendingApproval && i === processedMessages.length - 1}
+                            {#if pendingApproval && !oauthBlockerActive && i === processedMessages.length - 1}
                                 {@const connectorName = pendingApproval.tool_name.split('__')[0]}
                                 {@const actionName = pendingApproval.tool_name
                                     .split('__')
@@ -2630,7 +2636,7 @@
                     {/if}
                 {/each}
 
-                {#if pendingApproval && processedMessages[processedMessages.length - 1]?.role !== 'assistant'}
+                {#if pendingApproval && !oauthBlockerActive && processedMessages[processedMessages.length - 1]?.role !== 'assistant'}
                     {@const connectorName = pendingApproval.tool_name.split('__')[0]}
                     {@const actionName = pendingApproval.tool_name.split('__').slice(1).join('__')}
                     {@const connectorIcon = getSourceIconPath(connectorName)}

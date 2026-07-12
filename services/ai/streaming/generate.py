@@ -436,22 +436,6 @@ async def stream_generator(
         unanswered_calls = unanswered_tool_calls(conversation_messages)
         unanswered_ids = {tool_call["id"] for tool_call in unanswered_calls}
 
-        blocked_approvals = [
-            approval
-            for tool_call_id, approval in approval_interventions_by_tool_call_id.items()
-            if tool_call_id in unanswered_ids
-            and approval.status == ToolApprovalStatus.PENDING
-        ]
-        if blocked_approvals:
-            yield sse_event(
-                "approval_required",
-                approval_required_event(blocked_approvals, tool_use_blocks),
-            )
-            yield end_of_stream(
-                EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
-            )
-            return
-
         approved_oauth_keys = {
             (approval.source_id, approval.source_type, approval.provider)
             for tool_call_id, approval in oauth_interventions_by_tool_call_id.items()
@@ -473,6 +457,22 @@ async def stream_generator(
             yield sse_event("oauth_required", oauth_event_from_approval(blocked_oauth))
             yield end_of_stream(
                 EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+            )
+            return
+
+        blocked_approvals = [
+            approval
+            for tool_call_id, approval in approval_interventions_by_tool_call_id.items()
+            if tool_call_id in unanswered_ids
+            and approval.status == ToolApprovalStatus.PENDING
+        ]
+        if blocked_approvals:
+            yield sse_event(
+                "approval_required",
+                approval_required_event(blocked_approvals, tool_use_blocks),
+            )
+            yield end_of_stream(
+                EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
             )
             return
 
@@ -838,11 +838,6 @@ async def stream_generator(
                         approval_id, ToolApprovalStatus.COMPLETED, chat_user_id
                     )
 
-            if approval_required:
-                yield sse_event(
-                    "approval_required",
-                    approval_required_event(approval_required, tool_use_blocks),
-                )
             for oauth_intervention in oauth_required:
                 yield sse_event(
                     "oauth_required", oauth_event_from_approval(oauth_intervention)
@@ -853,6 +848,10 @@ async def stream_generator(
                 )
                 return
             if approval_required:
+                yield sse_event(
+                    "approval_required",
+                    approval_required_event(approval_required, tool_use_blocks),
+                )
                 yield end_of_stream(
                     EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
                 )

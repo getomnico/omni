@@ -1966,6 +1966,99 @@ class TestInterventionResume:
         assert len(llm.calls) == 2
 
     @pytest.mark.asyncio
+    async def test_oauth_required_defers_approval_prompt_in_same_batch(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        oauth_payload = OAuthRequiredPayload(
+            source_id="source-1",
+            source_type="google_drive",
+            provider="google",
+            oauth_start_url="/api/oauth/start?source_id=source-1",
+        )
+
+        class MixedInterventionHandler:
+            def __init__(self) -> None:
+                self.tool_names = {"google_drive__create", "google_drive__share"}
+                self.executions: list[str] = []
+
+            def get_tools(self):
+                return [
+                    {
+                        "name": tool_name,
+                        "description": "Test connector action",
+                        "input_schema": {"type": "object", "properties": {}},
+                    }
+                    for tool_name in sorted(self.tool_names)
+                ]
+
+            def can_handle(self, tool_name: str) -> bool:
+                return tool_name in self.tool_names
+
+            def requires_approval(self, tool_name: str) -> bool:
+                return tool_name == "google_drive__share"
+
+            async def execute(self, tool_name: str, _tool_input: dict, _context) -> ToolResult:
+                self.executions.append(tool_name)
+                if tool_name == "google_drive__create":
+                    return ToolResult(content=[], oauth_required=oauth_payload)
+                return ToolResult(content=[{"type": "text", "text": "shared"}])
+
+        handler = MixedInterventionHandler()
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_calls",
+                    [
+                        {
+                            "name": "google_drive__create",
+                            "input": {"title": "Pie chart"},
+                            "id": "toolu_create",
+                        },
+                        {
+                            "name": "google_drive__share",
+                            "input": {"spreadsheet_id": "sheet-1"},
+                            "id": "toolu_share",
+                        },
+                    ],
+                ),
+                ("text", "Done."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            paused_events = await collect_sse_events(client, chat_id)
+            event_types = [event_type for event_type, _, _ in paused_events]
+            assert "oauth_required" in event_types
+            assert "approval_required" not in event_types
+
+            oauth_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.OAUTH,
+                {ToolApprovalStatus.PENDING},
+            )
+            approval_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.APPROVAL,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert [row.tool_call_id for row in oauth_rows] == ["toolu_create"]
+            assert [row.tool_call_id for row in approval_rows] == ["toolu_share"]
+
+            await ToolApprovalsRepository().update_status(
+                oauth_rows[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+            resumed_events = await collect_sse_events(client, chat_id)
+
+        resumed_event_types = [event_type for event_type, _, _ in resumed_events]
+        assert "approval_required" in resumed_event_types
+        assert "oauth_required" not in resumed_event_types
+        assert handler.executions == ["google_drive__create"]
+
+    @pytest.mark.asyncio
     async def test_oauth_still_required_reuses_the_existing_row(
         self, seeded_chat, redis_client, redis_keys, monkeypatch
     ):
