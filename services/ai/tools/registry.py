@@ -85,6 +85,18 @@ class ToolRegistry:
                 return handler.requires_approval(tool_name)
         return True  # Unknown tools require approval by default
 
+    async def check_oauth_required(
+        self, tool_name: str, tool_input: dict, context: ToolContext
+    ) -> OAuthRequiredPayload | None:
+        """Check whether a tool needs OAuth before any approval/execution."""
+        for handler in self._handlers:
+            if handler.can_handle(tool_name):
+                checker = getattr(handler, "check_oauth_required", None)
+                if checker is None:
+                    return None
+                return await checker(tool_name, tool_input, context)
+        return None
+
     async def execute(
         self, tool_name: str, tool_input: dict, context: ToolContext
     ) -> ToolResult:

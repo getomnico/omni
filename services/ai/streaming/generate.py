@@ -716,7 +716,56 @@ async def stream_generator(
                 logger.info(f"Run cancelled before tool execution for chat {chat_id}")
                 break
 
-            # Preflight the whole batch before executing any tool. Existing
+            # Preflight credentials before asking for user approval. This keeps
+            # blocked write tools from showing an approval card before the user
+            # has connected the OAuth credential needed to run them.
+            oauth_required: list[ToolApproval] = []
+            for tool_call in tool_calls:
+                if tool_call["id"] in parse_errors_by_tool_call_id:
+                    continue
+                payload = await registry.check_oauth_required(
+                    tool_call["name"], tool_call["input"], context
+                )
+                if payload is None:
+                    continue
+                oauth_intervention = oauth_interventions_by_tool_call_id.get(
+                    tool_call["id"]
+                )
+                if oauth_intervention is None:
+                    oauth_intervention = await approvals_repo.create_pending(
+                        chat_id=chat_id,
+                        user_id=chat_user_id,
+                        tool_name=tool_call["name"],
+                        tool_input=tool_call["input"],
+                        tool_call_id=tool_call["id"],
+                        approval_type=ToolApprovalType.OAUTH,
+                        source_id=payload.source_id,
+                        source_type=payload.source_type,
+                        provider=payload.provider,
+                        oauth_start_url=payload.oauth_start_url,
+                    )
+                    oauth_interventions_by_tool_call_id[tool_call["id"]] = (
+                        oauth_intervention
+                    )
+                elif oauth_intervention.status == ToolApprovalStatus.APPROVED:
+                    await approvals_repo.update_status(
+                        oauth_intervention.id,
+                        ToolApprovalStatus.PENDING,
+                        chat_user_id,
+                    )
+                oauth_required.append(oauth_intervention)
+
+            if oauth_required:
+                for oauth_intervention in oauth_required:
+                    yield sse_event(
+                        "oauth_required", oauth_event_from_approval(oauth_intervention)
+                    )
+                yield end_of_stream(
+                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                )
+                return
+
+            # Preflight approval for credentials-ready tools. Existing
             # approved/denied interventions are reused on resume.
             approval_required: list[ToolApproval] = []
             for tool_call in tool_calls:
@@ -742,7 +791,7 @@ async def stream_generator(
                     approval_required.append(approval)
 
             tool_results: list[ToolResultBlockParam] = []
-            oauth_required: list[ToolApproval] = []
+            oauth_required = []
             completed_intervention_ids: set[str] = set()
             for tool_call in tool_calls:
                 parse_error = parse_errors_by_tool_call_id.get(tool_call["id"])

@@ -53,9 +53,9 @@ pytestmark = pytest.mark.integration
 # Timing constants — patched short for fast tests
 # =============================================================================
 
-_FAST_LOCK_TTL = 30         # seconds (was 300)
-_FAST_HEARTBEAT_MS = 1000   # ms (was 15000)
-_FAST_TTL = 10              # stream TTL seconds (was 300)
+_FAST_LOCK_TTL = 30  # seconds (was 300)
+_FAST_HEARTBEAT_MS = 1000  # ms (was 15000)
+_FAST_TTL = 10  # stream TTL seconds (was 300)
 
 
 @pytest.fixture
@@ -114,7 +114,9 @@ def _patch_chat_config(monkeypatch):
 
 
 @pytest.fixture
-async def seeded_chat(db_pool, _patch_db_pool, _patch_chat_config, _patch_timing) -> tuple[str, str, str]:
+async def seeded_chat(
+    db_pool, _patch_db_pool, _patch_chat_config, _patch_timing
+) -> tuple[str, str, str]:
     """Create a user, model, chat, and first user message.
 
     Returns ``(chat_id, user_id, model_id)``.  Cleans up DB rows on teardown.
@@ -283,7 +285,9 @@ class TestBaseline:
     """Happy-path assertions on the decoupled producer/consumer."""
 
     @pytest.mark.asyncio
-    async def test_happy_path_streams_text_and_persists_assistant(self, seeded_chat, redis_client, redis_keys):
+    async def test_happy_path_streams_text_and_persists_assistant(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """E2E: stream a text response → DB has persisted assistant row;
         consumer events have strictly increasing ``id:`` lines; no duplicate
         writes."""
@@ -294,9 +298,13 @@ class TestBaseline:
         async with _client(app) as client:
             events = await collect_sse_events(client, chat_id)
 
-        terminal = [(e[0], e[1]) for e in events if e[0] in ("end_of_stream", "stream_error")]
+        terminal = [
+            (e[0], e[1]) for e in events if e[0] in ("end_of_stream", "stream_error")
+        ]
         assert terminal, "Expected a terminal event"
-        assert terminal[-1][0] == "end_of_stream", f"Unexpected terminal: {terminal[-1]}"
+        assert (
+            terminal[-1][0] == "end_of_stream"
+        ), f"Unexpected terminal: {terminal[-1]}"
 
         msg_events = [e for e in events if e[0] == "message"]
         assert msg_events, "No message (SDK) events in stream"
@@ -308,7 +316,9 @@ class TestBaseline:
         assert db_msgs[-1].message["role"] == "assistant"
         assistant_text = db_msgs[-1].message["content"]
         if isinstance(assistant_text, list):
-            text = " ".join(b.get("text", "") for b in assistant_text if b.get("type") == "text")
+            text = " ".join(
+                b.get("text", "") for b in assistant_text if b.get("type") == "text"
+            )
         else:
             text = str(assistant_text)
         assert "This is a test response." in text
@@ -342,9 +352,9 @@ class TestBaseline:
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         assistant_rows = [m for m in db_msgs if m.message["role"] == "assistant"]
         assert assistant_rows, "No assistant message in DB"
-        assert assistant_rows[-1].id == msg_start_id, (
-            f"message_start id {msg_start_id} != DB id {assistant_rows[-1].id}"
-        )
+        assert (
+            assistant_rows[-1].id == msg_start_id
+        ), f"message_start id {msg_start_id} != DB id {assistant_rows[-1].id}"
 
 
 # =============================================================================
@@ -356,11 +366,15 @@ class TestResume:
     """Tests for the ``Last-Event-ID`` resume/reconnect logic."""
 
     @pytest.mark.asyncio
-    async def test_resume_from_last_event_id_yields_suffix_only(self, seeded_chat, redis_client, redis_keys):
+    async def test_resume_from_last_event_id_yields_suffix_only(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """Drop connection at ``id: k``, reconnect with ``Last-Event-ID: k`` →
         suffix events only, no duplicates."""
         chat_id, _user_id, model_id = seeded_chat
-        llm = GatedRecordingLLM([("text", "First part. Second part. Final part.")], model_id)
+        llm = GatedRecordingLLM(
+            [("text", "First part. Second part. Final part.")], model_id
+        )
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
@@ -380,18 +394,21 @@ class TestResume:
             )
 
         suffix_ids = [sid for _et, _d, sid in suffix_events if sid is not None]
-        assert all(sid > last_sse_id for sid in suffix_ids), (
-            f"Suffix events include ids ≤ {last_sse_id}: {suffix_ids}"
-        )
+        assert all(
+            sid > last_sse_id for sid in suffix_ids
+        ), f"Suffix events include ids ≤ {last_sse_id}: {suffix_ids}"
 
         suffix_terminals = [
-            et for et, _d, _sid in suffix_events
+            et
+            for et, _d, _sid in suffix_events
             if et in ("end_of_stream", "stream_error", "not_resumable")
         ]
         assert suffix_terminals, "No terminal event in suffix"
 
     @pytest.mark.asyncio
-    async def test_reconnect_after_run_replays_suffix(self, seeded_chat, redis_client, redis_keys):
+    async def test_reconnect_after_run_replays_suffix(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """Reconnect after run finished, within ``_STREAM_TTL``, with a
         ``Last-Event-ID`` → replays from that offset, then buffered
         ``end_of_stream``."""
@@ -412,15 +429,17 @@ class TestResume:
             )
 
         suffix_ids = [sid for _et, _d, sid in suffix if sid is not None]
-        assert all(sid > checkpoint_id for sid in suffix_ids), (
-            f"Suffix ids not all > {checkpoint_id}: {suffix_ids}"
-        )
+        assert all(
+            sid > checkpoint_id for sid in suffix_ids
+        ), f"Suffix ids not all > {checkpoint_id}: {suffix_ids}"
         assert any(
             et in ("end_of_stream", "stream_error") for et, _d, _ in suffix
         ), "No terminal event in suffix"
 
     @pytest.mark.asyncio
-    async def test_reconnect_after_ttl_returns_not_resumable(self, seeded_chat, redis_client, redis_keys):
+    async def test_reconnect_after_ttl_returns_not_resumable(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """Reconnect after ``_STREAM_TTL`` expired with a ``Last-Event-ID`` →
         ``event: not_resumable`` and no fresh generation."""
         # _STREAM_TTL is already 10s from _patch_timing; the run completes
@@ -442,13 +461,11 @@ class TestResume:
             )
 
         event_types = [et for et, _d, _sid in events]
-        assert "not_resumable" in event_types, (
-            f"Expected not_resumable, got {event_types}"
-        )
+        assert (
+            "not_resumable" in event_types
+        ), f"Expected not_resumable, got {event_types}"
         msg_events = [et for et, _d, _sid in events if et == "message"]
-        assert not msg_events, (
-            f"Got message events after TTL expired: {msg_events}"
-        )
+        assert not msg_events, f"Got message events after TTL expired: {msg_events}"
 
 
 # =============================================================================
@@ -460,7 +477,9 @@ class TestCancel:
     """Graceful stop via the Redis cancel flag."""
 
     @pytest.mark.asyncio
-    async def test_cancel_during_text_stream(self, seeded_chat, redis_client, redis_keys):
+    async def test_cancel_during_text_stream(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """Cancel (cross‑worker style via the Redis flag) during a text
         response → consumer sees terminal event; ``stream/status`` later
         shows ``running=false``."""
@@ -469,9 +488,7 @@ class TestCancel:
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Let the run start and write at least the first event
             await asyncio.sleep(0.3)
@@ -486,7 +503,9 @@ class TestCancel:
 
             events = await stream_task
 
-        terminal = [(et, d) for et, d, _ in events if et in ("end_of_stream", "stream_error")]
+        terminal = [
+            (et, d) for et, d, _ in events if et in ("end_of_stream", "stream_error")
+        ]
         assert terminal, "No terminal event after cancel"
 
         async with _client(app) as status_client:
@@ -510,7 +529,9 @@ class TestCancel:
         async with _client(app) as client:
             events = await collect_sse_events(client, chat_id)
 
-        terminal = [et for et, _d, _ in events if et in ("end_of_stream", "stream_error")]
+        terminal = [
+            et for et, _d, _ in events if et in ("end_of_stream", "stream_error")
+        ]
         assert terminal, "No terminal event"
 
         cancel_key = f"chat:cancel:{chat_id}"
@@ -540,9 +561,7 @@ class TestCancel:
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait for the LLM to yield text_delta (content accumulated)
             # With inter_event_delay=0.3:
@@ -570,12 +589,13 @@ class TestCancel:
         )
         latest_asst = assistant_msgs[-1].message
         content = latest_asst["content"]
-        text_blocks = [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        text_blocks = [
+            b for b in content if isinstance(b, dict) and b.get("type") == "text"
+        ]
         assert text_blocks, "No text block in persisted assistant message"
         text = " ".join(b["text"] for b in text_blocks)
         assert "Partial content" in text, (
-            f"Partial assistant text missing after task.cancel(). "
-            f"Got: {text!r}"
+            f"Partial assistant text missing after task.cancel(). " f"Got: {text!r}"
         )
 
     @pytest.mark.asyncio
@@ -601,17 +621,13 @@ class TestCancel:
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait for text_delta to be processed (content_blocks accumulates)
             await asyncio.sleep(0.8)
 
             # Set the Redis cancel flag (simulates cross-worker Stop)
-            await redis_client.set(
-                f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL
-            )
+            await redis_client.set(f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL)
 
             events = await stream_task
 
@@ -630,14 +646,12 @@ class TestCancel:
         latest_asst = assistant_msgs[-1].message
         content = latest_asst["content"]
         text_blocks = [
-            b for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b for b in content if isinstance(b, dict) and b.get("type") == "text"
         ]
         assert text_blocks, "No text block in persisted assistant message"
         text = " ".join(b["text"] for b in text_blocks)
         assert "Partial content" in text, (
-            f"Partial assistant text missing after Redis-flag cancel. "
-            f"Got: {text!r}"
+            f"Partial assistant text missing after Redis-flag cancel. " f"Got: {text!r}"
         )
 
 
@@ -650,7 +664,9 @@ class TestStreamStatus:
     """Correctness of the ``stream/status`` endpoint at each lifecycle phase."""
 
     @pytest.mark.asyncio
-    async def test_status_idle_all_flags_false(self, seeded_chat, redis_client, redis_keys):
+    async def test_status_idle_all_flags_false(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """Idle (no run active, no buffer) → all flags false."""
         chat_id, _user_id, _model_id = seeded_chat
         app = FastAPI()
@@ -668,7 +684,9 @@ class TestStreamStatus:
             assert status["pending_oauth"] is False
 
     @pytest.mark.asyncio
-    async def test_status_running_true_during_run_then_false_after(self, seeded_chat, redis_client, redis_keys):
+    async def test_status_running_true_during_run_then_false_after(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """During a run → ``running=True``, then after the run completes →
         ``running=False, resumable=True``.
 
@@ -685,9 +703,7 @@ class TestStreamStatus:
         app = _build_chat_app(llm, redis_client, model_id)
         # Separate clients: one for the long-lived stream, one for status
         async with _client(app) as stream_cl, _client(app) as status_cl:
-            stream_task = asyncio.create_task(
-                collect_sse_events(stream_cl, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(stream_cl, chat_id))
 
             # Poll for running=True (the route handler sets the lock before
             # returning; polling handles any startup delay).
@@ -726,7 +742,9 @@ class TestLockAndHeartbeat:
     """Lock refresh, heartbeat emission, and vanished-producer detection."""
 
     @pytest.mark.asyncio
-    async def test_consumer_emits_heartbeat_when_idle(self, seeded_chat, redis_client, redis_keys):
+    async def test_consumer_emits_heartbeat_when_idle(
+        self, seeded_chat, redis_client, redis_keys
+    ):
         """Consumer emits a ``heartbeat`` after ``_STREAM_HEARTBEAT_MS`` of
         idleness.  We make the LLM take a while to produce its first event
         (via a ``pre`` gate released after the heartbeat interval), so the
@@ -738,9 +756,7 @@ class TestLockAndHeartbeat:
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait > heartbeat interval while LLM is gated and stream is
             # empty.  During this time the consumer should fire a heartbeat.
@@ -753,7 +769,9 @@ class TestLockAndHeartbeat:
             events = await stream_task
 
         event_types = [et for et, _d, _sid in events]
-        assert "heartbeat" in event_types, f"No heartbeat found in events: {event_types}"
+        assert (
+            "heartbeat" in event_types
+        ), f"No heartbeat found in events: {event_types}"
 
     @pytest.mark.asyncio
     async def test_lock_refresh_keeps_lock_alive_past_ttl(
@@ -780,9 +798,7 @@ class TestLockAndHeartbeat:
         lock_key = f"chat:runlock:{chat_id}"
 
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait for the lock to be acquired
             await asyncio.sleep(0.3)
@@ -831,9 +847,9 @@ class TestLockAndHeartbeat:
                 pass
 
         event_types = [et for et, _d, _sid in events]
-        assert "stream_error" in event_types, (
-            f"Expected stream_error, got events: {event_types}"
-        )
+        assert (
+            "stream_error" in event_types
+        ), f"Expected stream_error, got events: {event_types}"
 
         # Lock should be cleaned up after the crash
         exists = await redis_client.exists(lock_key)
@@ -936,9 +952,9 @@ class TestStreamStatusPending:
             resp = await client.get(f"/chat/{chat_id}/stream/status")
             assert resp.status_code == 200
             status = resp.json()
-            assert status["pending_approval"] is True, (
-                f"Expected pending_approval=True, got {status}"
-            )
+            assert (
+                status["pending_approval"] is True
+            ), f"Expected pending_approval=True, got {status}"
             assert status["pending_oauth"] is False
             assert status["resumable"] is False
 
@@ -954,7 +970,9 @@ class TestPartialAssistant:
     def test_partial_assistant_strips_empty_text_blocks(self):
         """Empty text blocks are removed; non-empty text blocks are kept.
         Tool inputs with string JSON are parsed to dict."""
-        from streaming.persist import partial_assistant_message as _partial_assistant_message
+        from streaming.persist import (
+            partial_assistant_message as _partial_assistant_message,
+        )
         from anthropic.types import TextBlockParam, ToolUseBlockParam
 
         blocks: list[TextBlockParam | ToolUseBlockParam] = [
@@ -978,28 +996,36 @@ class TestPartialAssistant:
 
     def test_partial_assistant_returns_none_when_all_blocks_empty(self):
         """All-empty blocks → returns None."""
-        from streaming.persist import partial_assistant_message as _partial_assistant_message
+        from streaming.persist import (
+            partial_assistant_message as _partial_assistant_message,
+        )
         from anthropic.types import TextBlockParam
 
-        result = _partial_assistant_message([
-            TextBlockParam(type="text", text=""),
-            TextBlockParam(type="text", text="   "),
-        ])
+        result = _partial_assistant_message(
+            [
+                TextBlockParam(type="text", text=""),
+                TextBlockParam(type="text", text="   "),
+            ]
+        )
         assert result is None
 
     def test_partial_assistant_parses_empty_tool_input(self):
         """Empty string tool input becomes empty dict."""
-        from streaming.persist import partial_assistant_message as _partial_assistant_message
+        from streaming.persist import (
+            partial_assistant_message as _partial_assistant_message,
+        )
         from anthropic.types import ToolUseBlockParam
 
-        result = _partial_assistant_message([
-            ToolUseBlockParam(
-                type="tool_use",
-                id="toolu_empty",
-                name="empty_tool",
-                input="",
-            ),
-        ])
+        result = _partial_assistant_message(
+            [
+                ToolUseBlockParam(
+                    type="tool_use",
+                    id="toolu_empty",
+                    name="empty_tool",
+                    input="",
+                ),
+            ]
+        )
         assert result is not None
         assert result["content"][0]["input"] == {}
 
@@ -1047,8 +1073,7 @@ class TestDropEmpty:
         msgs_for_llm = llm.calls[0]["messages"]
         roles = [m["role"] for m in msgs_for_llm]
         assert roles == ["user", "user"], (
-            f"Expected [user, user], got {roles}. "
-            "Empty assistant was not dropped."
+            f"Expected [user, user], got {roles}. " "Empty assistant was not dropped."
         )
 
 
@@ -1064,8 +1089,11 @@ class TestReconnectActive:
         results=[
             SearchResult(
                 document=Document(
-                    id="doc_1", title="Result", content_type="text",
-                    url="", source_type="test",
+                    id="doc_1",
+                    title="Result",
+                    content_type="text",
+                    url="",
+                    source_type="test",
                 ),
                 highlights=["test highlight"],
                 source_type="test",
@@ -1123,9 +1151,7 @@ class TestReconnectActive:
 
         async with _client(app) as stream_cl, _client(app) as ctrl_cl:
             # Phase 1: start the stream in a background task
-            stream_task = asyncio.create_task(
-                collect_sse_events(stream_cl, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(stream_cl, chat_id))
 
             # Wait for the producer to write the tool-call events and
             # block on the searcher gate
@@ -1143,8 +1169,7 @@ class TestReconnectActive:
         reload_msg = [et for et, _d, _sid in reload_events if et == "message"]
         assert reload_msg, "No message events in reload stream"
         assert any(
-            et in ("end_of_stream", "stream_error")
-            for et, _d, _ in reload_events
+            et in ("end_of_stream", "stream_error") for et, _d, _ in reload_events
         ), "No terminal event in reload"
 
 
@@ -1190,9 +1215,7 @@ class TestCancelEarly:
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait for the LLM to start producing events (message_start
             # through part of the tool_use content blocks)
@@ -1200,27 +1223,22 @@ class TestCancelEarly:
 
             # Set cancel flag — the next cancel check inside the event
             # loop will detect it and break before tool execution.
-            await redis_client.set(
-                f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL
-            )
+            await redis_client.set(f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL)
 
             events = await stream_task
 
         # Should have received the tool_use events and a terminal
-        msg_events = [
-            json.loads(d) for et, d, _ in events
-            if et == "message" and d
-        ]
+        msg_events = [json.loads(d) for et, d, _ in events if et == "message" and d]
         tool_use_events = [
-            e for e in msg_events
+            e
+            for e in msg_events
             if e.get("type") == "content_block_start"
             and e.get("content_block", {}).get("type") == "tool_use"
         ]
         assert tool_use_events, "No tool_use content_block_start in events"
 
         terminal = [
-            et for et, _d, _ in events
-            if et in ("end_of_stream", "stream_error")
+            et for et, _d, _ in events if et in ("end_of_stream", "stream_error")
         ]
         assert terminal, "No terminal event after cancel"
 
@@ -1241,9 +1259,9 @@ class TestCancelEarly:
             blocks = um.message.get("content", [])
             if isinstance(blocks, list):
                 for b in blocks:
-                    assert b.get("type") != "tool_result", (
-                        "tool_result found in user message despite cancel before execution"
-                    )
+                    assert (
+                        b.get("type") != "tool_result"
+                    ), "tool_result found in user message despite cancel before execution"
 
 
 # =============================================================================
@@ -1263,8 +1281,11 @@ class TestCancelMidToolCall:
         results=[
             SearchResult(
                 document=Document(
-                    id="doc_1", title="Result", content_type="text",
-                    url="", source_type="test",
+                    id="doc_1",
+                    title="Result",
+                    content_type="text",
+                    url="",
+                    source_type="test",
                 ),
                 highlights=["test highlight"],
                 source_type="test",
@@ -1320,9 +1341,7 @@ class TestCancelMidToolCall:
         app.state.searcher_tool = gated_searcher
 
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait for the LLM to emit tool_use and the router to start
             # executing the tool (which blocks on searcher_gate)
@@ -1349,18 +1368,17 @@ class TestCancelMidToolCall:
         # The prior turn's assistant message with tool_use is persisted
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
-        assert assistant_msgs, (
-            "No assistant message persisted after mid-tool-call cancel."
-        )
+        assert (
+            assistant_msgs
+        ), "No assistant message persisted after mid-tool-call cancel."
         latest_asst = assistant_msgs[-1].message
         blocks = latest_asst.get("content", [])
         tool_use_blocks = [
-            b for b in blocks
-            if isinstance(b, dict) and b.get("type") == "tool_use"
+            b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"
         ]
-        assert tool_use_blocks, (
-            "Prior turn's tool_use was not persisted after mid-tool-call cancel."
-        )
+        assert (
+            tool_use_blocks
+        ), "Prior turn's tool_use was not persisted after mid-tool-call cancel."
 
         # Exactly one assistant message — no duplicate rows from a
         # late CancelledError handler re-saving the same content_blocks.
@@ -1404,9 +1422,7 @@ class TestRacingConnect:
 
         async with _client(app) as client1, _client(app) as client2:
             # Stream 1: will acquire the lock and become producer
-            stream1_task = asyncio.create_task(
-                collect_sse_events(client1, chat_id)
-            )
+            stream1_task = asyncio.create_task(collect_sse_events(client1, chat_id))
 
             # Wait for lock acquisition
             import time
@@ -1419,9 +1435,7 @@ class TestRacingConnect:
             assert await redis_client.exists(lock_key), "Lock not acquired"
 
             # Stream 2: should detect ``run_active`` and attach as consumer
-            stream2_task = asyncio.create_task(
-                collect_sse_events(client2, chat_id)
-            )
+            stream2_task = asyncio.create_task(collect_sse_events(client2, chat_id))
 
             # Let stream 2 attach before releasing
             await asyncio.sleep(0.3)
@@ -1471,15 +1485,11 @@ class TestEmptyRowDelete:
         # cancel check fires between message_start and content_block_start.
         # Since the check runs BEFORE processing the event, content_blocks
         # stays empty and _partial_assistant_message returns None.
-        llm = GatedRecordingLLM(
-            [("text", "X.")], model_id, inter_event_delay=0.55
-        )
+        llm = GatedRecordingLLM([("text", "X.")], model_id, inter_event_delay=0.55)
 
         app = _build_chat_app(llm, redis_client, model_id)
         async with _client(app) as client:
-            stream_task = asyncio.create_task(
-                collect_sse_events(client, chat_id)
-            )
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
 
             # Wait for ``message_start`` to be processed
             await asyncio.sleep(0.2)
@@ -1487,9 +1497,7 @@ class TestEmptyRowDelete:
             # Set cancel flag — the cancel check will fire when
             # content_block_start arrives (0.55s after message_start),
             # detect the flag, and break before processing the event.
-            await redis_client.set(
-                f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL
-            )
+            await redis_client.set(f"chat:cancel:{chat_id}", "1", ex=_FAST_LOCK_TTL)
 
             events = await stream_task
 
@@ -1576,13 +1584,12 @@ class TestInterruptedToolCall:
             content = [{"type": "text", "text": content}]
         tool_results = [b for b in content if b.get("type") == "tool_result"]
         assert tool_results, (
-            "No tool_result injected by repair path. "
-            f"Content: {content}"
+            "No tool_result injected by repair path. " f"Content: {content}"
         )
         assert tool_results[0]["tool_use_id"] == tool_use_id
-        assert tool_results[0]["is_error"] is True, (
-            "Repair tool_result should have is_error=True"
-        )
+        assert (
+            tool_results[0]["is_error"] is True
+        ), "Repair tool_result should have is_error=True"
 
 
 # =============================================================================
@@ -1659,8 +1666,7 @@ class TestMultiTurn:
                     user_with_tool_result = um
                     break
         assert user_with_tool_result is not None, (
-            "No user message with tool_result found. "
-            "Tool was not executed."
+            "No user message with tool_result found. " "Tool was not executed."
         )
 
 
@@ -1703,7 +1709,9 @@ class TestInterventionResume:
 
         async with _client(app) as client:
             paused_events = await collect_sse_events(client, chat_id)
-            assert any(event_type == "approval_required" for event_type, _, _ in paused_events)
+            assert any(
+                event_type == "approval_required" for event_type, _, _ in paused_events
+            )
             assert handler.executions == []
 
             approvals = await _interventions(
@@ -1894,7 +1902,9 @@ class TestInterventionResume:
             def requires_approval(self, tool_name: str) -> bool:
                 return False
 
-            async def execute(self, tool_name: str, _tool_input: dict, _context) -> ToolResult:
+            async def execute(
+                self, tool_name: str, _tool_input: dict, _context
+            ) -> ToolResult:
                 self.executions.append(tool_name)
                 if len(self.executions) <= 2:
                     return ToolResult(content=[], oauth_required=oauth_payload)
@@ -1950,7 +1960,9 @@ class TestInterventionResume:
             )
             resumed_events = await collect_sse_events(client, chat_id)
 
-        assert not any(event_type == "oauth_required" for event_type, _, _ in resumed_events)
+        assert not any(
+            event_type == "oauth_required" for event_type, _, _ in resumed_events
+        )
         assert handler.executions == [
             "google_drive__create",
             "google_drive__batch_update",
@@ -1964,6 +1976,102 @@ class TestInterventionResume:
         )
         assert [row.id for row in completed] == [row.id for row in oauth_rows]
         assert len(llm.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_oauth_preflight_runs_before_approval_for_same_tool(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        oauth_payload = OAuthRequiredPayload(
+            source_id="source-1",
+            source_type="google_drive",
+            provider="google",
+            oauth_start_url="/api/oauth/start?source_id=source-1",
+        )
+
+        class OAuthBeforeApprovalHandler:
+            def __init__(self) -> None:
+                self.tool_name = "google_drive__google_workspace_call"
+                self.oauth_connected = False
+                self.executions: list[dict] = []
+
+            def get_tools(self):
+                return [
+                    {
+                        "name": self.tool_name,
+                        "description": "Test connector action",
+                        "input_schema": {"type": "object", "properties": {}},
+                    }
+                ]
+
+            def can_handle(self, tool_name: str) -> bool:
+                return tool_name == self.tool_name
+
+            def requires_approval(self, tool_name: str) -> bool:
+                return self.can_handle(tool_name)
+
+            async def check_oauth_required(
+                self, tool_name: str, _tool_input: dict, _context
+            ) -> OAuthRequiredPayload | None:
+                if self.can_handle(tool_name) and not self.oauth_connected:
+                    return oauth_payload
+                return None
+
+            async def execute(
+                self, _tool_name: str, tool_input: dict, _context
+            ) -> ToolResult:
+                self.executions.append(tool_input)
+                return ToolResult(content=[{"type": "text", "text": "created"}])
+
+        handler = OAuthBeforeApprovalHandler()
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": handler.tool_name,
+                        "input": {"title": "Pie chart"},
+                        "id": "toolu_create",
+                    },
+                ),
+                ("text", "Done."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            paused_events = await collect_sse_events(client, chat_id)
+            event_types = [event_type for event_type, _, _ in paused_events]
+            assert "oauth_required" in event_types
+            assert "approval_required" not in event_types
+            assert handler.executions == []
+
+            approval_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.APPROVAL,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert approval_rows == []
+
+            oauth_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.OAUTH,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert [row.tool_call_id for row in oauth_rows] == ["toolu_create"]
+            await ToolApprovalsRepository().update_status(
+                oauth_rows[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+            handler.oauth_connected = True
+
+            resumed_events = await collect_sse_events(client, chat_id)
+
+        resumed_event_types = [event_type for event_type, _, _ in resumed_events]
+        assert "approval_required" in resumed_event_types
+        assert "oauth_required" not in resumed_event_types
+        assert handler.executions == []
 
     @pytest.mark.asyncio
     async def test_oauth_required_defers_approval_prompt_in_same_batch(
@@ -1998,7 +2106,9 @@ class TestInterventionResume:
             def requires_approval(self, tool_name: str) -> bool:
                 return tool_name == "google_drive__share"
 
-            async def execute(self, tool_name: str, _tool_input: dict, _context) -> ToolResult:
+            async def execute(
+                self, tool_name: str, _tool_input: dict, _context
+            ) -> ToolResult:
                 self.executions.append(tool_name)
                 if tool_name == "google_drive__create":
                     return ToolResult(content=[], oauth_required=oauth_payload)
@@ -2142,7 +2252,9 @@ class TestInterventionResume:
 
         async with _client(app) as client:
             paused_events = await collect_sse_events(client, chat_id)
-            assert any(event_type == "approval_required" for event_type, _, _ in paused_events)
+            assert any(
+                event_type == "approval_required" for event_type, _, _ in paused_events
+            )
             assert handler.executions == ["test__a", "test__c"]
 
             active_path = await MessagesRepository().get_active_path(chat_id)
@@ -2317,9 +2429,9 @@ class TestAgentChat:
         # The LLM's system prompt should contain agent instructions
         assert len(llm.calls) == 1, f"Expected 1 LLM call, got {len(llm.calls)}"
         system_prompt = llm.calls[0].get("system_prompt", "")
-        assert "Test Agent" in system_prompt or "test agent" in system_prompt, (
-            f"Agent instructions not found in system prompt: {system_prompt[:200]}"
-        )
+        assert (
+            "Test Agent" in system_prompt or "test agent" in system_prompt
+        ), f"Agent instructions not found in system prompt: {system_prompt[:200]}"
 
 
 # =============================================================================
@@ -2352,9 +2464,9 @@ class TestStandaloneEndpoints:
 
         # Verify the side effect: the Redis cancel flag was actually set,
         # not just an HTTP 200 returned.
-        assert await redis_client.exists(f"chat:cancel:{chat_id}"), (
-            "Cancel flag was not set in Redis"
-        )
+        assert await redis_client.exists(
+            f"chat:cancel:{chat_id}"
+        ), "Cancel flag was not set in Redis"
 
     @pytest.mark.asyncio
     async def test_context_overflow_triggers_compaction_retry(
@@ -2388,9 +2500,9 @@ class TestStandaloneEndpoints:
         ), "No terminal event after context-overflow retry"
 
         # The LLM should have been called twice: first fails, second succeeds
-        assert len(llm.calls) >= 2, (
-            f"Expected ≥2 LLM calls for retry, got {len(llm.calls)}"
-        )
+        assert (
+            len(llm.calls) >= 2
+        ), f"Expected ≥2 LLM calls for retry, got {len(llm.calls)}"
 
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
