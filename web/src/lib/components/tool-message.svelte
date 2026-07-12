@@ -31,6 +31,7 @@
         message: ToolMessageContent
         isAdmin?: boolean
         onOAuthComplete?: () => void
+        showOAuthCard?: boolean
     }
 
     const ToolIndicators: Record<string, { loading: string; loaded: string }> = {
@@ -139,7 +140,12 @@
         },
     }
 
-    let { message, isAdmin = false, onOAuthComplete = () => {} }: Props = $props()
+    let {
+        message,
+        isAdmin = false,
+        onOAuthComplete = () => {},
+        showOAuthCard = true,
+    }: Props = $props()
     let toolName = $derived(message.toolUse.name as ToolName)
 
     // Determine if this is a connector action (contains __)
@@ -352,7 +358,7 @@
             {/if}
         </div>
     </div>
-    {#if message.oauthRequired}
+    {#if showOAuthCard && message.oauthRequired}
         <div class="mt-2">
             <OAuthRequiredCard
                 oauthRequired={message.oauthRequired}

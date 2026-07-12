@@ -452,12 +452,20 @@ async def stream_generator(
             )
             return
 
+        approved_oauth_keys = {
+            (approval.source_id, approval.source_type, approval.provider)
+            for tool_call_id, approval in oauth_interventions_by_tool_call_id.items()
+            if tool_call_id in unanswered_ids
+            and approval.status == ToolApprovalStatus.APPROVED
+        }
         blocked_oauth = next(
             (
                 approval
                 for tool_call_id, approval in oauth_interventions_by_tool_call_id.items()
                 if tool_call_id in unanswered_ids
                 and approval.status == ToolApprovalStatus.PENDING
+                and (approval.source_id, approval.source_type, approval.provider)
+                not in approved_oauth_keys
             ),
             None,
         )

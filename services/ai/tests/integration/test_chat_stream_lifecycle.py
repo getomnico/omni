@@ -1862,6 +1862,110 @@ class TestInterventionResume:
         assert len(llm.calls) == 2
 
     @pytest.mark.asyncio
+    async def test_approved_oauth_unblocks_pending_sibling_for_same_source(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        oauth_payload = OAuthRequiredPayload(
+            source_id="source-1",
+            source_type="google_drive",
+            provider="google",
+            oauth_start_url="/api/oauth/start?source_id=source-1",
+        )
+
+        class MultiOAuthHandler:
+            def __init__(self) -> None:
+                self.tool_names = {"google_drive__create", "google_drive__batch_update"}
+                self.executions: list[str] = []
+
+            def get_tools(self):
+                return [
+                    {
+                        "name": tool_name,
+                        "description": "Test OAuth connector action",
+                        "input_schema": {"type": "object", "properties": {}},
+                    }
+                    for tool_name in sorted(self.tool_names)
+                ]
+
+            def can_handle(self, tool_name: str) -> bool:
+                return tool_name in self.tool_names
+
+            def requires_approval(self, tool_name: str) -> bool:
+                return False
+
+            async def execute(self, tool_name: str, _tool_input: dict, _context) -> ToolResult:
+                self.executions.append(tool_name)
+                if len(self.executions) <= 2:
+                    return ToolResult(content=[], oauth_required=oauth_payload)
+                return ToolResult(
+                    content=[{"type": "text", "text": f"{tool_name} completed"}]
+                )
+
+        handler = MultiOAuthHandler()
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_calls",
+                    [
+                        {
+                            "name": "google_drive__create",
+                            "input": {"title": "Pie chart"},
+                            "id": "toolu_create",
+                        },
+                        {
+                            "name": "google_drive__batch_update",
+                            "input": {"spreadsheet_id": "sheet-1"},
+                            "id": "toolu_batch_update",
+                        },
+                    ],
+                ),
+                ("text", "The spreadsheet is ready."),
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            paused_events = await collect_sse_events(client, chat_id)
+            oauth_events = [
+                json.loads(data)
+                for event_type, data, _ in paused_events
+                if event_type == "oauth_required"
+            ]
+            assert len(oauth_events) == 2
+            oauth_rows = await _interventions(
+                chat_id,
+                ToolApprovalType.OAUTH,
+                {ToolApprovalStatus.PENDING},
+            )
+            assert [row.tool_call_id for row in oauth_rows] == [
+                "toolu_create",
+                "toolu_batch_update",
+            ]
+
+            await ToolApprovalsRepository().update_status(
+                oauth_rows[0].id, ToolApprovalStatus.APPROVED, user_id
+            )
+            resumed_events = await collect_sse_events(client, chat_id)
+
+        assert not any(event_type == "oauth_required" for event_type, _, _ in resumed_events)
+        assert handler.executions == [
+            "google_drive__create",
+            "google_drive__batch_update",
+            "google_drive__create",
+            "google_drive__batch_update",
+        ]
+        completed = await _interventions(
+            chat_id,
+            ToolApprovalType.OAUTH,
+            {ToolApprovalStatus.COMPLETED},
+        )
+        assert [row.id for row in completed] == [row.id for row in oauth_rows]
+        assert len(llm.calls) == 2
+
+    @pytest.mark.asyncio
     async def test_oauth_still_required_reuses_the_existing_row(
         self, seeded_chat, redis_client, redis_keys, monkeypatch
     ):
