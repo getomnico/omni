@@ -145,8 +145,11 @@ class ToolApprovalsRepository:
                 """
                 UPDATE tool_approvals
                 SET status = $2,
-                    resolved_at = NOW(),
-                    resolved_by = COALESCE($3, resolved_by)
+                    resolved_at = CASE WHEN $2 = 'pending' THEN NULL ELSE NOW() END,
+                    resolved_by = CASE
+                        WHEN $2 = 'pending' THEN NULL
+                        ELSE COALESCE($3, resolved_by)
+                    END
                 WHERE id = $1
                 """,
                 approval_id,
@@ -158,7 +161,7 @@ class ToolApprovalsRepository:
         self,
         *,
         chat_id: str,
-        approval_type: ToolApprovalType,
+        approval_type: ToolApprovalType | None = None,
         statuses: set[ToolApprovalStatus],
         active_tool_call_ids: set[str] | None = None,
     ) -> list[ToolApproval]:
@@ -174,13 +177,13 @@ class ToolApprovalsRepository:
                        tool_call_id, source_id, source_type, provider, oauth_start_url
                 FROM tool_approvals
                 WHERE chat_id = $1
-                  AND approval_type = $2
+                  AND ($2::text IS NULL OR approval_type = $2)
                   AND status = ANY($3::text[])
                   AND ($4::text[] IS NULL OR tool_call_id = ANY($4::text[]))
                 ORDER BY created_at ASC
                 """,
                 chat_id,
-                approval_type.value,
+                approval_type.value if approval_type is not None else None,
                 [status.value for status in statuses],
                 (
                     list(active_tool_call_ids)

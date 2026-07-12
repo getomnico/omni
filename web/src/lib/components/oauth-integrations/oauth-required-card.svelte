@@ -62,7 +62,8 @@
                     typeof data === 'object' &&
                     data.type === 'omni:user-auth-result' &&
                     data.ok === true &&
-                    data.sourceId === oauthRequired.sourceId
+                    data.sourceId === oauthRequired.sourceId &&
+                    data.approvalId === oauthRequired.approvalId
                 ) {
                     onComplete()
                 }
@@ -77,10 +78,13 @@
     })
 
     function startConnect() {
-        const popup = window.open(oauthRequired.oauthStartUrl, 'omni_oauth', 'width=560,height=720')
+        const url = new URL(oauthRequired.oauthStartUrl, window.location.origin)
+        url.searchParams.set('approval_id', oauthRequired.approvalId)
+        url.searchParams.set('chat_id', oauthRequired.chatId)
+        const popup = window.open(url.toString(), 'omni_oauth', 'width=560,height=720')
         if (!popup) {
             // Popup blocked — fall back to full-page redirect.
-            window.location.href = oauthRequired.oauthStartUrl
+            window.location.href = url.toString()
         }
     }
 </script>

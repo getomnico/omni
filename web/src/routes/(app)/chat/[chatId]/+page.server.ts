@@ -5,18 +5,21 @@ import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
 
-function collectActivePathToolCallIds(messages: ChatMessage[]): Set<string> {
-    const ids = new Set<string>()
+function collectActiveUnansweredToolCallIds(messages: ChatMessage[]): Set<string> {
+    const toolCallIds = new Set<string>()
+    const answeredIds = new Set<string>()
     for (const msg of messages) {
         const content = msg.message.content
         if (!Array.isArray(content)) continue
         for (const block of content) {
             if (block.type === 'tool_use') {
-                ids.add(block.id)
+                toolCallIds.add(block.id)
+            } else if (block.type === 'tool_result') {
+                answeredIds.add(block.tool_use_id)
             }
         }
     }
-    return ids
+    return new Set([...toolCallIds].filter((toolCallId) => !answeredIds.has(toolCallId)))
 }
 
 type OmniUploadSource = {
@@ -102,7 +105,7 @@ export const load = async ({ params, locals, fetch, depends }) => {
     const uploadIds = collectUploadIds(messages)
     const uploadFilenames = await resolveUploadFilenames(uploadIds, fetch)
     const activePathMessages = await chatMessageRepository.getActivePath(chat.id)
-    const activePathToolCallIds = collectActivePathToolCallIds(activePathMessages)
+    const activePathToolCallIds = collectActiveUnansweredToolCallIds(activePathMessages)
     const allPendingApprovals = await toolApprovalRepository.getPendingForChatAll(
         chat.id,
         'approval',
@@ -111,12 +114,17 @@ export const load = async ({ params, locals, fetch, depends }) => {
         (approval) =>
             approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
     )
-    const allPendingOAuth = await toolApprovalRepository.getPendingForChatAll(chat.id, 'oauth')
-    const pendingOAuth =
-        allPendingOAuth.find(
-            (approval) =>
-                approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
-        ) ?? null
+    const resumableOAuth = await toolApprovalRepository.getForChatAll(
+        chat.id,
+        ['pending', 'approved'],
+        'oauth',
+    )
+    const activeOAuth = resumableOAuth.filter(
+        (approval) =>
+            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+    )
+    const pendingOAuth = activeOAuth.find((approval) => approval.status === 'pending') ?? null
+    const approvedOAuth = activeOAuth.find((approval) => approval.status === 'approved') ?? null
 
     return {
         user: locals.user!,
@@ -127,5 +135,6 @@ export const load = async ({ params, locals, fetch, depends }) => {
         uploadFilenames,
         pendingApprovals,
         pendingOAuth,
+        approvedOAuth,
     }
 }

@@ -1,4 +1,4 @@
-import { eq, and, asc, desc } from 'drizzle-orm'
+import { eq, and, asc, desc, inArray } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { db } from './index'
 import { toolApprovals } from './schema'
@@ -78,6 +78,64 @@ export class ToolApprovalRepository {
         return approval || null
     }
 
+    async getPendingOAuthForUserAndSource(
+        approvalId: string,
+        userId: string,
+        chatId: string,
+        sourceId: string,
+        sourceType: string,
+        provider: string,
+    ): Promise<ToolApproval | null> {
+        const [approval] = await this.db
+            .select()
+            .from(toolApprovals)
+            .where(
+                and(
+                    eq(toolApprovals.id, approvalId),
+                    eq(toolApprovals.userId, userId),
+                    eq(toolApprovals.chatId, chatId),
+                    eq(toolApprovals.approvalType, 'oauth'),
+                    eq(toolApprovals.status, 'pending'),
+                    eq(toolApprovals.sourceId, sourceId),
+                    eq(toolApprovals.sourceType, sourceType),
+                    eq(toolApprovals.provider, provider),
+                ),
+            )
+            .limit(1)
+        return approval || null
+    }
+
+    async approvePendingOAuth(
+        approvalId: string,
+        userId: string,
+        chatId: string,
+        sourceId: string,
+        sourceType: string,
+        provider: string,
+    ): Promise<ToolApproval | null> {
+        const [approval] = await this.db
+            .update(toolApprovals)
+            .set({
+                status: 'approved',
+                resolvedAt: new Date(),
+                resolvedBy: userId,
+            })
+            .where(
+                and(
+                    eq(toolApprovals.id, approvalId),
+                    eq(toolApprovals.userId, userId),
+                    eq(toolApprovals.chatId, chatId),
+                    eq(toolApprovals.approvalType, 'oauth'),
+                    eq(toolApprovals.status, 'pending'),
+                    eq(toolApprovals.sourceId, sourceId),
+                    eq(toolApprovals.sourceType, sourceType),
+                    eq(toolApprovals.provider, provider),
+                ),
+            )
+            .returning()
+        return approval || null
+    }
+
     async resolve(
         approvalId: string,
         status: 'approved' | 'denied',
@@ -132,7 +190,15 @@ export class ToolApprovalRepository {
         chatId: string,
         approvalType?: 'approval' | 'oauth',
     ): Promise<ToolApproval[]> {
-        const filters = [eq(toolApprovals.chatId, chatId), eq(toolApprovals.status, 'pending')]
+        return this.getForChatAll(chatId, ['pending'], approvalType)
+    }
+
+    async getForChatAll(
+        chatId: string,
+        statuses: Array<'pending' | 'approved' | 'denied' | 'completed' | 'expired'>,
+        approvalType?: 'approval' | 'oauth',
+    ): Promise<ToolApproval[]> {
+        const filters = [eq(toolApprovals.chatId, chatId), inArray(toolApprovals.status, statuses)]
         if (approvalType) {
             filters.push(eq(toolApprovals.approvalType, approvalType))
         }

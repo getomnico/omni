@@ -26,6 +26,73 @@ beforeEach(async () => {
 })
 
 describe('ToolApprovalRepository', () => {
+    it('finds only the exact pending OAuth approval correlation', async () => {
+        const approvalId = ulid()
+        const sourceId = ulid()
+        const sourceType = 'gmail'
+        const provider = 'google'
+        const approval = await repo.createWithId(
+            approvalId,
+            chatId,
+            userId,
+            'gmail__send_email',
+            { to: 'person@example.com' },
+            {
+                approvalType: 'oauth',
+                toolCallId: 'toolu_oauth',
+                sourceId,
+                sourceType,
+                provider,
+                oauthStartUrl: `/api/oauth/start?source_id=${sourceId}`,
+            },
+        )
+
+        await expect(
+            repo.getPendingOAuthForUserAndSource(
+                approvalId,
+                userId,
+                chatId,
+                sourceId,
+                sourceType,
+                provider,
+            ),
+        ).resolves.toEqual(approval)
+
+        const otherUserId = await createTestUser(db)
+        const otherChatId = await createTestChat(db, userId)
+        const mismatches: Parameters<ToolApprovalRepository['getPendingOAuthForUserAndSource']>[] =
+            [
+                [approvalId, otherUserId, chatId, sourceId, sourceType, provider],
+                [approvalId, userId, otherChatId, sourceId, sourceType, provider],
+                [approvalId, userId, chatId, ulid(), sourceType, provider],
+                [approvalId, userId, chatId, sourceId, 'google_drive', provider],
+                [approvalId, userId, chatId, sourceId, sourceType, 'microsoft'],
+            ]
+        for (const args of mismatches) {
+            await expect(repo.getPendingOAuthForUserAndSource(...args)).resolves.toBeNull()
+        }
+
+        const approved = await repo.approvePendingOAuth(
+            approvalId,
+            userId,
+            chatId,
+            sourceId,
+            sourceType,
+            provider,
+        )
+        expect(approved?.status).toBe('approved')
+        await expect(
+            repo.getPendingOAuthForUserAndSource(
+                approvalId,
+                userId,
+                chatId,
+                sourceId,
+                sourceType,
+                provider,
+            ),
+        ).resolves.toBeNull()
+    })
+
     it('createWithId is idempotent for replayed approval_required events', async () => {
         const approvalId = ulid()
         const toolInput = {

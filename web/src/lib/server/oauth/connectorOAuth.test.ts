@@ -1,10 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { OAuthStateManager } from './state'
 import {
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
     tokenEndpointAuthMethodForConfig,
     type OAuthManifestConfig,
 } from './connectorOAuth'
+
+const { redisMock } = vi.hoisted(() => ({
+    redisMock: {
+        getDel: vi.fn(),
+    },
+}))
+
+vi.mock('../redis', () => ({
+    getRedisClient: vi.fn().mockResolvedValue(redisMock),
+}))
 
 const baseManifest: OAuthManifestConfig = {
     provider: 'example',
@@ -20,6 +31,22 @@ const baseManifest: OAuthManifestConfig = {
 }
 
 describe('OAuth connector helpers', () => {
+    beforeEach(() => {
+        vi.clearAllMocks()
+    })
+
+    it('atomically consumes OAuth state with GETDEL', async () => {
+        redisMock.getDel.mockResolvedValueOnce(
+            JSON.stringify({ id: 'state-1', state_token: 'state-1', provider: 'example' }),
+        )
+
+        await expect(OAuthStateManager.validateAndConsumeState('state-1')).resolves.toMatchObject({
+            state_token: 'state-1',
+        })
+        expect(redisMock.getDel).toHaveBeenCalledOnce()
+        expect(redisMock.getDel).toHaveBeenCalledWith('oauth_state:state-1')
+    })
+
     it('infers auto-managed dynamic client registration providers from manifest fields', () => {
         expect(
             isAutoManagedOAuthProvider({

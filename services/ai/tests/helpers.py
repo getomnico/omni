@@ -9,25 +9,23 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock
 
-from ulid import ULID
-
 from anthropic.types import (
-    RawMessageStartEvent,
-    RawContentBlockStartEvent,
-    RawContentBlockDeltaEvent,
-    RawContentBlockStopEvent,
-    RawMessageStopEvent,
-    RawMessageDeltaEvent,
-    Message,
-    Usage,
-    TextBlock,
-    ToolUseBlock,
     InputJSONDelta,
-    TextDelta,
+    Message,
     MessageDeltaUsage,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
+    RawMessageStopEvent,
+    TextBlock,
+    TextDelta,
+    ToolUseBlock,
+    Usage,
 )
 from anthropic.types.raw_message_delta_event import Delta
-
+from ulid import ULID
 
 # =============================================================================
 # DB data factories
@@ -199,6 +197,37 @@ def tool_call_events(
         ),
     )
     yield RawContentBlockStopEvent(type="content_block_stop", index=0)
+    yield RawMessageDeltaEvent(
+        type="message_delta",
+        delta=Delta(stop_reason="tool_use", stop_sequence=None),
+        usage=MessageDeltaUsage(output_tokens=30),
+    )
+    yield RawMessageStopEvent(type="message_stop")
+
+
+def multi_tool_call_events(tool_calls: list[dict[str, Any]]):
+    """Yield one assistant turn containing multiple parallel tool calls."""
+    yield message_start_event()
+    for index, tool_call in enumerate(tool_calls):
+        yield RawContentBlockStartEvent(
+            type="content_block_start",
+            index=index,
+            content_block=ToolUseBlock(
+                type="tool_use",
+                id=tool_call["id"],
+                name=tool_call["name"],
+                input={},
+            ),
+        )
+        yield RawContentBlockDeltaEvent(
+            type="content_block_delta",
+            index=index,
+            delta=InputJSONDelta(
+                type="input_json_delta",
+                partial_json=json.dumps(tool_call["input"]),
+            ),
+        )
+        yield RawContentBlockStopEvent(type="content_block_stop", index=index)
     yield RawMessageDeltaEvent(
         type="message_delta",
         delta=Delta(stop_reason="tool_use", stop_sequence=None),
@@ -484,6 +513,11 @@ class GatedRecordingLLM:
                 yield event
                 if self._inter_event_delay:
                     await asyncio.sleep(self._inter_event_delay)
+        elif kind == "tool_calls":
+            for event in multi_tool_call_events(payload):
+                yield event
+                if self._inter_event_delay:
+                    await asyncio.sleep(self._inter_event_delay)
         else:
             for event in text_response_events(payload):
                 yield event
@@ -499,7 +533,7 @@ class GatedRecordingLLM:
         return True
 
     async def get_context_window_tokens(self):
-        from providers import ContextWindowInfo, SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS
+        from providers import SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS, ContextWindowInfo
 
         return ContextWindowInfo(
             tokens=SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS, source="safe_default"

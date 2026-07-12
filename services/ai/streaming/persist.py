@@ -80,6 +80,7 @@ class StreamErrorEvent(TypedDict):
 
 
 class OAuthRequiredEvent(TypedDict):
+    approval_id: str
     tool_call_id: str
     tool_name: str
     source_id: str
@@ -145,6 +146,7 @@ def end_of_stream(reason: EndOfStreamReason, *, message: str | None = None) -> s
 
 
 def oauth_event(
+    approval_id: str,
     tool_call_id: str,
     tool_name: str,
     source_id: str,
@@ -153,6 +155,7 @@ def oauth_event(
     oauth_start_url: str,
 ) -> OAuthRequiredEvent:
     return {
+        "approval_id": approval_id,
         "tool_call_id": tool_call_id,
         "tool_name": tool_name,
         "source_id": source_id,
