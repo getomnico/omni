@@ -13,6 +13,7 @@ import httpx
 import redis.asyncio as aioredis
 from anthropic.types import ToolParam
 
+from db.connection import get_db_pool
 from db.documents import DocumentsRepository
 from db.models import Source
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
@@ -355,6 +356,57 @@ class ConnectorToolHandler:
             return True
         return action.mode == "write"
 
+    async def check_oauth_required(
+        self, tool_name: str, _tool_input: dict, context: ToolContext
+    ) -> OAuthRequiredPayload | None:
+        action = self._actions.get(tool_name)
+        if (
+            action is None
+            or action.admin_only
+            or context.user_id is None
+            or context.skip_permission_check
+        ):
+            return None
+
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            user_credential = await conn.fetchrow(
+                """
+                SELECT id
+                FROM service_credentials
+                WHERE source_id = $1 AND user_id = $2
+                LIMIT 1
+                """,
+                action.source_id,
+                context.user_id,
+            )
+            if user_credential is not None:
+                return None
+
+            org_credential = await conn.fetchrow(
+                """
+                SELECT provider
+                FROM service_credentials
+                WHERE source_id = $1 AND user_id IS NULL
+                LIMIT 1
+                """,
+                action.source_id,
+            )
+
+        if org_credential is None:
+            return None
+
+        provider = org_credential["provider"]
+        if not provider:
+            return None
+
+        return OAuthRequiredPayload(
+            source_id=action.source_id,
+            source_type=action.source_type,
+            provider=provider,
+            oauth_start_url=f"/api/oauth/start?source_id={action.source_id}",
+        )
+
     async def execute(
         self, tool_name: str, tool_input: dict, context: ToolContext
     ) -> ToolResult:
@@ -442,8 +494,13 @@ class ConnectorToolHandler:
                 content_type = response.headers.get("content-type", "")
 
                 if "application/json" not in content_type:
-                    content_disposition = response.headers.get("content-disposition", "")
-                    if is_textual_content_type(content_type) and not content_disposition:
+                    content_disposition = response.headers.get(
+                        "content-disposition", ""
+                    )
+                    if (
+                        is_textual_content_type(content_type)
+                        and not content_disposition
+                    ):
                         return await text_result_or_sandbox(
                             text=response.text,
                             sandbox_url=self._sandbox_url,
@@ -522,4 +579,3 @@ def _action_result_file_name(action_name: str, *, extension: str) -> str:
     if not safe_name:
         safe_name = "connector_action_result"
     return f"{safe_name}_result.{extension}"
-

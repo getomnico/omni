@@ -1,7 +1,8 @@
 <script lang="ts">
-    import type { MessageContent, TextMessageContent, ToolMessageContent } from '$lib/types/message'
+    import type { MessageContent, OAuthRequired, ToolMessageContent } from '$lib/types/message'
     import ToolMessage from './tool-message.svelte'
     import MarkdownMessage from './markdown-message.svelte'
+    import OAuthRequiredCard from '$lib/components/oauth-integrations/oauth-required-card.svelte'
     import { ChevronRight } from '@lucide/svelte'
     import { fly } from 'svelte/transition'
 
@@ -15,6 +16,12 @@
 
     const MAX_VISIBLE_TOOLS = 4
 
+    type OAuthCardEntry = {
+        key: string
+        toolName: string
+        oauthRequired: OAuthRequired
+    }
+
     let {
         content,
         isStreaming,
@@ -24,26 +31,7 @@
     }: Props = $props()
     let expanded = $state(false)
 
-    // When the model fans out parallel tool calls against the same source and
-    // they all surface oauth_required, we only want one Connect card per source.
-    // Hide the duplicates here; on resume the AI service replaces every
-    // placeholder so the hidden blocks become real tool results naturally.
-    let skippedOAuthBlockIds = $derived.by(() => {
-        const seen = new Set<string>()
-        const skip = new Set<number>()
-        for (const block of content) {
-            if (block.type === 'tool' && block.oauthRequired) {
-                const key = block.oauthRequired.sourceId
-                if (seen.has(key)) skip.add(block.id)
-                else seen.add(key)
-            }
-        }
-        return skip
-    })
-
-    let visibleBlocks = $derived(
-        content.filter((b) => !(b.type === 'tool' && skippedOAuthBlockIds.has(b.id))),
-    )
+    let visibleBlocks = $derived(content)
     let toolBlocks = $derived(
         visibleBlocks.filter((b): b is ToolMessageContent => b.type === 'tool'),
     )
@@ -71,6 +59,23 @@
 
         return `${block.type}:${block.id}`
     }
+
+    function oauthCardEntries(blocks: MessageContent): OAuthCardEntry[] {
+        const seen = new Set<string>()
+        const entries: OAuthCardEntry[] = []
+        for (const block of blocks) {
+            if (block.type !== 'tool' || !block.oauthRequired) continue
+            const key = `${block.oauthRequired.sourceId}:${block.oauthRequired.provider}`
+            if (seen.has(key)) continue
+            seen.add(key)
+            entries.push({
+                key,
+                toolName: block.toolUse.name,
+                oauthRequired: block.oauthRequired,
+            })
+        }
+        return entries
+    }
 </script>
 
 {#if collapsibleCount > 0}
@@ -95,14 +100,29 @@
         <div class="mb-3 max-h-64 overflow-y-auto pr-1 opacity-80">
             {#each earlierBlocks as block (blockRenderKey(block))}
                 {#if block.type === 'text'}
-                    <MarkdownMessage
-                        content={stripThinkingContent(block.text, 'thinking')}
-                        citations={block.citations} />
+                    <div class="min-w-0 overflow-x-auto">
+                        <MarkdownMessage
+                            content={stripThinkingContent(block.text, 'thinking')}
+                            citations={block.citations} />
+                    </div>
                 {:else if block.type === 'tool'}
                     <div class="mb-1">
-                        <ToolMessage message={block} {isAdmin} {onOAuthComplete} />
+                        <ToolMessage
+                            message={block}
+                            {isAdmin}
+                            {onOAuthComplete}
+                            showOAuthCard={false} />
                     </div>
                 {/if}
+            {/each}
+            {#each oauthCardEntries(earlierBlocks) as entry (`oauth:${entry.key}`)}
+                <div class="mt-2 mb-1">
+                    <OAuthRequiredCard
+                        oauthRequired={entry.oauthRequired}
+                        toolName={entry.toolName}
+                        {isAdmin}
+                        onComplete={onOAuthComplete} />
+                </div>
             {/each}
         </div>
     </div>
@@ -111,12 +131,23 @@
 <!-- Recent blocks: always visible -->
 {#each recentBlocks as block (blockRenderKey(block))}
     {#if block.type === 'text'}
-        <MarkdownMessage
-            content={stripThinkingContent(block.text, 'thinking')}
-            citations={block.citations} />
+        <div class="min-w-0 overflow-x-auto">
+            <MarkdownMessage
+                content={stripThinkingContent(block.text, 'thinking')}
+                citations={block.citations} />
+        </div>
     {:else if block.type === 'tool'}
         <div in:fly={{ y: 4, duration: 300 }} class="mb-1">
-            <ToolMessage message={block} {isAdmin} {onOAuthComplete} />
+            <ToolMessage message={block} {isAdmin} {onOAuthComplete} showOAuthCard={false} />
         </div>
     {/if}
+{/each}
+{#each oauthCardEntries(recentBlocks) as entry (`oauth:${entry.key}`)}
+    <div in:fly={{ y: 4, duration: 300 }} class="mt-2 mb-1">
+        <OAuthRequiredCard
+            oauthRequired={entry.oauthRequired}
+            toolName={entry.toolName}
+            {isAdmin}
+            onComplete={onOAuthComplete} />
+    </div>
 {/each}
