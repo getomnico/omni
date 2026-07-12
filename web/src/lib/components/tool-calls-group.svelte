@@ -100,9 +100,11 @@
         <div class="mb-3 max-h-64 overflow-y-auto pr-1 opacity-80">
             {#each earlierBlocks as block (blockRenderKey(block))}
                 {#if block.type === 'text'}
-                    <MarkdownMessage
-                        content={stripThinkingContent(block.text, 'thinking')}
-                        citations={block.citations} />
+                    <div class="min-w-0 overflow-x-auto">
+                        <MarkdownMessage
+                            content={stripThinkingContent(block.text, 'thinking')}
+                            citations={block.citations} />
+                    </div>
                 {:else if block.type === 'tool'}
                     <div class="mb-1">
                         <ToolMessage
@@ -129,9 +131,11 @@
 <!-- Recent blocks: always visible -->
 {#each recentBlocks as block (blockRenderKey(block))}
     {#if block.type === 'text'}
-        <MarkdownMessage
-            content={stripThinkingContent(block.text, 'thinking')}
-            citations={block.citations} />
+        <div class="min-w-0 overflow-x-auto">
+            <MarkdownMessage
+                content={stripThinkingContent(block.text, 'thinking')}
+                citations={block.citations} />
+        </div>
     {:else if block.type === 'tool'}
         <div in:fly={{ y: 4, duration: 300 }} class="mb-1">
             <ToolMessage message={block} {isAdmin} {onOAuthComplete} showOAuthCard={false} />

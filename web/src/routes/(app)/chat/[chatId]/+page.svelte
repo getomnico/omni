@@ -2454,7 +2454,7 @@
                             data-testid={`chat-message-${message.origMessageId}`}
                             class="group mt-8 flex w-full min-w-0 flex-col gap-1">
                             <div
-                                class="prose prose-sm md:prose-base prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none min-w-0 overflow-x-auto">
+                                class="prose prose-sm md:prose-base prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none min-w-0 overflow-visible">
                                 {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
                                     <ToolCallsGroup
                                         content={message.content}
