@@ -28,6 +28,7 @@
         RotateCcw,
         ArrowDown,
         BookOpen,
+        X,
     } from '@lucide/svelte'
     import { marked } from 'marked'
     import { onDestroy, onMount } from 'svelte'
@@ -2340,9 +2341,18 @@
                 </Button>
             {/snippet}
         </Drawer.Trigger>
-        <Drawer.Content direction="right" class="flex max-h-full flex-col">
-            <Drawer.Title class="border-b px-5 py-3 text-base font-semibold">Sources</Drawer.Title>
-            <Drawer.Description class="sr-only">Cited sources for this response</Drawer.Description>
+        <Drawer.Content class="flex max-h-full flex-col">
+            <Drawer.Header class="relative border-b px-5 py-3 text-left">
+                <Drawer.Title class="text-base font-semibold">Sources</Drawer.Title>
+                <Drawer.Description class="sr-only">
+                    Cited sources for this response
+                </Drawer.Description>
+                <Drawer.Close
+                    class="ring-offset-background focus-visible:ring-ring absolute top-3 right-4 cursor-pointer rounded-xs opacity-70 transition-opacity hover:opacity-100 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-hidden disabled:pointer-events-none">
+                    <X class="size-4" />
+                    <span class="sr-only">Close</span>
+                </Drawer.Close>
+            </Drawer.Header>
             <div class="min-h-0 flex-1 overflow-y-auto px-5 pt-3 pb-5">
                 <div class="flex flex-col gap-2">
                     {#each citations as citation (citation.source)}
