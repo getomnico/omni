@@ -387,11 +387,11 @@ class CitationProcessor:
 
 
 class CitationStreamProcessor(StreamProcessor):
-    """StreamProcessor that strips [citation:...] markers from text deltas and emits
-    synthetic citation_delta events inline.
+    """Preserve [citation:...] markers and emit synthetic citation deltas inline.
 
-    Buffers text when a potential citation marker start is detected. When a complete
-    marker is found, it's swallowed and a citation_delta event is emitted instead.
+    The marker must remain in the persisted text because the citation object does not
+    contain its position in the generated response. The frontend replaces each marker
+    with the corresponding citation chip.
     """
 
     _PREFIX = "[citation:"
@@ -512,12 +512,19 @@ class CitationStreamProcessor(StreamProcessor):
             m = _CITATION_PATTERN.match(candidate)
             if m:
                 self._buf = self._buf[close + 1 :]
-                # Strip trailing space before the marker
+                # Strip trailing space before the marker; the inline citation chip
+                # provides its own spacing.
                 if text_acc and text_acc[-1].endswith(" "):
                     text_acc[-1] = text_acc[-1][:-1]
                 _flush_text()
-                ref_nums = [int(n) for n in _NUM_PATTERN.findall(m.group(1))]
-                segments.append(ref_nums)
+                ref_nums = [
+                    int(n)
+                    for n in _NUM_PATTERN.findall(m.group(1))
+                    if int(n) in self._citable_index
+                ]
+                if ref_nums:
+                    segments.append(ref_nums)
+                    segments.append(f"[citation:{','.join(map(str, ref_nums))}]")
             else:
                 text_acc.append(self._buf[0])
                 self._buf = self._buf[1:]
@@ -592,7 +599,10 @@ def _extract_data_from_document(block: DocumentBlockParam) -> str:
 
 
 def _strip_citations(block: TextBlockParam) -> TextBlockParam:
-    """Return a text block without the citations field."""
+    """Return a text block without synthetic markers or citation metadata."""
     if "citations" not in block:
         return block
-    return TextBlockParam(type="text", text=block["text"])
+    return TextBlockParam(
+        type="text",
+        text=_CITATION_PATTERN.sub("", block["text"]),
+    )

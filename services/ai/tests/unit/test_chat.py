@@ -75,7 +75,7 @@ def test_synthetic_citations_end_to_end():
             "content": [
                 {
                     "type": "text",
-                    "text": "Revenue grew 15%",
+                    "text": "Revenue grew 15%[citation:1]",
                     "citations": [
                         {
                             "type": "search_result_location",
@@ -241,7 +241,7 @@ async def _async_iter(events):
 
 @pytest.mark.asyncio
 async def test_citation_stream_processor():
-    """CitationStreamProcessor strips markers from text deltas and emits citation events inline."""
+    """CitationStreamProcessor preserves marker positions and emits citation events inline."""
     citable_index = {
         1: CitableRef(
             index=1,
@@ -280,12 +280,17 @@ async def test_citation_stream_processor():
     )
     text = "".join(e.delta.text for e in out if e.delta.type == "text_delta")
     cites = [e for e in out if e.delta.type == "citations_delta"]
-    assert text == "Hello world"
+    assert text == "Hello[citation:1] world"
     assert len(cites) == 1
     assert cites[0].delta.citation.type == "search_result_location"
-    # Verify ordering: text "Hello" before citation, then text " world" after
+    # The durable marker follows the citation event at the original position.
     delta_types = [e.delta.type for e in out]
-    assert delta_types == ["text_delta", "citations_delta", "text_delta"]
+    assert delta_types == [
+        "text_delta",
+        "citations_delta",
+        "text_delta",
+        "text_delta",
+    ]
 
     # Partial marker across chunks: "start [cit" + "ation:2] done"
     out2 = await _collect(
@@ -295,9 +300,7 @@ async def test_citation_stream_processor():
     )
     text2 = "".join(e.delta.text for e in out2 if e.delta.type == "text_delta")
     cites2 = [e for e in out2 if e.delta.type == "citations_delta"]
-    assert "[citation:" not in text2
-    assert "start" in text2
-    assert "done" in text2
+    assert text2 == "start [citation:2] done"
     assert len(cites2) == 1
     assert cites2[0].delta.citation.type == "char_location"
 
@@ -308,7 +311,7 @@ async def test_citation_stream_processor():
         )
     )
     text3 = "".join(e.delta.text for e in out3 if e.delta.type == "text_delta")
-    assert text3 == "version 10.0 is stable"
+    assert text3 == "version 10.0[citation:1] is stable"
 
     # Before punctuation: "The software version is 10.0 [citation: 1]."
     out4 = await _collect(
@@ -317,7 +320,7 @@ async def test_citation_stream_processor():
         )
     )
     text4 = "".join(e.delta.text for e in out4 if e.delta.type == "text_delta")
-    assert text4 == "The software version is 10.0."
+    assert text4 == "The software version is 10.0[citation:1]."
 
     # Flush: incomplete bracket emitted after stream ends
     out5 = await _collect(

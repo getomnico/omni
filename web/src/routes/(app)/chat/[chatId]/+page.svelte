@@ -57,7 +57,7 @@
     import type { ContentBlockParam } from '@anthropic-ai/sdk/resources.js'
     import {
         normalizeCitation,
-        citationIdFromCitation,
+        placeCitationPlaceholders,
         sourceIdentityFromCitation,
         type NormalizedCitation,
     } from '$lib/utils/citations'
@@ -1051,10 +1051,6 @@
                 for (let blockIdx = 0; blockIdx < contentBlocks.length; blockIdx++) {
                     const block = contentBlocks[blockIdx]
                     if (block.type === 'text') {
-                        let citationTxt = ''
-                        for (const citation of block.citations || []) {
-                            citationTxt += `{omni-cit:${encodeURIComponent(citationIdFromCitation(citation))}}`
-                        }
                         processedMessage.content.push({
                             id: processedMessage.content.length,
                             type: 'text',
@@ -1063,7 +1059,7 @@
                                 // citations are enabled. Replace them with clean [source] so
                                 // the readable IMAP label is not shown raw with unicode brackets.
                                 const cleaned = block.text.replace(/【([^】]*)】/g, '[$1]')
-                                return citationTxt ? `${cleaned} ${citationTxt}` : cleaned
+                                return placeCitationPlaceholders(cleaned, block.citations ?? [])
                             })(),
                             citations: block.citations ? [...block.citations] : undefined,
                         })

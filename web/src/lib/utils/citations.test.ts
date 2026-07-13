@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import type { TextCitationParam } from '@anthropic-ai/sdk/resources'
-import { normalizeCitation, citationIdFromCitation, sourceIdentityFromCitation } from './citations'
+import {
+    normalizeCitation,
+    citationIdFromCitation,
+    placeCitationPlaceholders,
+    sourceIdentityFromCitation,
+} from './citations'
 
 // ---------------------------------------------------------------------------
 // citationIdFromCitation
@@ -106,6 +111,55 @@ describe('citationIdFromCitation', () => {
             cited_text: 'block B',
         }
         expect(citationIdFromCitation(a)).not.toBe(citationIdFromCitation(b))
+    })
+})
+
+// ---------------------------------------------------------------------------
+// placeCitationPlaceholders
+// ---------------------------------------------------------------------------
+
+describe('placeCitationPlaceholders', () => {
+    const first: TextCitationParam = {
+        type: 'char_location',
+        document_index: 0,
+        document_title: 'First document',
+        start_char_index: 0,
+        end_char_index: 10,
+        cited_text: 'First excerpt',
+    }
+    const second: TextCitationParam = {
+        type: 'char_location',
+        document_index: 1,
+        document_title: 'Second document',
+        start_char_index: 10,
+        end_char_index: 20,
+        cited_text: 'Second excerpt',
+    }
+
+    it('keeps synthetic citations at their marker positions', () => {
+        const result = placeCitationPlaceholders(
+            'First claim[citation:1]. Second claim[citation:2].',
+            [first, second],
+        )
+
+        const firstPlaceholder = `{omni-cit:${encodeURIComponent(citationIdFromCitation(first))}}`
+        const secondPlaceholder = `{omni-cit:${encodeURIComponent(citationIdFromCitation(second))}}`
+        expect(result).toBe(`First claim${firstPlaceholder}. Second claim${secondPlaceholder}.`)
+    })
+
+    it('places multiple references from one marker in order', () => {
+        const result = placeCitationPlaceholders('Claim[citation:1, 2].', [first, second])
+        const firstPlaceholder = `{omni-cit:${encodeURIComponent(citationIdFromCitation(first))}}`
+        const secondPlaceholder = `{omni-cit:${encodeURIComponent(citationIdFromCitation(second))}}`
+
+        expect(result).toBe(`Claim${firstPlaceholder}${secondPlaceholder}.`)
+    })
+
+    it('keeps native citations at the end of their text block', () => {
+        const result = placeCitationPlaceholders('Native claim', [first])
+        const placeholder = `{omni-cit:${encodeURIComponent(citationIdFromCitation(first))}}`
+
+        expect(result).toBe(`Native claim ${placeholder}`)
     })
 })
 

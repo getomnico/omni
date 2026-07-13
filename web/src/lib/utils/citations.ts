@@ -18,6 +18,35 @@ function exhaustiveCheck(citation: never): never {
     throw new Error(`Unknown citation type: ${(citation as { type: string }).type ?? 'undefined'}`)
 }
 
+const syntheticCitationPattern = /\[citation:([\d,\s]+)\]/g
+
+function citationPlaceholder(citation: TextCitationParam): string {
+    return `{omni-cit:${encodeURIComponent(citationIdFromCitation(citation))}}`
+}
+
+/**
+ * Replace preserved synthetic citation markers in their original positions.
+ * Native citation blocks do not contain markers, so their citations remain
+ * attached to the end of the block as before.
+ */
+export function placeCitationPlaceholders(text: string, citations: TextCitationParam[]): string {
+    let citationIndex = 0
+    const withInlineCitations = text.replace(syntheticCitationPattern, (marker, references) => {
+        const referenceCount = references.match(/\d+/g)?.length ?? 0
+        const markerCitations = citations.slice(citationIndex, citationIndex + referenceCount)
+        citationIndex += referenceCount
+
+        return markerCitations.length > 0
+            ? markerCitations.map(citationPlaceholder).join('')
+            : marker
+    })
+
+    const remainingPlaceholders = citations.slice(citationIndex).map(citationPlaceholder).join('')
+    return remainingPlaceholders
+        ? `${withInlineCitations} ${remainingPlaceholders}`
+        : withInlineCitations
+}
+
 // ---------------------------------------------------------------------------
 // Per-citation identity (presentation-exact, includes title + cited_text)
 // ---------------------------------------------------------------------------
