@@ -11,11 +11,10 @@
     type Props = {
         href: string
         title: string
-        text: string
         snippet?: string
     }
 
-    let { href, title, text, snippet }: Props = $props()
+    let { href, title, snippet }: Props = $props()
 
     // Remove markdown annotations, reduce consecutive whitespace to a single space, truncate to 80 chars
     function sanitizeCitedText(text: string) {
@@ -72,14 +71,51 @@
             </div>
         </div>
     </HoverCard.Content>
-    <!-- Keep the trigger last and close Root inline so Svelte does not emit whitespace between the citation and following punctuation. -->
+    <!-- Inline chip with icon, truncated title, and existing hover card.
+         The chip replaces the numeric marker while preserving punctuation adjacency.
+         For HTTP(S) sources, renders as an anchor with target=_blank.
+         For non-navigable sources, renders as a button with type=button. -->
     {@const isNavigable = href.startsWith('http://') || href.startsWith('https://')}
-    <HoverCard.Trigger
-        href={isNavigable ? href : undefined}
-        {title}
-        target={isNavigable ? '_blank' : undefined}
-        rel={isNavigable ? 'noreferrer noopener' : undefined}
-        class="text-muted-foreground hover:text-foreground/80 inline-block max-w-36 items-center
-        gap-1 truncate overflow-hidden border p-0.5 text-xs no-underline
-        transition-colors">[{text}]</HoverCard.Trigger
-    ></HoverCard.Root>
+    <HoverCard.Trigger {title}>
+        {#snippet child({ props })}
+            {#if isNavigable}
+                <a
+                    {...props}
+                    role={undefined}
+                    {href}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    class="text-muted-foreground hover:text-foreground/80 ml-0.5 inline-flex max-w-36 cursor-pointer items-center
+                    gap-0.5 truncate overflow-hidden border-b border-dashed p-0 text-xs no-underline
+                    transition-colors">
+                    {#if getIconFromSearchResult(href)}
+                        <img
+                            src={getIconFromSearchResult(href)}
+                            alt=""
+                            class="!m-0 h-3 w-3 flex-shrink-0" />
+                    {:else}
+                        <FileText class="text-muted-foreground h-3 w-3 flex-shrink-0" />
+                    {/if}
+                    <span class="truncate">{title}</span>
+                </a>
+            {:else}
+                <button
+                    {...props}
+                    type="button"
+                    class="text-muted-foreground hover:text-foreground/80 ml-0.5 inline-flex max-w-36 cursor-pointer items-center
+                    gap-0.5 truncate overflow-hidden border-b border-dashed p-0 text-xs no-underline
+                    transition-colors">
+                    {#if getIconFromSearchResult(href)}
+                        <img
+                            src={getIconFromSearchResult(href)}
+                            alt=""
+                            class="!m-0 h-3 w-3 flex-shrink-0" />
+                    {:else}
+                        <FileText class="text-muted-foreground h-3 w-3 flex-shrink-0" />
+                    {/if}
+                    <span class="truncate">{title}</span>
+                </button>
+            {/if}
+        {/snippet}
+    </HoverCard.Trigger>
+</HoverCard.Root>

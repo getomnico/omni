@@ -6,7 +6,6 @@
         MessageStreamEvent,
         SearchResultBlockParam,
         TextBlockParam,
-        TextCitationParam,
         ToolUseBlock,
         TextDelta,
         CitationsDelta,
@@ -28,6 +27,7 @@
         ChevronRight,
         RotateCcw,
         ArrowDown,
+        BookOpen,
     } from '@lucide/svelte'
     import { marked } from 'marked'
     import { onDestroy, onMount } from 'svelte'
@@ -74,6 +74,7 @@
     import { SourceType } from '$lib/types'
     import MarkdownMessage from '$lib/components/markdown-message.svelte'
     import ImapCitationSource from '$lib/components/search-results/imap-citation-source.svelte'
+    import * as Drawer from '$lib/components/ui/drawer'
     import { themeStore } from '$lib/themes/store.svelte'
     import { formatChatTimestamp } from '$lib/utils/datetime'
 
@@ -481,6 +482,7 @@
 
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
+    let drawerOpenByKey = $state<Record<string, boolean>>({})
 
     function hashString(value: string): string {
         let hash = 2166136261
@@ -626,12 +628,11 @@
         return res
     }
 
-    function collectSources(message: ProcessedMessage): TextCitationParam[] {
-        const citations = []
-        const sourceSet = new Set()
+    function collectSources(message: ProcessedMessage): CitationSearchResultLocationParam[] {
+        const citations: CitationSearchResultLocationParam[] = []
+        const sourceSet = new Set<string>()
         for (const block of message.content) {
             if (block.type === 'text' && block.citations) {
-                // TODO: Handle other types of citations if necessary
                 for (const citation of block.citations) {
                     if (
                         citation.type === 'search_result_location' &&
@@ -979,7 +980,6 @@
             const chatMsg = displayPath[i]
             const message = chatMsg.message
             const info = siblingInfo.get(chatMsg.id)
-            const messageCitations: TextCitationParam[] = [] // All citations in this message
 
             if (isUserMessage(message)) {
                 // User messages may contain text blocks plus omni_upload document/image blocks.
@@ -1051,18 +1051,7 @@
                         let citationTxt = ''
                         for (const citation of block.citations || []) {
                             if (citation.type === 'search_result_location') {
-                                const existingCitationIdx = messageCitations.findIndex(
-                                    (c) =>
-                                        c.type === 'search_result_location' &&
-                                        c.source === citation.source,
-                                )
-                                if (existingCitationIdx !== -1) {
-                                    citationTxt += ` [${existingCitationIdx}]`
-                                } else {
-                                    const citationIdx = messageCitations.length
-                                    messageCitations.push(citation)
-                                    citationTxt += ` [${citationIdx}]`
-                                }
+                                citationTxt += `{omni-cit:${encodeURIComponent(citation.source)}}`
                             }
                         }
                         processedMessage.content.push({
@@ -1199,24 +1188,6 @@
                             }
                         }
                     }
-                }
-
-                // Add a separate block containing all the citation links
-                if (messageCitations.length > 0) {
-                    const citationSourceTxt = messageCitations
-                        .map((c, idx) => {
-                            if (c.type === 'search_result_location') {
-                                return `[${idx}]: ${c.source}`
-                            }
-                        })
-                        .filter((t) => t !== undefined)
-                        .join('\n')
-
-                    processedMessage.content.push({
-                        id: processedMessage.content.length,
-                        type: 'text',
-                        text: `\n\n${citationSourceTxt}\n\n`,
-                    })
                 }
 
                 addMessage(processedMessage)
@@ -2349,13 +2320,32 @@
     </div>
 {/snippet}
 
-{#snippet sourcesSection(citations: TextCitationParam[])}
-    {#if citations.length > 0}
-        <div class="flex flex-col gap-1.5">
-            <p class="text-muted-foreground pl-1 text-xs font-bold uppercase">Sources</p>
-            <div class="flex flex-wrap gap-1">
-                {#each citations as citation, idx}
-                    {#if citation.type === 'search_result_location'}
+{#snippet sourcesDrawer(citations: CitationSearchResultLocationParam[], drawerKey: string)}
+    <Drawer.Root
+        open={drawerOpenByKey[drawerKey] ?? false}
+        direction="right"
+        autoFocus={true}
+        onOpenChange={(o) => {
+            drawerOpenByKey = { ...drawerOpenByKey, [drawerKey]: o }
+        }}>
+        <Drawer.Trigger>
+            {#snippet child({ props })}
+                <Button
+                    {...props}
+                    size="sm"
+                    variant="outline"
+                    class="cursor-pointer gap-1.5 text-xs">
+                    <BookOpen class="h-3.5 w-3.5" />
+                    {citations.length} source{citations.length > 1 ? 's' : ''}
+                </Button>
+            {/snippet}
+        </Drawer.Trigger>
+        <Drawer.Content direction="right" class="flex max-h-full flex-col">
+            <Drawer.Title class="border-b px-5 py-3 text-base font-semibold">Sources</Drawer.Title>
+            <Drawer.Description class="sr-only">Cited sources for this response</Drawer.Description>
+            <div class="min-h-0 flex-1 overflow-y-auto px-5 pt-3 pb-5">
+                <div class="flex flex-col gap-2">
+                    {#each citations as citation (citation.source)}
                         {@const hasUrl =
                             citation.source?.startsWith('http://') ||
                             citation.source?.startsWith('https://')}
@@ -2363,11 +2353,11 @@
                         <svelte:element
                             this={hasUrl ? 'a' : 'div'}
                             href={hasUrl ? citation.source : undefined}
+                            data-testid="drawer-source"
                             class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors"
                             target={hasUrl ? '_blank' : undefined}
                             rel={hasUrl ? 'noopener noreferrer' : undefined}>
-                            <div class="flex items-center gap-1">
-                                <div class="text-muted-foreground text-sm">[{idx}]</div>
+                            <div class="flex items-center gap-2">
                                 {#if isImap}
                                     <Mail class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                 {:else if getIconFromSearchResult(citation.source)}
@@ -2378,19 +2368,25 @@
                                 {:else}
                                     <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                 {/if}
-                                <div class="flex flex-col gap-0.5">
-                                    <h1 class="text-muted-foreground text-sm font-semibold">
+                                <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+                                    <p
+                                        data-testid="drawer-source-title"
+                                        class="text-muted-foreground text-sm font-semibold">
                                         {citation.title}
-                                    </h1>
+                                    </p>
                                     <ImapCitationSource source={citation.source} />
                                 </div>
+                                {#if hasUrl}
+                                    <ExternalLink
+                                        class="text-muted-foreground h-3 w-3 flex-shrink-0" />
+                                {/if}
                             </div>
                         </svelte:element>
-                    {/if}
-                {/each}
+                    {/each}
+                </div>
             </div>
-        </div>
-    {/if}
+        </Drawer.Content>
+    </Drawer.Root>
 {/snippet}
 
 <div class="flex h-full flex-col">
@@ -2617,7 +2613,12 @@
                                 </Card.Root>
                             {/if}
                             {#if !isStreaming}
-                                {@render sourcesSection(collectSources(message))}
+                                {@const citations = collectSources(message)}
+                                {#if citations.length > 0}
+                                    <div class="flex items-center gap-2">
+                                        {@render sourcesDrawer(citations, message.renderKey)}
+                                    </div>
+                                {/if}
                             {/if}
                             <div
                                 class={cn(

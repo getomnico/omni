@@ -75,6 +75,7 @@ type TextUserMessage = {
 
 type SeededCitationChat = SeededChat & {
     assistantMessageId: string
+    citationFreeAssistantMessageId: string
 }
 
 function sseMessage(data: unknown): string {
@@ -433,9 +434,17 @@ async function seedCitationRenderingChat(): Promise<SeededCitationChat> {
         SELECT id FROM chat_messages
         WHERE chat_id = ${seeded.chatId} AND message_seq_num = 2
     `
+    const [citationFreeMessage] = await sql<{ id: string }[]>`
+        SELECT id FROM chat_messages
+        WHERE chat_id = ${seeded.chatId} AND message_seq_num = 4
+    `
     await sql.end()
 
-    return { ...seeded, assistantMessageId: assistantMessage.id }
+    return {
+        ...seeded,
+        assistantMessageId: assistantMessage.id,
+        citationFreeAssistantMessageId: citationFreeMessage.id,
+    }
 }
 
 async function countMessagesContaining(
@@ -547,11 +556,13 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
     }
 })
 
-test('chat renders text after a citation in the same paragraph', async ({ page }) => {
+test('chat renders citation chips and Sources drawer', async ({ page }) => {
     let seeded: SeededCitationChat | null = null
     try {
         seeded = await seedCitationRenderingChat()
         await authenticate(page, seeded)
+        // Short viewport so 6 cards overflow the drawer body
+        await page.setViewportSize({ width: 1280, height: 360 })
 
         await page.goto(`/chat/${seeded.chatId}`)
 
@@ -561,30 +572,206 @@ test('chat renders text after a citation in the same paragraph', async ({ page }
         await expect(message.getByText('A cited bullet')).toBeVisible()
         await expect(message.getByText('A text-only bullet')).toBeVisible()
 
+        // --- Inline chip labels appear ---
+        await expect(message.getByText('Citation source', { exact: true }).first()).toBeVisible()
+        await expect(message.getByText('Bullet citation source', { exact: true })).toBeVisible()
+        await expect(message.getByText('Web Source Example', { exact: true })).toBeVisible()
+
+        // --- Exact normalized structure preserves paragraph/list flow ---
         await expect
             .poll(async () =>
                 message
                     .locator('p')
                     .first()
-                    .evaluate((paragraph) => paragraph.textContent?.replace(/\s+/g, ' ').trim()),
+                    .evaluate((p) => p.textContent?.replace(/\s+/g, ' ').trim()),
             )
-            .toBe('A cited answer [0]. It should stay inline.')
+            .toBe('A cited answer Citation source. It should stay inline.')
+
         await expect
             .poll(async () =>
                 message
                     .locator('li')
                     .nth(0)
-                    .evaluate((listItem) => listItem.textContent?.replace(/\s+/g, ' ').trim()),
+                    .evaluate((li) => li.textContent?.replace(/\s+/g, ' ').trim()),
             )
-            .toBe('A cited bullet [1] should also stay inline.')
+            .toBe('A cited bullet Bullet citation source should also stay inline.')
+
         await expect
             .poll(async () =>
                 message
                     .locator('li')
                     .nth(1)
-                    .evaluate((listItem) => listItem.textContent?.replace(/\s+/g, ' ').trim()),
+                    .evaluate((li) => li.textContent?.replace(/\s+/g, ' ').trim()),
             )
             .toBe('A text-only bullet should also stay inline too.')
+
+        // No numeric markers anywhere in message
+        await expect
+            .poll(async () => message.evaluate((el) => (el.textContent ?? '').replace(/\s+/g, ' ')))
+            .not.toMatch(/\[\d+\]/)
+
+        // --- Navigable source has link semantics ---
+        const webLinkChip = message.locator('a[href="https://example.com/cited-web-page"]').first()
+        await expect(webLinkChip).toBeVisible()
+        await expect(webLinkChip).toHaveAttribute('target', '_blank')
+        await expect(webLinkChip.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noreferrer/,
+        )
+        await expect(webLinkChip.evaluate((el) => el.relList?.toString() ?? '')).toMatch(/noopener/)
+        await expect(webLinkChip).not.toHaveAttribute('role', 'button')
+        await expect(message.getByRole('link', { name: 'Web Source Example' })).toBeVisible()
+
+        // Non-navigable source is a button (not an anchor) with role="button"
+        const buttonChips = message.locator('button')
+        const citationBtn = buttonChips.filter({ hasText: 'Citation source' }).first()
+        await expect(citationBtn).toBeVisible()
+        await expect(citationBtn).toHaveAttribute('type', 'button')
+        await expect(citationBtn).toHaveAttribute('role', 'button')
+
+        // Web chip is an anchor, not a button
+        await expect(buttonChips.filter({ hasText: 'Web Source Example' })).toHaveCount(0)
+
+        // --- Long title truncation ---
+        const longChip = message
+            .locator('button, a')
+            .filter({ hasText: 'A Very Long Document Title' })
+            .first()
+        await expect(longChip).toBeVisible()
+        const truncation = await longChip.evaluate((el) => {
+            const span = el.querySelector('span.truncate')
+            if (!span) return { truncated: false }
+            return {
+                truncated: span.scrollWidth > span.clientWidth,
+                overflow: getComputedStyle(span).overflow,
+                textOverflow: getComputedStyle(span).textOverflow,
+            }
+        })
+        expect(truncation.truncated).toBe(true)
+        expect(truncation.overflow).toBe('hidden')
+        expect(truncation.textOverflow).toBe('ellipsis')
+
+        // --- Hover card on chip ---
+        await citationBtn.hover()
+        await expect(page.getByText('Citation source snippet')).toBeVisible()
+        await expect(page.getByText('Local Files')).toBeVisible()
+
+        // --- Sources button with correct count (6 unique sources) ---
+        const sourcesButton = message.getByRole('button', { name: /6 sources/i })
+        await expect(sourcesButton).toBeVisible()
+
+        // --- Drawer: open, geometry, ordered titles, dedup ---
+        await sourcesButton.click()
+        const drawer = page.locator('[data-slot="drawer-content"]')
+        await expect(drawer).toBeVisible()
+
+        // Right-side positioning after animation
+        await expect
+            .poll(async () => {
+                const box = await drawer.evaluate((el) => {
+                    const r = el.getBoundingClientRect()
+                    return { right: r.right, windowWidth: window.innerWidth }
+                })
+                return box.right
+            })
+            .toBeCloseTo(1280, 0)
+
+        // Full viewport height (at 360px viewport)
+        const drawerHeight = await drawer.evaluate((el) => el.getBoundingClientRect().height)
+        expect(drawerHeight).toBeGreaterThan(300)
+
+        // Accessible title
+        await expect(drawer.getByRole('heading', { name: /sources/i })).toBeVisible()
+
+        // Ordered deduped sources via stable testid selector
+        const expectedSourceTitles = [
+            'Citation source',
+            'Bullet citation source',
+            'A Very Long Document Title That Should Visually Truncate When Displayed as an Inline Chip in the Chat Interface to Keep the Layout Clean',
+            'Web Source Example',
+            'Another Document',
+            'Yet Another Document',
+        ]
+        const titleElements = drawer.locator('[data-testid="drawer-source-title"]')
+        await expect(titleElements).toHaveText(expectedSourceTitles)
+
+        await expect(drawer.getByText('Citation source', { exact: true })).toHaveCount(1)
+        await expect(drawer.getByText('Duplicate: Citation source', { exact: true })).toHaveCount(0)
+
+        // Title elements are <p>, not <h1>
+        await expect(titleElements.first()).toHaveTag('p')
+
+        // Behavioral scroll: drawer overflows with 6 cards at 360px height
+        const scrollContainer = drawer.locator('.overflow-y-auto')
+        await expect(scrollContainer).toBeAttached()
+        const scrollable = await scrollContainer.evaluate((el) => {
+            return { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+        })
+        expect(scrollable.scrollHeight).toBeGreaterThan(scrollable.clientHeight)
+        // Set scrollTop and verify it takes effect
+        await scrollContainer.evaluate((el) => {
+            el.scrollTop = 100
+        })
+        const scrolledTo = await scrollContainer.evaluate((el) => el.scrollTop)
+        expect(scrolledTo).toBeGreaterThan(0)
+
+        // Web source card is an anchor with correct attributes
+        const webDrawerCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]', {
+                hasText: 'Web Source Example',
+            }),
+        })
+        await expect(webDrawerCard).toHaveTag('a')
+        await expect(webDrawerCard).toHaveAttribute('href', 'https://example.com/cited-web-page')
+        await expect(webDrawerCard).toHaveAttribute('target', '_blank')
+        await expect(webDrawerCard.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noopener/,
+        )
+
+        // Non-http drawer source card is a div
+        const nonHttpCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]', {
+                hasText: 'Bullet citation source',
+            }),
+        })
+        await expect(nonHttpCard).toHaveTag('div')
+
+        // --- Close via Escape, focus returns to trigger ---
+        const triggerButtonText = await sourcesButton.textContent()
+        await page.keyboard.press('Escape')
+        await expect(drawer).not.toBeVisible()
+
+        // Focus returns to the Sources trigger after Escape
+        const focusedAfterEscape = await page.evaluate(() => document.activeElement?.textContent)
+        expect(focusedAfterEscape).toContain(triggerButtonText?.trim())
+
+        // --- Re-open and close via close button ---
+        await page.getByRole('button', { name: /6 sources/i }).click()
+        await expect(drawer).toBeVisible()
+
+        await drawer.locator('button').filter({ hasText: /close/i }).click()
+        await expect(drawer).not.toBeVisible()
+
+        // Focus returns to trigger after close button too
+        const focusedAfterCloseBtn = await page.evaluate(() => document.activeElement?.textContent)
+        expect(focusedAfterCloseBtn).toContain(triggerButtonText?.trim())
+
+        // --- Re-open and close via overlay click ---
+        await page.getByRole('button', { name: /6 sources/i }).click()
+        await expect(drawer).toBeVisible()
+        const overlay = page.locator('[data-slot="drawer-overlay"]')
+        await expect(overlay).toBeVisible()
+        await overlay.click({ position: { x: 10, y: 10 } })
+        await expect(drawer).not.toBeVisible()
+        await expect(sourcesButton).toBeFocused()
+
+        // --- Citation-free assistant message has no Sources trigger ---
+        const noCitationMessage = page.getByTestId(
+            `chat-message-${seeded.citationFreeAssistantMessageId}`,
+        )
+        await expect(
+            noCitationMessage.getByText('Here is an answer with no citations at all.'),
+        ).toBeVisible()
+        await expect(noCitationMessage.getByRole('button', { name: /source/i })).toHaveCount(0)
     } finally {
         await cleanupChat(seeded)
     }
