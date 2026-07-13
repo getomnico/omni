@@ -2341,7 +2341,8 @@
                 </Button>
             {/snippet}
         </Drawer.Trigger>
-        <Drawer.Content class="flex max-h-full flex-col">
+        <Drawer.Content
+            class="m-2 flex max-h-full flex-col overflow-hidden rounded-xl border shadow-lg">
             <Drawer.Header class="relative border-b px-5 py-3 text-left">
                 <Drawer.Title class="text-base font-semibold">Sources</Drawer.Title>
                 <Drawer.Description class="sr-only">

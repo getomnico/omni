@@ -25,6 +25,9 @@
     }: Props = $props()
 
     // Remove markdown annotations, reduce consecutive whitespace to a single space, truncate to 80 chars
+    const citationChipClass =
+        'text-muted-foreground hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50 focus-visible:border-ring focus-visible:ring-ring/50 ml-0.5 inline-flex h-5 max-w-40 cursor-pointer items-center gap-1 overflow-hidden rounded-md border border-border/60 bg-transparent px-1.5 py-0 text-xs font-medium no-underline outline-none transition-colors focus-visible:ring-[3px]'
+
     function sanitizeCitedText(text: string) {
         // Remove markdown formatting
         let sanitized = text
@@ -101,9 +104,7 @@
                     {href}
                     target="_blank"
                     rel="noreferrer noopener"
-                    class="text-muted-foreground hover:text-foreground/80 ml-0.5 inline-flex max-w-36 cursor-pointer items-center
-                    gap-0.5 truncate overflow-hidden border-b border-dashed p-0 text-xs no-underline
-                    transition-colors">
+                    class={citationChipClass}>
                     {#if iconHint && getIconFromSearchResult(iconHint)}
                         <img
                             src={getIconFromSearchResult(iconHint)}
@@ -117,12 +118,7 @@
                     <span class="truncate">{title}</span>
                 </a>
             {:else}
-                <button
-                    {...props}
-                    type="button"
-                    class="text-muted-foreground hover:text-foreground/80 ml-0.5 inline-flex max-w-36 cursor-pointer items-center
-                    gap-0.5 truncate overflow-hidden border-b border-dashed p-0 text-xs no-underline
-                    transition-colors">
+                <button {...props} type="button" class={citationChipClass}>
                     {#if iconHint && getIconFromSearchResult(iconHint)}
                         <img
                             src={getIconFromSearchResult(iconHint)}
