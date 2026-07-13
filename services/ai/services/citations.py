@@ -23,7 +23,10 @@ from anthropic.types import (
     MessageStreamEvent,
     PlainTextSourceParam,
     RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
     SearchResultBlockParam,
+    TextBlock,
     TextBlockParam,
     TextCitationParam,
     TextDelta,
@@ -387,11 +390,11 @@ class CitationProcessor:
 
 
 class CitationStreamProcessor(StreamProcessor):
-    """Preserve [citation:...] markers and emit synthetic citation deltas inline.
+    """Convert prompt-based citation markers into Anthropic-style text blocks.
 
-    The marker must remain in the persisted text because the citation object does not
-    contain its position in the generated response. The frontend replaces each marker
-    with the corresponding citation chip.
+    Each cited claim becomes a text block whose ``citations`` list contains the
+    supporting references. Subsequent source blocks are reindexed when one input
+    text block expands into multiple output blocks.
     """
 
     _PREFIX = "[citation:"
@@ -399,71 +402,109 @@ class CitationStreamProcessor(StreamProcessor):
     def __init__(self, citable_index: dict[int, CitableRef]) -> None:
         self._citable_index = citable_index
         self._buf = ""
-        self._current_index = 0
+        self._index_map: dict[int, int] = {}
+        self._next_output_index = 0
+        self._active_input_index: int | None = None
+        self._active_output_index: int | None = None
+        self._text_block_open = False
+        self._current_block_has_citations = False
 
     async def process(
         self,
         stream: AsyncIterator[MessageStreamEvent],
     ) -> AsyncIterator[MessageStreamEvent]:
         async for event in stream:
-            if event.type == "content_block_delta" and event.delta.type == "text_delta":
-                self._current_index = event.index
-                for out in self._process_text_delta(event):
-                    yield out
+            if event.type == "content_block_start":
+                output_index = self._next_output_index
+                self._next_output_index += 1
+                self._index_map[event.index] = output_index
+
+                if event.content_block.type == "text":
+                    self._active_input_index = event.index
+                    self._active_output_index = output_index
+                    self._text_block_open = True
+                    self._current_block_has_citations = False
+                    yield RawContentBlockStartEvent(
+                        type="content_block_start",
+                        index=output_index,
+                        content_block=event.content_block.model_copy(
+                            update={"text": "", "citations": None}
+                        ),
+                    )
+                    if event.content_block.text:
+                        for out in self._process_text(event.content_block.text):
+                            yield out
+                else:
+                    yield event.model_copy(update={"index": output_index})
+
+            elif event.type == "content_block_delta":
+                if event.delta.type == "text_delta":
+                    if event.index != self._active_input_index:
+                        raise RuntimeError(
+                            f"Text delta for inactive content block index {event.index}"
+                        )
+                    for out in self._process_text(event.delta.text):
+                        yield out
+                else:
+                    output_index = (
+                        self._current_text_index()
+                        if event.index == self._active_input_index
+                        else self._output_index(event.index)
+                    )
+                    yield event.model_copy(update={"index": output_index})
 
             elif event.type == "content_block_stop":
-                for out in self._flush_buffer(event.index):
-                    yield out
-                yield event
+                if event.index == self._active_input_index:
+                    for out in self._flush_buffer():
+                        yield out
+                    if self._text_block_open:
+                        yield self._stop_text_block()
+                    self._active_input_index = None
+                    self._active_output_index = None
+                    self._current_block_has_citations = False
+                else:
+                    yield event.model_copy(update={"index": self._output_index(event.index)})
 
             elif event.type == "message_stop":
-                for out in self._flush_buffer(self._current_index):
+                for out in self._finish_open_text_block():
                     yield out
                 yield event
 
             else:
                 yield event
 
-        # Flush any remaining buffered text after stream ends
-        for out in self._flush_buffer(self._current_index):
+        for out in self._finish_open_text_block():
             yield out
 
-    # ------------------------------------------------------------------
-
-    def _process_text_delta(
-        self,
-        event: MessageStreamEvent,
-    ) -> list[MessageStreamEvent]:
-        """Buffer text, emit interleaved text deltas and citation events."""
-        self._buf += event.delta.text
+    def _process_text(self, text: str) -> list[MessageStreamEvent]:
+        self._buf += text
         results: list[MessageStreamEvent] = []
 
         for segment in self._consume_buffer():
             if isinstance(segment, str):
-                if segment:
-                    results.append(
-                        RawContentBlockDeltaEvent(
-                            type="content_block_delta",
-                            index=event.index,
-                            delta=TextDelta(type="text_delta", text=segment),
-                        )
+                if not segment:
+                    continue
+                if self._current_block_has_citations:
+                    results.append(self._stop_text_block())
+                    results.append(self._start_text_block())
+                results.append(
+                    RawContentBlockDeltaEvent(
+                        type="content_block_delta",
+                        index=self._current_text_index(),
+                        delta=TextDelta(type="text_delta", text=segment),
                     )
+                )
             else:
-                # segment is a list of ref numbers from a citation marker
                 for ref_num in segment:
-                    citation_event = self._build_citation_event(event.index, ref_num)
+                    citation_event = self._build_citation_event(self._current_text_index(), ref_num)
                     if citation_event:
                         results.append(citation_event)
+                        self._current_block_has_citations = True
 
         return results
 
     def _consume_buffer(self) -> list[str | list[int]]:
-        """Parse the buffer, returning interleaved segments in order.
-
-        Each segment is either a str (text to emit) or a list[int] (citation
-        ref numbers from a swallowed marker). Leaves any incomplete potential
-        marker in self._buf.
-        """
+        """Return text and reference groups while retaining incomplete markers."""
         segments: list[str | list[int]] = []
         text_acc: list[str] = []
 
@@ -476,75 +517,131 @@ class CitationStreamProcessor(StreamProcessor):
         while self._buf:
             bracket = self._buf.find("[")
             if bracket == -1:
-                text_acc.append(self._buf)
-                self._buf = ""
+                if self._buf.endswith(" "):
+                    text_acc.append(self._buf[:-1])
+                    self._buf = " "
+                else:
+                    text_acc.append(self._buf)
+                    self._buf = ""
                 break
 
             if bracket > 0:
                 text_acc.append(self._buf[:bracket])
                 self._buf = self._buf[bracket:]
 
-            prefix = self._PREFIX
-            if len(self._buf) < len(prefix):
-                if prefix.startswith(self._buf):
-                    break  # could still become a citation, keep buffering
-                else:
-                    text_acc.append(self._buf[0])
-                    self._buf = self._buf[1:]
-                    continue
-
-            if not self._buf.startswith(prefix):
+            if len(self._buf) < len(self._PREFIX):
+                if self._PREFIX.startswith(self._buf):
+                    self._retain_trailing_space(text_acc)
+                    break
                 text_acc.append(self._buf[0])
                 self._buf = self._buf[1:]
                 continue
 
-            close = self._buf.find("]", len(prefix))
+            if not self._buf.startswith(self._PREFIX):
+                text_acc.append(self._buf[0])
+                self._buf = self._buf[1:]
+                continue
+
+            close = self._buf.find("]", len(self._PREFIX))
             if close == -1:
-                rest = self._buf[len(prefix) :]
+                rest = self._buf[len(self._PREFIX) :]
                 if all(c in "0123456789, " for c in rest):
-                    break  # keep buffering
-                else:
-                    text_acc.append(self._buf[0])
-                    self._buf = self._buf[1:]
-                    continue
+                    self._retain_trailing_space(text_acc)
+                    break
+                text_acc.append(self._buf[0])
+                self._buf = self._buf[1:]
+                continue
 
             candidate = self._buf[: close + 1]
-            m = _CITATION_PATTERN.match(candidate)
-            if m:
+            match = _CITATION_PATTERN.fullmatch(candidate)
+            if match:
                 self._buf = self._buf[close + 1 :]
-                # Strip trailing space before the marker; the inline citation chip
-                # provides its own spacing.
                 if text_acc and text_acc[-1].endswith(" "):
                     text_acc[-1] = text_acc[-1][:-1]
                 _flush_text()
                 ref_nums = [
-                    int(n)
-                    for n in _NUM_PATTERN.findall(m.group(1))
-                    if int(n) in self._citable_index
+                    ref_num
+                    for value in _NUM_PATTERN.findall(match.group(1))
+                    if (ref_num := int(value)) in self._citable_index
                 ]
                 if ref_nums:
                     segments.append(ref_nums)
-                    segments.append(f"[citation:{','.join(map(str, ref_nums))}]")
-            else:
-                text_acc.append(self._buf[0])
-                self._buf = self._buf[1:]
+                continue
+
+            text_acc.append(self._buf[0])
+            self._buf = self._buf[1:]
 
         _flush_text()
         return segments
 
-    def _flush_buffer(self, block_index: int) -> list["MessageStreamEvent"]:
-        """Emit any remaining buffered text as a text_delta event."""
+    def _retain_trailing_space(self, text_acc: list[str]) -> None:
+        if not text_acc or not text_acc[-1].endswith(" "):
+            return
+        text_acc[-1] = text_acc[-1][:-1]
+        self._buf = " " + self._buf
+
+    def _flush_buffer(self) -> list[MessageStreamEvent]:
         if not self._buf:
             return []
         text = self._buf
         self._buf = ""
-        return [
+        return self._emit_unparsed_text(text)
+
+    def _emit_unparsed_text(self, text: str) -> list[MessageStreamEvent]:
+        results: list[MessageStreamEvent] = []
+        if self._current_block_has_citations:
+            results.append(self._stop_text_block())
+            results.append(self._start_text_block())
+        results.append(
             RawContentBlockDeltaEvent(
                 type="content_block_delta",
-                index=block_index,
+                index=self._current_text_index(),
                 delta=TextDelta(type="text_delta", text=text),
             )
-        ]
+        )
+        return results
+
+    def _finish_open_text_block(self) -> list[MessageStreamEvent]:
+        if self._active_input_index is None:
+            return []
+        results = self._flush_buffer()
+        if self._text_block_open:
+            results.append(self._stop_text_block())
+        self._active_input_index = None
+        self._active_output_index = None
+        self._current_block_has_citations = False
+        return results
+
+    def _start_text_block(self) -> RawContentBlockStartEvent:
+        output_index = self._next_output_index
+        self._next_output_index += 1
+        self._active_output_index = output_index
+        self._text_block_open = True
+        self._current_block_has_citations = False
+        return RawContentBlockStartEvent(
+            type="content_block_start",
+            index=output_index,
+            content_block=TextBlock(type="text", text="", citations=None),
+        )
+
+    def _stop_text_block(self) -> RawContentBlockStopEvent:
+        output_index = self._current_text_index()
+        self._text_block_open = False
+        return RawContentBlockStopEvent(
+            type="content_block_stop",
+            index=output_index,
+        )
+
+    def _current_text_index(self) -> int:
+        if self._active_output_index is None or not self._text_block_open:
+            raise RuntimeError("No active text content block")
+        return self._active_output_index
+
+    def _output_index(self, input_index: int) -> int:
+        try:
+            return self._index_map[input_index]
+        except KeyError as error:
+            raise RuntimeError(f"Event for unknown content block index {input_index}") from error
 
     def _build_citation_event(
         self, block_index: int, ref_num: int
@@ -599,10 +696,7 @@ def _extract_data_from_document(block: DocumentBlockParam) -> str:
 
 
 def _strip_citations(block: TextBlockParam) -> TextBlockParam:
-    """Return a text block without synthetic markers or citation metadata."""
+    """Return a text block without the citations field."""
     if "citations" not in block:
         return block
-    return TextBlockParam(
-        type="text",
-        text=_CITATION_PATTERN.sub("", block["text"]),
-    )
+    return TextBlockParam(type="text", text=block["text"])

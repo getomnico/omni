@@ -2,10 +2,15 @@
 
 import pytest
 from anthropic.types import (
+    InputJSONDelta,
+    MessageStreamEvent,
     RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
     RawContentBlockStopEvent,
     RawMessageStopEvent,
+    TextBlock,
     TextDelta,
+    ToolUseBlock,
 )
 
 from services.citations import CitableRef, CitationProcessor, CitationStreamProcessor
@@ -75,7 +80,7 @@ def test_synthetic_citations_end_to_end():
             "content": [
                 {
                     "type": "text",
-                    "text": "Revenue grew 15%[citation:1]",
+                    "text": "Revenue grew 15%",
                     "citations": [
                         {
                             "type": "search_result_location",
@@ -241,7 +246,7 @@ async def _async_iter(events):
 
 @pytest.mark.asyncio
 async def test_citation_stream_processor():
-    """CitationStreamProcessor preserves marker positions and emits citation events inline."""
+    """Synthetic markers become cited text blocks with stable output indices."""
     citable_index = {
         1: CitableRef(
             index=1,
@@ -261,6 +266,13 @@ async def test_citation_stream_processor():
         ),
     }
 
+    def start(index: int) -> RawContentBlockStartEvent:
+        return RawContentBlockStartEvent(
+            type="content_block_start",
+            index=index,
+            content_block=TextBlock(type="text", text="", citations=None),
+        )
+
     def td(index: int, text: str) -> RawContentBlockDeltaEvent:
         return RawContentBlockDeltaEvent(
             type="content_block_delta",
@@ -268,73 +280,195 @@ async def test_citation_stream_processor():
             delta=TextDelta(type="text_delta", text=text),
         )
 
+    def tool_start(index: int) -> RawContentBlockStartEvent:
+        return RawContentBlockStartEvent(
+            type="content_block_start",
+            index=index,
+            content_block=ToolUseBlock(
+                type="tool_use",
+                id="toolu_test",
+                name="search_documents",
+                input={},
+            ),
+        )
+
+    def input_delta(index: int, partial_json: str) -> RawContentBlockDeltaEvent:
+        return RawContentBlockDeltaEvent(
+            type="content_block_delta",
+            index=index,
+            delta=InputJSONDelta(
+                type="input_json_delta",
+                partial_json=partial_json,
+            ),
+        )
+
     def stop(index: int) -> RawContentBlockStopEvent:
         return RawContentBlockStopEvent(type="content_block_stop", index=index)
 
-    # Full marker in one chunk: "Hello [citation:1] world"
-    # Citation events should be interleaved between text chunks
+    def assert_valid_block_lifecycle(events: list[MessageStreamEvent]) -> None:
+        open_indices: set[int] = set()
+        for event in events:
+            if event.type == "content_block_start":
+                assert event.index not in open_indices
+                open_indices.add(event.index)
+            elif event.type == "content_block_delta":
+                assert event.index in open_indices
+            elif event.type == "content_block_stop":
+                assert event.index in open_indices
+                open_indices.remove(event.index)
+        assert not open_indices
+
     out = await _collect(
         CitationStreamProcessor(citable_index).process(
-            _async_iter([td(0, "Hello [citation:1] world")])
+            _async_iter(
+                [
+                    start(0),
+                    td(
+                        0,
+                        "First claim [citation:1]. Second claim [citation:2].",
+                    ),
+                    stop(0),
+                    start(1),
+                    td(1, "Following source block."),
+                    stop(1),
+                ]
+            )
         )
     )
-    text = "".join(e.delta.text for e in out if e.delta.type == "text_delta")
-    cites = [e for e in out if e.delta.type == "citations_delta"]
-    assert text == "Hello[citation:1] world"
-    assert len(cites) == 1
-    assert cites[0].delta.citation.type == "search_result_location"
-    # The durable marker follows the citation event at the original position.
-    delta_types = [e.delta.type for e in out]
-    assert delta_types == [
-        "text_delta",
-        "citations_delta",
-        "text_delta",
-        "text_delta",
+
+    assert_valid_block_lifecycle(out)
+
+    block_texts: list[str] = []
+    block_citation_types: list[list[str]] = []
+    for event in out:
+        if event.type == "content_block_start":
+            assert event.index == len(block_texts)
+            block_texts.append("")
+            block_citation_types.append([])
+        elif event.type == "content_block_delta":
+            if event.delta.type == "text_delta":
+                block_texts[event.index] += event.delta.text
+            elif event.delta.type == "citations_delta":
+                block_citation_types[event.index].append(event.delta.citation.type)
+
+    assert block_texts == [
+        "First claim",
+        ". Second claim",
+        ".",
+        "Following source block.",
+    ]
+    assert block_citation_types == [
+        ["search_result_location"],
+        ["char_location"],
+        [],
+        [],
+    ]
+    assert [event.index for event in out if event.type == "content_block_stop"] == [
+        0,
+        1,
+        2,
+        3,
     ]
 
-    # Partial marker across chunks: "start [cit" + "ation:2] done"
-    out2 = await _collect(
+    # Tool blocks following a split text block are reindexed with their deltas.
+    with_tool = await _collect(
         CitationStreamProcessor(citable_index).process(
-            _async_iter([td(0, "start [cit"), td(0, "ation:2] done")])
+            _async_iter(
+                [
+                    start(0),
+                    td(0, "Claim [citation:1] tail"),
+                    stop(0),
+                    tool_start(1),
+                    input_delta(1, '{"query":"test"}'),
+                    stop(1),
+                ]
+            )
         )
     )
-    text2 = "".join(e.delta.text for e in out2 if e.delta.type == "text_delta")
-    cites2 = [e for e in out2 if e.delta.type == "citations_delta"]
-    assert text2 == "start [citation:2] done"
-    assert len(cites2) == 1
-    assert cites2[0].delta.citation.type == "char_location"
+    assert_valid_block_lifecycle(with_tool)
+    tool_events = [
+        event
+        for event in with_tool
+        if (event.type == "content_block_start" and event.content_block.type == "tool_use")
+        or (event.type == "content_block_delta" and event.delta.type == "input_json_delta")
+    ]
+    assert [event.index for event in tool_events] == [2, 2]
+    assert with_tool[-1].type == "content_block_stop"
+    assert with_tool[-1].index == 2
 
-    # Whitespace consumed: "version 10.0 [citation:1] is stable"
-    out3 = await _collect(
+    # Separate adjacent markers support the same claim and stay in one block.
+    adjacent = await _collect(
         CitationStreamProcessor(citable_index).process(
-            _async_iter([td(0, "version 10.0 [citation:1] is stable")])
+            _async_iter(
+                [
+                    start(0),
+                    td(0, "Shared claim [citation:1] [citation:2]."),
+                    stop(0),
+                ]
+            )
         )
     )
-    text3 = "".join(e.delta.text for e in out3 if e.delta.type == "text_delta")
-    assert text3 == "version 10.0[citation:1] is stable"
+    adjacent_citations = [
+        event
+        for event in adjacent
+        if event.type == "content_block_delta" and event.delta.type == "citations_delta"
+    ]
+    assert [event.index for event in adjacent_citations] == [0, 0]
 
-    # Before punctuation: "The software version is 10.0 [citation: 1]."
-    out4 = await _collect(
+    # Markers may span provider chunks.
+    partial = await _collect(
         CitationStreamProcessor(citable_index).process(
-            _async_iter([td(0, "The software version is 10.0 [citation: 1].")])
+            _async_iter(
+                [
+                    start(0),
+                    td(0, "start "),
+                    td(0, "[cit"),
+                    td(0, "ation:2] done"),
+                    stop(0),
+                ]
+            )
         )
     )
-    text4 = "".join(e.delta.text for e in out4 if e.delta.type == "text_delta")
-    assert text4 == "The software version is 10.0[citation:1]."
-
-    # Flush: incomplete bracket emitted after stream ends
-    out5 = await _collect(
-        CitationStreamProcessor(citable_index).process(_async_iter([td(0, "text [")]))
+    assert "[citation:" not in "".join(
+        event.delta.text
+        for event in partial
+        if event.type == "content_block_delta" and event.delta.type == "text_delta"
     )
-    text5 = "".join(e.delta.text for e in out5 if e.delta.type == "text_delta")
-    assert "[" in text5
+    assert any(
+        event.type == "content_block_delta"
+        and event.delta.type == "citations_delta"
+        and event.index == 0
+        for event in partial
+    )
+    assert (
+        next(
+            event.delta.text
+            for event in partial
+            if event.type == "content_block_delta" and event.delta.type == "text_delta"
+        )
+        == "start"
+    )
 
-    # Flush before message_stop when a provider omits content_block_stop
-    out6 = await _collect(
+    # Incomplete markers are flushed and the synthesized block is closed before
+    # message_stop when a provider omits content_block_stop.
+    incomplete = await _collect(
         CitationStreamProcessor(citable_index).process(
-            _async_iter([td(0, "text ["), RawMessageStopEvent(type="message_stop")])
+            _async_iter(
+                [
+                    start(0),
+                    td(0, "text ["),
+                    RawMessageStopEvent(type="message_stop"),
+                ]
+            )
         )
     )
-    assert out6[-1].type == "message_stop"
-    assert out6[-2].type == "content_block_delta"
-    assert "".join(e.delta.text for e in out6[:-1] if e.delta.type == "text_delta") == "text ["
+    assert incomplete[-1].type == "message_stop"
+    assert incomplete[-2].type == "content_block_stop"
+    assert (
+        "".join(
+            event.delta.text
+            for event in incomplete
+            if event.type == "content_block_delta" and event.delta.type == "text_delta"
+        )
+        == "text ["
+    )
