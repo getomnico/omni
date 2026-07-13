@@ -1,0 +1,178 @@
+name: Build Omni CLI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Test CLI
+        run: cargo test -p omni-cli --locked
+
+  build-linux:
+    name: Build ${{ matrix.asset-name }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset-name: omni-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            asset-name: omni-linux-arm64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: linux-${{ matrix.target }}
+
+      - name: Build CLI
+        run: cross build --release -p omni-cli --target ${{ matrix.target }} --locked
+
+      - name: Stage artifact
+        run: |
+          cp target/${{ matrix.target }}/release/omni ${{ matrix.asset-name }}
+          chmod +x ${{ matrix.asset-name }}
+          shasum -a 256 ${{ matrix.asset-name }} > ${{ matrix.asset-name }}.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset-name }}
+          path: |
+            ${{ matrix.asset-name }}
+            ${{ matrix.asset-name }}.sha256
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset-name }}
+            ${{ matrix.asset-name }}.sha256
+
+  build-macos:
+    name: Build ${{ matrix.asset-name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: x86_64-apple-darwin
+            asset-name: omni-macos-x86_64
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset-name: omni-macos-arm64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+          key: macos-${{ matrix.target }}
+
+      - name: Build CLI
+        run: cargo build --release -p omni-cli --target ${{ matrix.target }} --locked
+
+      - name: Stage artifact
+        run: |
+          cp target/${{ matrix.target }}/release/omni ${{ matrix.asset-name }}
+          chmod +x ${{ matrix.asset-name }}
+          shasum -a 256 ${{ matrix.asset-name }} > ${{ matrix.asset-name }}.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset-name }}
+          path: |
+            ${{ matrix.asset-name }}
+            ${{ matrix.asset-name }}.sha256
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset-name }}
+            ${{ matrix.asset-name }}.sha256
+
+  build-windows:
+    name: Build omni-windows-x86_64.exe
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Build CLI
+        run: cargo build --release -p omni-cli --locked
+
+      - name: Stage artifact
+        shell: pwsh
+        run: |
+          Copy-Item target/release/omni.exe omni-windows-x86_64.exe
+          Get-FileHash omni-windows-x86_64.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  omni-windows-x86_64.exe" } | Set-Content omni-windows-x86_64.exe.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: omni-windows-x86_64.exe
+          path: |
+            omni-windows-x86_64.exe
+            omni-windows-x86_64.exe.sha256
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            omni-windows-x86_64.exe
+            omni-windows-x86_64.exe.sha256

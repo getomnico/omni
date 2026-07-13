@@ -16,6 +16,7 @@ members = [
     "connectors/darwinbox",
     "shared",
     "benchmarks",
+    "cli",
 ]
 resolver = "2"
 

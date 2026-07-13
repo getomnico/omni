@@ -45,6 +45,7 @@ jobs:
       paperless-connector: ${{ steps.filter.outputs.paperless-connector }}
       docling: ${{ steps.filter.outputs.docling }}
       deployment: ${{ steps.filter.outputs.deployment }}
+      cli: ${{ steps.filter.outputs.cli }}
     steps:
       - uses: actions/checkout@v6
 
@@ -227,6 +228,12 @@ jobs:
               - 'infra/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/package-deployment.yml'
+            cli:
+              - 'cli/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-cli.yml'
 
   # ---------------------------------------------------------------------------
   # Core services
@@ -631,6 +638,13 @@ jobs:
       connector-name: ${{ matrix.connector-name }}
       connector-type: ${{ matrix.connector-type }}
     secrets: inherit
+
+  build-cli:
+    needs: detect-changes
+    if: >
+      needs.detect-changes.outputs.is-tag == 'true' ||
+      needs.detect-changes.outputs.cli == 'true'
+    uses: ./.github/workflows/build-cli.yml
 
   # ---------------------------------------------------------------------------
   # Deployment packaging
