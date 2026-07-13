@@ -48,6 +48,7 @@ from streaming.persist import (
     oauth_event,
     parse_tool_call_inputs,
     partial_assistant_message,
+    sse_event,
     stream_error_sse,
 )
 from streaming.run import _CANCEL_CHECK_INTERVAL_SECONDS, is_run_cancelled
