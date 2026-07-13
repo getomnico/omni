@@ -30,7 +30,7 @@ from anthropic.types import (
     ToolResultBlockParam,
 )
 
-from services.stream import StreamProcessor
+from streaming.processor import StreamProcessor
 
 # Matches [citation:1], [citation:9, 3, 4], [citation:1,2], etc.
 _CITATION_PATTERN = re.compile(r"\[citation:([\d,\s]+)\]")
