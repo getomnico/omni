@@ -26,6 +26,8 @@ from anthropic.types import ContentBlockParam, MessageParam, TextBlockParam
 
 from db.uploads import UploadsRepository
 from storage import ContentStorage
+from tools.document_handler import DocumentToolHandler
+from tools.registry import ToolContext
 
 
 # Our custom source variant embedded in Anthropic document/image blocks. Not part of
@@ -109,15 +111,19 @@ async def _expand_omni_upload(
     uploads_repo: UploadsRepository,
     sandbox_url: str | None,
     cache: dict[UploadId, list[TextBlockParam]],
+    user_id: str | None = None,
 ) -> list[TextBlockParam]:
     if upload_id in cache:
         return cache[upload_id]
 
     upload = await uploads_repo.get(upload_id)
     if not upload:
-        expanded: list[TextBlockParam] = [
-            _text_block(f"[upload {upload_id} not found]")
-        ]
+        expanded: list[TextBlockParam] = [_text_block(f"[upload {upload_id} not found]")]
+        cache[upload_id] = expanded
+        return expanded
+
+    if user_id is not None and upload.user_id != user_id:
+        expanded: list[TextBlockParam] = [_text_block(f"[upload {upload_id} not found]")]
         cache[upload_id] = expanded
         return expanded
 
@@ -130,9 +136,7 @@ async def _expand_omni_upload(
             text = None
 
         if text is not None and len(text) <= INLINE_TEXT_THRESHOLD:
-            expanded = [
-                _text_block(f'<file name="{upload.filename}">\n{text}\n</file>')
-            ]
+            expanded = [_text_block(f'<file name="{upload.filename}">\n{text}\n</file>')]
             cache[upload_id] = expanded
             return expanded
 
@@ -176,12 +180,194 @@ def _as_omni_upload(block: ContentBlockParam) -> OmniUploadBlock | None:
     return cast(OmniUploadBlock, block)
 
 
+class OmniMentionSource(TypedDict):
+    type: Literal["omni_mention"]
+    document_id: str
+    title: str
+
+
+class OmniMentionBlock(TypedDict):
+    type: Literal["document"]
+    source: OmniMentionSource
+
+
+# ID of a document in the `documents` table (ULID). Aliased for self-documenting dict keys.
+DocumentId = str
+
+
+async def _expand_omni_mention(
+    document_id: str,
+    title: str,
+    chat_id: str,
+    doc_handler: DocumentToolHandler,
+    user_id: str | None,
+    user_email: str | None,
+    skip_permission_check: bool,
+    cache: dict[DocumentId, tuple[bool, list[ContentBlockParam]]],
+) -> list[ContentBlockParam]:
+    # cache stores (is_error, content_blocks) — the content blocks are
+    # the raw ToolResult content (no label). The label is built fresh
+    # per occurrence so each mention gets its own title in the label.
+    if document_id in cache:
+        is_error, raw = cache[document_id]
+        if is_error:
+            return [_text_block(f"[Document '{title}' could not be loaded]")]
+        return [_text_block(f"[Mentioned document: {title}]")] + list(raw)
+
+    tool_context = ToolContext(
+        chat_id=chat_id,
+        user_id=user_id,
+        user_email=user_email,
+        skip_permission_check=skip_permission_check,
+    )
+
+    try:
+        result = await doc_handler.execute(
+            "read_document",
+            {"id": document_id, "name": title},
+            tool_context,
+            mention_document_id=document_id,
+        )
+    except Exception as e:
+        logger.warning(f"expand_mentions: failed to fetch document {document_id}: {e}")
+        cache[document_id] = (True, [])
+        return [_text_block(f"[Document '{title}' could not be loaded]")]
+
+    if result.is_error:
+        logger.info(f"expand_mentions: document {document_id} not accessible")
+        cache[document_id] = (True, [])
+        return [_text_block(f"[Document '{title}' could not be loaded]")]
+
+    # Cache the raw content (no label). Label is built per occurrence.
+    raw_content = list(result.content)
+    cache[document_id] = (False, raw_content)
+    return [_text_block(f"[Mentioned document: {title}]")] + raw_content
+
+
+def _as_omni_mention(
+    block: ContentBlockParam, msg_role: str | None = None
+) -> OmniMentionBlock | None:
+    """Narrow `block` to OmniMentionBlock when it carries a valid omni_mention
+    source that should be expanded.
+
+    A valid mention has outer ``type='document'``, a ``source`` dict with
+    ``type='omni_mention'``, a nonempty string ``document_id``, and a nonempty
+    string ``title``.  Returns None if not a mention, is in a non-user role, or
+    has invalid structure.  Always safe to call on any block; never raises."""
+    if msg_role is not None and msg_role != "user":
+        return None
+    if block.get("type") != "document":
+        return None
+    source = cast(dict, block).get("source")
+    if not isinstance(source, dict) or source.get("type") != "omni_mention":
+        return None
+    document_id = source.get("document_id")
+    title = source.get("title")
+    if not isinstance(document_id, str) or not document_id:
+        return None
+    if not isinstance(title, str) or not title:
+        return None
+    return cast(OmniMentionBlock, block)
+
+
+def _has_mention_source(block: ContentBlockParam) -> bool:
+    """Check if a block carries an omni_mention source dict, regardless of
+    outer type or field validity. Used for provider-invariant sanitization:
+    any such block must be either validated+expanded (user role) or replaced
+    with safe text (non-user)."""
+    source = cast(dict, block).get("source")
+    return isinstance(source, dict) and source.get("type") == "omni_mention"
+
+
+async def expand_mentions(
+    messages: list[MessageParam],
+    chat_id: str,
+    doc_handler: DocumentToolHandler,
+    user_id: str | None,
+    user_email: str | None,
+    skip_permission_check: bool = False,
+) -> list[MessageParam]:
+    """Return a new message list with all omni_mention blocks expanded.
+
+    Each mention block is replaced by a short label plus the document's
+    content (or an error notice if the document isn't accessible).
+    The expansion reuses ``DocumentToolHandler.execute("read_document", ...)``
+    so text inlining, sandbox staging for large/binary files, and permission
+    checks all behave identically to an explicit ``read_document`` tool call.
+    """
+    cache: dict[DocumentId, tuple[bool, list[ContentBlockParam]]] = {}
+    out: list[MessageParam] = []
+    for msg in messages:
+        # Only expand mentions in user messages. Assistant messages carry
+        # mention references only via tool_use input params, not as top-level
+        # content blocks, so they should never match _as_omni_mention. Guard
+        # here to stay safe against accidental expansion.
+        if msg.get("role") != "user":
+            # Sanitize any omni_mention blocks found outside user role.
+            # Never pass custom blocks through to the provider.
+            content = msg["content"]
+            if isinstance(content, list):
+                new_blocks: list[ContentBlockParam] = []
+                changed = False
+                for block in content:
+                    if _has_mention_source(block):
+                        new_blocks.append(_text_block("[Invalid document mention omitted]"))
+                        changed = True
+                    else:
+                        new_blocks.append(block)
+                if changed:
+                    out.append({**msg, "content": new_blocks})
+                else:
+                    out.append(msg)
+            else:
+                out.append(msg)
+            continue
+        content = msg["content"]
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+
+        new_blocks: list[ContentBlockParam] = []
+        changed = False
+        for block in content:
+            mention_block = _as_omni_mention(block, msg.get("role"))
+            if mention_block is not None:
+                new_blocks.extend(
+                    await _expand_omni_mention(
+                        mention_block["source"]["document_id"],
+                        mention_block["source"]["title"],
+                        chat_id,
+                        doc_handler,
+                        user_id,
+                        user_email,
+                        skip_permission_check,
+                        cache,
+                    )
+                )
+                changed = True
+            elif _has_mention_source(block):
+                # Invalid mention structure in user message — replace with
+                # safe text rather than passing a malformed custom block.
+                new_blocks.append(_text_block("[Invalid document mention omitted]"))
+                changed = True
+            else:
+                new_blocks.append(block)
+
+        if changed:
+            out.append({**msg, "content": new_blocks})
+        else:
+            out.append(msg)
+
+    return out
+
+
 async def expand_uploads(
     messages: list[MessageParam],
     chat_id: str,
     storage: ContentStorage,
     uploads_repo: UploadsRepository,
     sandbox_url: str | None,
+    user_id: str | None = None,
 ) -> list[MessageParam]:
     """Return a new message list with all omni_upload blocks expanded.
 
@@ -212,6 +398,7 @@ async def expand_uploads(
                     uploads_repo,
                     sandbox_url,
                     cache,
+                    user_id=user_id,
                 )
             )
             changed = True

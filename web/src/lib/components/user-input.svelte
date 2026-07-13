@@ -55,6 +55,8 @@
         onAttachClick?: () => void
         onFilesDropped?: (files: FileList) => void
         attachments?: Snippet
+        mentionedDocs?: { document_id: string; title: string }[]
+        canSubmit?: boolean
     }
 
     export type InputMode = 'search' | 'chat'
@@ -86,6 +88,8 @@
         onAttachClick,
         onFilesDropped,
         attachments,
+        mentionedDocs = $bindable([]),
+        canSubmit = undefined,
     }: UserInputProps = $props()
 
     let isDragging = $state(false)
@@ -147,6 +151,11 @@
     let popoverContainer: HTMLDivElement | undefined = $state()
     let placeholder = $derived(placeholders[inputMode])
 
+    let effectiveEligibility = $derived.by(() => {
+        if (canSubmit !== undefined) return canSubmit
+        return value.trim().length > 0 || mentionedDocs.length > 0
+    })
+
     // @-mention state
     let mentionActive = $state(false)
     let mentionQuery = $state('')
@@ -169,22 +178,39 @@
     )
 
     let effectiveShowPopover = $derived.by(() => {
-        if (inputMode !== 'search') {
-            return false
-        }
-
         if (mentionActive) {
             return mentionResults.length > 0
         }
-
-        return showPopover
+        return inputMode === 'search' && showPopover
     })
 
+    // Extract text content, stripping mention-chip text for chat mode.
+    // In search mode, chip title text is included (existing behavior).
+    function textWithoutMentionChips(): string {
+        if (!inputRef) return ''
+        if (inputMode === 'search') return inputRef.innerText
+        // Clone to avoid live DOM manipulation
+        const clone = inputRef.cloneNode(true) as HTMLElement
+        const chips = clone.querySelectorAll('[data-document-id]')
+        for (const chip of chips) {
+            chip.remove()
+        }
+        return clone.textContent ?? ''
+    }
+
+    // Sync externally controlled value/mentionedDocs to the live DOM.
+    // When the parent resets both to empty (successful submit), clear all
+    // children including chips. When chips exist but values are nonempty,
+    // leave DOM intact (parent is editing, not resetting).
     $effect(() => {
-        // Use innerText to match what is extracted in handleInputChange.
-        // This prevents the reactivity loop from triggering while the user is actively typing,
-        // which completely avoids disrupting both cursor positions and Korean IME composition.
-        if (inputRef && value !== inputRef.innerText) {
+        if (!inputRef) return
+        if (value === '' && mentionedDocs.length === 0) {
+            // Controlled clear: parent reset after successful submit.
+            inputRef.replaceChildren()
+            return
+        }
+        const hasChips = inputRef.querySelector('[data-document-id]')
+        if (!hasChips && value !== inputRef.innerText) {
             if (value) {
                 inputRef.innerText = value
             } else {
@@ -192,6 +218,18 @@
             }
         }
     })
+
+    function scanMentionedDocs() {
+        if (!inputRef) {
+            mentionedDocs = []
+            return
+        }
+        const chips = inputRef.querySelectorAll('[data-document-id]')
+        mentionedDocs = Array.from(chips).map((chip) => ({
+            document_id: (chip as HTMLElement).dataset.documentId ?? '',
+            title: chip.textContent ?? '',
+        }))
+    }
 
     function closeMention() {
         mentionActive = false
@@ -317,7 +355,9 @@
         sel.addRange(newRange)
 
         closeMention()
-        onInput(inputRef.innerText)
+        scanMentionedDocs()
+        value = textWithoutMentionChips()
+        onInput(value)
     }
 
     function handleKeyPress(event: KeyboardEvent) {
@@ -352,7 +392,7 @@
     }
 
     async function handleSubmitClick() {
-        if (value.trim() && !disabled && !isLoading && !isStreaming) {
+        if (effectiveEligibility && !disabled && !isLoading && !isStreaming) {
             await onSubmit()
         }
     }
@@ -365,8 +405,9 @@
 
     function handleInputChange() {
         if (inputRef) {
-            value = inputRef.innerText
+            value = textWithoutMentionChips()
             onInput(value)
+            scanMentionedDocs()
             detectMention()
             if (!mentionActive && onPopoverChange) {
                 onPopoverChange(false)
@@ -395,6 +436,14 @@
             onPopoverChange(false)
         }
     }
+
+    function changeInputMode(newMode: InputMode) {
+        inputMode = newMode
+        // Recompute controlled value from current DOM for the new mode
+        // (search includes chip titles; chat excludes them).
+        value = textWithoutMentionChips()
+        onInput(value)
+    }
 </script>
 
 {#snippet modeSelector()}
@@ -412,7 +461,7 @@
                             aria-label="Chat mode"
                             onclick={(e) => {
                                 e.stopPropagation()
-                                inputMode = 'chat'
+                                changeInputMode('chat')
                             }}>
                             <MessageCircle class="size-4" />
                         </Button>
@@ -437,7 +486,7 @@
                             aria-label="Search mode"
                             onclick={(e) => {
                                 e.stopPropagation()
-                                inputMode = 'search'
+                                changeInputMode('search')
                             }}>
                             <Search class="size-4" />
                         </Button>
@@ -584,7 +633,9 @@
                         size="icon"
                         class="omni-composer-send size-8 cursor-pointer"
                         onclick={handleSubmitClick}
-                        disabled={!value.trim() || disabled}>
+                        disabled={!effectiveEligibility ||
+                            disabled ||
+                            (canSubmit !== undefined && !canSubmit)}>
                         {#if inputMode === 'search'}
                             <Search class="h-3 w-3" />
                         {:else}

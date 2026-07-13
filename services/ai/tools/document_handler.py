@@ -17,6 +17,19 @@ from tools.sandbox import write_binary_to_sandbox, write_text_to_sandbox
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_basename(title: str) -> str:
+    """Sanitize a document title to a safe filesystem basename.
+
+    Keeps only letters, digits, dots, dashes, underscores. Strips control
+    characters and path separators. Truncates to 128 chars to stay safely
+    bounded.
+    """
+    safe = "".join(c for c in title if c.isalnum() or c in ".-_")
+    safe = safe.strip(".-")
+    return safe[:128] or "document"
+
+
 # Content types considered binary (not extracted text).
 # The documents.content_type column stores the standardized content_type
 # (e.g. "spreadsheet") when set, falling back to MIME type otherwise.
@@ -110,7 +123,12 @@ class DocumentToolHandler:
         return False  # read-only operation
 
     async def execute(
-        self, tool_name: str, tool_input: dict, context: ToolContext
+        self,
+        tool_name: str,
+        tool_input: dict,
+        context: ToolContext,
+        *,
+        mention_document_id: str | None = None,
     ) -> ToolResult:
         if tool_name != "read_document":
             return ToolResult(
@@ -119,7 +137,6 @@ class DocumentToolHandler:
             )
 
         document_id = tool_input.get("id", "")
-        # Strip the _ref: prefix if the LLM passes the raw search result reference token.
         if document_id and document_id.startswith("_ref:"):
             document_id = document_id[len("_ref:") :]
         document_name = tool_input.get("name", document_id)
@@ -133,14 +150,8 @@ class DocumentToolHandler:
             )
 
         try:
-            # Look up document metadata, applying permission filter when appropriate.
-            # Accept either a documents.id (ULID) or a connector-native external_id —
-            # the latter is what attachment pointers in email threads carry, since
-            # the indexer-assigned ULID isn't known at the time the thread is emitted.
             user_email = None if context.skip_permission_check else context.user_email
-            doc = await self._documents_repo.get_by_id(
-                document_id, user_email=user_email
-            )
+            doc = await self._documents_repo.get_by_id(document_id, user_email=user_email)
             if doc is None:
                 doc = await self._documents_repo.get_by_external_id(
                     document_id, user_email=user_email
@@ -156,15 +167,35 @@ class DocumentToolHandler:
                     is_error=True,
                 )
 
-            # Determine if this is a binary file
+            # When mention_document_id is set (expand_mentions path), use a
+            # deterministic workspace path and stat-before-read to avoid
+            # re-fetching cross-turn. The path includes the authoritative
+            # doc.id and the blob content_id (when available) for freshness.
+            # Docs without content_id (e.g. source-fetched binaries) skip
+            # stat reuse and are always re-fetched.
+            deterministic_path = None
+            if mention_document_id and self._sandbox_url and doc.content_id:
+                safe_title = _safe_basename(doc.title or "document")
+                deterministic_path = f"mention_{doc.id}_{doc.content_id}_{safe_title}"
+                stat_result = await self._stat_sandbox_path(deterministic_path, context.chat_id)
+                if stat_result:
+                    size_kb = stat_result.get("size_bytes", 0) / 1024
+                    return ToolResult(
+                        content=[
+                            {
+                                "type": "text",
+                                "text": f"Document saved to workspace: {deterministic_path} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
+                            }
+                        ],
+                    )
+            elif mention_document_id and self._sandbox_url and not doc.content_id:
+                # No content_id — build a deterministic write path but skip
+                # stat reuse; always re-fetch to avoid stale data.
+                safe_title = _safe_basename(doc.title or "document")
+                deterministic_path = f"mention_{doc.id}_{safe_title}"
+
             is_binary = doc.content_type in BINARY_CONTENT_TYPES
 
-            # For binary types, connectors often extract text at index time and
-            # store it in content_blobs (with content_type="text/plain"). When
-            # that happens, prefer the stored text over a round-trip binary fetch.
-            # We use the blob's MIME type to distinguish real extracted text
-            # (text/plain) from metadata-only blobs stored for images, videos,
-            # and unextractable archives (which retain their original MIME type).
             has_extracted_text = False
             if is_binary and doc.content_id and self._content_storage:
                 try:
@@ -174,7 +205,7 @@ class DocumentToolHandler:
                     )
                 except Exception:
                     logger.debug(
-                        "get_metadata failed for content_id %s, falling back to binary fetch",
+                        "get_metadata failed for content_id %s",
                         doc.content_id,
                         exc_info=True,
                     )
@@ -185,10 +216,17 @@ class DocumentToolHandler:
                 and self._connector_manager_url
                 and doc.source_id
             ):
-                return await self._fetch_binary(doc, document_name, context)
+                return await self._fetch_binary(
+                    doc, document_name, context, deterministic_path=deterministic_path
+                )
             else:
                 return await self._read_text(
-                    doc, document_name, start_line, end_line, context
+                    doc,
+                    document_name,
+                    start_line,
+                    end_line,
+                    context,
+                    deterministic_path=deterministic_path,
                 )
 
         except Exception as e:
@@ -198,10 +236,39 @@ class DocumentToolHandler:
                 is_error=True,
             )
 
+    async def _stat_sandbox_path(self, path: str, chat_id: str) -> dict | None:
+        """Stat a sandbox path, returning metadata dict if it exists, None otherwise."""
+        if not self._sandbox_url:
+            return None
+        base = self._sandbox_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{base}/files/stat",
+                    json={"path": path, "chat_id": chat_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("exists"):
+                    return data
+        except Exception:
+            logger.debug("stat failed for sandbox path %s", path, exc_info=True)
+        return None
+
     async def _fetch_binary(
-        self, doc, document_name: str, context: ToolContext
+        self,
+        doc,
+        document_name: str,
+        context: ToolContext,
+        *,
+        deterministic_path: str | None = None,
     ) -> ToolResult:
-        """Fetch binary file from source via connector-manager and write to sandbox."""
+        """Fetch binary file from source via connector-manager and write to sandbox.
+
+        For deterministic (mention) paths, the caller provides a pre-computed
+        path; for ordinary tool calls the filename from the response header
+        or document_name is used.
+        """
         logger.info(
             f"Fetching binary file '{document_name}' (id={doc.id}) from source {doc.source_id}"
         )
@@ -221,7 +288,6 @@ class DocumentToolHandler:
             content_type = resp.headers.get("content-type", "")
 
             if "application/json" in content_type:
-                # The connector returned a JSON error
                 result = resp.json()
                 error = result.get("error", "Unknown error")
                 return ToolResult(
@@ -236,7 +302,13 @@ class DocumentToolHandler:
 
             binary_data = resp.content
             header_name = resp.headers.get("x-file-name")
-            file_name = unquote(header_name) if header_name else document_name
+            # Use the decoded header name for ordinary tool calls; for
+            # deterministic mention paths use the caller-provided path.
+            file_name = (
+                deterministic_path
+                if deterministic_path
+                else (unquote(header_name) if header_name else document_name)
+            )
 
         return await write_binary_to_sandbox(
             self._sandbox_url, binary_data, file_name, context.chat_id
@@ -249,6 +321,8 @@ class DocumentToolHandler:
         start_line: int | None,
         end_line: int | None,
         context: ToolContext,
+        *,
+        deterministic_path: str | None = None,
     ) -> ToolResult:
         """Read text document content, returning directly or writing to sandbox."""
         if not doc.content_id:
@@ -264,14 +338,12 @@ class DocumentToolHandler:
 
         content = await self._content_storage.get_text(doc.content_id)
 
-        # Apply line range if specified
         if start_line is not None or end_line is not None:
             lines = content.split("\n")
-            start = (start_line or 1) - 1  # Convert to 0-indexed
+            start = (start_line or 1) - 1
             end = end_line or len(lines)
             content = "\n".join(lines[start:end])
 
-        # Size check: return directly or write to sandbox
         if len(content) <= DIRECT_RETURN_THRESHOLD:
             return ToolResult(
                 content=[
@@ -288,23 +360,22 @@ class DocumentToolHandler:
                 ],
             )
 
-        # Large text: write to sandbox
         if self._sandbox_url:
-            # Determine a reasonable filename
-            file_name = document_name or doc.title or f"document_{doc.id}.txt"
-            if "." not in file_name:
-                file_name += ".txt"
+            filepath = deterministic_path
+            if not filepath:
+                filepath = document_name or doc.title or f"document_{doc.id}"
+                if "." not in filepath:
+                    filepath += ".txt"
 
             size_kb = len(content.encode("utf-8")) / 1024
             return await write_text_to_sandbox(
                 self._sandbox_url,
                 content,
-                file_name,
+                filepath,
                 context.chat_id,
-                message=f"Document saved to workspace: {file_name} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
+                message=f"Document saved to workspace: {filepath} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
             )
 
-        # No sandbox available, return truncated content
         truncated = content[:DIRECT_RETURN_THRESHOLD]
         return ToolResult(
             content=[
