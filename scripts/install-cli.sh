@@ -3,7 +3,15 @@ set -eu
 
 REPO="${OMNI_CLI_REPO:-getomnico/omni}"
 VERSION="${OMNI_CLI_VERSION:-latest}"
-INSTALL_DIR="${OMNI_CLI_INSTALL_DIR:-/usr/local/bin}"
+if [ -n "${OMNI_CLI_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$OMNI_CLI_INSTALL_DIR"
+elif [ -n "${XDG_BIN_HOME:-}" ]; then
+  INSTALL_DIR="$XDG_BIN_HOME"
+elif [ -n "${HOME:-}" ]; then
+  INSTALL_DIR="$HOME/.local/bin"
+else
+  INSTALL_DIR=""
+fi
 BINARY_NAME="${OMNI_CLI_BINARY_NAME:-omni}"
 
 usage() {
@@ -16,7 +24,7 @@ Usage:
 Options:
   --version VERSION      Release tag to install, e.g. v0.1.7 or 0.1.7 (default: latest)
   --repo OWNER/REPO      GitHub repository to download from (default: getomnico/omni)
-  --install-dir PATH     Directory to install into (default: /usr/local/bin)
+  --install-dir PATH     Directory to install into (default: $XDG_BIN_HOME or $HOME/.local/bin)
   --binary-name NAME     Installed binary name (default: omni)
   -h, --help             Show this help
 
