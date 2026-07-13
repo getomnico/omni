@@ -1,20 +1,28 @@
 <script lang="ts">
     import * as HoverCard from '$lib/components/ui/hover-card'
-    import { SourceType } from '$lib/types'
-    import {
-        getIconFromSearchResult,
-        getSourceDisplayName,
-        inferSourceFromUrl,
-    } from '$lib/utils/icons'
-    import { FileText } from '@lucide/svelte'
+    import { getIconFromSearchResult } from '$lib/utils/icons'
+    import { FileText, Globe } from '@lucide/svelte'
 
     type Props = {
-        href: string
+        href: string | null
         title: string
         snippet?: string
+        /** Raw URL string for icon inference (may be null for documents). */
+        iconHint?: string | null
+        /** Connector display name (e.g. "Files", "Web", "Gmail"). */
+        sourceName: string
+        /** Location label (e.g. "Pages 3–5", "Document excerpt"). */
+        locationLabel?: string | null
     }
 
-    let { href, title, snippet }: Props = $props()
+    let {
+        href,
+        title,
+        snippet,
+        iconHint = null,
+        sourceName,
+        locationLabel = null,
+    }: Props = $props()
 
     // Remove markdown annotations, reduce consecutive whitespace to a single space, truncate to 80 chars
     function sanitizeCitedText(text: string) {
@@ -51,21 +59,28 @@
     <HoverCard.Content>
         <div class="flex flex-col gap-1">
             <div class="flex items-center gap-1">
-                {#if getIconFromSearchResult(href)}
+                {#if iconHint && getIconFromSearchResult(iconHint)}
                     <img
-                        src={getIconFromSearchResult(href)}
+                        src={getIconFromSearchResult(iconHint)}
                         alt=""
                         class="!m-0 h-4 w-4 flex-shrink-0" />
+                {:else if sourceName === 'Web'}
+                    <Globe class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                 {:else}
                     <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                 {/if}
                 <h4 class="text-muted-foreground text-xs font-semibold">
-                    {getSourceDisplayName(inferSourceFromUrl(href) || SourceType.LOCAL_FILES)}
+                    {sourceName}
                 </h4>
             </div>
             <h4 class="truncate overflow-hidden text-sm font-semibold">
                 {title}
             </h4>
+            {#if locationLabel}
+                <p class="text-muted-foreground/70 text-xs">
+                    {locationLabel}
+                </p>
+            {/if}
             <div class="text-muted-foreground overflow-hidden text-xs whitespace-break-spaces">
                 {sanitizeCitedText(snippet || '')}
             </div>
@@ -75,7 +90,8 @@
          The chip replaces the numeric marker while preserving punctuation adjacency.
          For HTTP(S) sources, renders as an anchor with target=_blank.
          For non-navigable sources, renders as a button with type=button. -->
-    {@const isNavigable = href.startsWith('http://') || href.startsWith('https://')}
+    {@const isNavigable =
+        href !== null && (href.startsWith('http://') || href.startsWith('https://'))}
     <HoverCard.Trigger {title}>
         {#snippet child({ props })}
             {#if isNavigable}
@@ -88,11 +104,13 @@
                     class="text-muted-foreground hover:text-foreground/80 ml-0.5 inline-flex max-w-36 cursor-pointer items-center
                     gap-0.5 truncate overflow-hidden border-b border-dashed p-0 text-xs no-underline
                     transition-colors">
-                    {#if getIconFromSearchResult(href)}
+                    {#if iconHint && getIconFromSearchResult(iconHint)}
                         <img
-                            src={getIconFromSearchResult(href)}
+                            src={getIconFromSearchResult(iconHint)}
                             alt=""
                             class="!m-0 h-3 w-3 flex-shrink-0" />
+                    {:else if sourceName === 'Web'}
+                        <Globe class="text-muted-foreground h-3 w-3 flex-shrink-0" />
                     {:else}
                         <FileText class="text-muted-foreground h-3 w-3 flex-shrink-0" />
                     {/if}
@@ -105,11 +123,13 @@
                     class="text-muted-foreground hover:text-foreground/80 ml-0.5 inline-flex max-w-36 cursor-pointer items-center
                     gap-0.5 truncate overflow-hidden border-b border-dashed p-0 text-xs no-underline
                     transition-colors">
-                    {#if getIconFromSearchResult(href)}
+                    {#if iconHint && getIconFromSearchResult(iconHint)}
                         <img
-                            src={getIconFromSearchResult(href)}
+                            src={getIconFromSearchResult(iconHint)}
                             alt=""
                             class="!m-0 h-3 w-3 flex-shrink-0" />
+                    {:else if sourceName === 'Web'}
+                        <Globe class="text-muted-foreground h-3 w-3 flex-shrink-0" />
                     {:else}
                         <FileText class="text-muted-foreground h-3 w-3 flex-shrink-0" />
                     {/if}

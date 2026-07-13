@@ -19,6 +19,7 @@
         Check,
         CircleAlert,
         CircleAlertIcon,
+        Globe,
         ExternalLink,
         FileText,
         Mail,
@@ -53,10 +54,13 @@
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import { type ChatMessage } from '$lib/server/db/schema'
-    import type {
-        CitationSearchResultLocationParam,
-        ContentBlockParam,
-    } from '@anthropic-ai/sdk/resources.js'
+    import type { ContentBlockParam } from '@anthropic-ai/sdk/resources.js'
+    import {
+        normalizeCitation,
+        citationIdFromCitation,
+        sourceIdentityFromCitation,
+        type NormalizedCitation,
+    } from '$lib/utils/citations'
     import { afterNavigate, invalidate, invalidateAll } from '$app/navigation'
     import { page } from '$app/state'
     import UserInput from '$lib/components/user-input.svelte'
@@ -629,18 +633,16 @@
         return res
     }
 
-    function collectSources(message: ProcessedMessage): CitationSearchResultLocationParam[] {
-        const citations: CitationSearchResultLocationParam[] = []
+    function collectSources(message: ProcessedMessage): NormalizedCitation[] {
+        const citations: NormalizedCitation[] = []
         const sourceSet = new Set<string>()
         for (const block of message.content) {
             if (block.type === 'text' && block.citations) {
                 for (const citation of block.citations) {
-                    if (
-                        citation.type === 'search_result_location' &&
-                        !sourceSet.has(citation.source)
-                    ) {
-                        citations.push(citation)
-                        sourceSet.add(citation.source)
+                    const sourceId = sourceIdentityFromCitation(citation)
+                    if (!sourceSet.has(sourceId)) {
+                        sourceSet.add(sourceId)
+                        citations.push(normalizeCitation(citation))
                     }
                 }
             }
@@ -1051,9 +1053,7 @@
                     if (block.type === 'text') {
                         let citationTxt = ''
                         for (const citation of block.citations || []) {
-                            if (citation.type === 'search_result_location') {
-                                citationTxt += `{omni-cit:${encodeURIComponent(citation.source)}}`
-                            }
+                            citationTxt += `{omni-cit:${encodeURIComponent(citationIdFromCitation(citation))}}`
                         }
                         processedMessage.content.push({
                             id: processedMessage.content.length,
@@ -2321,7 +2321,7 @@
     </div>
 {/snippet}
 
-{#snippet sourcesDrawer(citations: CitationSearchResultLocationParam[], drawerKey: string)}
+{#snippet sourcesDrawer(citations: NormalizedCitation[], drawerKey: string)}
     <Drawer.Root
         open={drawerOpenByKey[drawerKey] ?? false}
         direction="right"
@@ -2355,26 +2355,24 @@
             </Drawer.Header>
             <div class="min-h-0 flex-1 overflow-y-auto px-5 pt-3 pb-5">
                 <div class="flex flex-col gap-2">
-                    {#each citations as citation (citation.source)}
-                        {@const hasUrl =
-                            citation.source?.startsWith('http://') ||
-                            citation.source?.startsWith('https://')}
-                        {@const isImap = citation.source?.startsWith('imap:')}
+                    {#each citations as citation (citation.sourceId)}
                         <svelte:element
-                            this={hasUrl ? 'a' : 'div'}
-                            href={hasUrl ? citation.source : undefined}
+                            this={citation.href ? 'a' : 'div'}
+                            href={citation.href ?? undefined}
                             data-testid="drawer-source"
                             class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors"
-                            target={hasUrl ? '_blank' : undefined}
-                            rel={hasUrl ? 'noopener noreferrer' : undefined}>
+                            target={citation.href ? '_blank' : undefined}
+                            rel={citation.href ? 'noopener noreferrer' : undefined}>
                             <div class="flex items-center gap-2">
-                                {#if isImap}
+                                {#if citation.isImap}
                                     <Mail class="text-muted-foreground h-4 w-4 flex-shrink-0" />
-                                {:else if getIconFromSearchResult(citation.source)}
+                                {:else if citation.iconHint && getIconFromSearchResult(citation.iconHint)}
                                     <img
-                                        src={getIconFromSearchResult(citation.source)}
+                                        src={getIconFromSearchResult(citation.iconHint)}
                                         alt=""
                                         class="!m-0 h-4 w-4 flex-shrink-0" />
+                                {:else if citation.sourceName === 'Web'}
+                                    <Globe class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                 {:else}
                                     <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
                                 {/if}
@@ -2384,9 +2382,19 @@
                                         class="text-muted-foreground text-sm font-semibold">
                                         {citation.title}
                                     </p>
-                                    <ImapCitationSource source={citation.source} />
+                                    <p class="text-muted-foreground/60 text-xs">
+                                        {citation.sourceName}
+                                    </p>
+                                    {#if citation.isImap}
+                                        <ImapCitationSource
+                                            source={citation.iconHint ?? undefined} />
+                                    {:else if citation.locationLabel}
+                                        <p class="text-muted-foreground/70 text-xs">
+                                            {citation.locationLabel}
+                                        </p>
+                                    {/if}
                                 </div>
-                                {#if hasUrl}
+                                {#if citation.href}
                                     <ExternalLink
                                         class="text-muted-foreground h-3 w-3 flex-shrink-0" />
                                 {/if}

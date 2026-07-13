@@ -109,24 +109,79 @@
                         }
                     ]
                 },
+
                 {
                     "type": "text",
-                    "text": " and yet another",
+                    "text": "\n\nA document citation with",
                     "citations": [
                         {
-                            "type": "search_result_location",
-                            "title": "Yet Another Document",
-                            "source": "synthetic://yet-another-source",
-                            "cited_text": "Yet another snippet",
+                            "type": "char_location",
+                            "document_index": 6,
+                            "document_title": "Google Doc Research",
+                            "start_char_index": 0,
+                            "end_char_index": 100,
+                            "cited_text": "Google Doc Research key finding excerpt"
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": " and a page from",
+                    "citations": [
+                        {
+                            "type": "page_location",
+                            "document_index": 7,
+                            "document_title": "Academic Paper",
+                            "start_page_number": 3,
+                            "end_page_number": 5,
+                            "cited_text": "Academic paper methodology section"
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": " and a web search result",
+                    "citations": [
+                        {
+                            "type": "web_search_result_location",
+                            "url": "https://web-search.example.com/result",
+                            "title": "Web Search Title",
+                            "cited_text": "Web search result excerpt",
+                            "encrypted_index": "abc123"
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": "\n\nA content block excerpt from",
+                    "citations": [
+                        {
+                            "type": "content_block_location",
+                            "document_index": 8,
+                            "document_title": "Another Doc",
                             "start_block_index": 0,
-                            "end_block_index": 0,
-                            "search_result_index": 5
+                            "end_block_index": 2,
+                            "cited_text": "Content block excerpt text"
+                        }
+                    ]
+                },
+                {
+                    "type": "text",
+                    "text": " and a second range from the same doc",
+                    "citations": [
+                        {
+                            "type": "char_location",
+                            "document_index": 6,
+                            "document_title": "Google Doc Research",
+                            "start_char_index": 200,
+                            "end_char_index": 300,
+                            "cited_text": "Second Google Doc excerpt in same source"
                         }
                     ]
                 }
             ]
         },
-        "contentText": "A cited answer. It should stay inline. A cited bullet should also stay inline. A text-only bullet should also stay inline too. A third cited block and a navigable web source including another and yet another.",
+        "contentText": "A cited answer. It should stay inline. A cited bullet should also stay inline. A text-only bullet should also stay inline too. A third cited block and a navigable web source including another. A document citation with and a page from and a web search result. A content block excerpt from and a second range from the same doc.",
         "createdAt": "2026-06-04T14:20:01.000Z"
     },
     {

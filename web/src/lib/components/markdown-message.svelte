@@ -3,6 +3,7 @@
     import { mount, unmount, tick } from 'svelte'
     import LinkHoverCard from './reflink-hover-card.svelte'
     import type { TextCitationParam } from '@anthropic-ai/sdk/resources'
+    import { normalizeCitation, citationIdFromCitation } from '$lib/utils/citations'
 
     type Props = {
         content: string
@@ -29,18 +30,15 @@
     // URI-encoded so it survives text coalescing; we decode it here and find
     // the citation's position in the citations array.
     function preprocessContent(text: string): string {
-        return text.replace(/\{omni-cit:([^}]+)\}/g, (_match, encodedSource) => {
-            let source: string
+        return text.replace(/\{omni-cit:([^}]+)\}/g, (_match, encodedId) => {
+            let targetId: string
             try {
-                source = decodeURIComponent(encodedSource)
+                targetId = decodeURIComponent(encodedId)
             } catch {
-                // Malformed placeholder – keep text literal so the message still renders
                 return _match
             }
             const citationIdx =
-                citations?.findIndex(
-                    (c) => c.type === 'search_result_location' && c.source === source,
-                ) ?? -1
+                citations?.findIndex((c) => citationIdFromCitation(c) === targetId) ?? -1
             if (citationIdx >= 0) {
                 return `<span class="omni-reflink" data-citation-idx="${citationIdx}"></span>`
             }
@@ -73,20 +71,19 @@
             const linkPlaceholders = Array.from(container.querySelectorAll('.omni-reflink'))
             for (const link of linkPlaceholders) {
                 const citationIdx = link.getAttribute('data-citation-idx')
-                const citation = citationIdx ? citations?.[parseInt(citationIdx, 10)] : undefined
-                const href = citation?.type === 'search_result_location' ? citation.source : '#'
-                const title = citation?.type === 'search_result_location' ? citation.title : ''
-                const snippet =
-                    citation?.type === 'search_result_location' ? citation.cited_text : undefined
-
+                const raw = citationIdx ? citations?.[parseInt(citationIdx, 10)] : undefined
+                const normalized = raw ? normalizeCitation(raw) : undefined
                 mountedCards.push(
                     mount(LinkHoverCard, {
                         target: link.parentNode as Element,
                         anchor: link,
                         props: {
-                            href: href || '#',
-                            title: title || '',
-                            snippet: snippet || undefined,
+                            href: normalized?.href ?? null,
+                            title: normalized?.title ?? '',
+                            snippet: normalized?.citedText ?? undefined,
+                            iconHint: normalized?.iconHint ?? null,
+                            sourceName: normalized?.sourceName ?? 'Files',
+                            locationLabel: normalized?.locationLabel ?? null,
                         },
                     }),
                 )
