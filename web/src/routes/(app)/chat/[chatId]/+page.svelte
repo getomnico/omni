@@ -39,11 +39,13 @@
         TextMessageContent,
         ToolMessageContent,
         UploadMessageContent,
+        MentionMessageContent,
         MessageContent,
         ApprovalRequiredEvent,
         OAuthRequired,
         OAuthRequiredEvent,
         OmniUploadBlock,
+        OmniMentionBlock,
     } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
@@ -125,8 +127,10 @@
     })
 
     let userMessage = $state('')
+    let mentionedDocs = $state<{ document_id: string; title: string }[]>([])
+    let isSending = $state(false)
 
-    type UserMessageBlock = OmniUploadBlock | TextBlockParam
+    type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
 
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
     type UploadResponse = {
@@ -989,7 +993,11 @@
                 const userMessageContent: MessageContent =
                     typeof message.content === 'string'
                         ? [{ id: 0, type: 'text', text: message.content }]
-                        : (message.content as Array<ContentBlockParam | OmniUploadBlock>)
+                        : (
+                              message.content as Array<
+                                  ContentBlockParam | OmniUploadBlock | OmniMentionBlock
+                              >
+                          )
                               .map((b, bi): MessageContent[number] | null => {
                                   if (b.type === 'text') {
                                       return { id: bi, type: 'text', text: b.text }
@@ -1003,6 +1011,18 @@
                                           id: bi,
                                           type: 'upload',
                                           uploadId: b.source.upload_id,
+                                      }
+                                  }
+                                  if (
+                                      b.type === 'document' &&
+                                      'source' in b &&
+                                      b.source.type === 'omni_mention'
+                                  ) {
+                                      return {
+                                          id: bi,
+                                          type: 'mention',
+                                          documentId: b.source.document_id,
+                                          title: b.source.title,
                                       }
                                   }
                                   return null
@@ -1939,19 +1959,22 @@
     }
 
     async function handleSubmit() {
+        if (isSending) return
+
         const userMsg = userMessage.trim()
         const readyAttachments = pendingUploads.filter((u) => !u.uploading)
         if (pendingUploads.some((u) => u.uploading)) {
             return
         }
-        if (!userMsg && readyAttachments.length === 0) return
+        if (!userMsg && readyAttachments.length === 0 && mentionedDocs.length === 0) return
 
         const displayPath = getDisplayPath(chatMessages)
         const parentId = displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
 
         const attachmentIds = readyAttachments.map((u) => u.id)
+        const submitMentionedDocs = [...mentionedDocs]
 
-        userMessage = ''
+        isSending = true
 
         let response: Response
         try {
@@ -1965,16 +1988,17 @@
                     role: 'user',
                     parentId,
                     attachmentIds,
+                    mentionedDocuments: submitMentionedDocs,
                 }),
             })
         } catch (err) {
-            userMessage = userMsg
+            isSending = false
             console.error('Failed to send message to chat session', err)
             return
         }
 
         if (!response.ok) {
-            userMessage = userMsg
+            isSending = false
             if (response.status === 409) {
                 void resumeActiveStreamIfNeeded()
                 toast.info('The previous response is still in progress. Reconnecting to it now.')
@@ -1984,25 +2008,30 @@
             return
         }
 
+        // Success — build optimistic message and clear composer
         const { messageId } = await response.json()
 
         let messageContent: string | UserMessageBlock[]
-        if (attachmentIds.length > 0) {
+        const mentionBlocks: UserMessageBlock[] = submitMentionedDocs.map((doc) => ({
+            type: 'document',
+            source: { type: 'omni_mention', document_id: doc.document_id, title: doc.title },
+        }))
+        const hasRichBlocks = mentionBlocks.length > 0 || attachmentIds.length > 0
+        if (hasRichBlocks) {
             for (const up of pendingUploads) {
                 uploadFilenames[up.id] = up.filename
             }
-            const blocks: UserMessageBlock[] = attachmentIds.map((id) => ({
+            const uploadBlocks: UserMessageBlock[] = attachmentIds.map((id) => ({
                 type: 'document',
                 source: { type: 'omni_upload', upload_id: id },
             }))
+            const blocks: UserMessageBlock[] = [...mentionBlocks, ...uploadBlocks]
             if (userMsg) blocks.push({ type: 'text', text: userMsg })
             messageContent = blocks
         } else {
             messageContent = userMsg
         }
 
-        // The DB column is typed as Anthropic's MessageParam; our custom omni_upload
-        // source isn't part of that union, so narrow to MessageParam via unknown.
         const newUserMessage: ChatMessage = {
             id: messageId,
             chatId: data.chat.id,
@@ -2015,10 +2044,14 @@
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
+
+        // Clear composer state only on success. Failure leaves DOM intact.
+        userMessage = ''
+        mentionedDocs = []
+        pendingUploads = []
+        isSending = false
         chatMessages = [...chatMessages, newUserMessage]
         selectBranch(newUserMessage.parentId, newUserMessage.id)
-
-        pendingUploads = []
         isAwayFromBottom = false
 
         scrollUserMessageToTop()
@@ -2163,7 +2196,21 @@
         {@const uploads = message.content.filter(
             (b): b is UploadMessageContent => b.type === 'upload',
         )}
+        {@const mentions = message.content.filter(
+            (b): b is MentionMessageContent => b.type === 'mention',
+        )}
         <div class="flex max-w-[80%] flex-col items-end gap-1">
+            {#if mentions.length > 0}
+                <div class="mb-2 flex flex-wrap justify-end gap-1">
+                    {#each mentions as m (m.id)}
+                        <span
+                            class="inline-flex items-center rounded-full bg-blue-100 px-2 text-sm text-blue-800 select-none">
+                            <FileText class="mr-1 h-3 w-3" />
+                            {m.title}
+                        </span>
+                    {/each}
+                </div>
+            {/if}
             {#if uploads.length > 0}
                 <div class="mb-2 flex flex-wrap justify-end gap-1">
                     {#each uploads as up (up.uploadId)}
@@ -2826,6 +2873,7 @@
                     <UserInput
                         bind:this={userInputRef}
                         bind:value={userMessage}
+                        bind:mentionedDocs
                         inputMode="chat"
                         onSubmit={handleSubmit}
                         onInput={(v) => (userMessage = v)}
@@ -2839,6 +2887,12 @@
                         }}
                         {isStreaming}
                         {stopInProgress}
+                        isLoading={isSending}
+                        canSubmit={!isSending &&
+                            !pendingUploads.some((u) => u.uploading) &&
+                            (userMessage.trim().length > 0 ||
+                                mentionedDocs.length > 0 ||
+                                pendingUploads.filter((u) => !u.uploading).length > 0)}
                         onStop={handleStop}
                         maxWidth="max-w-4xl" />
                 </div>

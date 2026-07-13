@@ -228,6 +228,35 @@ async function triggerTitleGeneration(
 }
 
 export const GET: RequestHandler = async ({ params, locals, cookies, request, url }) => {
+    if (!locals.user?.id) {
+        return json({ error: 'User not authenticated' }, { status: 401 })
+    }
+
+    const chatId = params.chatId
+    if (!chatId) {
+        return json({ error: 'chatId parameter is required' }, { status: 400 })
+    }
+
+    const chat = await chatRepository.get(chatId)
+    if (!chat) {
+        return json({ error: 'Chat not found' }, { status: 404 })
+    }
+    if (chat.userId !== locals.user.id) {
+        return json({ error: 'Forbidden' }, { status: 403 })
+    }
+    if (chat.agentId) {
+        const agent = await getAgent(chat.agentId)
+        if (!agent) {
+            return json({ error: 'Chat agent not found' }, { status: 404 })
+        }
+        if (agent.agentType === 'org' && locals.user.role !== 'admin') {
+            return json({ error: 'Admin access required' }, { status: 403 })
+        }
+        if (agent.agentType === 'user' && agent.userId !== locals.user.id) {
+            return json({ error: 'Forbidden' }, { status: 403 })
+        }
+    }
+
     const replayPath = replayStreamFixturePath(cookies)
     if (replayPath) {
         const sampleStream = await readFile(replayPath, 'utf-8')
@@ -235,26 +264,6 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
     }
 
     const logger = locals.logger.child('chat')
-
-    const chatId = params.chatId
-    if (!chatId) {
-        logger.warn('Missing chatId parameter in stream request')
-        return json({ error: 'chatId parameter is required' }, { status: 400 })
-    }
-
-    const chat = await chatRepository.get(chatId)
-    if (!chat) {
-        logger.error('Chat not found', undefined, { chatId })
-        return json({ error: 'Chat not found' }, { status: 404 })
-    }
-
-    // Agent chats require admin access
-    if (chat.agentId) {
-        const agent = await getAgent(chat.agentId)
-        if (agent?.agentType === 'org' && locals.user?.role !== 'admin') {
-            throw error(403, 'Admin access required for agent chats')
-        }
-    }
 
     logger.debug('Sending GET request to AI service to receive the streaming response', { chatId })
 

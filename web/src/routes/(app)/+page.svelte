@@ -12,6 +12,7 @@
     let { data }: PageProps = $props()
 
     let searchQuery = $state('')
+    let mentionedDocs = $state<{ document_id: string; title: string }[]>([])
     let popoverOpen = $state(false)
     let isSearching = $state(false)
     let inputMode = $state<InputMode>(userPreferences.get('inputMode'))
@@ -110,64 +111,75 @@
         const trimmed = searchQuery.trim()
         const readyAttachments = pendingUploads.filter((u) => !u.uploading)
         if (pendingUploads.some((u) => u.uploading)) return
-        if (!trimmed && readyAttachments.length === 0) return
-
-        if (isSearching) {
+        if (
+            inputMode === 'chat' &&
+            !trimmed &&
+            readyAttachments.length === 0 &&
+            mentionedDocs.length === 0
+        )
             return
-        }
+        if (inputMode === 'search' && !trimmed && readyAttachments.length === 0) return
 
+        if (isSearching) return
         isSearching = true
 
         if (inputMode === 'search') {
+            if (!trimmed) return
             goto(`/search?q=${encodeURIComponent(trimmed)}`)
+            isSearching = false
             return
         }
 
-        const response = await fetch(`/api/chat`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ modelId: selectedModelId }),
-        })
+        try {
+            const response = await fetch(`/api/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ modelId: selectedModelId }),
+            })
 
-        if (!response.ok) {
-            console.error('Failed to create chat session')
-            return
+            if (!response.ok) {
+                console.error('Failed to create chat session')
+                return
+            }
+
+            const { chatId } = await response.json()
+
+            const msgResponse = await fetch(`/api/chat/${chatId}/messages`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    content: trimmed,
+                    role: 'user',
+                    attachmentIds: readyAttachments.map((u) => u.id),
+                    mentionedDocuments: mentionedDocs,
+                }),
+            })
+
+            if (!msgResponse.ok) {
+                console.error('Failed to send message to chat session')
+                return
+            }
+
+            const { messageId } = await msgResponse.json()
+
+            popoverOpen = false
+
+            goto(`/chat/${chatId}`, {
+                invalidateAll: true,
+                state: {
+                    stream: true,
+                },
+            })
+        } catch (err) {
+            console.error('Failed to create chat or send message', err)
+            // Composer state preserved on failure
+        } finally {
+            isSearching = false
         }
-
-        const { chatId } = await response.json()
-        console.log('Created chat session with ID:', chatId)
-
-        const msgResponse = await fetch(`/api/chat/${chatId}/messages`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                content: trimmed,
-                role: 'user',
-                attachmentIds: readyAttachments.map((u) => u.id),
-            }),
-        })
-
-        if (!msgResponse.ok) {
-            console.error('Failed to send message to chat session')
-            return
-        }
-
-        const { messageId } = await msgResponse.json()
-        console.log('Sent message with ID:', messageId)
-
-        isSearching = true
-        popoverOpen = false
-
-        goto(`/chat/${chatId}`, {
-            invalidateAll: true,
-            state: {
-                stream: true,
-            },
-        })
     }
 
     function selectSuggestion(query: string) {
@@ -228,6 +240,7 @@
             <UserInput
                 bind:value={searchQuery}
                 bind:inputMode
+                bind:mentionedDocs
                 onSubmit={submitQuery}
                 onInput={(v) => (searchQuery = v)}
                 onAttachClick={() => uploadInputEl?.click()}
@@ -239,6 +252,13 @@
                     chat: 'Ask anything...',
                 }}
                 isLoading={isSearching}
+                canSubmit={inputMode === 'search'
+                    ? searchQuery.trim().length > 0
+                    : !isSearching &&
+                      !pendingUploads.some((u) => u.uploading) &&
+                      (searchQuery.trim().length > 0 ||
+                          mentionedDocs.length > 0 ||
+                          pendingUploads.filter((u) => !u.uploading).length > 0)}
                 {popoverItems}
                 showPopover={popoverOpen}
                 onPopoverChange={(open) => (popoverOpen = open)}

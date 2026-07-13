@@ -28,7 +28,7 @@ from fastapi.responses import Response, StreamingResponse
 from agents.executor import _build_source_filter
 from agents.models import Agent
 from agents.repository import AgentRepository, AgentRunRepository
-from attachments import expand_uploads
+from attachments import expand_mentions, expand_uploads
 from config import (
     AGENT_MAX_ITERATIONS,
     CONNECTOR_MANAGER_URL,
@@ -176,9 +176,7 @@ def _loaded_tools_from_history(
                     if call is None:
                         continue
                     loaded.update(
-                        _loaded_tools_from_meta_call(
-                            call["name"], call["input"], connector_handler
-                        )
+                        _loaded_tools_from_meta_call(call["name"], call["input"], connector_handler)
                     )
                 case _:
                     continue
@@ -512,9 +510,7 @@ def _extract_text_for_title(
 
 
 @router.get("/chat/{chat_id}/stream/status")
-async def stream_status(
-    request: Request, chat_id: str = Path(..., description="Chat thread ID")
-):
+async def stream_status(request: Request, chat_id: str = Path(..., description="Chat thread ID")):
     redis_client = getattr(request.app.state, "redis_client", None)
     messages_repo = MessagesRepository()
     approvals_repo = ToolApprovalsRepository()
@@ -580,9 +576,9 @@ class StreamChatHandler:
         redis_client = request.app.state.redis_client
 
         # Reconnect/resume fast path
-        last_event_id = request.headers.get(
-            "last-event-id"
-        ) or request.query_params.get("last_event_id")
+        last_event_id = request.headers.get("last-event-id") or request.query_params.get(
+            "last_event_id"
+        )
         if redis_client is not None:
             run_active = await redis_client.exists(run_lock_key(chat_id))
             if run_active:
@@ -656,9 +652,7 @@ class StreamChatHandler:
                 if auto_start:
                     chat_messages = []
                 else:
-                    raise HTTPException(
-                        status_code=404, detail="No messages found for chat"
-                    )
+                    raise HTTPException(status_code=404, detail="No messages found for chat")
 
             build_result = await _build_agent_chat_registry(
                 request, agent, is_admin=chat_user.role == "admin"
@@ -669,18 +663,14 @@ class StreamChatHandler:
 
             run_repo = AgentRunRepository()
             runs = await run_repo.list_runs(agent.id, limit=20)
-            active_sources = [
-                s for s in build_result.sources if s.is_active and not s.is_deleted
-            ]
+            active_sources = [s for s in build_result.sources if s.is_active and not s.is_deleted]
 
             memory_provider = request.app.state.memory_provider
             effective_mode = MemoryMode.OFF
             memories = []
             if memory_provider is not None:
                 config_repo = ConfigurationRepository()
-                org_default = (
-                    await config_repo.get_global_configuration()
-                ).memory_mode_default
+                org_default = (await config_repo.get_global_configuration()).memory_mode_default
                 if is_org_agent:
                     effective_mode = org_default
                 elif user_configuration is not None:
@@ -717,19 +707,13 @@ class StreamChatHandler:
                 user_email=user_email,
                 memories=memories if memories else None,
                 user_configuration=user_configuration,
-                include_web_search=getattr(
-                    request.app.state, "web_search_provider", None
-                )
+                include_web_search=getattr(request.app.state, "web_search_provider", None)
                 is not None,
-                include_fetch_web_page=getattr(
-                    request.app.state, "web_fetch_provider", None
-                )
+                include_fetch_web_page=getattr(request.app.state, "web_fetch_provider", None)
                 is not None,
             )
 
-            messages: list[MessageParam] = [
-                MessageParam(**msg.message) for msg in chat_messages
-            ]
+            messages: list[MessageParam] = [MessageParam(**msg.message) for msg in chat_messages]
             needs_start = not messages or messages[-1].get("role") != "user"
             if auto_start and needs_start:
                 messages.append(MessageParam(role="user", content="Go."))
@@ -752,9 +736,7 @@ class StreamChatHandler:
                     is_admin = user.role == "admin"
 
             if not chat_messages:
-                raise HTTPException(
-                    status_code=404, detail="No messages found for chat"
-                )
+                raise HTTPException(status_code=404, detail="No messages found for chat")
 
             messages = [MessageParam(**msg.message) for msg in chat_messages]
 
@@ -798,9 +780,7 @@ class StreamChatHandler:
                 )
             ]
 
-            active_sources = [
-                s for s in build_result.sources if s.is_active and not s.is_deleted
-            ]
+            active_sources = [s for s in build_result.sources if s.is_active and not s.is_deleted]
 
             memory_provider = request.app.state.memory_provider
             memories = []
@@ -808,12 +788,8 @@ class StreamChatHandler:
             if memory_provider is not None and chat.user_id:
                 memory_write_key = user_key(chat.user_id)
                 config_repo = ConfigurationRepository()
-                org_default = (
-                    await config_repo.get_global_configuration()
-                ).memory_mode_default
-                user_memory_mode = (
-                    user_configuration.memory_mode if user_configuration else None
-                )
+                org_default = (await config_repo.get_global_configuration()).memory_mode_default
+                user_memory_mode = user_configuration.memory_mode if user_configuration else None
                 effective_mode = resolve_memory_mode(user_memory_mode, org_default)
                 if effective_mode >= MemoryMode.CHAT:
                     last_user_text = ""
@@ -838,9 +814,7 @@ class StreamChatHandler:
                         )
                         memories = [h.record.text for h in hits if h.record.text]
 
-            loaded_source_ids = _loaded_source_ids(
-                loaded_toolsets, build_result.connector_handler
-            )
+            loaded_source_ids = _loaded_source_ids(loaded_toolsets, build_result.connector_handler)
             system_prompt = build_chat_system_prompt(
                 active_sources,
                 toolsets=build_result.toolsets,
@@ -849,17 +823,13 @@ class StreamChatHandler:
                 user_email=user_email,
                 memories=memories if memories else None,
                 user_configuration=user_configuration,
-                include_web_search=getattr(
-                    request.app.state, "web_search_provider", None
-                )
+                include_web_search=getattr(request.app.state, "web_search_provider", None)
                 is not None,
-                include_fetch_web_page=getattr(
-                    request.app.state, "web_fetch_provider", None
-                )
+                include_fetch_web_page=getattr(request.app.state, "web_fetch_provider", None)
                 is not None,
             )
 
-        # ---- Common setup (repair, compaction, etc.) ----
+        # ---- Common setup ----
         intervention_tool_call_ids = {
             approval.tool_call_id
             for approval in pending_interventions
@@ -868,50 +838,65 @@ class StreamChatHandler:
         preserved_batch_ids = latest_intervention_tool_batch_ids(
             messages, intervention_tool_call_ids
         )
-        messages, repaired_tool_calls = repair_interrupted_tool_calls(
-            messages, preserve_tool_call_ids=preserved_batch_ids
+
+        # Query latest compaction on the raw active path before any
+        # message-count-changing operations (repair/drop).
+        compactions_repo = CompactionsRepository()
+        active_path_ids = [row.id for row in chat_messages]
+        latest_compaction = await compactions_repo.get_latest_for_chat_path(
+            chat_id, active_path_ids
         )
-        if repaired_tool_calls:
-            logger.warning(
-                f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
-            )
-        before = len(messages)
-        messages = drop_empty_assistant_messages(messages)
-        dropped = before - len(messages)
-        if dropped:
-            logger.warning(
-                f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
+
+        # Compute split index: only expand content for messages after the
+        # compaction anchor. The prefix (already compacted) stays raw.
+        mention_anchor_index: int | None = None
+        if latest_compaction is not None:
+            mention_anchor_index = next(
+                (
+                    i
+                    for i, row in enumerate(chat_messages)
+                    if row.id == latest_compaction.anchor_message_id
+                ),
+                None,
             )
 
+        if mention_anchor_index is not None:
+            expand_prefix = messages[: mention_anchor_index + 1]
+            expand_suffix = messages[mention_anchor_index + 1 :]
+        else:
+            expand_prefix = []
+            expand_suffix = messages
+
+        # Expand uploads/mentions on suffix only (these preserve message
+        # count, so indices stay aligned for compaction below).
         storage = request.app.state.content_storage
         if storage is not None:
-            messages = await expand_uploads(
-                messages,
+            expand_suffix = await expand_uploads(
+                expand_suffix,
                 chat_id=chat_id,
                 storage=storage,
                 uploads_repo=UploadsRepository(),
                 sandbox_url=SANDBOX_URL,
+                user_id=chat.user_id,
             )
 
-        last_message_role = messages[-1].get("role") if messages else None
-        if not pending_interventions and last_message_role != "user":
-            logger.info(
-                f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
-            )
+        expand_suffix = await expand_mentions(
+            expand_suffix,
+            chat_id=chat_id,
+            doc_handler=DocumentToolHandler(
+                content_storage=request.app.state.content_storage,
+                documents_repo=DocumentsRepository(),
+                sandbox_url=SANDBOX_URL,
+                connector_manager_url=CONNECTOR_MANAGER_URL,
+            ),
+            user_id=tool_user_id,
+            user_email=user_email,
+            skip_permission_check=tool_skip_perm,
+        )
 
-            async def empty_generator():
-                yield end_of_stream(
-                    EndOfStreamReason.NO_NEW_MESSAGE,
-                    message="No new user message to process.",
-                ).encode()
+        messages = expand_prefix + expand_suffix
 
-            return StreamingResponse(
-                empty_generator(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
-
-        # Compaction
+        # Compaction sees expanded content for accurate token estimation.
         secondary_provider = _resolve_secondary_provider(request.app.state)
 
         def _on_compaction_usage(usage):
@@ -945,7 +930,7 @@ class StreamChatHandler:
             chat_id=chat_id,
             chat_messages=chat_messages,
             messages=messages,
-            compactions_repo=CompactionsRepository(),
+            compactions_repo=compactions_repo,
             target_provider=llm_provider,
             tools=initial_tools,
             system_prompt=system_prompt,
@@ -962,6 +947,35 @@ class StreamChatHandler:
             summarizer_context.tokens,
             summarizer_context.source,
         )
+
+        # After compaction, apply repair/drop (may change message count).
+        messages, repaired_tool_calls = repair_interrupted_tool_calls(
+            messages, preserve_tool_call_ids=preserved_batch_ids
+        )
+        messages = drop_empty_assistant_messages(messages)
+
+        if repaired_tool_calls:
+            logger.info(
+                "Inserted %d failed tool_result placeholder(s) for interrupted tool calls in chat %s",
+                repaired_tool_calls,
+                chat_id,
+            )
+
+        last_message_role = messages[-1].get("role") if messages else None
+        if not pending_interventions and last_message_role != "user":
+            logger.info(f"Last message is not from user, no processing needed. Chat ID: {chat_id}")
+
+            async def empty_generator():
+                yield end_of_stream(
+                    EndOfStreamReason.NO_NEW_MESSAGE,
+                    message="No new user message to process.",
+                ).encode()
+
+            return StreamingResponse(
+                empty_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
 
         # Extract first user message for caching
         original_user_query = None
@@ -1000,9 +1014,7 @@ class StreamChatHandler:
             connector_handler=build_result.connector_handler,
             loaded_toolsets=loaded_toolsets,
             compactor=compactor,
-            latest_compaction_summary=(
-                latest_compaction.summary if latest_compaction else None
-            ),
+            latest_compaction_summary=(latest_compaction.summary if latest_compaction else None),
             summarizer_context_window_tokens=summarizer_context.tokens,
             memory_provider=memory_provider,
             memory_write_key=memory_write_key,
@@ -1020,9 +1032,7 @@ class StreamChatHandler:
             )
 
         # Single producer per chat
-        got_lock = await redis_client.set(
-            run_lock_key(chat_id), "1", nx=True, ex=_RUN_LOCK_TTL
-        )
+        got_lock = await redis_client.set(run_lock_key(chat_id), "1", nx=True, ex=_RUN_LOCK_TTL)
         if not got_lock:
             return StreamingResponse(
                 consume_run(redis_client, chat_id, last_event_id or "0"),
@@ -1038,7 +1048,8 @@ class StreamChatHandler:
         set_producer_task(chat_id, task)
 
         def _cleanup_run_task(
-            t: asyncio.Task, cid: str = chat_id  # type: ignore[assignment]
+            t: asyncio.Task,
+            cid: str = chat_id,  # type: ignore[assignment]
         ) -> None:
             if _run_tasks_by_chat.get(cid) is t:
                 clear_producer_task(cid, t)
@@ -1061,9 +1072,7 @@ class StreamChatHandler:
 async def stream_chat(
     request: Request,
     chat_id: str = Path(..., description="Chat thread ID"),
-    auto_start: bool = Query(
-        False, description="Auto-inject initial message for agent chats"
-    ),
+    auto_start: bool = Query(False, description="Auto-inject initial message for agent chats"),
 ):
     return await StreamChatHandler(request, chat_id, auto_start).handle()
 
@@ -1117,9 +1126,7 @@ async def generate_chat_title(
         messages_repo = MessagesRepository()
         chat_messages = await messages_repo.get_by_chat(chat_id)
         if not chat_messages:
-            raise HTTPException(
-                status_code=400, detail="Not enough messages to generate title"
-            )
+            raise HTTPException(status_code=400, detail="Not enough messages to generate title")
 
         conversation_text = ""
         for msg in chat_messages:
@@ -1180,9 +1187,7 @@ async def generate_chat_title(
             f"Failed to generate title for chat {chat_id}: {e}",
             exc_info=True,
         )
-        raise HTTPException(
-            status_code=500, detail=f"Failed to generate title: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to generate title: {str(e)}")
 
 
 # ---------------------------------------------------------------------------
@@ -1216,9 +1221,7 @@ async def download_artifact(
             )
     except httpx.HTTPStatusError as e:
         logger.error(f"Sandbox artifact download failed: {e}")
-        raise HTTPException(
-            status_code=502, detail="Failed to fetch artifact from sandbox"
-        )
+        raise HTTPException(status_code=502, detail="Failed to fetch artifact from sandbox")
     except Exception as e:
         logger.error(f"Artifact download error: {e}")
         raise HTTPException(status_code=500, detail="Internal error fetching artifact")
