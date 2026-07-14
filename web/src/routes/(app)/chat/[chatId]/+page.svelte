@@ -1584,6 +1584,15 @@
                 updateScrollState()
             })
 
+            eventSource.addEventListener('compaction_end', (event) => {
+                if (!isCurrentStream()) return
+                streamLastEventId = event.lastEventId || streamLastEventId
+                lastStreamEventAt = Date.now()
+                reconnectAttempts = 0
+                if (isCompacting) startThinkingText()
+                updateScrollState()
+            })
+
             eventSource.addEventListener('message', (event) => {
                 if (!isCurrentStream()) return
                 streamLastEventId = event.lastEventId || streamLastEventId

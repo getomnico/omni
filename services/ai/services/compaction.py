@@ -719,6 +719,17 @@ Summary:"""
             summarizer_context=summarizer_context,
         )
 
+    def select_legacy_compaction_split(
+        self, messages: list[MessageParam]
+    ) -> CompactionSplit | None:
+        if not ENABLE_CONVERSATION_COMPACTION:
+            return None
+
+        split = self.select_compaction_split(messages)
+        if not split.old_messages:
+            return None
+        return split
+
     async def compact_conversation(
         self,
         chat_id: str,
@@ -732,11 +743,8 @@ Summary:"""
         `create_summary_result`, and `make_summary_message` so they can store the
         returned summary and anchor in Postgres.
         """
-        if not ENABLE_CONVERSATION_COMPACTION:
-            return messages
-
-        split = self.select_compaction_split(messages)
-        if not split.old_messages:
+        split = self.select_legacy_compaction_split(messages)
+        if split is None:
             return messages
 
         result = await self.create_summary_result(
