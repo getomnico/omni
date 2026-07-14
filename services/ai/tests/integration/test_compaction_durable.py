@@ -725,6 +725,10 @@ async def test_chat_stream_api_runs_compaction_before_provider_call(db_pool):
 
     assert response.status_code == 200
     assert "api chat response" in response.text
+    assert "event: compaction_start" in response.text
+    assert response.text.index("event: compaction_start") < response.text.index(
+        "event: message\n"
+    )
     assert len(target_provider.recorded_messages) == 1
     provider_messages = target_provider.recorded_messages[0]
     assert "api-chat-summary" in _summary_text(provider_messages[0])

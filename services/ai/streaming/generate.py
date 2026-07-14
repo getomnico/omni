@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass
 from typing import cast
 
 from anthropic import MessageStreamEvent
@@ -68,6 +69,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class CompactionStart:
+    """Internal marker emitted before a forced compaction retry."""
+
+
 async def event_stream_with_context_retry(
     turn_tools: list[dict],
     conversation_messages: list[MessageParam],
@@ -78,7 +84,7 @@ async def event_stream_with_context_retry(
     compactor: ConversationCompactor,
     latest_compaction_summary: str | None,
     summarizer_context_window_tokens: int,
-) -> AsyncIterator[MessageStreamEvent]:
+) -> AsyncIterator[MessageStreamEvent | CompactionStart]:
     """Stream events from the LLM provider with one automatic compaction retry
     on context-overflow errors.
 
@@ -136,6 +142,7 @@ async def event_stream_with_context_retry(
                     "Chat %s hit provider context limit; retrying once after forced compaction",
                     chat_id,
                 )
+                yield CompactionStart()
                 conversation_messages[:] = await compactor.compact_conversation(
                     chat_id,
                     conversation_messages,
@@ -541,6 +548,10 @@ async def stream_generator(
                 cancelled = False
                 last_cancel_check_at = 0.0
                 async for event in stream:
+                    if isinstance(event, CompactionStart):
+                        yield sse_event("compaction_start", {})
+                        continue
+
                     logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
 

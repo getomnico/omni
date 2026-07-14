@@ -2498,6 +2498,7 @@ class TestStandaloneEndpoints:
         assert any(
             et in ("end_of_stream", "stream_error") for et, _, _ in events
         ), "No terminal event after context-overflow retry"
+        assert any(et == "compaction_start" for et, _, _ in events)
 
         # The LLM should have been called twice: first fails, second succeeds
         assert (
