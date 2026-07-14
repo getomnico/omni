@@ -1,3 +1,49 @@
+/// Confirmed content-type allowlist for @-mention candidates.
+///
+/// Normalized types:
+///   document, spreadsheet, presentation, pdf, page
+///
+/// MIME/raw fallbacks for connectors that store MIME types instead of
+/// normalized values:
+///   text/plain, text/markdown, text/csv
+///   application/pdf
+///   application/vnd.openxmlformats-officedocument.wordprocessingml.document (docx)
+///   application/msword (doc)
+///   application/vnd.openxmlformats-officedocument.spreadsheetml.sheet (xlsx)
+///   application/vnd.ms-excel (xls)
+///   application/vnd.openxmlformats-officedocument.presentationml.presentation (pptx)
+///   application/vnd.ms-powerpoint (ppt)
+///   application/vnd.google-apps.document
+///   application/vnd.google-apps.spreadsheet
+///   application/vnd.google-apps.presentation
+///
+/// NULL and unknown values remain excluded (fail-closed).
+pub const MENTIONABLE_CONTENT_TYPES: &[&str] = &[
+    // Normalized
+    "document",
+    "spreadsheet",
+    "presentation",
+    "pdf",
+    "page",
+    // Text/file MIME fallbacks
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    // PDF explicit
+    "application/pdf",
+    // Microsoft Office fallbacks
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-powerpoint",
+    // Google Workspace fallbacks
+    "application/vnd.google-apps.document",
+    "application/vnd.google-apps.spreadsheet",
+    "application/vnd.google-apps.presentation",
+];
+
 use fst::automaton::Str;
 use fst::{Automaton, IntoStreamer, Map, MapBuilder, Streamer};
 use shared::{DatabasePool, DocumentRepository};
@@ -7,6 +53,17 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 
 use crate::models::TypeaheadResult;
+
+/// A scored candidate entry returned by the FST before ACL filtering.
+/// The handler filters by permission and then applies the final limit.
+#[derive(Debug, Clone)]
+pub struct ScoredCandidate {
+    pub score: i64,
+    pub document_id: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub source_id: String,
+}
 
 pub struct TypeaheadEntry {
     pub document_id: String,
@@ -49,7 +106,11 @@ impl TitleIndex {
 
     pub async fn refresh(&self) -> anyhow::Result<()> {
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let rows = repo.fetch_all_title_entries().await?;
+        let types: Vec<String> = MENTIONABLE_CONTENT_TYPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows = repo.fetch_title_entries_by_types(&types).await?;
 
         let mut entries: Vec<TypeaheadEntry> = Vec::with_capacity(rows.len());
         let mut normalized_titles: Vec<String> = Vec::with_capacity(rows.len());
@@ -104,7 +165,10 @@ impl TitleIndex {
         Ok(())
     }
 
-    pub async fn search(&self, query: &str, limit: usize) -> Vec<TypeaheadResult> {
+    /// Return the full set of score-ordered candidate entries for a query.
+    /// No cap is applied — the caller (handler) processes batches for ACL
+    /// filtering and then applies the user-requested limit.
+    pub async fn search_candidates(&self, query: &str) -> Vec<ScoredCandidate> {
         let normalized = normalize(query);
         if normalized.is_empty() {
             return Vec::new();
@@ -131,14 +195,30 @@ impl TitleIndex {
 
         candidates
             .iter()
-            .take(limit)
-            .filter_map(|(_, idx)| {
-                data.entries.get(*idx).map(|entry| TypeaheadResult {
+            .filter_map(|(score, idx)| {
+                data.entries.get(*idx).map(|entry| ScoredCandidate {
+                    score: *score,
                     document_id: entry.document_id.clone(),
                     title: entry.title.clone(),
                     url: entry.url.clone(),
                     source_id: entry.source_id.clone(),
                 })
+            })
+            .collect()
+    }
+
+    /// Legacy convenience: apply ACL-unfiltered search with a fixed limit.
+    /// Used by existing callers and tests that do not need permission checks.
+    pub async fn search(&self, query: &str, limit: usize) -> Vec<TypeaheadResult> {
+        self.search_candidates(query)
+            .await
+            .into_iter()
+            .take(limit)
+            .map(|c| TypeaheadResult {
+                document_id: c.document_id,
+                title: c.title,
+                url: c.url,
+                source_id: c.source_id,
             })
             .collect()
     }
@@ -401,5 +481,55 @@ mod tests {
             score >= 10_000,
             "multi-word prefix match should score >= 10,000, got {score}"
         );
+    }
+
+    #[test]
+    fn test_mentionable_content_types_cover_confirmed_allowlist() {
+        let allowed: &[&str] = MENTIONABLE_CONTENT_TYPES;
+        // Normalized types
+        assert!(allowed.contains(&"document"));
+        assert!(allowed.contains(&"spreadsheet"));
+        assert!(allowed.contains(&"presentation"));
+        assert!(allowed.contains(&"pdf"));
+        assert!(allowed.contains(&"page"));
+        // Text/file MIME fallbacks
+        assert!(allowed.contains(&"text/plain"));
+        assert!(allowed.contains(&"text/markdown"));
+        assert!(allowed.contains(&"text/csv"));
+        // PDF explicit
+        assert!(allowed.contains(&"application/pdf"));
+        // Microsoft Office
+        assert!(allowed
+            .contains(&"application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        assert!(allowed.contains(&"application/msword"));
+        assert!(
+            allowed.contains(&"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        );
+        assert!(allowed.contains(&"application/vnd.ms-excel"));
+        assert!(allowed.contains(
+            &"application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        ));
+        assert!(allowed.contains(&"application/vnd.ms-powerpoint"));
+        // Google Workspace
+        assert!(allowed.contains(&"application/vnd.google-apps.document"));
+        assert!(allowed.contains(&"application/vnd.google-apps.spreadsheet"));
+        assert!(allowed.contains(&"application/vnd.google-apps.presentation"));
+        // Count check
+        assert_eq!(allowed.len(), 18);
+    }
+
+    #[test]
+    fn test_unknown_and_null_types_not_in_allowlist() {
+        let allowed: &[&str] = MENTIONABLE_CONTENT_TYPES;
+        assert!(!allowed.contains(&"email"));
+        assert!(!allowed.contains(&"email_thread"));
+        assert!(!allowed.contains(&"contact"));
+        assert!(!allowed.contains(&"message"));
+        assert!(!allowed.contains(&"chat"));
+        assert!(!allowed.contains(&"event"));
+        assert!(!allowed.contains(&"issue"));
+        assert!(!allowed.contains(&"employee_profile"));
+        assert!(!allowed.contains(&"meeting_transcript"));
+        assert!(!allowed.contains(&"webpage"));
     }
 }

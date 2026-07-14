@@ -4,7 +4,7 @@ use crate::models::{
     CapabilitiesUpsertRequest, CapabilitiesUpsertResponse, CapabilitySearchRequest,
     CapabilitySearchResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
     SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
-    TypeaheadResponse,
+    TypeaheadResponse, TypeaheadResult,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
@@ -20,8 +20,8 @@ use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 use shared::{
-    models::UserConfiguration, ConfigurationRepository, PersonRepository, Repository,
-    UserRepository,
+    models::UserConfiguration, ConfigurationRepository, DocumentRepository, GroupRepository,
+    PersonRepository, Repository, UserRepository,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
@@ -298,9 +298,102 @@ pub async fn typeahead(
     State(state): State<AppState>,
     Query(query): Query<TypeaheadQuery>,
 ) -> SearcherResult<Json<Value>> {
-    let results = state.title_index.search(&query.q, query.limit()).await;
+    let user_id = query.user_id.clone();
+    if user_id.is_empty() {
+        info!("typeahead: empty user_id, returning empty");
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+
+    let user_repo = UserRepository::new(&state.db_pool.pool());
+    let user = match user_repo.find_by_id(user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            info!("typeahead: unknown user, returning empty");
+            return Ok(Json(serde_json::to_value(TypeaheadResponse {
+                results: vec![],
+                query: query.q,
+            })?));
+        }
+        Err(e) => {
+            error!("typeahead: user lookup failed: {}", e);
+            return Err(SearcherError::Internal(anyhow::anyhow!(
+                "User lookup failed for typeahead"
+            )));
+        }
+    };
+
+    if !user.is_active {
+        info!("typeahead: inactive user, returning empty");
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+    let user_email = user.email;
+
+    // Resolve current group memberships. Fail closed on DB error.
+    let group_repo = GroupRepository::new(&state.db_pool.pool());
+    let user_groups = group_repo
+        .find_groups_for_user(&user_email)
+        .await
+        .map_err(|e| {
+            error!("typeahead: group lookup failed: {}", e);
+            SearcherError::Internal(anyhow::anyhow!("Group lookup failed for typeahead"))
+        })?;
+
+    // Fetch the full score-ordered candidate set (no cap).
+    let candidates = state.title_index.search_candidates(&query.q).await;
+
+    if candidates.is_empty() {
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+
+    // Process candidates in bounded batches until the requested limit is
+    // filled or all candidates are exhausted.
+    let doc_repo = DocumentRepository::new(state.db_pool.pool());
+    let batch_size = 100;
+    let mut accessible: Vec<TypeaheadResult> = Vec::new();
+    let limit = query.limit();
+
+    for chunk in candidates.chunks(batch_size) {
+        if accessible.len() >= limit {
+            break;
+        }
+
+        let ids: Vec<String> = chunk.iter().map(|c| c.document_id.clone()).collect();
+        let allowed = doc_repo
+            .filter_accessible_titles(&ids, &user_email, &user_groups)
+            .await
+            .map_err(|e| {
+                error!("typeahead: ACL filter failed: {}", e);
+                SearcherError::Internal(anyhow::anyhow!("Permission check failed for typeahead"))
+            })?;
+
+        // Collect accessible results in ranked order.
+        for c in chunk {
+            if accessible.len() >= limit {
+                break;
+            }
+            if !allowed.contains(&c.document_id) {
+                continue;
+            }
+            accessible.push(TypeaheadResult {
+                document_id: c.document_id.clone(),
+                title: c.title.clone(),
+                url: c.url.clone(),
+                source_id: c.source_id.clone(),
+            });
+        }
+    }
+
     let response = TypeaheadResponse {
-        results,
+        results: accessible,
         query: query.q,
     };
     Ok(Json(serde_json::to_value(response)?))

@@ -1,7 +1,7 @@
 use crate::{
-    SourceType,
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
+    SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
@@ -108,6 +108,85 @@ impl DocumentRepository {
         .await?;
 
         Ok(entries)
+    }
+
+    /// Fetch title entries whose content_type matches one of the given values.
+    /// Used by the typeahead index to exclude non-document entities (emails,
+    /// contacts, messages, etc.) from @-mention candidates.
+    ///
+    /// When `content_types` is empty the method returns no rows (fail-closed).
+    pub async fn fetch_title_entries_by_types(
+        &self,
+        content_types: &[String],
+    ) -> Result<Vec<TitleEntry>, DatabaseError> {
+        if content_types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let entries = sqlx::query_as::<_, TitleEntry>(
+            r#"
+            SELECT d.id, d.title, d.url, d.source_id
+            FROM documents d
+            JOIN sources s ON d.source_id = s.id
+            WHERE NOT s.is_deleted
+              AND d.content_type = ANY($1)
+            "#,
+        )
+        .bind(content_types)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(entries)
+    }
+
+    /// Given a list of candidate document IDs, return the subset that the user
+    /// is allowed to access according to the existing permission semantics
+    /// (public, direct-user, domain, group). The full list is needed because
+    /// the permission check is per-document and candidates may reference the
+    /// same document via multiple FST keys.
+    ///
+    /// Given a list of candidate document IDs, return the subset that the user
+    /// is allowed to access according to the existing permission semantics
+    /// (public, direct-user, domain, group).
+    ///
+    /// Returns the allowed document IDs preserving the order of `candidate_ids`.
+    /// Returns empty vec when `candidate_ids` or `user_email` is empty.
+    ///
+    /// The generated filter already includes the ``permissions @@@`` expression,
+    /// so it is inserted directly (no extra wrapping).
+    pub async fn filter_accessible_titles(
+        &self,
+        candidate_ids: &[String],
+        user_email: &str,
+        user_groups: &[String],
+    ) -> Result<Vec<String>, DatabaseError> {
+        if candidate_ids.is_empty() || user_email.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let perm_filter = generate_permission_filter(user_email, user_groups);
+
+        let rows = sqlx::query_scalar::<_, String>(&format!(
+            r#"
+                SELECT d.id
+                FROM documents d
+                JOIN sources s ON d.source_id = s.id
+                WHERE d.id = ANY($1)
+                  AND NOT s.is_deleted
+                  AND {}
+                "#,
+            perm_filter
+        ))
+        .bind(candidate_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let allowed: std::collections::HashSet<String> = rows.into_iter().collect();
+        Ok(candidate_ids
+            .iter()
+            .filter(|id| allowed.contains(*id))
+            .cloned()
+            .collect())
     }
 
     pub async fn fetch_random_documents(
