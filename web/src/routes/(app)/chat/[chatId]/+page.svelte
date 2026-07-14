@@ -2343,7 +2343,7 @@
         </Drawer.Trigger>
         <Drawer.Content
             class="m-2 flex max-h-full flex-col overflow-hidden rounded-xl border shadow-lg">
-            <Drawer.Header class="relative border-b px-5 py-3 text-left">
+            <Drawer.Header class="relative px-5 py-3 text-left">
                 <Drawer.Title class="text-base font-semibold">Sources</Drawer.Title>
                 <Drawer.Description class="sr-only">
                     Cited sources for this response
@@ -2354,14 +2354,14 @@
                     <span class="sr-only">Close</span>
                 </Drawer.Close>
             </Drawer.Header>
-            <div class="min-h-0 flex-1 overflow-y-auto px-5 pt-3 pb-5">
+            <div class="min-h-0 flex-1 overflow-y-auto px-3 pt-3 pb-5">
                 <div class="flex flex-col gap-2">
                     {#each citations as citation (citation.sourceId)}
                         <svelte:element
                             this={citation.href ? 'a' : 'div'}
                             href={citation.href ?? undefined}
                             data-testid="drawer-source"
-                            class="border-primary/10 hover:border-primary/20 hover:bg-muted/40 rounded-lg border p-2 px-2.5 text-xs font-normal no-underline transition-colors"
+                            class="hover:bg-muted/40 rounded-lg p-2 px-2.5 text-xs font-normal no-underline transition-colors"
                             target={citation.href ? '_blank' : undefined}
                             rel={citation.href ? 'noopener noreferrer' : undefined}>
                             <div class="flex items-center gap-2">
