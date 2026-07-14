@@ -44,3 +44,28 @@ def test_convert_messages_does_not_forward_search_result_extras():
     internal_search_result = messages[0]["content"][0]["content"][0]
     assert internal_search_result["source_type"] == "jira"
     assert internal_search_result["internal_extra"] == "must-not-be-sent"
+
+
+def test_convert_messages_handles_only_user_text_documents():
+    text_document = {
+        "type": "document",
+        "title": "Report.pdf",
+        "source": {"type": "text", "data": "Q3 revenue grew 14%."},
+    }
+    binary_document = {
+        "type": "document",
+        "source": {"type": "base64", "data": "ignored"},
+    }
+
+    converted = _convert_messages_to_gemini(
+        [
+            {"role": "user", "content": [text_document, binary_document]},
+            {"role": "assistant", "content": [text_document]},
+        ]
+    )
+
+    assert len(converted) == 1
+    assert converted[0].role == "user"
+    assert [part.text for part in converted[0].parts] == [
+        'Document title: "Report.pdf"\nDocument content:\nQ3 revenue grew 14%.'
+    ]

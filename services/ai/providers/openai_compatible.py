@@ -25,6 +25,7 @@ from openai.types.chat import (
 )
 from openai.types.chat.chat_completion_message_tool_call_param import Function
 from anthropic.types import (
+    DocumentBlockParam,
     Message,
     MessageDeltaUsage,
     MessageParam,
@@ -48,6 +49,7 @@ from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, LLMProviderEmptyResponseError, TokenUsage
+from .content_blocks import extract_text_document
 from .types import ProviderError, ProviderType
 
 
@@ -161,7 +163,11 @@ def _convert_messages_to_openai(
                 continue
 
             block = cast(
-                TextBlockParam | ToolUseBlockParam | ToolResultBlockParam, block
+                DocumentBlockParam
+                | TextBlockParam
+                | ToolUseBlockParam
+                | ToolResultBlockParam,
+                block,
             )
             block_reasoning_content = block.get(REASONING_CONTENT_KEY)
             if isinstance(block_reasoning_content, str):
@@ -171,6 +177,10 @@ def _convert_messages_to_openai(
                 block = cast(TextBlockParam, block)
                 if block["text"]:
                     text_parts.append(block["text"])
+            elif block["type"] == "document" and role == "user":
+                document_text = extract_text_document(block)
+                if document_text is not None:
+                    text_parts.append(document_text)
             elif block["type"] == "tool_use":
                 block = cast(ToolUseBlockParam, block)
                 raw_input = block["input"]

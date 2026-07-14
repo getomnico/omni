@@ -62,6 +62,29 @@ BINARY_CONTENT_TYPES = {
 # Max text size to return directly in LLM context (characters)
 DIRECT_RETURN_THRESHOLD = 32_000
 
+PDF_CONTENT_TYPES = {"pdf", "application/pdf", "application/x-pdf"}
+PDF_EXTRACTION_FAILURE_TEXT = (
+    "[Text extraction failed for this PDF. The document was skipped "
+    "for extracted-text indexing because no text could be extracted.]"
+)
+PDF_EXTRACTION_FAILURE_REASON_PREFIX = (
+    "[Text extraction failed for this PDF. The document was skipped "
+    "for extracted-text indexing. Reason: "
+)
+
+
+def _is_pdf_extraction_failure(content_type: str | None, content: str) -> bool:
+    if content_type not in PDF_CONTENT_TYPES:
+        return False
+    if content == PDF_EXTRACTION_FAILURE_TEXT:
+        return True
+    return (
+        content.startswith(PDF_EXTRACTION_FAILURE_REASON_PREFIX)
+        and len(content) > len(PDF_EXTRACTION_FAILURE_REASON_PREFIX) + 1
+        and content.endswith("]")
+    )
+
+
 DOCUMENT_TOOL = {
     "name": "read_document",
     "description": (
@@ -337,6 +360,27 @@ class DocumentToolHandler:
             )
 
         content = await self._content_storage.get_text(doc.content_id)
+
+        if _is_pdf_extraction_failure(doc.content_type, content):
+            if self._connector_manager_url and self._sandbox_url and doc.source_id:
+                return await self._fetch_binary(
+                    doc,
+                    document_name,
+                    context,
+                    deterministic_path=deterministic_path,
+                )
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Document '{document_name}' could not be loaded: PDF text "
+                            "extraction failed and binary staging is unavailable."
+                        ),
+                    }
+                ],
+                is_error=True,
+            )
 
         if start_line is not None or end_line is not None:
             lines = content.split("\n")

@@ -29,6 +29,7 @@ from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, TokenUsage
+from .content_blocks import extract_text_document
 from .types import ProviderError, ProviderType
 
 
@@ -358,6 +359,10 @@ class OpenAIProvider(LLMProvider):
 
                 if block_type == "text":
                     text_parts.append(block.get("text", ""))
+                elif block_type == "document" and role == "user":
+                    document_text = extract_text_document(block)
+                    if document_text is not None:
+                        text_parts.append(document_text)
                 elif block_type == "tool_use":
                     tool_calls.append(
                         {
