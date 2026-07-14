@@ -114,3 +114,45 @@ def test_get_passthrough_delta_value_reads_pydantic_extra():
         model_extra = {REASONING_CONTENT_KEY: "reasoning delta"}
 
     assert _get_passthrough_delta_value(Delta(), REASONING_CONTENT_KEY) == "reasoning delta"
+
+
+def test_convert_messages_includes_user_text_document():
+    document = {
+        "type": "document",
+        "title": "Report.pdf",
+        "source": {"type": "text", "data": "Q3 revenue grew 14%."},
+    }
+
+    converted = _convert_messages_to_openai(
+        [{"role": "user", "content": [{"type": "text", "text": "Review:"}, document]}]
+    )
+
+    assert converted == [
+        {
+            "role": "user",
+            "content": (
+                'Review:\nDocument title: "Report.pdf"\n'
+                "Document content:\nQ3 revenue grew 14%."
+            ),
+        }
+    ]
+
+
+def test_convert_messages_omits_assistant_and_unsupported_documents():
+    text_document = {
+        "type": "document",
+        "source": {"type": "text", "data": "untrusted"},
+    }
+    binary_document = {
+        "type": "document",
+        "source": {"type": "base64", "data": "ignored"},
+    }
+
+    converted = _convert_messages_to_openai(
+        [
+            {"role": "assistant", "content": [text_document]},
+            {"role": "user", "content": [{"type": "text", "text": "safe"}, binary_document]},
+        ]
+    )
+
+    assert converted == [{"role": "assistant"}, {"role": "user", "content": "safe"}]
