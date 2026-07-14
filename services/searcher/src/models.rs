@@ -141,6 +141,7 @@ pub struct SuggestedQuestionsResponse {
 pub struct TypeaheadQuery {
     pub q: String,
     pub limit: Option<usize>,
+    pub user_id: String,
 }
 
 impl TypeaheadQuery {
