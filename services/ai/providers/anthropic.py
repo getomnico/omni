@@ -40,6 +40,10 @@ class AnthropicProvider(LLMProvider):
 
     provider_type: ClassVar[ProviderType] = ProviderType.ANTHROPIC
 
+    @property
+    def supports_citations(self) -> bool:
+        return True
+
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
         self.client = AsyncAnthropic(api_key=api_key)

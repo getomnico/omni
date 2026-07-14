@@ -44,6 +44,10 @@ class AzureFoundryProvider(LLMProvider):
 
     provider_type: ClassVar[ProviderType] = ProviderType.AZURE_FOUNDRY
 
+    @property
+    def supports_citations(self) -> bool:
+        return self._delegate.supports_citations
+
     def __init__(self, endpoint_url: str, model: str):
         self.endpoint_url = endpoint_url.rstrip("/")
         self.model = model

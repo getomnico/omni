@@ -75,6 +75,7 @@ type TextUserMessage = {
 
 type SeededCitationChat = SeededChat & {
     assistantMessageId: string
+    citationFreeAssistantMessageId: string
 }
 
 function sseMessage(data: unknown): string {
@@ -433,9 +434,17 @@ async function seedCitationRenderingChat(): Promise<SeededCitationChat> {
         SELECT id FROM chat_messages
         WHERE chat_id = ${seeded.chatId} AND message_seq_num = 2
     `
+    const [citationFreeMessage] = await sql<{ id: string }[]>`
+        SELECT id FROM chat_messages
+        WHERE chat_id = ${seeded.chatId} AND message_seq_num = 4
+    `
     await sql.end()
 
-    return { ...seeded, assistantMessageId: assistantMessage.id }
+    return {
+        ...seeded,
+        assistantMessageId: assistantMessage.id,
+        citationFreeAssistantMessageId: citationFreeMessage.id,
+    }
 }
 
 async function countMessagesContaining(
@@ -547,11 +556,12 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
     }
 })
 
-test('chat renders text after a citation in the same paragraph', async ({ page }) => {
+test('chat renders citation chips and Sources drawer', async ({ page }) => {
     let seeded: SeededCitationChat | null = null
     try {
         seeded = await seedCitationRenderingChat()
         await authenticate(page, seeded)
+        await page.setViewportSize({ width: 1280, height: 360 })
 
         await page.goto(`/chat/${seeded.chatId}`)
 
@@ -561,30 +571,301 @@ test('chat renders text after a citation in the same paragraph', async ({ page }
         await expect(message.getByText('A cited bullet')).toBeVisible()
         await expect(message.getByText('A text-only bullet')).toBeVisible()
 
+        // --- Inline chip labels appear ---
+        await expect(message.getByText('Citation source', { exact: true }).first()).toBeVisible()
+        await expect(message.getByText('Bullet citation source', { exact: true })).toBeVisible()
+        await expect(message.getByText('Web Source Example', { exact: true })).toBeVisible()
+        await expect(
+            message.getByText('Google Doc Research', { exact: true }).first(),
+        ).toBeVisible()
+        await expect(message.getByText('Academic Paper', { exact: true })).toBeVisible()
+        await expect(message.getByText('Web Search Title', { exact: true })).toBeVisible()
+        await expect(message.getByText('Another Doc', { exact: true })).toBeVisible()
+
+        // --- Paragraph/list structure preserved ---
         await expect
             .poll(async () =>
                 message
                     .locator('p')
                     .first()
-                    .evaluate((paragraph) => paragraph.textContent?.replace(/\s+/g, ' ').trim()),
+                    .evaluate((p) => p.textContent?.replace(/\s+/g, ' ').trim()),
             )
-            .toBe('A cited answer [0]. It should stay inline.')
+            .toBe('A cited answer Citation source. It should stay inline.')
+
         await expect
             .poll(async () =>
                 message
                     .locator('li')
                     .nth(0)
-                    .evaluate((listItem) => listItem.textContent?.replace(/\s+/g, ' ').trim()),
+                    .evaluate((li) => li.textContent?.replace(/\s+/g, ' ').trim()),
             )
-            .toBe('A cited bullet [1] should also stay inline.')
+            .toBe('A cited bullet Bullet citation source should also stay inline.')
+
         await expect
             .poll(async () =>
                 message
                     .locator('li')
                     .nth(1)
-                    .evaluate((listItem) => listItem.textContent?.replace(/\s+/g, ' ').trim()),
+                    .evaluate((li) => li.textContent?.replace(/\s+/g, ' ').trim()),
             )
             .toBe('A text-only bullet should also stay inline too.')
+
+        await expect
+            .poll(async () => message.evaluate((el) => (el.textContent ?? '').replace(/\s+/g, ' ')))
+            .not.toMatch(/\[\d+\]/)
+
+        // --- Navigable source link semantics ---
+        const webLinkChip = message.locator('a[href="https://example.com/cited-web-page"]').first()
+        await expect(webLinkChip).toBeVisible()
+        await expect(webLinkChip).toHaveAttribute('target', '_blank')
+        await expect(webLinkChip.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noreferrer/,
+        )
+        await expect(webLinkChip.evaluate((el) => el.relList?.toString() ?? '')).toMatch(/noopener/)
+        await expect(webLinkChip).not.toHaveAttribute('role', 'button')
+        await expect(message.getByRole('link', { name: 'Web Source Example' })).toBeVisible()
+
+        // Non-navigable source is a button with role="button"
+        const buttonChips = message.locator('button')
+        const citationBtn = buttonChips.filter({ hasText: 'Citation source' }).first()
+        await expect(citationBtn).toBeVisible()
+        await expect(citationBtn).toHaveAttribute('type', 'button')
+        await expect(citationBtn).toHaveAttribute('role', 'button')
+        await expect(buttonChips.filter({ hasText: 'Web Source Example' })).toHaveCount(0)
+
+        // Long title truncation
+        const longChip = message
+            .locator('button, a')
+            .filter({ hasText: 'A Very Long Document Title' })
+            .first()
+        await expect(longChip).toBeVisible()
+        const trunc = await longChip.evaluate((el) => {
+            const span = el.querySelector('span.truncate')
+            if (!span) return { truncated: false }
+            return {
+                truncated: span.scrollWidth > span.clientWidth,
+                overflow: getComputedStyle(span).overflow,
+                textOverflow: getComputedStyle(span).textOverflow,
+            }
+        })
+        expect(trunc.truncated).toBe(true)
+        expect(trunc.overflow).toBe('hidden')
+        expect(trunc.textOverflow).toBe('ellipsis')
+
+        // --- Two Google Doc chips (different excerpts from same doc index 6) ---
+        const googleDocChips = buttonChips.filter({ hasText: 'Google Doc Research' })
+        await expect(googleDocChips).toHaveCount(2)
+
+        // First Google Doc chip hover shows its own snippet
+        const hc = page.locator('[data-slot="hover-card-content"]:visible')
+        const googleFirst = googleDocChips.first()
+        await googleFirst.hover()
+        await expect(hc.getByText('Google Doc Research key finding excerpt')).toBeVisible({
+            timeout: 2000,
+        })
+        await expect(hc.getByText('Files', { exact: true })).toBeVisible()
+        await expect(hc.getByText('Document excerpt')).toBeVisible()
+
+        // Second Google Doc chip hover shows different snippet
+        const googleSecond = googleDocChips.nth(1)
+        await googleSecond.hover()
+        await expect(hc.getByText('Second Google Doc excerpt in same source')).toBeVisible({
+            timeout: 2000,
+        })
+        await expect(hc.getByText('Document excerpt')).toBeVisible()
+
+        // Academic Paper hover shows Pages label in hover content
+        const pageChip = message.getByRole('button', { name: 'Academic Paper', exact: true })
+        await pageChip.hover()
+        await expect(hc.getByText('Academic paper methodology section')).toBeVisible({
+            timeout: 2000,
+        })
+        await expect(hc.getByText('Pages 3–5')).toBeVisible()
+
+        // Another Doc (exact match — not "Another Document") hover
+        const blockChip = message.getByRole('button', { name: 'Another Doc', exact: true })
+        await blockChip.hover()
+        await expect(hc.getByText('Content block excerpt text')).toBeVisible({ timeout: 2000 })
+        await expect(hc.getByText('Document excerpt')).toBeVisible()
+
+        // --- Web search result chip ---
+        const webSearchChip = message
+            .locator('a[href="https://web-search.example.com/result"]')
+            .first()
+        await expect(webSearchChip).toBeVisible()
+        await expect(webSearchChip).toHaveAttribute('target', '_blank')
+        await expect(webSearchChip.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noreferrer/,
+        )
+        await expect(webSearchChip.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noopener/,
+        )
+        await webSearchChip.hover()
+        await expect(hc.getByText('Web search result excerpt')).toBeVisible({ timeout: 2000 })
+        await expect(hc.getByText('Web', { exact: true })).toBeVisible()
+
+        // --- Sources button count ---
+        const sourcesButton = message.getByRole('button', { name: /9 sources/i })
+        await expect(sourcesButton).toBeVisible()
+
+        // --- Open drawer ---
+        await sourcesButton.click()
+        const drawer = page.locator('[data-slot="drawer-content"]')
+        await expect(drawer).toBeVisible()
+
+        await expect
+            .poll(async () => {
+                const box = await drawer.evaluate((el) => {
+                    const r = el.getBoundingClientRect()
+                    return { right: r.right, windowWidth: window.innerWidth }
+                })
+                return box.right
+            })
+            .toBeCloseTo(1280, 0)
+
+        const drawerHeight = await drawer.evaluate((el) => el.getBoundingClientRect().height)
+        expect(drawerHeight).toBeGreaterThan(300)
+
+        await expect(drawer.getByRole('heading', { name: /sources/i })).toBeVisible()
+
+        // Ordered deduped sources (fixture encounter order)
+        const expectedTitles = [
+            'Citation source',
+            'Bullet citation source',
+            'A Very Long Document Title That Should Visually Truncate When Displayed as an Inline Chip in the Chat Interface to Keep the Layout Clean',
+            'Web Source Example',
+            'Another Document',
+            'Google Doc Research',
+            'Academic Paper',
+            'Web Search Title',
+            'Another Doc',
+        ]
+        const titleElements = drawer.locator('[data-testid="drawer-source-title"]')
+        await expect(titleElements).toHaveText(expectedTitles)
+
+        await expect(drawer.getByText('Citation source', { exact: true })).toHaveCount(1)
+        await expect(drawer.getByText('Duplicate: Citation source', { exact: true })).toHaveCount(0)
+
+        await expect(titleElements.first()).toHaveTag('p')
+
+        // Location labels: Document excerpt appears twice (char+block), Pages 3–5
+        await expect(drawer.getByText('Document excerpt')).toHaveCount(2)
+        await expect(drawer.getByText('Pages 3–5')).toHaveCount(1)
+
+        // Scope location labels to their source cards
+        const googleDocDrawerCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]').filter({
+                hasText: /^Google Doc Research$/,
+            }),
+        })
+        await expect(googleDocDrawerCard.getByText('Document excerpt')).toHaveCount(1)
+
+        const anotherDocDrawerCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]').filter({
+                hasText: /^Another Doc$/,
+            }),
+        })
+        await expect(anotherDocDrawerCard.getByText('Document excerpt')).toHaveCount(1)
+
+        const academicDrawerCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]').filter({
+                hasText: /^Academic Paper$/,
+            }),
+        })
+        await expect(academicDrawerCard.getByText('Pages 3–5')).toHaveCount(1)
+
+        // Google Doc Research collapsed to one drawer entry
+        await expect(drawer.getByText('Google Doc Research')).toHaveCount(1)
+
+        // Scrollable
+        const scrollContainer = drawer.locator('.overflow-y-auto')
+        await expect(scrollContainer).toBeAttached()
+        const scrollable = await scrollContainer.evaluate((el) => {
+            return { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+        })
+        expect(scrollable.scrollHeight).toBeGreaterThan(scrollable.clientHeight)
+        await scrollContainer.evaluate((el) => {
+            el.scrollTop = 100
+        })
+        expect(await scrollContainer.evaluate((el) => el.scrollTop)).toBeGreaterThan(0)
+
+        // Web drawer card — anchor with href, target, rel
+        const webDrawerCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]', {
+                hasText: 'Web Source Example',
+            }),
+        })
+        await expect(webDrawerCard).toHaveTag('a')
+        await expect(webDrawerCard).toHaveAttribute('href', 'https://example.com/cited-web-page')
+        await expect(webDrawerCard).toHaveAttribute('target', '_blank')
+        await expect(webDrawerCard.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noopener/,
+        )
+
+        // Non-http drawer source card is a div
+        const nonHttpCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]', {
+                hasText: 'Bullet citation source',
+            }),
+        })
+        await expect(nonHttpCard).toHaveTag('div')
+
+        // Web Search card — anchor with href, target
+        const webSearchCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]').filter({
+                hasText: /^Web Search Title$/,
+            }),
+        })
+        await expect(webSearchCard).toHaveTag('a')
+        await expect(webSearchCard).toHaveAttribute('href', 'https://web-search.example.com/result')
+        await expect(webSearchCard).toHaveAttribute('target', '_blank')
+        await expect(webSearchCard.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noreferrer/,
+        )
+        await expect(webSearchCard.evaluate((el) => el.relList?.toString() ?? '')).toMatch(
+            /noopener/,
+        )
+
+        // Document drawer card is a div
+        const docCard = drawer.locator('[data-testid="drawer-source"]').filter({
+            has: page.locator('[data-testid="drawer-source-title"]').filter({
+                hasText: /^Google Doc Research$/,
+            }),
+        })
+        await expect(docCard).toHaveTag('div')
+
+        // Close via Escape
+        const triggerButtonText = await sourcesButton.textContent()
+        await page.keyboard.press('Escape')
+        await expect(drawer).not.toBeVisible()
+        const focusedAfterEscape = await page.evaluate(() => document.activeElement?.textContent)
+        expect(focusedAfterEscape).toContain(triggerButtonText?.trim())
+
+        // Re-open and close via close button
+        await page.getByRole('button', { name: /9 sources/i }).click()
+        await expect(drawer).toBeVisible()
+        await drawer.locator('button').filter({ hasText: /close/i }).click()
+        await expect(drawer).not.toBeVisible()
+        const focusedAfterCloseBtn = await page.evaluate(() => document.activeElement?.textContent)
+        expect(focusedAfterCloseBtn).toContain(triggerButtonText?.trim())
+
+        // Re-open and close via overlay click
+        await page.getByRole('button', { name: /9 sources/i }).click()
+        await expect(drawer).toBeVisible()
+        const overlay = page.locator('[data-slot="drawer-overlay"]')
+        await expect(overlay).toBeVisible()
+        await overlay.click({ position: { x: 10, y: 10 } })
+        await expect(drawer).not.toBeVisible()
+        await expect(sourcesButton).toBeFocused()
+
+        // --- Citation-free assistant message has no Sources trigger ---
+        const noCitationMessage = page.getByTestId(
+            `chat-message-${seeded.citationFreeAssistantMessageId}`,
+        )
+        await expect(
+            noCitationMessage.getByText('Here is an answer with no citations at all.'),
+        ).toBeVisible()
+        await expect(noCitationMessage.getByRole('button', { name: /source/i })).toHaveCount(0)
     } finally {
         await cleanupChat(seeded)
     }

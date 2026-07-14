@@ -83,6 +83,11 @@ class LLMProvider(ABC):
             tokens=SAFE_DEFAULT_CONTEXT_WINDOW_TOKENS, source="safe_default"
         )
 
+    @property
+    def supports_citations(self) -> bool:
+        """Whether this provider natively generates citation events for documents and search results."""
+        return False
+
     @abstractmethod
     async def stream_response(
         self,
