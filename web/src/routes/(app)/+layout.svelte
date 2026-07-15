@@ -35,6 +35,7 @@
         Pencil,
         Trash2,
         Bot,
+        BookOpen,
     } from '@lucide/svelte'
     import { onMount, type Snippet } from 'svelte'
     import { cn } from '$lib/utils'
@@ -397,8 +398,15 @@
                     <Bot />
                     <span class="group-data-[collapsible=icon]:hidden">Agents</span>
                 </Button>
-                <hr />
             {/if}
+            <Button
+                href="/skills"
+                class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                variant="ghost">
+                <BookOpen />
+                <span class="group-data-[collapsible=icon]:hidden">Skills</span>
+            </Button>
+            <hr />
 
             <Button
                 href="/"
@@ -518,6 +526,8 @@
                             Chat
                         {:else if page.url.pathname.startsWith('/agents')}
                             Agents
+                        {:else if page.url.pathname.startsWith('/skills')}
+                            Skills
                         {:else}
                             <!-- empty -->
                         {/if}

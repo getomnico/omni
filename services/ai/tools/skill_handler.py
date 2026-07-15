@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 from anthropic.types import ToolParam
 
+from db.skills import Skill, SkillsRepository
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
     CapabilitiesUpsertRequest,
@@ -62,6 +63,8 @@ class SkillHandler:
         skills_dir: Path,
         searcher_client: SearcherClient | None = None,
         connector_manager_url: str | None = None,
+        skills_repository: SkillsRepository | None = None,
+        skill_user_id: str | None = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._searcher_client = searcher_client
@@ -71,6 +74,9 @@ class SkillHandler:
         self._available: dict[str, Path] = {}
         self._connector_skills: dict[str, ConnectorSkill] = {}
         self._connector_skills_loaded = False
+        self._library_skills: dict[str, Skill] = {}
+        self._skills_repository = skills_repository
+        self._skill_user_id = skill_user_id
         self._discover_skills()
 
     def _discover_skills(self) -> None:
@@ -130,8 +136,26 @@ class SkillHandler:
         self._connector_skills = skills
         self._connector_skills_loaded = True
 
+    async def refresh_library_skills(self, user_id: str | None = None) -> None:
+        """Fetch library skills visible to the configured skill-library user."""
+        if self._skills_repository is None:
+            self._library_skills = {}
+            return
+        if user_id and self._skill_user_id is None:
+            self._skill_user_id = user_id
+        visibility_user_id = self._skill_user_id
+        if not visibility_user_id:
+            self._library_skills = {}
+            return
+        try:
+            skills = await self._skills_repository.list_visible(visibility_user_id)
+            self._library_skills = {f"library:{skill.id}": skill for skill in skills}
+        except Exception as e:
+            logger.warning(f"Failed to refresh library skills: {e}")
+            self._library_skills = {}
+
     def has_skills(self) -> bool:
-        return bool(self._available or self._connector_skills)
+        return bool(self._available or self._connector_skills or self._library_skills)
 
     def get_tools(self) -> list[ToolParam]:
         return [
@@ -188,6 +212,8 @@ class SkillHandler:
     async def execute(
         self, tool_name: str, tool_input: dict, context: ToolContext
     ) -> ToolResult:
+        await self.refresh_library_skills(context.user_id)
+
         if tool_name == "skill_search":
             return await self._skill_search(tool_input)
         if tool_name != "load_skill":
@@ -215,6 +241,12 @@ class SkillHandler:
 
         if skill in self._connector_skills:
             return await self._load_connector_skill(skill)
+
+        if skill in self._library_skills:
+            lib_skill = self._library_skills[skill]
+            return ToolResult(
+                content=[{"type": "text", "text": lib_skill.instructions}]
+            )
 
         available = ", ".join(sorted(self._all_skill_ids()))
         return ToolResult(
@@ -292,7 +324,7 @@ class SkillHandler:
         return request
 
     def _all_skill_ids(self) -> set[str]:
-        return set(self._available) | set(self._connector_skills)
+        return set(self._available) | set(self._connector_skills) | set(self._library_skills)
 
     async def _skill_search(self, tool_input: dict) -> ToolResult:
         await self.refresh_connector_skills()
@@ -344,18 +376,21 @@ class SkillHandler:
         if self._searcher_client is None:
             raise RuntimeError("skill_search requires a searcher client")
 
+        allowed_ids = [f"skill:{skill_id}" for skill_id in self._all_skill_ids()]
+
         response = await self._searcher_client.search_capabilities(
             CapabilitySearchRequest(
                 capability_type="skill",
                 query=query,
                 limit=limit,
-                allowed_ids=[f"skill:{skill_id}" for skill_id in self._all_skill_ids()],
+                allowed_ids=allowed_ids,
             )
         )
+        all_ids = self._all_skill_ids() | set(self._library_skills)
         matches: list[tuple[str, str, str]] = []
         for result in response.results:
             skill_id = result.data["skill_id"]
-            if skill_id not in self._all_skill_ids():
+            if skill_id not in all_ids:
                 continue
             title = result.data.get("title") or skill_id
             body = result.data.get("body") or result.data.get("description") or ""
@@ -364,7 +399,10 @@ class SkillHandler:
 
     async def publish_skill_capabilities(self) -> None:
         await self.refresh_connector_skills()
-        if self._searcher_client is None or not self._all_skill_ids():
+        await self.refresh_library_skills()
+        if self._searcher_client is None:
+            return
+        if not self._all_skill_ids() and not self._library_skills:
             return
 
         capabilities = await self._skill_capabilities()
@@ -430,6 +468,25 @@ class SkillHandler:
                         "body": body,
                         "source_type": skill.source_type,
                         "source_id": skill.source_id,
+                    },
+                )
+            )
+        for lib_id, lib_skill in self._library_skills.items():
+            body = lib_skill.instructions
+            capabilities.append(
+                CapabilityUpsert(
+                    id=f"skill:{lib_id}",
+                    capability_type="skill",
+                    name=lib_id,
+                    description=self._snippet(body, max_chars=240),
+                    search_text=f"{lib_id} {lib_skill.name}\n{body}",
+                    user_id=lib_skill.owner_id,
+                    data={
+                        "skill_id": lib_id,
+                        "title": lib_skill.name,
+                        "description": self._snippet(body, max_chars=240),
+                        "body": body,
+                        "user_id": lib_skill.owner_id,
                     },
                 )
             )

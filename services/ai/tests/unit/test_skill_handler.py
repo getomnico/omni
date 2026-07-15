@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -26,7 +28,9 @@ class _FakeSearcherClient:
     async def search_capabilities(self, request):
         self.searches.append(request)
         results = []
-        if self.include_excel:
+        query = request.query.lower()
+        allowed_ids = set(request.allowed_ids or [])
+        if self.include_excel and (not allowed_ids or "skill:excel" in allowed_ids):
             results.append(
                 CapabilitySearchResult(
                     id="skill:excel",
@@ -43,7 +47,25 @@ class _FakeSearcherClient:
                     score=4.2,
                 )
             )
-        return CapabilitySearchResponse(results=results)
+        for upsert in self.upserts:
+            for capability in upsert.capabilities:
+                if allowed_ids and capability.id not in allowed_ids:
+                    continue
+                searchable = f"{capability.id} {capability.name} {capability.search_text}".lower()
+                if query not in searchable:
+                    continue
+                results.append(
+                    CapabilitySearchResult(
+                        id=capability.id,
+                        capability_type=capability.capability_type,
+                        name=capability.name,
+                        description=capability.description,
+                        search_text=capability.search_text,
+                        data=capability.data,
+                        score=3.0,
+                    )
+                )
+        return CapabilitySearchResponse(results=results[: request.limit])
 
 
 def _ctx() -> ToolContext:
@@ -197,3 +219,247 @@ def test_google_workspace_connector_skills_do_not_instruct_local_gws_auth_or_ins
         for phrase in forbidden:
             assert phrase not in text
         assert "Do not run local `gws` commands" in text
+
+
+# =============================================================================
+# Library skill tests
+# =============================================================================
+
+
+@dataclass
+class _FakeSkill:
+    """Minimal stand-in matching the fields SkillHandler reads from Skill."""
+    id: str
+    owner_id: str
+    name: str
+    instructions: str
+    visibility: str
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class _FakeSkillsRepository:
+    """In-memory SkillsRepository that returns pre-configured library skill records."""
+
+    def __init__(self, skills: list | None = None):
+        self.skills = skills or []
+
+    async def list_visible(self, user_id: str) -> list:
+        return [
+            s for s in self.skills
+            if s.owner_id == user_id or s.visibility == "public"
+        ]
+
+    async def get_visible_by_id(self, skill_id: str, user_id: str):
+        for s in self.skills:
+            if s.id == skill_id and (s.owner_id == user_id or s.visibility == "public"):
+                return s
+        return None
+
+
+@pytest.mark.asyncio
+async def test_library_skill_loads_via_namespaced_id(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    searcher = _FakeSearcherClient()
+
+    skill_id = "01J00000000000000000000000"
+    assert len(skill_id) == 26
+    lib_skill = _FakeSkill(
+        id=skill_id,
+        owner_id="user-1",
+        name="My Library Skill",
+        instructions="# Library Skill\n\nDo the thing.",
+        visibility="public",
+        created_at=datetime.datetime.now(),
+        updated_at=datetime.datetime.now(),
+    )
+    fake_repo = _FakeSkillsRepository(skills=[lib_skill])
+
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+    )
+
+    result = await handler.execute(
+        "load_skill",
+        {"skill": f"library:{skill_id}"},
+        ToolContext(chat_id="c1", user_id="user-1"),
+    )
+
+    assert not result.is_error
+    assert result.content[0]["text"] == "# Library Skill\n\nDo the thing."
+
+
+@pytest.mark.asyncio
+async def test_library_skill_not_loadable_by_non_owner_when_private(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    searcher = _FakeSearcherClient()
+
+    lib_skill = _FakeSkill(
+        id="01J00000000000000000000001",
+        owner_id="user-1",
+        name="Private Skill",
+        instructions="Secret instructions",
+        visibility="private",
+        created_at=datetime.datetime.now(),
+        updated_at=datetime.datetime.now(),
+    )
+    fake_repo = _FakeSkillsRepository(skills=[lib_skill])
+
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+    )
+
+    # Non-owner user-2 tries to load user-1's private skill
+    result = await handler.execute(
+        "load_skill",
+        {"skill": "library:01J00000000000000000000001"},
+        ToolContext(chat_id="c1", user_id="user-2"),
+    )
+
+    assert result.is_error
+    assert "Unknown skill" in result.content[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_library_skills_included_in_search_allowed_ids(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    (skills_dir / "excel.md").write_text("# Excel Skill\n\nInspect spreadsheets.")
+
+    lib_skill = _FakeSkill(
+        id="01J00000000000000000000002",
+        owner_id="user-1",
+        name="Public Library Skill",
+        instructions="Public library instructions",
+        visibility="public",
+        created_at=datetime.datetime.now(),
+        updated_at=datetime.datetime.now(),
+    )
+    fake_repo = _FakeSkillsRepository(skills=[lib_skill])
+
+    searcher = _FakeSearcherClient()
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+    )
+
+    await handler.execute(
+        "skill_search",
+        {"query": "spreadsheet"},
+        ToolContext(chat_id="c1", user_id="user-1"),
+    )
+
+    # The library skills should be in the allowed_ids
+    assert len(searcher.searches) >= 1
+    allowed_ids = searcher.searches[0].allowed_ids
+    assert "skill:library:01J00000000000000000000002" in allowed_ids
+
+
+@pytest.mark.asyncio
+async def test_library_skills_published_as_capabilities(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    searcher = _FakeSearcherClient()
+
+    lib_skill = _FakeSkill(
+        id="01J00000000000000000000003",
+        owner_id="user-1",
+        name="Lib Skill",
+        instructions="Lib instructions",
+        visibility="public",
+        created_at=datetime.datetime.now(),
+        updated_at=datetime.datetime.now(),
+    )
+    fake_repo = _FakeSkillsRepository(skills=[lib_skill])
+
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+    )
+
+    await handler.refresh_library_skills("user-1")
+    await handler.publish_skill_capabilities()
+
+    assert searcher.upserts
+    capability_ids = {c.id for c in searcher.upserts[0].capabilities}
+    assert "skill:library:01J00000000000000000000003" in capability_ids
+
+
+@pytest.mark.asyncio
+async def test_library_skill_search_returns_exact_library_id(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    searcher = _FakeSearcherClient(include_excel=False)
+    skill_id = "01J00000000000000000000004"
+    fake_repo = _FakeSkillsRepository(
+        skills=[
+            _FakeSkill(
+                id=skill_id,
+                owner_id="user-1",
+                name="PR Review",
+                instructions="Review pull requests with a checklist.",
+                visibility="public",
+                created_at=datetime.datetime.now(),
+                updated_at=datetime.datetime.now(),
+            )
+        ]
+    )
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+        skill_user_id="user-1",
+    )
+
+    await handler.publish_skill_capabilities()
+    result = await handler.execute(
+        "skill_search",
+        {"query": f"library:{skill_id}"},
+        ToolContext(chat_id="c1", user_id="user-1"),
+    )
+
+    assert not result.is_error
+    assert f"library:{skill_id} — PR Review" in result.content[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_library_skill_uses_configured_owner_when_context_has_no_user(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    skill_id = "01J00000000000000000000005"
+    fake_repo = _FakeSkillsRepository(
+        skills=[
+            _FakeSkill(
+                id=skill_id,
+                owner_id="agent-owner",
+                name="Owner Private Skill",
+                instructions="Private owner instructions.",
+                visibility="private",
+                created_at=datetime.datetime.now(),
+                updated_at=datetime.datetime.now(),
+            )
+        ]
+    )
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=_FakeSearcherClient(include_excel=False),
+        skills_repository=fake_repo,
+        skill_user_id="agent-owner",
+    )
+
+    result = await handler.execute(
+        "load_skill",
+        {"skill": f"library:{skill_id}"},
+        ToolContext(chat_id="agent-run", user_id=None, skip_permission_check=True),
+    )
+
+    assert not result.is_error
+    assert result.content[0]["text"] == "Private owner instructions."

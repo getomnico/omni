@@ -1,4 +1,14 @@
-import { pgTable, text, timestamp, boolean, jsonb, bigint, integer } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+import {
+    pgTable,
+    text,
+    timestamp,
+    boolean,
+    jsonb,
+    bigint,
+    integer,
+    index,
+} from 'drizzle-orm/pg-core'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
 
 export const user = pgTable('users', {
@@ -360,6 +370,31 @@ export const compactions = pgTable('compactions', {
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const skills = pgTable(
+    'skills',
+    {
+        id: text('id').primaryKey(),
+        ownerId: text('owner_id')
+            .notNull()
+            .references(() => user.id, { onDelete: 'cascade' }),
+        name: text('name').notNull(),
+        instructions: text('instructions').notNull(),
+        visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
+        createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })
+            .notNull()
+            .defaultNow(),
+        updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' })
+            .notNull()
+            .defaultNow(),
+    },
+    (table) => [
+        index('idx_skills_owner_updated').on(table.ownerId, table.updatedAt.desc()),
+        index('idx_skills_public_updated')
+            .on(table.updatedAt.desc())
+            .where(sql`${table.visibility} = 'public'`),
+    ],
+)
+
 export const apiKeys = pgTable('api_keys', {
     id: text('id').primaryKey(),
     userId: text('user_id')
@@ -402,4 +437,6 @@ export type WebFetchProvider = typeof webFetchProviders.$inferSelect
 export type Agent = typeof agents.$inferSelect
 export type AgentRun = typeof agentRuns.$inferSelect
 export type AgentRunLog = typeof agentRunLogs.$inferSelect
+export type Skill = typeof skills.$inferSelect
+
 export type ApiKey = typeof apiKeys.$inferSelect
