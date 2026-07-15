@@ -300,7 +300,8 @@
         mentionAnchorNode = node as Text
         mentionAnchorOffset = atIndex
 
-        if (query.length < 2) {
+        if (query.length < 3) {
+            if (debounceTimer) clearTimeout(debounceTimer)
             mentionActive = true
             mentionQuery = query
             mentionResults = []

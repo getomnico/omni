@@ -781,10 +781,11 @@
 
     async function handleEdit(origMessageId: string, newContent: string) {
         editingMessageId = null
+        const trimmedContent = newContent.trim()
         const response = await fetch(`/api/chat/${data.chat.id}/messages/${origMessageId}/edit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: newContent }),
+            body: JSON.stringify({ content: trimmedContent }),
         })
 
         if (!response.ok) {
@@ -797,9 +798,13 @@
             return
         }
 
-        const { messageId } = await response.json()
+        const { messageId, message } = (await response.json()) as {
+            messageId: string
+            message: ChatMessage['message']
+        }
 
-        // Find the original message's parent to set the branch selection
+        // Use the server-built message so retry/edit preserves the original
+        // mention and upload blocks exactly.
         const origMsg = chatMessages.find((m) => m.id === origMessageId)
         const parentKey = branchSelectionKey(origMsg?.parentId)
 
@@ -807,8 +812,8 @@
             id: messageId,
             chatId: data.chat.id,
             parentId: origMsg?.parentId ?? null,
-            message: { role: 'user', content: newContent },
-            contentText: newContent,
+            message,
+            contentText: trimmedContent,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -1020,14 +1025,13 @@
                                       'source' in b &&
                                       b.source.type === 'omni_mention'
                                   ) {
-                                      const src = b.source as Record<string, unknown>
                                       return {
                                           id: bi,
                                           type: 'mention',
-                                          documentId: src.document_id as string,
-                                          title: src.title as string,
-                                          sourceType: src.source_type as string | undefined,
-                                          contentType: src.content_type as string | undefined,
+                                          documentId: b.source.document_id,
+                                          title: b.source.title,
+                                          sourceType: b.source.source_type,
+                                          contentType: b.source.content_type,
                                       }
                                   }
                                   return null

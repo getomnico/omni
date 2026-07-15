@@ -10,18 +10,23 @@ import pytest
 from ulid import ULID
 
 from db.documents import DocumentsRepository
+from tests.helpers import create_test_document, create_test_source, create_test_user
 from tools.document_handler import DocumentToolHandler
 from tools.registry import ToolContext
-from tests.helpers import create_test_user, create_test_source, create_test_document
 
 pytestmark = pytest.mark.integration
 
 
-def _ctx(user_email: str | None, skip: bool = False) -> ToolContext:
+def _ctx(
+    user_email: str | None,
+    skip: bool = False,
+    user_groups: list[str] | None = None,
+) -> ToolContext:
     return ToolContext(
         chat_id="test-chat",
         user_id="test-user",
         user_email=user_email,
+        user_groups=user_groups,
         skip_permission_check=skip,
     )
 
@@ -60,6 +65,27 @@ class TestDocumentHandlerPermissions:
             _ctx("alice@co.com"),
         )
         assert "not found" not in result.content[0]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_missing_identity_fails_closed(
+        self, db_pool, doc_handler, test_user_id
+    ):
+        source_id = await create_test_source(db_pool, test_user_id, "google_drive")
+        doc_id = await create_test_document(
+            db_pool,
+            source_id,
+            "private.txt",
+            "content",
+            permissions={"public": False, "users": ["alice@co.com"], "groups": []},
+        )
+
+        result = await doc_handler.execute(
+            "read_document",
+            {"id": doc_id, "name": "private.txt"},
+            _ctx(None),
+        )
+        assert result.is_error
+        assert "not found" in result.content[0]["text"].lower()
 
     @pytest.mark.asyncio
     async def test_user_without_access_denied(self, db_pool, doc_handler, test_user_id):
@@ -114,7 +140,7 @@ class TestDocumentHandlerPermissions:
         result = await doc_handler.execute(
             "read_document",
             {"id": doc_id, "name": "eng-only.txt"},
-            _ctx("eng@co.com"),
+            _ctx("alice@co.com", user_groups=["eng@co.com"]),
         )
         assert "not found" not in result.content[0]["text"].lower()
 
@@ -186,7 +212,8 @@ class TestPdfReturnsExtractedText:
             )
 
         assert not result.is_error
-        assert result.content[0]["text"] == "Q3 revenue grew 14% YoY."
+        assert result.content[0]["type"] == "document"
+        assert result.content[0]["source"]["data"] == "Q3 revenue grew 14% YoY."
         mock_storage.get_text.assert_awaited_once_with(content_id)
 
 
@@ -228,7 +255,8 @@ class TestReadDocumentByExternalId:
         )
 
         assert not result.is_error
-        assert result.content[0]["text"] == "Q3 revenue grew 14% YoY."
+        assert result.content[0]["type"] == "document"
+        assert result.content[0]["source"]["data"] == "Q3 revenue grew 14% YoY."
         mock_storage.get_text.assert_awaited_once_with(content_id)
         assert doc_id  # sanity: the doc was actually inserted under a real ULID
 

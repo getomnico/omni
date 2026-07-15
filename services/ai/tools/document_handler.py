@@ -170,12 +170,23 @@ class DocumentToolHandler:
                 is_error=True,
             )
 
+        if not context.skip_permission_check and context.user_email is None:
+            return ToolResult(
+                content=[
+                    {"type": "text", "text": f"Document not found: {document_id}"}
+                ],
+                is_error=True,
+            )
+
         try:
             user_email = None if context.skip_permission_check else context.user_email
-            doc = await self._documents_repo.get_by_id(document_id, user_email=user_email)
+            user_groups = context.user_groups
+            doc = await self._documents_repo.get_by_id(
+                document_id, user_email=user_email, user_groups=user_groups
+            )
             if doc is None:
                 doc = await self._documents_repo.get_by_external_id(
-                    document_id, user_email=user_email
+                    document_id, user_email=user_email, user_groups=user_groups
                 )
             if doc is None:
                 return ToolResult(

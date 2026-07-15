@@ -334,6 +334,15 @@ pub async fn typeahead(
     }
     let user_email = user.email;
 
+    // Enforce minimum query length (3 characters after normalization).
+    // This prevents broad 1-2 character scans from direct API calls.
+    if !crate::typeahead::has_minimum_query_length(&query.q) {
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+
     // Resolve current group memberships. Fail closed on DB error.
     let group_repo = GroupRepository::new(&state.db_pool.pool());
     let user_groups = group_repo

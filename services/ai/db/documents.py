@@ -10,17 +10,42 @@ from .connection import get_db_pool
 
 logger = logging.getLogger(__name__)
 
-_COLUMNS = "id, content_id, source_id, external_id, title, content_type"
+_COLUMNS = "d.id, d.content_id, d.source_id, d.external_id, d.title, d.content_type"
 
 
-def _permission_filter(user_email: str) -> str:
-    return f"""
-    AND (
-        permissions @@@ 'public:true'
-        OR permissions @@@ 'users:{user_email}'
-        OR permissions @@@ 'groups:{user_email}'
-    )
-"""
+_DELETED_FILTER = "AND s.is_deleted = false"
+_SOURCE_JOIN = "JOIN sources s ON d.source_id = s.id"
+
+
+def _quote_permission_value(value: str) -> str:
+    """Quote a value for use in a ParadeDB permissions BM25 query.
+
+    Matches the Rust quote_permission_query_value helper:
+    wraps in double quotes, escapes backslashes and double quotes.
+    """
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _permission_filter(user_email: str, user_groups: list[str] | None = None) -> str:
+    terms = [
+        "public:true",
+        f"users:{_quote_permission_value(user_email)}",
+    ]
+
+    # Domain-wide access: any group entry matching the email's domain
+    if "@" in user_email:
+        domain = user_email.split("@", 1)[1]
+        if domain:
+            terms.append(f"groups:{_quote_permission_value(domain)}")
+
+    # Resolved group membership
+    if user_groups:
+        for g in user_groups:
+            terms.append(f"groups:{_quote_permission_value(g)}")
+
+    joined = " OR ".join(terms)
+    return joined
 
 
 @dataclass
@@ -81,7 +106,10 @@ class DocumentsRepository:
         }
 
     async def get_by_id(
-        self, document_id: str, user_email: str | None = None
+        self,
+        document_id: str,
+        user_email: str | None = None,
+        user_groups: list[str] | None = None,
     ) -> Optional[Document]:
         """Get a document by ID.
 
@@ -93,11 +121,11 @@ class DocumentsRepository:
         pool = await self._get_pool()
 
         if user_email:
-            perm_filter = _permission_filter(user_email.lower())
-            query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1 {perm_filter}"
-            row = await pool.fetchrow(query, document_id)
+            perm_value = _permission_filter(user_email.lower(), user_groups)
+            query = f"SELECT {_COLUMNS} FROM documents d {_SOURCE_JOIN} WHERE d.id = $1 AND ( permissions @@@ $2 ) {_DELETED_FILTER}"
+            row = await pool.fetchrow(query, document_id, perm_value)
         else:
-            query = f"SELECT {_COLUMNS} FROM documents WHERE id = $1"
+            query = f"SELECT {_COLUMNS} FROM documents d {_SOURCE_JOIN} WHERE d.id = $1 {_DELETED_FILTER}"
             row = await pool.fetchrow(query, document_id)
 
         if row:
@@ -112,7 +140,10 @@ class DocumentsRepository:
         return None
 
     async def get_by_external_id(
-        self, external_id: str, user_email: str | None = None
+        self,
+        external_id: str,
+        user_email: str | None = None,
+        user_groups: list[str] | None = None,
     ) -> Optional[Document]:
         """Get a document by its connector-native external_id.
 
@@ -124,11 +155,12 @@ class DocumentsRepository:
         pool = await self._get_pool()
 
         if user_email:
-            perm_filter = _permission_filter(user_email.lower())
-            query = f"SELECT {_COLUMNS} FROM documents WHERE external_id = $1 {perm_filter} LIMIT 1"
+            perm_value = _permission_filter(user_email.lower(), user_groups)
+            query = f"SELECT {_COLUMNS} FROM documents d {_SOURCE_JOIN} WHERE d.external_id = $1 AND ( permissions @@@ $2 ) {_DELETED_FILTER} LIMIT 1"
+            row = await pool.fetchrow(query, external_id, perm_value)
         else:
-            query = f"SELECT {_COLUMNS} FROM documents WHERE external_id = $1 LIMIT 1"
-        row = await pool.fetchrow(query, external_id)
+            query = f"SELECT {_COLUMNS} FROM documents d {_SOURCE_JOIN} WHERE d.external_id = $1 {_DELETED_FILTER} LIMIT 1"
+            row = await pool.fetchrow(query, external_id)
 
         if row:
             return Document(

@@ -230,6 +230,7 @@ async def _expand_omni_mention(
     user_email: str | None,
     skip_permission_check: bool,
     cache: dict[DocumentId, tuple[bool, list[ContentBlockParam]]],
+    user_groups: list[str] | None = None,
 ) -> list[ContentBlockParam]:
     # cache stores (is_error, content_blocks) — the content blocks are
     # the raw ToolResult content (no label). The label is built fresh
@@ -244,6 +245,7 @@ async def _expand_omni_mention(
         chat_id=chat_id,
         user_id=user_id,
         user_email=user_email,
+        user_groups=user_groups,
         skip_permission_check=skip_permission_check,
     )
 
@@ -312,6 +314,7 @@ async def expand_mentions(
     user_id: str | None,
     user_email: str | None,
     skip_permission_check: bool = False,
+    user_groups: list[str] | None = None,
 ) -> list[MessageParam]:
     """Return a new message list with all omni_mention blocks expanded.
 
@@ -368,6 +371,7 @@ async def expand_mentions(
                         user_email,
                         skip_permission_check,
                         cache,
+                        user_groups=user_groups,
                     )
                 )
                 changed = True

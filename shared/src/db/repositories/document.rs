@@ -112,33 +112,60 @@ impl DocumentRepository {
         Ok(entries)
     }
 
-    /// Fetch title entries whose content_type matches one of the given values.
-    /// Used by the typeahead index to exclude non-document entities (emails,
-    /// contacts, messages, etc.) from @-mention candidates.
+    /// Fetch a page of title entries whose content_type matches one of the given
+    /// values, using keyset pagination over the stable document ID.
     ///
     /// When `content_types` is empty the method returns no rows (fail-closed).
-    pub async fn fetch_title_entries_by_types(
+    /// When `after_id` is None, returns the first page.
+    /// Pass the last document ID from the previous page as `after_id` to fetch
+    /// the next page.  Pages are ordered ascending by `d.id`.
+    pub async fn fetch_title_entries_by_types_paginated(
         &self,
         content_types: &[String],
+        after_id: Option<&str>,
+        page_size: i64,
     ) -> Result<Vec<TitleEntry>, DatabaseError> {
         if content_types.is_empty() {
             return Ok(Vec::new());
         }
 
-        let entries = sqlx::query_as::<_, TitleEntry>(
-            r#"
-            SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
-            FROM documents d
-            JOIN sources s ON d.source_id = s.id
-            WHERE NOT s.is_deleted
-              AND d.content_type = ANY($1)
-            "#,
-        )
-        .bind(content_types)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(entries)
+        if let Some(cursor) = after_id {
+            let entries = sqlx::query_as::<_, TitleEntry>(
+                r#"
+                SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
+                FROM documents d
+                JOIN sources s ON d.source_id = s.id
+                WHERE NOT s.is_deleted
+                  AND d.content_type = ANY($1)
+                  AND d.id > $2
+                ORDER BY d.id ASC
+                LIMIT $3
+                "#,
+            )
+            .bind(content_types)
+            .bind(cursor)
+            .bind(page_size)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(entries)
+        } else {
+            let entries = sqlx::query_as::<_, TitleEntry>(
+                r#"
+                SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
+                FROM documents d
+                JOIN sources s ON d.source_id = s.id
+                WHERE NOT s.is_deleted
+                  AND d.content_type = ANY($1)
+                ORDER BY d.id ASC
+                LIMIT $2
+                "#,
+            )
+            .bind(content_types)
+            .bind(page_size)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(entries)
+        }
     }
 
     /// Given a list of candidate document IDs, return the subset that the user

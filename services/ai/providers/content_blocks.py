@@ -1,14 +1,15 @@
 import json
-from collections.abc import Mapping
+
+from anthropic.types import DocumentBlockParam
 
 
-def extract_text_document(block: Mapping[str, object]) -> str | None:
+def extract_text_document(block: DocumentBlockParam) -> str | None:
     """Convert a text-backed document block into provider-neutral text."""
     if block.get("type") != "document":
         return None
 
     source = block.get("source")
-    if not isinstance(source, Mapping) or source.get("type") != "text":
+    if not isinstance(source, dict) or source.get("type") != "text":
         return None
 
     data = source.get("data")

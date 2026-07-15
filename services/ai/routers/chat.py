@@ -39,6 +39,7 @@ from config import (
 )
 from db import ChatsRepository, CompactionsRepository, MessagesRepository, SkillsRepository
 from db.documents import DocumentsRepository
+from db.groups import GroupRepository
 from db.configuration import ConfigurationRepository
 from db.models import Chat, Source, UserConfiguration
 from db.tool_approvals import (
@@ -880,6 +881,21 @@ class StreamChatHandler:
                 user_id=chat.user_id,
             )
 
+        user_groups = None
+        if user_email and not tool_skip_perm:
+            try:
+                user_groups = await GroupRepository().find_groups_for_user(user_email)
+            except Exception as error:
+                logger.error(
+                    "Group lookup failed for %s — failing closed. Mentions will not be expanded.",
+                    user_email,
+                    exc_info=True,
+                )
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to verify permissions for document mentions. Please try again.",
+                ) from error
+
         expand_suffix = await expand_mentions(
             expand_suffix,
             chat_id=chat_id,
@@ -892,6 +908,7 @@ class StreamChatHandler:
             user_id=tool_user_id,
             user_email=user_email,
             skip_permission_check=tool_skip_perm,
+            user_groups=user_groups,
         )
 
         messages = expand_prefix + expand_suffix
@@ -1006,6 +1023,7 @@ class StreamChatHandler:
             chat.user_id,
             tool_user_id=tool_user_id,
             user_email=user_email,
+            user_groups=user_groups,
             user_configuration=user_configuration,
             tool_skip_perm=tool_skip_perm,
             system_prompt=system_prompt,
