@@ -170,7 +170,7 @@
     let mentionAnchorOffset = 0
 
     let effectivePopoverItems: PopoverItem[] = $derived(
-        mentionActive && mentionResults.length > 0
+        inputMode === 'chat' && mentionActive && mentionResults.length > 0
             ? mentionResults.map((result) => ({
                   label: result.title,
                   icon: FileText,
@@ -182,7 +182,7 @@
     )
 
     let effectiveShowPopover = $derived.by(() => {
-        if (mentionActive) {
+        if (inputMode === 'chat' && mentionActive) {
             return mentionResults.length > 0
         }
         return inputMode === 'search' && showPopover
@@ -224,7 +224,7 @@
     })
 
     function scanMentionedDocs() {
-        if (!inputRef) {
+        if (inputMode !== 'chat' || !inputRef) {
             mentionedDocs = []
             return
         }
@@ -249,6 +249,11 @@
     }
 
     function detectMention() {
+        if (inputMode !== 'chat') {
+            closeMention()
+            return
+        }
+
         const sel = window.getSelection()
         if (!sel || sel.rangeCount === 0) {
             closeMention()
@@ -265,7 +270,8 @@
         const text = node.textContent || ''
         const cursorPos = range.startOffset
 
-        // Scan backwards from cursor for `@`
+        // Scan backwards from cursor for `@`. Spaces are allowed in document
+        // titles/queries (e.g. "@Asset Risk"), but mentions do not span lines.
         let atIndex = -1
         for (let i = cursorPos - 1; i >= 0; i--) {
             const ch = text[i]
@@ -276,8 +282,7 @@
                 }
                 break
             }
-            // Stop scanning if we hit whitespace before finding `@`
-            if (/\s/.test(ch)) break
+            if (ch === '\n') break
         }
 
         if (atIndex === -1) {
@@ -307,6 +312,8 @@
     }
 
     async function fetchTypeahead(query: string) {
+        if (inputMode !== 'chat') return
+
         try {
             const res = await fetch(`/api/typeahead?q=${encodeURIComponent(query)}&limit=5`)
             if (!res.ok) {
@@ -314,7 +321,7 @@
                 return
             }
             const data = await res.json()
-            if (mentionActive && mentionQuery === query) {
+            if (inputMode === 'chat' && mentionActive && mentionQuery === query) {
                 mentionResults = data.results || []
                 mentionHighlightIndex = 0
             }
@@ -324,7 +331,7 @@
     }
 
     function insertMentionChip(result: TypeaheadResult) {
-        if (!mentionAnchorNode || !inputRef) return
+        if (inputMode !== 'chat' || !mentionAnchorNode || !inputRef) return
 
         const sel = window.getSelection()
         if (!sel || sel.rangeCount === 0) return
@@ -365,7 +372,7 @@
     }
 
     function handleKeyPress(event: KeyboardEvent) {
-        if (mentionActive && mentionResults.length > 0) {
+        if (inputMode === 'chat' && mentionActive && mentionResults.length > 0) {
             if (event.key === 'ArrowDown') {
                 event.preventDefault()
                 mentionHighlightIndex = (mentionHighlightIndex + 1) % mentionResults.length
@@ -443,9 +450,11 @@
 
     function changeInputMode(newMode: InputMode) {
         inputMode = newMode
+        closeMention()
         // Recompute controlled value from current DOM for the new mode
         // (search includes chip titles; chat excludes them).
         value = textWithoutMentionChips()
+        scanMentionedDocs()
         onInput(value)
     }
 </script>
@@ -544,7 +553,9 @@
             onblur={handleBlur}
             class={cn(
                 'before:text-muted-foreground relative min-h-12 cursor-text overflow-y-auto before:pointer-events-none before:absolute before:inset-0 focus:outline-none',
-                value.trim() ? "before:content-['']" : 'before:content-[attr(data-placeholder)]',
+                value.trim() || mentionedDocs.length > 0
+                    ? "before:content-['']"
+                    : 'before:content-[attr(data-placeholder)]',
             )}
             contenteditable="true"
             role="textbox"
