@@ -2204,9 +2204,9 @@
                 <div class="mb-2 flex flex-wrap justify-end gap-1">
                     {#each mentions as m (m.id)}
                         <span
-                            class="inline-flex items-center rounded-full bg-blue-100 px-2 text-sm text-blue-800 select-none">
-                            <FileText class="mr-1 h-3 w-3" />
-                            {m.title}
+                            class="bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-md border px-1.5 py-0.5 align-baseline text-sm select-none">
+                            <FileText class="h-3.5 w-3.5 shrink-0" />
+                            <span class="truncate">{m.title}</span>
                         </span>
                     {/each}
                 </div>
