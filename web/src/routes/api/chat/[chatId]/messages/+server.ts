@@ -24,6 +24,8 @@ const MAX_CONTENT_LENGTH = 100_000
 const mentionedDocumentSchema = z.object({
     document_id: z.string().min(1).max(100).refine(isValidUlid, 'Invalid ULID'),
     title: z.string().min(1).max(500),
+    source_type: z.string().min(1).max(100).optional(),
+    content_type: z.string().min(1).max(255).optional(),
 })
 
 const ulidString = z.string().min(26).max(26).refine(isValidUlid, 'Invalid ULID')
