@@ -388,6 +388,8 @@ pub async fn typeahead(
                 title: c.title.clone(),
                 url: c.url.clone(),
                 source_id: c.source_id.clone(),
+                source_type: c.source_type.clone(),
+                content_type: c.content_type.clone(),
             });
         }
     }

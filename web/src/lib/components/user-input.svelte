@@ -17,11 +17,13 @@
     import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
+    import { getDocumentIconPath } from '$lib/utils/icons'
     import { formatProviderName } from '$lib/utils/providers.js'
 
     interface PopoverItem {
         label: string
         icon?: Component
+        iconPath?: string
         onClick: () => void
     }
 
@@ -172,6 +174,8 @@
             ? mentionResults.map((result) => ({
                   label: result.title,
                   icon: FileText,
+                  iconPath:
+                      getDocumentIconPath(result.source_type, result.content_type) ?? undefined,
                   onClick: () => insertMentionChip(result),
               }))
             : popoverItems,
@@ -675,7 +679,12 @@
                                 )}
                                 onclick={() => handlePopoverItemClick(item)}>
                                 <div class="flex items-center gap-3">
-                                    {#if item.icon}
+                                    {#if item.iconPath}
+                                        <img
+                                            src={item.iconPath}
+                                            alt=""
+                                            class="h-4 w-4 shrink-0 object-contain" />
+                                    {:else if item.icon}
                                         <svelte:component
                                             this={item.icon}
                                             class="text-muted-foreground h-4 w-4 shrink-0" />
