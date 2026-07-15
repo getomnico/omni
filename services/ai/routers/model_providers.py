@@ -182,46 +182,22 @@ async def _list_anthropic_models(
     ]
 
 
+# Latest Gemini models as of July 2026.
+_GEMINI_LATEST_MODELS = [
+    ("gemini-3.5-flash", "Gemini 3.5 Flash"),
+    ("gemini-3.5-pro", "Gemini 3.5 Pro"),
+    ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
+]
+
+
 async def _list_gemini_models(
     provider: GeminiProvider | VertexAIProvider,
     limit: int = DISCOVERED_MODELS_LIMIT,
 ) -> list[AvailableModel]:
-    client = provider.client if isinstance(provider, GeminiProvider) else provider._delegate.client
-    async_models = await client.aio.models.list()
-    # Collect (AvailableModel, version_string) pairs.
-    # version is an auto-incrementing decimal like "1.0", "2.0".
-    entries: list[tuple[AvailableModel, str | None]] = []
-    async for model in async_models:
-        supported_actions = getattr(model, "supported_actions", None) or []
-        if supported_actions and "generateContent" not in supported_actions:
-            continue
-        model_id = _google_model_id(getattr(model, "name", None))
-        if not model_id:
-            continue
-        entries.append(
-            (
-                AvailableModel(
-                    model_id=model_id,
-                    display_name=_display_name(
-                        model_id, getattr(model, "display_name", None)
-                    ),
-                ),
-                getattr(model, "version", None),
-            )
-        )
-
-    def _gemini_sort_key(item: tuple[AvailableModel, str | None]) -> tuple:
-        _, ver = item
-        if ver:
-            try:
-                parts = ver.split(".")
-                return tuple(int(p) for p in parts)
-            except (ValueError, TypeError):
-                pass
-        return (0,)
-
-    entries.sort(key=_gemini_sort_key, reverse=True)
-    return [e[0] for e in entries[:limit]]
+    return [
+        AvailableModel(model_id=mid, display_name=dname)
+        for mid, dname in _GEMINI_LATEST_MODELS[:limit]
+    ]
 
 
 async def _list_bedrock_models(
