@@ -167,7 +167,13 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
     let userMessage: { role: 'user'; content: string | UserMessageBlock[] }
     const mentionBlocks: UserMessageBlock[] = mentionedDocuments.map((doc) => ({
         type: 'document',
-        source: { type: 'omni_mention', document_id: doc.document_id, title: doc.title },
+        source: {
+            type: 'omni_mention',
+            document_id: doc.document_id,
+            title: doc.title,
+            ...(doc.source_type ? { source_type: doc.source_type } : {}),
+            ...(doc.content_type ? { content_type: doc.content_type } : {}),
+        },
     }))
     const uploadBlocks: OmniUploadBlock[] = attachmentIds.map((id) => ({
         type: 'document',

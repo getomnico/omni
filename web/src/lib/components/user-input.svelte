@@ -17,6 +17,7 @@
     import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
+    import type { MentionedDocument } from '$lib/types/message'
     import { getDocumentIconPath } from '$lib/utils/icons'
     import { formatProviderName } from '$lib/utils/providers.js'
 
@@ -57,7 +58,7 @@
         onAttachClick?: () => void
         onFilesDropped?: (files: FileList) => void
         attachments?: Snippet
-        mentionedDocs?: { document_id: string; title: string }[]
+        mentionedDocs?: MentionedDocument[]
         canSubmit?: boolean
     }
 
@@ -234,6 +235,8 @@
             return {
                 document_id: element.dataset.documentId ?? '',
                 title: element.dataset.title ?? element.textContent ?? '',
+                source_type: element.dataset.sourceType,
+                content_type: element.dataset.contentType,
             }
         })
     }
@@ -354,8 +357,10 @@
         chip.contentEditable = 'false'
         chip.dataset.documentId = result.document_id
         chip.dataset.title = result.title
+        chip.dataset.sourceType = result.source_type
+        chip.dataset.contentType = result.content_type
         chip.className =
-            'bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-md border px-1.5 py-0.5 align-baseline text-sm select-none'
+            'bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-full border px-1.5 py-0.5 align-baseline text-sm select-none'
 
         const iconPath = getDocumentIconPath(result.source_type, result.content_type)
         if (iconPath) {
