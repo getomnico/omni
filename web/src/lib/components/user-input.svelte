@@ -229,10 +229,13 @@
             return
         }
         const chips = inputRef.querySelectorAll('[data-document-id]')
-        mentionedDocs = Array.from(chips).map((chip) => ({
-            document_id: (chip as HTMLElement).dataset.documentId ?? '',
-            title: chip.textContent ?? '',
-        }))
+        mentionedDocs = Array.from(chips).map((chip) => {
+            const element = chip as HTMLElement
+            return {
+                document_id: element.dataset.documentId ?? '',
+                title: element.dataset.title ?? element.textContent ?? '',
+            }
+        })
     }
 
     function closeMention() {
@@ -350,9 +353,23 @@
         const chip = document.createElement('span')
         chip.contentEditable = 'false'
         chip.dataset.documentId = result.document_id
+        chip.dataset.title = result.title
         chip.className =
-            'inline-flex items-center rounded-full bg-blue-100 text-blue-800 px-2 text-sm select-none'
-        chip.textContent = result.title
+            'bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-md border px-1.5 py-0.5 align-baseline text-sm select-none'
+
+        const iconPath = getDocumentIconPath(result.source_type, result.content_type)
+        if (iconPath) {
+            const icon = document.createElement('img')
+            icon.src = iconPath
+            icon.alt = ''
+            icon.className = 'h-3.5 w-3.5 shrink-0 object-contain'
+            chip.append(icon)
+        }
+
+        const label = document.createElement('span')
+        label.className = 'truncate'
+        label.textContent = result.title
+        chip.append(label)
 
         // Insert chip + trailing space
         range.insertNode(chip)
