@@ -333,15 +333,17 @@
     function insertMentionChip(result: TypeaheadResult) {
         if (inputMode !== 'chat' || !mentionAnchorNode || !inputRef) return
 
-        const sel = window.getSelection()
-        if (!sel || sel.rangeCount === 0) return
+        const queryEndOffset = Math.min(
+            mentionAnchorOffset + 1 + mentionQuery.length,
+            mentionAnchorNode.textContent?.length ?? mentionAnchorOffset,
+        )
 
-        const cursorOffset = sel.getRangeAt(0).startOffset
-
-        // Create a range from `@` to current cursor position
+        // Create a range from `@` to the end of the current mention query. Do
+        // not rely on window selection here: mouse-selecting a suggestion can
+        // move focus/selection from the composer to the popover button.
         const range = document.createRange()
         range.setStart(mentionAnchorNode, mentionAnchorOffset)
-        range.setEnd(mentionAnchorNode, cursorOffset)
+        range.setEnd(mentionAnchorNode, queryEndOffset)
         range.deleteContents()
 
         // Create the chip element
@@ -358,17 +360,23 @@
         const space = document.createTextNode('\u00A0')
         chip.after(space)
 
-        // Move cursor after the space
-        const newRange = document.createRange()
-        newRange.setStartAfter(space)
-        newRange.collapse(true)
-        sel.removeAllRanges()
-        sel.addRange(newRange)
-
         closeMention()
         scanMentionedDocs()
         value = textWithoutMentionChips()
         onInput(value)
+
+        // Closing the popover can update focus. Restore the caret after the
+        // inserted chip once DOM/state updates have settled.
+        requestAnimationFrame(() => {
+            inputRef?.focus()
+            const sel = window.getSelection()
+            if (!sel) return
+            const newRange = document.createRange()
+            newRange.setStartAfter(space)
+            newRange.collapse(true)
+            sel.removeAllRanges()
+            sel.addRange(newRange)
+        })
     }
 
     function handleKeyPress(event: KeyboardEvent) {
@@ -688,6 +696,9 @@
                                         i === mentionHighlightIndex &&
                                         'bg-accent text-accent-foreground',
                                 )}
+                                onmousedown={(event) => {
+                                    if (mentionActive) event.preventDefault()
+                                }}
                                 onclick={() => handlePopoverItemClick(item)}>
                                 <div class="flex items-center gap-3">
                                     {#if item.iconPath}
