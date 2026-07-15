@@ -6,13 +6,14 @@
     import UserInput, { type InputMode } from '$lib/components/user-input.svelte'
     import UploadChip from '$lib/components/upload-chip.svelte'
     import { themeStore } from '$lib/themes/store.svelte'
+    import type { MentionedDocument } from '$lib/types/message'
     import { userPreferences } from '$lib/preferences'
     import { toast } from 'svelte-sonner'
 
     let { data }: PageProps = $props()
 
     let searchQuery = $state('')
-    let mentionedDocs = $state<{ document_id: string; title: string }[]>([])
+    let mentionedDocs = $state<MentionedDocument[]>([])
     let popoverOpen = $state(false)
     let isSearching = $state(false)
     let inputMode = $state<InputMode>(userPreferences.get('inputMode'))

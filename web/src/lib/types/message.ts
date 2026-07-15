@@ -7,9 +7,16 @@ export type OmniUploadBlock = {
     source: { type: 'omni_upload'; upload_id: string }
 }
 
+export type MentionedDocument = {
+    document_id: string
+    title: string
+    source_type?: string
+    content_type?: string
+}
+
 export type OmniMentionBlock = {
     type: 'document'
-    source: { type: 'omni_mention'; document_id: string; title: string }
+    source: { type: 'omni_mention' } & MentionedDocument
 }
 
 export type TextMessageContent = {
@@ -115,6 +122,8 @@ export type MentionMessageContent = {
     type: 'mention'
     documentId: string
     title: string
+    sourceType?: string
+    contentType?: string
 }
 
 export type MessageContent = Array<

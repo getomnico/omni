@@ -47,7 +47,7 @@
         OmniUploadBlock,
         OmniMentionBlock,
     } from '$lib/types/message'
-    import { ToolApprovalStatus } from '$lib/types/message'
+    import { ToolApprovalStatus, MentionedDocument } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolMessage from '$lib/components/tool-message.svelte'
@@ -72,6 +72,7 @@
     import * as HoverCard from '$lib/components/ui/hover-card'
     import { copyTextToClipboard } from '$lib/utils'
     import {
+        getDocumentIconPath,
         getIconFromSearchResult,
         getSourceDisplayName,
         getSourceIconPath,
@@ -127,7 +128,7 @@
     })
 
     let userMessage = $state('')
-    let mentionedDocs = $state<{ document_id: string; title: string }[]>([])
+    let mentionedDocs = $state<MentionedDocument[]>([])
     let isSending = $state(false)
 
     type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
@@ -1018,11 +1019,14 @@
                                       'source' in b &&
                                       b.source.type === 'omni_mention'
                                   ) {
+                                      const src = b.source as Record<string, unknown>
                                       return {
                                           id: bi,
                                           type: 'mention',
-                                          documentId: b.source.document_id,
-                                          title: b.source.title,
+                                          documentId: src.document_id as string,
+                                          title: src.title as string,
+                                          sourceType: src.source_type as string | undefined,
+                                          contentType: src.content_type as string | undefined,
                                       }
                                   }
                                   return null
@@ -2014,7 +2018,13 @@
         let messageContent: string | UserMessageBlock[]
         const mentionBlocks: UserMessageBlock[] = submitMentionedDocs.map((doc) => ({
             type: 'document',
-            source: { type: 'omni_mention', document_id: doc.document_id, title: doc.title },
+            source: {
+                type: 'omni_mention',
+                document_id: doc.document_id,
+                title: doc.title,
+                ...(doc.source_type ? { source_type: doc.source_type } : {}),
+                ...(doc.content_type ? { content_type: doc.content_type } : {}),
+            },
         }))
         const hasRichBlocks = mentionBlocks.length > 0 || attachmentIds.length > 0
         if (hasRichBlocks) {
@@ -2203,9 +2213,17 @@
             {#if mentions.length > 0}
                 <div class="mb-2 flex flex-wrap justify-end gap-1">
                     {#each mentions as m (m.id)}
+                        {@const iconPath = getDocumentIconPath(m.sourceType, m.contentType)}
                         <span
-                            class="bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-md border px-1.5 py-0.5 align-baseline text-sm select-none">
-                            <FileText class="h-3.5 w-3.5 shrink-0" />
+                            class="bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-full border px-1.5 py-0.5 align-baseline text-sm select-none">
+                            {#if iconPath}
+                                <img
+                                    src={iconPath}
+                                    alt=""
+                                    class="h-3.5 w-3.5 shrink-0 object-contain" />
+                            {:else}
+                                <FileText class="h-3.5 w-3.5 shrink-0" />
+                            {/if}
                             <span class="truncate">{m.title}</span>
                         </span>
                     {/each}
