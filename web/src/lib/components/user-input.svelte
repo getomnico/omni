@@ -385,11 +385,11 @@
         // Closing the popover can update focus. Restore the caret after the
         // inserted chip once DOM/state updates have settled.
         requestAnimationFrame(() => {
-            inputRef?.focus()
+            inputRef?.focus({ preventScroll: true })
             const sel = window.getSelection()
-            if (!sel) return
+            if (!sel || !space.isConnected) return
             const newRange = document.createRange()
-            newRange.setStartAfter(space)
+            newRange.setStart(space, space.length)
             newRange.collapse(true)
             sel.removeAllRanges()
             sel.addRange(newRange)
