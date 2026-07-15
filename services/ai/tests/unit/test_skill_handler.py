@@ -25,6 +25,10 @@ class _FakeSearcherClient:
         self.upserts.append(request)
         return type("Resp", (), {"upserted": len(request.capabilities)})()
 
+    async def sync_capabilities(self, request):
+        self.upserts.append(request)
+        return type("Resp", (), {"upserted": len(request.capabilities), "deleted": 0})()
+
     async def search_capabilities(self, request):
         self.searches.append(request)
         results = []

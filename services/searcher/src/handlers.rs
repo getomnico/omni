@@ -1,9 +1,10 @@
 use crate::capabilities_repository::AgentCapabilitiesRepository;
 use crate::models::{
-    AttributeValuesResponse, CapabilitiesUpsertRequest, CapabilitiesUpsertResponse,
-    CapabilitySearchRequest, CapabilitySearchResponse, PeopleSearchResponse, PersonResult,
-    RecentSearchesRequest, SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse,
-    TypeaheadQuery, TypeaheadResponse,
+    AttributeValuesResponse, CapabilitiesSyncRequest, CapabilitiesSyncResponse,
+    CapabilitiesUpsertRequest, CapabilitiesUpsertResponse, CapabilitySearchRequest,
+    CapabilitySearchResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
+    SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
+    TypeaheadResponse,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
@@ -17,10 +18,10 @@ use axum::{
 };
 use futures_util::Stream;
 use redis::AsyncCommands;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shared::{
-    ConfigurationRepository, PersonRepository, Repository, UserRepository,
-    models::UserConfiguration,
+    models::UserConfiguration, ConfigurationRepository, PersonRepository, Repository,
+    UserRepository,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
@@ -412,16 +413,13 @@ pub async fn attribute_values(
     Ok(Json(AttributeValuesResponse { attributes }))
 }
 
-pub async fn capabilities_upsert(
-    State(state): State<AppState>,
-    Json(request): Json<CapabilitiesUpsertRequest>,
-) -> SearcherResult<Json<CapabilitiesUpsertResponse>> {
-    if request.capabilities.len() > 500 {
+fn validate_capabilities(capabilities: &[crate::models::CapabilityUpsert]) -> SearcherResult<()> {
+    if capabilities.len() > 500 {
         return Err(SearcherError::BadRequest(
             "capabilities batch is limited to 500 items".to_string(),
         ));
     }
-    if request.capabilities.iter().any(|capability| {
+    if capabilities.iter().any(|capability| {
         capability.id.trim().is_empty()
             || capability.capability_type.trim().is_empty()
             || capability.name.trim().is_empty()
@@ -431,6 +429,14 @@ pub async fn capabilities_upsert(
             "capability id, capability_type, name, and search_text are required".to_string(),
         ));
     }
+    Ok(())
+}
+
+pub async fn capabilities_upsert(
+    State(state): State<AppState>,
+    Json(request): Json<CapabilitiesUpsertRequest>,
+) -> SearcherResult<Json<CapabilitiesUpsertResponse>> {
+    validate_capabilities(&request.capabilities)?;
 
     let repo = AgentCapabilitiesRepository::new(state.db_pool.pool());
     repo.upsert_many(&request.capabilities)
@@ -439,6 +445,42 @@ pub async fn capabilities_upsert(
 
     Ok(Json(CapabilitiesUpsertResponse {
         upserted: request.capabilities.len(),
+    }))
+}
+
+pub async fn capabilities_sync(
+    State(state): State<AppState>,
+    Json(request): Json<CapabilitiesSyncRequest>,
+) -> SearcherResult<Json<CapabilitiesSyncResponse>> {
+    if request.publisher_id.trim().is_empty() || request.capability_type.trim().is_empty() {
+        return Err(SearcherError::BadRequest(
+            "publisher_id and capability_type are required".to_string(),
+        ));
+    }
+    validate_capabilities(&request.capabilities)?;
+    if request
+        .capabilities
+        .iter()
+        .any(|capability| capability.capability_type != request.capability_type)
+    {
+        return Err(SearcherError::BadRequest(
+            "all capabilities must match request capability_type".to_string(),
+        ));
+    }
+
+    let repo = AgentCapabilitiesRepository::new(state.db_pool.pool());
+    let deleted = repo
+        .sync_publisher(
+            &request.publisher_id,
+            &request.capability_type,
+            &request.capabilities,
+        )
+        .await
+        .map_err(|e| SearcherError::Internal(anyhow!("Capability sync failed: {}", e)))?;
+
+    Ok(Json(CapabilitiesSyncResponse {
+        upserted: request.capabilities.len(),
+        deleted,
     }))
 }
 

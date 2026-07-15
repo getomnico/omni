@@ -50,6 +50,10 @@ class _RecordingSearcherClient:
         self.upsert_calls.append(request)
         return await self.inner.upsert_capabilities(request)
 
+    async def sync_capabilities(self, request):
+        self.upsert_calls.append(request)
+        return await self.inner.sync_capabilities(request)
+
     async def search_capabilities(self, request):
         self.search_calls.append(request)
         try:

@@ -48,7 +48,8 @@ vi.mock('$lib/server/db/skills.js', () => ({
 }))
 
 function locals(userId: string | null = 'user-1') {
-    return userId ? { user: { id: userId } } : { user: null }
+    const logger = { warn: vi.fn() }
+    return userId ? { user: { id: userId }, logger } : { user: null, logger }
 }
 
 function jsonRequest(body: unknown) {
@@ -98,6 +99,32 @@ describe('skills API routes', () => {
 
         expect(updateResponse.status).toBe(403)
         expect(deleteResponse.status).toBe(403)
+    })
+
+    it('deletes owned skills and prunes their capability publisher', async () => {
+        const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+        vi.stubGlobal('fetch', fetchMock)
+        repo.delete.mockClear()
+
+        const response = await DELETE({
+            locals: locals(),
+            params: { skillId: ownedSkill.id },
+        } as never)
+
+        expect(response.status).toBe(200)
+        expect(repo.delete).toHaveBeenCalledWith(ownedSkill.id, 'user-1')
+        expect(fetchMock).toHaveBeenCalledWith(
+            expect.stringContaining('/capabilities/sync'),
+            expect.objectContaining({
+                method: 'POST',
+                body: JSON.stringify({
+                    publisher_id: `omni:skill-library:${ownedSkill.id}`,
+                    capability_type: 'skill',
+                    capabilities: [],
+                }),
+            }),
+        )
+        vi.unstubAllGlobals()
     })
 
     it('clones through the server-side repository', async () => {

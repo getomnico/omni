@@ -26,3 +26,12 @@ CREATE TRIGGER update_skills_updated_at BEFORE UPDATE ON skills
 
 COMMENT ON TABLE skills IS
     'User-created skill library entries only. Built-in and connector skills remain sourced from static Markdown files and are indexed/cached separately.';
+
+ALTER TABLE agent_capabilities
+    ADD COLUMN IF NOT EXISTS publisher_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_capabilities_publisher_type
+    ON agent_capabilities(publisher_id, capability_type);
+
+COMMENT ON COLUMN agent_capabilities.publisher_id IS
+    'Stable owner of this capability projection. Publishers sync their own capabilities atomically and prune stale rows.';

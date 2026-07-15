@@ -16,7 +16,7 @@ from anthropic.types import ToolParam
 from db.skills import Skill, SkillsRepository
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
-    CapabilitiesUpsertRequest,
+    CapabilitiesSyncRequest,
     CapabilitySearchRequest,
     CapabilityUpsert,
     SearcherClient,
@@ -28,7 +28,7 @@ _TOOL_NAMES = {"skill_search", "load_skill"}
 _SKILL_FILENAME = "SKILL.md"
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
-_CAPABILITY_UPSERT_BATCH_SIZE = 500
+_BUILTIN_SKILLS_PUBLISHER_ID = "omni:skills"
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -324,7 +324,11 @@ class SkillHandler:
         return request
 
     def _all_skill_ids(self) -> set[str]:
-        return set(self._available) | set(self._connector_skills) | set(self._library_skills)
+        return (
+            set(self._available)
+            | set(self._connector_skills)
+            | set(self._library_skills)
+        )
 
     async def _skill_search(self, tool_input: dict) -> ToolResult:
         await self.refresh_connector_skills()
@@ -417,12 +421,20 @@ class SkillHandler:
             if publish_key in self._published_capability_keys:
                 return
             try:
-                for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
-                    await self._searcher_client.upsert_capabilities(
-                        CapabilitiesUpsertRequest(
-                            capabilities=capabilities[
-                                start : start + _CAPABILITY_UPSERT_BATCH_SIZE
-                            ]
+                grouped: dict[tuple[str, str], list[CapabilityUpsert]] = {}
+                for capability in capabilities:
+                    publisher_id = (
+                        capability.publisher_id or _BUILTIN_SKILLS_PUBLISHER_ID
+                    )
+                    grouped.setdefault(
+                        (publisher_id, capability.capability_type), []
+                    ).append(capability)
+                for (publisher_id, capability_type), group in grouped.items():
+                    await self._searcher_client.sync_capabilities(
+                        CapabilitiesSyncRequest(
+                            publisher_id=publisher_id,
+                            capability_type=capability_type,
+                            capabilities=group,
                         )
                     )
             except Exception as e:
@@ -441,6 +453,7 @@ class SkillHandler:
                     capability_type="skill",
                     name=skill_id,
                     description=self._snippet(content, max_chars=240),
+                    publisher_id=_BUILTIN_SKILLS_PUBLISHER_ID,
                     search_text=f"{skill_id} {title}\n{content}",
                     data={
                         "skill_id": skill_id,
@@ -460,6 +473,8 @@ class SkillHandler:
                     capability_type="skill",
                     name=skill_id,
                     description=skill.description or self._snippet(body, max_chars=240),
+                    publisher_id=skill.source_id
+                    or f"connector:{skill.source_type or skill_id}",
                     search_text=f"{skill_id} {skill.title}\n{body}",
                     data={
                         "skill_id": skill_id,
@@ -479,6 +494,7 @@ class SkillHandler:
                     capability_type="skill",
                     name=lib_id,
                     description=self._snippet(body, max_chars=240),
+                    publisher_id=f"omni:skill-library:{lib_skill.id}",
                     search_text=f"{lib_id} {lib_skill.name}\n{body}",
                     user_id=lib_skill.owner_id,
                     data={

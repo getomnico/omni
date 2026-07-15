@@ -1,6 +1,6 @@
 use crate::models::{CapabilitySearchResult, CapabilityUpsert};
 use shared::db::error::DatabaseError;
-use sqlx::{FromRow, PgPool};
+use sqlx::{FromRow, PgPool, Postgres, Transaction};
 
 #[derive(FromRow)]
 struct CapabilityHit {
@@ -30,11 +30,58 @@ impl AgentCapabilitiesRepository {
             return Ok(());
         }
 
+        let mut tx = self.pool.begin().await?;
+        Self::upsert_many_in_tx(&mut tx, items, None).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn sync_publisher(
+        &self,
+        publisher_id: &str,
+        capability_type: &str,
+        items: &[CapabilityUpsert],
+    ) -> Result<u64, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+        Self::upsert_many_in_tx(&mut tx, items, Some(publisher_id)).await?;
+
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        let result = sqlx::query(
+            r#"
+            DELETE FROM agent_capabilities
+            WHERE publisher_id = $1
+              AND capability_type = $2
+              AND NOT (id = ANY($3::text[]))
+            "#,
+        )
+        .bind(publisher_id)
+        .bind(capability_type)
+        .bind(ids)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(result.rows_affected())
+    }
+
+    async fn upsert_many_in_tx(
+        tx: &mut Transaction<'_, Postgres>,
+        items: &[CapabilityUpsert],
+        publisher_override: Option<&str>,
+    ) -> Result<(), DatabaseError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         let capability_types: Vec<&str> =
             items.iter().map(|i| i.capability_type.as_str()).collect();
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
         let descriptions: Vec<&str> = items.iter().map(|i| i.description.as_str()).collect();
+        let publisher_ids: Vec<Option<&str>> = items
+            .iter()
+            .map(|i| publisher_override.or(i.publisher_id.as_deref()))
+            .collect();
         let user_ids: Vec<Option<&str>> = items.iter().map(|i| i.user_id.as_deref()).collect();
         let source_ids: Vec<Option<&str>> = items.iter().map(|i| i.source_id.as_deref()).collect();
         let source_types: Vec<Option<&str>> =
@@ -45,20 +92,21 @@ impl AgentCapabilitiesRepository {
         sqlx::query(
             r#"
             INSERT INTO agent_capabilities (
-                id, capability_type, name, description, user_id, source_id, source_type,
-                search_text, data, created_at, updated_at
+                id, capability_type, name, description, publisher_id, user_id,
+                source_id, source_type, search_text, data, created_at, updated_at
             )
-            SELECT u.id, u.capability_type, u.name, u.description, u.user_id,
-                   u.source_id, u.source_type, u.search_text, u.data, NOW(), NOW()
+            SELECT u.id, u.capability_type, u.name, u.description, u.publisher_id,
+                   u.user_id, u.source_id, u.source_type, u.search_text, u.data, NOW(), NOW()
             FROM UNNEST(
                 $1::varchar[], $2::text[], $3::text[], $4::text[], $5::text[],
-                $6::text[], $7::text[], $8::text[], $9::jsonb[]
-            ) AS u(id, capability_type, name, description, user_id, source_id,
-                   source_type, search_text, data)
+                $6::text[], $7::text[], $8::text[], $9::text[], $10::jsonb[]
+            ) AS u(id, capability_type, name, description, publisher_id, user_id,
+                   source_id, source_type, search_text, data)
             ON CONFLICT (id) DO UPDATE SET
                 capability_type = EXCLUDED.capability_type,
                 name = EXCLUDED.name,
                 description = EXCLUDED.description,
+                publisher_id = EXCLUDED.publisher_id,
                 user_id = EXCLUDED.user_id,
                 source_id = EXCLUDED.source_id,
                 source_type = EXCLUDED.source_type,
@@ -71,12 +119,13 @@ impl AgentCapabilitiesRepository {
         .bind(capability_types)
         .bind(names)
         .bind(descriptions)
+        .bind(&publisher_ids)
         .bind(user_ids)
         .bind(source_ids)
         .bind(source_types)
         .bind(search_texts)
         .bind(data)
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await?;
 
         Ok(())

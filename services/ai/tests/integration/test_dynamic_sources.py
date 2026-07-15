@@ -221,6 +221,18 @@ class _FakeCapabilitySearcherClient:
         self.capabilities = list(by_id.values())
         return type("Resp", (), {"upserted": len(request.capabilities)})()
 
+    async def sync_capabilities(self, request):
+        by_id = {
+            capability.id: capability
+            for capability in self.capabilities
+            if capability.publisher_id != request.publisher_id
+            or capability.capability_type != request.capability_type
+        }
+        for capability in request.capabilities:
+            by_id[capability.id] = capability
+        self.capabilities = list(by_id.values())
+        return type("Resp", (), {"upserted": len(request.capabilities), "deleted": 0})()
+
     async def search_capabilities(self, request):
         query = request.query.lower()
         results = []

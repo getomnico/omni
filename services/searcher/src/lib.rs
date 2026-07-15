@@ -10,13 +10,14 @@ pub mod typeahead;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
-    Router, middleware,
+    middleware,
     routing::{get, post},
+    Router,
 };
 use redis::Client as RedisClient;
 use shared::{
-    AIClient, DatabasePool, ObjectStorage, SearcherConfig, StorageFactory,
     telemetry::{self, TelemetryConfig},
+    AIClient, DatabasePool, ObjectStorage, SearcherConfig, StorageFactory,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -98,6 +99,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/typeahead", get(handlers::typeahead))
         .route("/people/search", get(handlers::people_search))
         .route("/capabilities/upsert", post(handlers::capabilities_upsert))
+        .route("/capabilities/sync", post(handlers::capabilities_sync))
         .route("/capabilities/search", post(handlers::capabilities_search))
         .route("/suggested-questions", post(handlers::suggested_questions))
         .route("/attributes/values", get(handlers::attribute_values))

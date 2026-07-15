@@ -20,7 +20,7 @@ from anthropic.types import ToolParam
 from tools.connector_handler import ConnectorAction, ConnectorToolHandler
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
-    CapabilitiesUpsertRequest,
+    CapabilitiesSyncRequest,
     CapabilitySearchRequest,
     CapabilityUpsert,
     SearcherClient,
@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 _TOOL_NAMES = {"tool_search", "load_tool", "load_tool_set"}
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
-_CAPABILITY_UPSERT_BATCH_SIZE = 500
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 OnLoad = Callable[[set[str]], Awaitable[None]]
 
@@ -239,12 +238,17 @@ class MetaToolHandler:
             if publish_key in self._published_capability_keys:
                 return
             try:
-                for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
-                    await self._searcher_client.upsert_capabilities(
-                        CapabilitiesUpsertRequest(
-                            capabilities=capabilities[
-                                start : start + _CAPABILITY_UPSERT_BATCH_SIZE
-                            ]
+                grouped: dict[str, list[CapabilityUpsert]] = {}
+                for capability in capabilities:
+                    if not capability.source_id:
+                        continue
+                    grouped.setdefault(capability.source_id, []).append(capability)
+                for publisher_id, group in grouped.items():
+                    await self._searcher_client.sync_capabilities(
+                        CapabilitiesSyncRequest(
+                            publisher_id=publisher_id,
+                            capability_type="tool",
+                            capabilities=group,
                         )
                     )
             except Exception as e:
@@ -261,6 +265,7 @@ class MetaToolHandler:
                     capability_type="tool",
                     name=tool_name,
                     description=action.description or "",
+                    publisher_id=action.source_id,
                     source_id=action.source_id,
                     source_type=action.source_type,
                     search_text=(

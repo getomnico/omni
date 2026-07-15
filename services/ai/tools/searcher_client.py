@@ -93,6 +93,7 @@ class CapabilityUpsert(BaseModel):
     search_text: str
     data: JsonObject
     description: str = ""
+    publisher_id: str | None = None
     user_id: str | None = None
     source_id: str | None = None
     source_type: str | None = None
@@ -102,8 +103,19 @@ class CapabilitiesUpsertRequest(BaseModel):
     capabilities: list[CapabilityUpsert]
 
 
+class CapabilitiesSyncRequest(BaseModel):
+    publisher_id: str
+    capability_type: str
+    capabilities: list[CapabilityUpsert]
+
+
 class CapabilitiesUpsertResponse(BaseModel):
     upserted: int
+
+
+class CapabilitiesSyncResponse(BaseModel):
+    upserted: int
+    deleted: int
 
 
 class CapabilitySearchRequest(BaseModel):
@@ -225,6 +237,25 @@ class SearcherClient:
         )
         raise SearcherError(
             message=f"Capability upsert failed: {response.status_code} {response.text}",
+            request=response.request,
+            response=response,
+        )
+
+    async def sync_capabilities(
+        self, request: CapabilitiesSyncRequest
+    ) -> CapabilitiesSyncResponse:
+        """Atomically replace one publisher's capabilities of a single type."""
+        response = await self.client.post(
+            f"{self.searcher_url}/capabilities/sync",
+            json=request.model_dump(),
+        )
+        if response.status_code == 200:
+            return CapabilitiesSyncResponse.model_validate(response.json())
+        logger.error(
+            f"Capability sync error: {response.status_code} - {response.text}"
+        )
+        raise SearcherError(
+            message=f"Capability sync failed: {response.status_code} {response.text}",
             request=response.request,
             response=response,
         )
