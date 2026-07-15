@@ -47,7 +47,8 @@
         OmniUploadBlock,
         OmniMentionBlock,
     } from '$lib/types/message'
-    import { ToolApprovalStatus, MentionedDocument } from '$lib/types/message'
+    import { ToolApprovalStatus } from '$lib/types/message'
+    import type { MentionedDocument } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolMessage from '$lib/components/tool-message.svelte'
