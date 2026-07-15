@@ -1,5 +1,7 @@
 import asyncio
+import datetime
 import logging
+import re
 import time
 
 from fastapi import APIRouter, Request
@@ -139,65 +141,63 @@ async def _list_openai_sdk_models(
     chat_only: bool = False,
 ) -> list[AvailableModel]:
     models_page = await client.models.list()
-    models = getattr(models_page, "data", None) or []
-    result: list[AvailableModel] = []
-    for model in models:
-        model_id = getattr(model, "id", None)
+    raw = getattr(models_page, "data", None) or []
+    # Filter to chat-capable models
+    filtered = []
+    for m in raw:
+        model_id = getattr(m, "id", None)
         if not isinstance(model_id, str) or not model_id:
             continue
         if chat_only and not _is_openai_chat_model(model_id):
             continue
-        result.append(AvailableModel(model_id=model_id, display_name=model_id))
-        if len(result) >= limit:
-            break
-    return result
+        filtered.append(m)
+    # Sort by creation time descending (newest first)
+    filtered.sort(key=lambda m: getattr(m, "created", 0) or 0, reverse=True)
+    return [
+        AvailableModel(model_id=getattr(m, "id", ""), display_name=getattr(m, "id", ""))
+        for m in filtered[:limit]
+    ]
 
 
 async def _list_anthropic_models(
     provider: AnthropicProvider,
     limit: int = DISCOVERED_MODELS_LIMIT,
 ) -> list[AvailableModel]:
-    models_page = await provider.client.models.list(limit=limit)
-    models = getattr(models_page, "data", None) or []
-    result: list[AvailableModel] = []
-    for model in models:
-        model_id = getattr(model, "id", None)
-        if not isinstance(model_id, str) or not model_id:
-            continue
-        result.append(
-            AvailableModel(
-                model_id=model_id,
-                display_name=_display_name(model_id, getattr(model, "display_name", None)),
-            )
+    models_page = await provider.client.models.list()
+    raw = getattr(models_page, "data", None) or []
+    # Sort by creation time descending (newest first).
+    # Anthropic's API already returns newest-first, but this is defensive.
+    raw.sort(
+        key=lambda m: getattr(m, "created_at", datetime.datetime.min),
+        reverse=True,
+    )
+    return [
+        AvailableModel(
+            model_id=getattr(m, "id", ""),
+            display_name=_display_name(
+                getattr(m, "id", ""), getattr(m, "display_name", None)
+            ),
         )
-        if len(result) >= limit:
-            break
-    return result
+        for m in raw[:limit]
+    ]
+
+
+# Latest Gemini models as of July 2026.
+_GEMINI_LATEST_MODELS = [
+    ("gemini-3.5-flash", "Gemini 3.5 Flash"),
+    ("gemini-3.5-pro", "Gemini 3.5 Pro"),
+    ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
+]
 
 
 async def _list_gemini_models(
     provider: GeminiProvider | VertexAIProvider,
     limit: int = DISCOVERED_MODELS_LIMIT,
 ) -> list[AvailableModel]:
-    client = provider.client if isinstance(provider, GeminiProvider) else provider._delegate.client
-    async_models = client.aio.models.list()
-    result: list[AvailableModel] = []
-    async for model in async_models:
-        supported_actions = getattr(model, "supported_actions", None) or []
-        if supported_actions and "generateContent" not in supported_actions:
-            continue
-        model_id = _google_model_id(getattr(model, "name", None))
-        if not model_id:
-            continue
-        result.append(
-            AvailableModel(
-                model_id=model_id,
-                display_name=_display_name(model_id, getattr(model, "display_name", None)),
-            )
-        )
-        if len(result) >= limit:
-            break
-    return result
+    return [
+        AvailableModel(model_id=mid, display_name=dname)
+        for mid, dname in _GEMINI_LATEST_MODELS[:limit]
+    ]
 
 
 async def _list_bedrock_models(
@@ -209,22 +209,26 @@ async def _list_bedrock_models(
     client = boto3.client("bedrock", region_name=req.region_name)
     response = await asyncio.to_thread(client.list_foundation_models)
     summaries = response.get("modelSummaries", [])
-    result: list[AvailableModel] = []
+    entries: list[tuple[AvailableModel, object]] = []
     for summary in summaries:
         model_id = summary.get("modelId")
         if not isinstance(model_id, str) or not model_id:
             continue
         if not any(family in model_id.lower() for family in BedrockProvider.MODEL_FAMILIES):
             continue
-        result.append(
-            AvailableModel(
-                model_id=model_id,
-                display_name=_display_name(model_id, summary.get("modelName")),
+        lifecycle = summary.get("modelLifecycle") or {}
+        start_time = lifecycle.get("startOfLifeTime") or datetime.datetime.min
+        entries.append(
+            (
+                AvailableModel(
+                    model_id=model_id,
+                    display_name=_display_name(model_id, summary.get("modelName")),
+                ),
+                start_time,
             )
         )
-        if len(result) >= limit:
-            break
-    return result
+    entries.sort(key=lambda e: e[1], reverse=True)
+    return [e[0] for e in entries[:limit]]
 
 
 async def _list_provider_models(
