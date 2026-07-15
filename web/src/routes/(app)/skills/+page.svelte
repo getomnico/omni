@@ -9,6 +9,7 @@
     import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js'
     import { Plus, BookOpen, Copy, Pencil, Trash2, Globe, Lock } from '@lucide/svelte'
     import { invalidateAll } from '$app/navigation'
+    import { toast } from 'svelte-sonner'
     import { formatDateTime } from '$lib/utils/datetime'
     import type { PageData } from './$types.js'
     import type { Skill } from '$lib/server/db/schema.js'
@@ -23,8 +24,6 @@
     let newInstructions = $state('')
     let newVisibility = $state<SkillVisibility>('private')
     let saving = $state(false)
-    let error = $state('')
-    let statusMessage = $state('')
     let filterQuery = $state('')
 
     let showEditForm = $state(false)
@@ -65,8 +64,6 @@
         newName = ''
         newInstructions = ''
         newVisibility = 'private'
-        error = ''
-        statusMessage = ''
     }
 
     function openEdit(skill: Skill) {
@@ -75,8 +72,6 @@
         editInstructions = skill.instructions
         editVisibility = skill.visibility
         showEditForm = true
-        error = ''
-        statusMessage = ''
     }
 
     function openDelete(skill: Skill) {
@@ -86,12 +81,10 @@
 
     async function handleCreate() {
         if (!newName.trim() || !newInstructions.trim()) {
-            error = 'Name and instructions are required'
+            toast.error('Name and instructions are required')
             return
         }
         saving = true
-        error = ''
-        statusMessage = ''
         try {
             const res = await fetch('/api/skills', {
                 method: 'POST',
@@ -104,14 +97,14 @@
             })
             if (res.ok) {
                 resetNewForm()
-                statusMessage = 'Skill created.'
+                toast.success('Skill created')
                 invalidateAll()
             } else {
                 const body = await res.json()
-                error = body.error || 'Failed to create skill'
+                toast.error(body.error || 'Failed to create skill')
             }
         } catch {
-            error = 'Failed to create skill'
+            toast.error('Failed to create skill')
         } finally {
             saving = false
         }
@@ -120,12 +113,10 @@
     async function handleUpdate() {
         if (!editingSkill) return
         if (!editName.trim() || !editInstructions.trim()) {
-            error = 'Name and instructions are required'
+            toast.error('Name and instructions are required')
             return
         }
         saving = true
-        error = ''
-        statusMessage = ''
         try {
             const res = await fetch(`/api/skills/${editingSkill.id}`, {
                 method: 'PUT',
@@ -139,14 +130,14 @@
             if (res.ok) {
                 showEditForm = false
                 editingSkill = null
-                statusMessage = 'Skill updated.'
+                toast.success('Skill updated')
                 invalidateAll()
             } else {
                 const body = await res.json()
-                error = body.error || 'Failed to update skill'
+                toast.error(body.error || 'Failed to update skill')
             }
         } catch {
-            error = 'Failed to update skill'
+            toast.error('Failed to update skill')
         } finally {
             saving = false
         }
@@ -162,32 +153,30 @@
             const res = await fetch(`/api/skills/${skillId}`, { method: 'DELETE' })
             if (!res.ok) {
                 const body = await res.json()
-                error = body.error || 'Failed to delete skill'
+                toast.error(body.error || 'Failed to delete skill')
                 return
             }
-            statusMessage = 'Skill deleted.'
+            toast.success('Skill deleted')
             invalidateAll()
         } catch {
-            error = 'Failed to delete skill'
+            toast.error('Failed to delete skill')
         }
     }
 
     async function handleClone(skillId: string) {
         cloningIds = [...cloningIds, skillId]
-        error = ''
-        statusMessage = ''
         try {
             const res = await fetch(`/api/skills/${skillId}/clone`, { method: 'POST' })
             if (res.ok) {
-                statusMessage = 'Skill cloned as a private copy.'
+                toast.success('Skill cloned as a private copy')
                 await invalidateAll()
                 tab = 'mine'
                 return
             }
             const body = await res.json()
-            error = body.error || 'Failed to clone skill'
+            toast.error(body.error || 'Failed to clone skill')
         } catch {
-            error = 'Failed to clone skill'
+            toast.error('Failed to clone skill')
         } finally {
             cloningIds = cloningIds.filter((id) => id !== skillId)
         }
@@ -215,18 +204,6 @@
             </Button>
         {/if}
     </div>
-
-    {#if statusMessage}
-        <p
-            class="mb-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
-            {statusMessage}
-        </p>
-    {/if}
-    {#if error && !showNewForm && !showEditForm}
-        <p class="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-        </p>
-    {/if}
 
     <!-- Create form -->
     {#if showNewForm}
@@ -284,9 +261,6 @@
                             </label>
                         </div>
                     </div>
-                    {#if error}
-                        <p class="text-sm text-red-500">{error}</p>
-                    {/if}
                     <div class="flex gap-2">
                         <Button type="submit" disabled={saving} class="cursor-pointer">
                             {saving ? 'Creating...' : 'Create'}
@@ -350,9 +324,6 @@
                             </label>
                         </div>
                     </div>
-                    {#if error}
-                        <p class="text-sm text-red-500">{error}</p>
-                    {/if}
                     <div class="flex gap-2">
                         <Button type="submit" disabled={saving} class="cursor-pointer">
                             {saving ? 'Saving...' : 'Save Changes'}
@@ -363,7 +334,6 @@
                             onclick={() => {
                                 showEditForm = false
                                 editingSkill = null
-                                error = ''
                             }}
                             type="button">
                             Cancel
@@ -417,52 +387,53 @@
             {:else}
                 <div class="space-y-3">
                     {#each mySkills as skill (skill.id)}
-                        <div
-                            class="hover:bg-muted/50 flex items-start justify-between rounded-lg border p-4 transition-colors">
-                            <div class="min-w-0 flex-1">
-                                <div class="flex items-center gap-2">
-                                    <h3 class="font-medium">{skill.name}</h3>
-                                    {#if skill.visibility === 'public'}
-                                        <Badge variant="outline">
-                                            <Globe class="mr-1 h-3 w-3" />
-                                            Public
-                                        </Badge>
-                                    {:else}
-                                        <Badge variant="secondary">
-                                            <Lock class="mr-1 h-3 w-3" />
-                                            Private
-                                        </Badge>
-                                    {/if}
+                        <Card.Root class="hover:bg-muted/50 transition-colors">
+                            <Card.Content class="flex items-start justify-between p-4">
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-center gap-2">
+                                        <h3 class="font-medium">{skill.name}</h3>
+                                        {#if skill.visibility === 'public'}
+                                            <Badge variant="outline">
+                                                <Globe class="mr-1 h-3 w-3" />
+                                                Public
+                                            </Badge>
+                                        {:else}
+                                            <Badge variant="secondary">
+                                                <Lock class="mr-1 h-3 w-3" />
+                                                Private
+                                            </Badge>
+                                        {/if}
+                                    </div>
+                                    <p class="text-muted-foreground mt-1 line-clamp-2 text-sm">
+                                        {skill.instructions}
+                                    </p>
+                                    <p class="text-muted-foreground mt-1 text-xs">
+                                        Updated {formatDateTime(
+                                            skill.updatedAt,
+                                            data.user.configuration,
+                                        )}
+                                    </p>
                                 </div>
-                                <p class="text-muted-foreground mt-1 line-clamp-2 text-sm">
-                                    {skill.instructions}
-                                </p>
-                                <p class="text-muted-foreground mt-1 text-xs">
-                                    Updated {formatDateTime(
-                                        skill.updatedAt,
-                                        data.user.configuration,
-                                    )}
-                                </p>
-                            </div>
-                            <div class="ml-4 flex shrink-0 items-center gap-1">
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    class="cursor-pointer"
-                                    onclick={() => openEdit(skill)}
-                                    title="Edit">
-                                    <Pencil class="h-4 w-4" />
-                                </Button>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    class="cursor-pointer text-red-500 hover:text-red-600"
-                                    onclick={() => openDelete(skill)}
-                                    title="Delete">
-                                    <Trash2 class="h-4 w-4" />
-                                </Button>
-                            </div>
-                        </div>
+                                <div class="ml-4 flex shrink-0 items-center gap-1">
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="cursor-pointer"
+                                        onclick={() => openEdit(skill)}
+                                        title="Edit">
+                                        <Pencil class="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        class="cursor-pointer text-red-500 hover:text-red-600"
+                                        onclick={() => openDelete(skill)}
+                                        title="Delete">
+                                        <Trash2 class="h-4 w-4" />
+                                    </Button>
+                                </div>
+                            </Card.Content>
+                        </Card.Root>
                     {/each}
                 </div>
             {/if}
@@ -483,36 +454,37 @@
             {:else}
                 <div class="space-y-3">
                     {#each publicSkills as skill (skill.id)}
-                        <div
-                            class="hover:bg-muted/50 flex items-start justify-between rounded-lg border p-4 transition-colors">
-                            <div class="min-w-0 flex-1">
-                                <div class="flex items-center gap-2">
-                                    <h3 class="font-medium">{skill.name}</h3>
-                                    <Badge variant="outline">
-                                        <Globe class="mr-1 h-3 w-3" />
-                                        Public
-                                    </Badge>
-                                    <Badge variant="secondary">Shared</Badge>
+                        <Card.Root class="hover:bg-muted/50 transition-colors">
+                            <Card.Content class="flex items-start justify-between p-4">
+                                <div class="min-w-0 flex-1">
+                                    <div class="flex items-center gap-2">
+                                        <h3 class="font-medium">{skill.name}</h3>
+                                        <Badge variant="outline">
+                                            <Globe class="mr-1 h-3 w-3" />
+                                            Public
+                                        </Badge>
+                                        <Badge variant="secondary">Shared</Badge>
+                                    </div>
+                                    <p class="text-muted-foreground mt-1 line-clamp-2 text-sm">
+                                        {skill.instructions}
+                                    </p>
+                                    <p class="text-muted-foreground mt-1 text-xs">
+                                        ID: library:{skill.id}
+                                    </p>
                                 </div>
-                                <p class="text-muted-foreground mt-1 line-clamp-2 text-sm">
-                                    {skill.instructions}
-                                </p>
-                                <p class="text-muted-foreground mt-1 text-xs">
-                                    ID: library:{skill.id}
-                                </p>
-                            </div>
-                            <div class="ml-4 shrink-0">
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    class="cursor-pointer"
-                                    disabled={cloningIds.includes(skill.id)}
-                                    onclick={() => handleClone(skill.id)}>
-                                    <Copy class="mr-1 h-3 w-3" />
-                                    {cloningIds.includes(skill.id) ? 'Cloning...' : 'Clone'}
-                                </Button>
-                            </div>
-                        </div>
+                                <div class="ml-4 shrink-0">
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        class="cursor-pointer"
+                                        disabled={cloningIds.includes(skill.id)}
+                                        onclick={() => handleClone(skill.id)}>
+                                        <Copy class="mr-1 h-3 w-3" />
+                                        {cloningIds.includes(skill.id) ? 'Cloning...' : 'Clone'}
+                                    </Button>
+                                </div>
+                            </Card.Content>
+                        </Card.Root>
                     {/each}
                 </div>
             {/if}
