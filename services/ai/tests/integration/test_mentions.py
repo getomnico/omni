@@ -18,9 +18,9 @@ from ulid import ULID
 
 from attachments import expand_mentions
 from db.documents import DocumentsRepository
+from tests.helpers import create_test_document, create_test_source, create_test_user
 from tools.document_handler import DocumentToolHandler
 from tools.registry import ToolContext
-from tests.helpers import create_test_user, create_test_source, create_test_document
 
 pytestmark = pytest.mark.integration
 
@@ -34,6 +34,23 @@ def _mention_block(document_id: str, title: str = "Test Doc") -> dict[str, Any]:
             "title": title,
         },
     }
+
+
+def _block_texts(blocks: list[dict[str, Any]]) -> list[str]:
+    texts: list[str] = []
+    for block in blocks:
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            texts.append(block["text"])
+            continue
+        source = block.get("source")
+        if (
+            block.get("type") == "document"
+            and isinstance(source, dict)
+            and source.get("type") == "text"
+            and isinstance(source.get("data"), str)
+        ):
+            texts.append(source["data"])
+    return texts
 
 
 class RecordingDocumentHandler:
@@ -109,7 +126,7 @@ class TestExpandMentionsRealStorage:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         assert any("Mentioned document" in t and "Q3 Report" in t for t in texts)
         assert any(text in t for t in texts)
         assert any("key results" in t for t in texts)
@@ -240,15 +257,15 @@ class TestExpandMentionsRealStorage:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
 
         # Each mention gets its own label with its own title
         first_labels = [t for t in texts if "First Title" in t]
         second_labels = [t for t in texts if "Second Title" in t]
         assert len(first_labels) == 1, "First mention should have its own label"
         assert len(second_labels) == 1, "Second mention should have its own label"
-        assert any("Mentioned document: First Title" in t for t in texts)
-        assert any("Mentioned document: Second Title" in t for t in texts)
+        assert any('Mentioned document: "First Title"' in t for t in texts)
+        assert any('Mentioned document: "Second Title"' in t for t in texts)
         assert any(text in t for t in texts)
 
     @pytest.mark.asyncio
@@ -324,7 +341,7 @@ class TestExpandMentionsPermissions:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         assert any("Mentioned document" in t for t in texts)
         assert any("Hello, world!" in t for t in texts)
 
@@ -370,7 +387,7 @@ class TestExpandMentionsPermissions:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         assert any("could not be loaded" in t for t in texts)
         assert any("Read this" in t for t in texts)
 
@@ -413,7 +430,7 @@ class TestExpandMentionsPermissions:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         assert any("Secret content" in t for t in texts)
 
 
@@ -444,7 +461,7 @@ class TestExpandMentionsEdgeCases:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         assert any("could not be loaded" in t for t in texts)
 
     @pytest.mark.asyncio
@@ -507,12 +524,12 @@ class TestExpandMentionsEdgeCases:
 
         user_blocks = result[0]["content"]
         assert isinstance(user_blocks, list)
-        user_texts = [b["text"] for b in user_blocks if b.get("type") == "text"]
+        user_texts = _block_texts(cast(list[dict[str, Any]], user_blocks))
         assert any("Mentioned document" in t for t in user_texts)
 
         assistant_blocks = result[1]["content"]
         assert isinstance(assistant_blocks, list)
-        texts = [b["text"] for b in assistant_blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], assistant_blocks))
         assert any("Invalid document mention omitted" in t for t in texts), (
             "Non-user omni_mention blocks should be replaced with safe text"
         )
@@ -562,7 +579,7 @@ class TestExpandMentionsEdgeCases:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         assert any("could not be loaded" in t and "Bad Doc" in t for t in texts)
         assert any("Actual content" in t for t in texts)
 
@@ -621,7 +638,7 @@ class TestExpandMentionsEdgeCases:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         omission_count = sum(1 for t in texts if "Invalid document mention omitted" in t)
         assert omission_count == 4, (
             f"Expected all 4 malformed mentions to be replaced, got {omission_count} omissions"
@@ -664,7 +681,7 @@ class TestExpandMentionsEdgeCases:
 
         blocks = result[0]["content"]
         assert isinstance(blocks, list)
-        texts = [b["text"] for b in blocks if b.get("type") == "text"]
+        texts = _block_texts(cast(list[dict[str, Any]], blocks))
         omission_count = sum(1 for t in texts if "Invalid document mention omitted" in t)
         assert omission_count == 2, (
             f"Expected all 2 assistant mention blocks to be replaced, got {omission_count}"

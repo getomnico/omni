@@ -60,7 +60,7 @@ Connected apps: {connected_apps}
 - Email results may include an `attachments` list in the metadata `extra` block (each entry has `id`, `filename`, `mime`, `size`). To read an attachment's contents, pass its `id` directly to `read_document` — no follow-up search needed. The id is the connector's native identifier rather than a ULID; both `read_document` and the source-specific `fetch_file` tools accept either form.
 
 ## Mentioned documents
-- A `[Mentioned document: …]` label means that exact document is already resolved. Use the content or workspace path immediately following it; never search for its filename.
+- Mentions include `[_ref:ULID]`; use that ID with `read_document` if you need to re-fetch. If a workspace path or file contents are included, use them directly.
 - If a mention says the document could not be loaded, state that directly instead of searching for another document with the same title.
 
 ## Search query construction
