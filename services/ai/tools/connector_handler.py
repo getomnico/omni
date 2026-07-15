@@ -427,8 +427,20 @@ class ConnectorToolHandler:
         document_id = tool_input.get("document_id")
         if document_id and self._documents_repo and not context.skip_permission_check:
             user_email = context.user_email
+            if user_email is None:
+                return ToolResult(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"Document not found: {document_id}",
+                        }
+                    ],
+                    is_error=True,
+                )
             doc = await self._documents_repo.get_by_id(
-                document_id, user_email=user_email
+                document_id,
+                user_email=user_email,
+                user_groups=context.user_groups,
             )
             if doc is None:
                 return ToolResult(

@@ -40,6 +40,7 @@ from botocore.exceptions import ClientError
 
 from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import build_messages_for_anthropic_api
+from .content_blocks import extract_text_document
 from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,10 @@ class BedrockProvider(LLMProvider):
                         # Handle TextBlockParam, ToolUseBlockParam, ToolResultBlockParam, etc.
                         if block["type"] == "text":
                             adapted_blocks.append({"text": block["text"]})
+                        elif block["type"] == "document" and msg["role"] == "user":
+                            document_text = extract_text_document(block)
+                            if document_text is not None:
+                                adapted_blocks.append({"text": document_text})
                         elif block["type"] == "tool_use":
                             adapted_blocks.append(
                                 {

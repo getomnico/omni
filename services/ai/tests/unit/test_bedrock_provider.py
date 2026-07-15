@@ -95,3 +95,89 @@ def test_amazon_message_adapter_does_not_forward_search_result_extras():
     internal_search_result = messages[0]["content"][0]["content"][0]
     assert internal_search_result["source_type"] == "jira"
     assert internal_search_result["internal_extra"] == "must-not-be-sent"
+
+
+def test_amazon_message_adapter_preserves_top_level_document_block():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {"type": "text", "media_type": "text/plain", "data": "Document body"},
+                    "title": "Report.pdf",
+                },
+                {"type": "text", "text": "Summarize this"},
+            ],
+        }
+    ]
+
+    adapted = provider._adapt_messages_for_amazon_models(messages)
+
+    adapted_blocks = adapted[0]["content"]
+    assert any("Document body" in block.get("text", "") for block in adapted_blocks)
+
+
+def test_amazon_message_adapter_drops_non_text_document_block():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": "AAAA"},
+                    "title": "binary.pdf",
+                },
+            ],
+        }
+    ]
+
+    adapted = provider._adapt_messages_for_amazon_models(messages)
+
+    adapted_blocks = adapted[0]["content"]
+    assert all(block.get("type") != "document" for block in adapted_blocks)
+
+
+def test_amazon_message_adapter_handles_document_with_title():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {"type": "text", "media_type": "text/plain", "data": "The content"},
+                    "title": "Meeting Notes",
+                },
+            ],
+        }
+    ]
+
+    adapted = provider._adapt_messages_for_amazon_models(messages)
+
+    adapted_blocks = adapted[0]["content"]
+    assert any("Meeting Notes" in block.get("text", "") for block in adapted_blocks)
+    assert any("The content" in block.get("text", "") for block in adapted_blocks)
+
+
+def test_amazon_message_adapter_omits_document_in_assistant_role():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {"type": "text", "media_type": "text/plain", "data": "Assistant body"},
+                    "title": "Doc.pdf",
+                },
+            ],
+        }
+    ]
+
+    adapted = provider._adapt_messages_for_amazon_models(messages)
+
+    adapted_blocks = adapted[0]["content"]
+    assert all("Assistant body" not in block.get("text", "") for block in adapted_blocks)

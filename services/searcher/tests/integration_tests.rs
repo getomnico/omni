@@ -7,7 +7,9 @@ use axum::{
 };
 use common::SearcherTestFixture;
 use serde_json::{json, Value};
-use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
+use shared::db::repositories::{
+    DocumentRepository, GroupRepository, PersonRepository, PersonUpsert,
+};
 use shared::models::DocumentPermissions;
 use tower::ServiceExt;
 use ulid::Ulid;
@@ -2885,7 +2887,7 @@ async fn test_typeahead_freshness_after_perm_change_and_source_delete() -> Resul
 }
 
 #[tokio::test]
-async fn test_typeahead_multi_batch_fills_after_denied_top() -> Result<()> {
+async fn test_typeahead_fills_after_denied_candidates_within_cap() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
     let pool = fixture.test_env.db_pool.pool();
     let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -2893,8 +2895,8 @@ async fn test_typeahead_multi_batch_fills_after_denied_top() -> Result<()> {
         serde_json::json!({"public": false, "users": ["alice@example.com"], "groups": []});
     let pub_perm = serde_json::json!({"public": true, "users": [], "groups": []});
 
-    // 110 denied docs with short title — higher FST rank, all in batch 1 (batch_size=100)
-    for i in 0..110 {
+    // 80 denied docs with short title — higher FST rank, all in batch 1 (batch_size=100)
+    for i in 0..80 {
         let doc_id = ulid::Ulid::new().to_string();
         sqlx::query(
             "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
@@ -2906,7 +2908,7 @@ async fn test_typeahead_multi_batch_fills_after_denied_top() -> Result<()> {
     }
 
     // 5 accessible docs with distinct, progressively longer titles.
-    // All score below all 110 denied docs, so they sit in batch 2.
+    // All score below all 80 denied docs, so they sit in batch 2.
     // Within batch 2, shortest accessible title scores highest.
     let accessible = [
         "Doc zzz aaaaa",
@@ -2936,8 +2938,8 @@ async fn test_typeahead_multi_batch_fills_after_denied_top() -> Result<()> {
         .iter()
         .map(|r| r["title"].as_str().unwrap())
         .collect();
-    // All 5 accessible docs appear despite 110 denied higher-ranked docs filtered out.
-    // Batch 1 (0-99): 100 denied docs filtered. Batch 2 (100-114): 10 remaining denied + 5 accessible.
+    // All 5 accessible docs appear despite 80 denied higher-ranked docs filtered out.
+    // With the 100-candidate cap, all 80 denied + 5 accessible = 85 candidates fit in one batch. Only accessible survive.
     // Only accessible survive. Within accessible, shortest title has highest FST score.
     assert_eq!(titles.len(), 5, "expected 5 results, got {:?}", titles);
     assert_eq!(titles[0], "Doc zzz aaaaa");
@@ -2945,6 +2947,93 @@ async fn test_typeahead_multi_batch_fills_after_denied_top() -> Result<()> {
     assert_eq!(titles[2], "Doc zzz ccccccc");
     assert_eq!(titles[3], "Doc zzz dddddddd");
     assert_eq!(titles[4], "Doc zzz eeeeeeeee");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_candidate_set_is_capped_at_100() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let permissions = serde_json::json!({"public": true, "users": [], "groups": []});
+
+    for i in 0..105 {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Content', 'document', $5::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id)
+        .bind(source_id)
+        .bind(format!("cap-ext-{i}"))
+        .bind(format!("Cap candidate {i:03}"))
+        .bind(&permissions)
+        .execute(pool)
+        .await?;
+    }
+
+    fixture.title_index.refresh().await?;
+    let candidates = fixture.title_index.search_candidates("cap").await;
+    assert_eq!(candidates.len(), 100);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_title_entry_keyset_pagination_has_no_duplicates_or_omissions() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let repo = DocumentRepository::new(pool);
+    let content_types = vec!["document".to_string()];
+    let mut after_id: Option<String> = None;
+    let mut ids = Vec::new();
+
+    loop {
+        let page = repo
+            .fetch_title_entries_by_types_paginated(&content_types, after_id.as_deref(), 7)
+            .await?;
+        if page.is_empty() {
+            break;
+        }
+        after_id = page.last().map(|entry| entry.id.clone());
+        ids.extend(page.into_iter().map(|entry| entry.id));
+    }
+
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM documents d JOIN sources s ON s.id = d.source_id WHERE NOT s.is_deleted AND d.content_type = 'document'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(ids.len(), expected as usize);
+    assert_eq!(unique.len(), ids.len());
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_queries_shorter_than_three_characters_return_empty() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let (_doc_ids, _) = fixture.seed_mentionable_data().await?;
+    for query in ["", "a", "ab", "文", "文件"] {
+        let (status, response) = fixture.typeahead(query, None).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(response["results"].as_array().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_is_case_insensitive_but_not_typo_tolerant() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let (_doc_ids, _) = fixture.seed_mentionable_data().await?;
+    fixture.title_index.refresh().await?;
+
+    let (_, lower) = fixture.typeahead("planning", None).await?;
+    let (_, upper) = fixture.typeahead("PLANNING", None).await?;
+    assert_eq!(lower["results"], upper["results"]);
+
+    let (_, typo) = fixture.typeahead("plannign", None).await?;
+    assert!(typo["results"].as_array().unwrap().is_empty());
     Ok(())
 }
 

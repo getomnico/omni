@@ -46,6 +46,7 @@ from config import (
 from db import CompactionsRepository, SkillsRepository
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
+from db.groups import GroupRepository
 from db.models import Source, UserConfiguration
 from db.usage import UsageRepository
 from db.users import UsersRepository
@@ -531,10 +532,24 @@ async def _run_agent_loop(
     log_messages = await _load_or_initialize_conversation(run, run_repo, claim_token)
     conversation_messages = _conversation_from_log_messages(log_messages)
 
+    # Resolve group memberships for personal agents. Fail closed on error.
+    agent_user_groups = None
+    if agent_user_email and not is_org_agent:
+        try:
+            agent_user_groups = await GroupRepository().find_groups_for_user(agent_user_email)
+        except Exception:
+            logger.error(
+                "Group lookup failed for agent user %s — failing closed",
+                agent_user_email,
+                exc_info=True,
+            )
+            raise
+
     context = ToolContext(
         chat_id=run.id,
         user_id=None if is_org_agent else agent.user_id,
         user_email=agent_user_email,
+        user_groups=agent_user_groups,
         user_configuration=agent_user_configuration,
         skip_permission_check=is_org_agent,
     )
