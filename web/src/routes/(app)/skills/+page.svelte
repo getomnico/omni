@@ -4,16 +4,18 @@
     import { Input } from '$lib/components/ui/input/index.js'
     import { Textarea } from '$lib/components/ui/textarea/index.js'
     import { Label } from '$lib/components/ui/label/index.js'
+    import { Switch } from '$lib/components/ui/switch/index.js'
     import * as Tabs from '$lib/components/ui/tabs/index.js'
     import * as Card from '$lib/components/ui/card/index.js'
+    import * as Dialog from '$lib/components/ui/dialog/index.js'
     import * as AlertDialog from '$lib/components/ui/alert-dialog/index.js'
-    import { Plus, BookOpen, Copy, Pencil, Trash2, Globe, Lock } from '@lucide/svelte'
+    import { Tooltip, TooltipTrigger, TooltipContent } from '$lib/components/ui/tooltip/index.js'
+    import { Plus, BookOpen, Copy, Pencil, Trash2, Globe, Lock, Search } from '@lucide/svelte'
     import { invalidateAll } from '$app/navigation'
     import { toast } from 'svelte-sonner'
     import { formatDateTime } from '$lib/utils/datetime'
     import type { PageData } from './$types.js'
     import type { Skill } from '$lib/server/db/schema.js'
-    import type { SkillVisibility } from '$lib/skills.js'
 
     let { data }: { data: PageData } = $props()
 
@@ -22,7 +24,7 @@
     let showNewForm = $state(false)
     let newName = $state('')
     let newInstructions = $state('')
-    let newVisibility = $state<SkillVisibility>('private')
+    let newIsPublic = $state(false)
     let saving = $state(false)
     let filterQuery = $state('')
 
@@ -30,7 +32,7 @@
     let editingSkill = $state<Skill | null>(null)
     let editName = $state('')
     let editInstructions = $state('')
-    let editVisibility = $state<SkillVisibility>('private')
+    let editIsPublic = $state(false)
 
     let showDeleteConfirm = $state(false)
     let deletingSkill = $state<Skill | null>(null)
@@ -63,14 +65,14 @@
         showNewForm = false
         newName = ''
         newInstructions = ''
-        newVisibility = 'private'
+        newIsPublic = false
     }
 
     function openEdit(skill: Skill) {
         editingSkill = skill
         editName = skill.name
         editInstructions = skill.instructions
-        editVisibility = skill.visibility
+        editIsPublic = skill.visibility === 'public'
         showEditForm = true
     }
 
@@ -92,7 +94,7 @@
                 body: JSON.stringify({
                     name: newName.trim(),
                     instructions: newInstructions.trim(),
-                    visibility: newVisibility,
+                    visibility: newIsPublic ? 'public' : 'private',
                 }),
             })
             if (res.ok) {
@@ -124,7 +126,7 @@
                 body: JSON.stringify({
                     name: editName.trim(),
                     instructions: editInstructions.trim(),
-                    visibility: editVisibility,
+                    visibility: editIsPublic ? 'public' : 'private',
                 }),
             })
             if (res.ok) {
@@ -188,8 +190,7 @@
         <div>
             <h1 class="text-2xl font-bold">Skill Library</h1>
             <p class="text-muted-foreground text-sm">
-                Create and manage workplace skills. Public skills are visible to everyone in your
-                deployment.
+                Create and manage workplace skills. Public skills are visible to everyone.
             </p>
         </div>
         {#if !showNewForm}
@@ -236,30 +237,13 @@
                             placeholder="Describe the task, what tools to use, and how to format the response..."
                             rows={6} />
                     </div>
-                    <div class="space-y-2">
-                        <Label>Visibility</Label>
-                        <div class="flex gap-4">
-                            <label class="flex cursor-pointer items-center gap-2">
-                                <input
-                                    type="radio"
-                                    name="visibility"
-                                    value="private"
-                                    checked={newVisibility === 'private'}
-                                    onchange={() => (newVisibility = 'private')} />
-                                <Lock class="h-4 w-4" />
-                                <span class="text-sm">Private (only you)</span>
-                            </label>
-                            <label class="flex cursor-pointer items-center gap-2">
-                                <input
-                                    type="radio"
-                                    name="visibility"
-                                    value="public"
-                                    checked={newVisibility === 'public'}
-                                    onchange={() => (newVisibility = 'public')} />
-                                <Globe class="h-4 w-4" />
-                                <span class="text-sm">Public (everyone)</span>
-                            </label>
-                        </div>
+                    <div class="flex items-center gap-2">
+                        <Switch
+                            id="new-is-public"
+                            checked={newIsPublic}
+                            onCheckedChange={(v) => (newIsPublic = v)}
+                            class="cursor-pointer" />
+                        <Label for="new-is-public" class="cursor-pointer">Public</Label>
                     </div>
                     <div class="flex gap-2">
                         <Button type="submit" disabled={saving} class="cursor-pointer">
@@ -278,88 +262,83 @@
         </Card.Root>
     {/if}
 
-    <!-- Edit form dialog -->
-    {#if showEditForm && editingSkill}
-        <Card.Root class="mb-6">
-            <Card.Header>
-                <Card.Title>Edit Skill</Card.Title>
-            </Card.Header>
-            <Card.Content>
-                <form
-                    onsubmit={(e) => {
-                        e.preventDefault()
-                        handleUpdate()
-                    }}
-                    class="space-y-4">
-                    <div class="space-y-2">
-                        <Label for="edit-name">Name</Label>
-                        <Input id="edit-name" bind:value={editName} />
-                    </div>
-                    <div class="space-y-2">
-                        <Label for="edit-instructions">Instructions</Label>
-                        <Textarea id="edit-instructions" bind:value={editInstructions} rows={6} />
-                    </div>
-                    <div class="space-y-2">
-                        <Label>Visibility</Label>
-                        <div class="flex gap-4">
-                            <label class="flex cursor-pointer items-center gap-2">
-                                <input
-                                    type="radio"
-                                    name="edit-visibility"
-                                    value="private"
-                                    checked={editVisibility === 'private'}
-                                    onchange={() => (editVisibility = 'private')} />
-                                <Lock class="h-4 w-4" />
-                                <span class="text-sm">Private</span>
-                            </label>
-                            <label class="flex cursor-pointer items-center gap-2">
-                                <input
-                                    type="radio"
-                                    name="edit-visibility"
-                                    value="public"
-                                    checked={editVisibility === 'public'}
-                                    onchange={() => (editVisibility = 'public')} />
-                                <Globe class="h-4 w-4" />
-                                <span class="text-sm">Public</span>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="flex gap-2">
-                        <Button type="submit" disabled={saving} class="cursor-pointer">
-                            {saving ? 'Saving...' : 'Save Changes'}
-                        </Button>
-                        <Button
-                            variant="outline"
-                            class="cursor-pointer"
-                            onclick={() => {
-                                showEditForm = false
-                                editingSkill = null
-                            }}
-                            type="button">
-                            Cancel
-                        </Button>
-                    </div>
-                </form>
-            </Card.Content>
-        </Card.Root>
-    {/if}
+    <!-- Edit skill dialog -->
+    <Dialog.Root
+        open={showEditForm}
+        onOpenChange={(open) => {
+            if (!open) {
+                showEditForm = false
+                editingSkill = null
+            }
+        }}>
+        <Dialog.Content>
+            <Dialog.Header>
+                <Dialog.Title>Edit Skill</Dialog.Title>
+                <Dialog.Description
+                    >Update the skill name, instructions, or visibility.</Dialog.Description>
+            </Dialog.Header>
+            <form
+                onsubmit={(e) => {
+                    e.preventDefault()
+                    handleUpdate()
+                }}
+                class="space-y-4">
+                <div class="space-y-2">
+                    <Label for="edit-name">Name</Label>
+                    <Input id="edit-name" bind:value={editName} />
+                </div>
+                <div class="space-y-2">
+                    <Label for="edit-instructions">Instructions</Label>
+                    <Textarea id="edit-instructions" bind:value={editInstructions} rows={6} />
+                </div>
+                <div class="flex items-center gap-2">
+                    <Switch
+                        id="edit-is-public"
+                        checked={editIsPublic}
+                        onCheckedChange={(v) => (editIsPublic = v)}
+                        class="cursor-pointer" />
+                    <Label for="edit-is-public" class="cursor-pointer">Public</Label>
+                </div>
+                <Dialog.Footer>
+                    <Button
+                        variant="outline"
+                        class="cursor-pointer"
+                        onclick={() => {
+                            showEditForm = false
+                            editingSkill = null
+                        }}
+                        type="button">Cancel</Button>
+                    <Button type="submit" disabled={saving} class="cursor-pointer"
+                        >{saving ? 'Saving...' : 'Save Changes'}</Button>
+                </Dialog.Footer>
+            </form>
+        </Dialog.Content>
+    </Dialog.Root>
 
     <div class="mb-4">
         <Label for="skill-filter">Filter skills</Label>
-        <Input
-            id="skill-filter"
-            bind:value={filterQuery}
-            placeholder="Search by name, instructions, or library:<id>"
-            class="mt-2" />
+        <div class="relative mt-2">
+            <Search
+                class="text-muted-foreground pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+            <Input
+                id="skill-filter"
+                bind:value={filterQuery}
+                placeholder="Search by name, instructions, or library:<id>"
+                class="pl-9" />
+        </div>
     </div>
 
     <!-- Tabs -->
     <Tabs.Root value={tab} onValueChange={(v) => (tab = v)} class="w-full">
         <Tabs.List class="mb-4">
-            <Tabs.Trigger value="mine" class="cursor-pointer">
+            <Tabs.Trigger
+                value="mine"
+                class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
                 My Skills ({mySkills.length})
             </Tabs.Trigger>
-            <Tabs.Trigger value="public" class="cursor-pointer">
+            <Tabs.Trigger
+                value="public"
+                class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
                 Public Library ({publicSkills.length})
             </Tabs.Trigger>
         </Tabs.List>
@@ -385,10 +364,10 @@
                     </Button>
                 </div>
             {:else}
-                <div class="space-y-3">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {#each mySkills as skill (skill.id)}
-                        <Card.Root class="hover:bg-muted/50 transition-colors">
-                            <Card.Content class="flex items-start justify-between p-4">
+                        <Card.Root class="group hover:bg-muted/50 transition-colors">
+                            <Card.Content class="flex items-start justify-between">
                                 <div class="min-w-0 flex-1">
                                     <div class="flex items-center gap-2">
                                         <h3 class="font-medium">{skill.name}</h3>
@@ -414,23 +393,32 @@
                                         )}
                                     </p>
                                 </div>
-                                <div class="ml-4 flex shrink-0 items-center gap-1">
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        class="cursor-pointer"
-                                        onclick={() => openEdit(skill)}
-                                        title="Edit">
-                                        <Pencil class="h-4 w-4" />
-                                    </Button>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        class="cursor-pointer text-red-500 hover:text-red-600"
-                                        onclick={() => openDelete(skill)}
-                                        title="Delete">
-                                        <Trash2 class="h-4 w-4" />
-                                    </Button>
+                                <div
+                                    class="invisible ml-4 flex shrink-0 items-center gap-1 group-hover:visible">
+                                    <Tooltip>
+                                        <TooltipTrigger>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                class="cursor-pointer"
+                                                onclick={() => openEdit(skill)}>
+                                                <Pencil class="h-4 w-4" />
+                                            </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Edit</TooltipContent>
+                                    </Tooltip>
+                                    <Tooltip>
+                                        <TooltipTrigger>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                class="cursor-pointer text-red-500 hover:text-red-600"
+                                                onclick={() => openDelete(skill)}>
+                                                <Trash2 class="h-4 w-4" />
+                                            </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Delete</TooltipContent>
+                                    </Tooltip>
                                 </div>
                             </Card.Content>
                         </Card.Root>
@@ -452,10 +440,10 @@
                     </p>
                 </div>
             {:else}
-                <div class="space-y-3">
+                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     {#each publicSkills as skill (skill.id)}
-                        <Card.Root class="hover:bg-muted/50 transition-colors">
-                            <Card.Content class="flex items-start justify-between p-4">
+                        <Card.Root class="group hover:bg-muted/50 transition-colors">
+                            <Card.Content class="flex items-start justify-between">
                                 <div class="min-w-0 flex-1">
                                     <div class="flex items-center gap-2">
                                         <h3 class="font-medium">{skill.name}</h3>
@@ -472,7 +460,7 @@
                                         ID: library:{skill.id}
                                     </p>
                                 </div>
-                                <div class="ml-4 shrink-0">
+                                <div class="invisible ml-4 shrink-0 group-hover:visible">
                                     <Button
                                         variant="outline"
                                         size="sm"
