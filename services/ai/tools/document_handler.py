@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import base64
 import logging
-from typing import Union
 from urllib.parse import unquote
 
 import httpx
@@ -124,7 +122,7 @@ class DocumentToolHandler:
 
     def __init__(
         self,
-        content_storage: Union[ContentStorage, PostgresContentStorage, None] = None,
+        content_storage: ContentStorage | PostgresContentStorage | None = None,
         documents_repo: DocumentsRepository | None = None,
         sandbox_url: str | None = None,
         connector_manager_url: str | None = None,
@@ -207,7 +205,7 @@ class DocumentToolHandler:
                         content=[
                             {
                                 "type": "text",
-                                "text": f"Document saved to workspace: {deterministic_path} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
+                                "text": f"File saved to workspace: {deterministic_path} ({size_kb:.1f} KB)",
                             }
                         ],
                     )
@@ -412,12 +410,17 @@ class DocumentToolHandler:
                     filepath += ".txt"
 
             size_kb = len(content.encode("utf-8")) / 1024
+            message = (
+                f"File saved to workspace: {filepath} ({size_kb:.1f} KB)"
+                if deterministic_path
+                else f"Document saved to workspace: {filepath} ({size_kb:.1f} KB). Use read_file or run_python to process it."
+            )
             return await write_text_to_sandbox(
                 self._sandbox_url,
                 content,
                 filepath,
                 context.chat_id,
-                message=f"Document saved to workspace: {filepath} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
+                message=message,
             )
 
         truncated = content[:DIRECT_RETURN_THRESHOLD]

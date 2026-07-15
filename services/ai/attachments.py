@@ -17,8 +17,8 @@ single existence check and a no-op when the file is already there.
 from __future__ import annotations
 
 import base64
+import json
 import logging
-
 from typing import Literal, TypedDict, cast
 
 import httpx
@@ -102,6 +102,32 @@ async def _stage_in_sandbox(
 
 def _text_block(text: str) -> TextBlockParam:
     return {"type": "text", "text": text}
+
+
+def _mention_label(title: str, document_id: str) -> TextBlockParam:
+    safe_title = json.dumps(title, ensure_ascii=False)
+    return _text_block(f"[Mentioned document: {safe_title}]\n[_ref:{document_id}]")
+
+
+def _is_workspace_saved_notice(block: ContentBlockParam) -> bool:
+    if block.get("type") != "text":
+        return False
+    text = block.get("text")
+    return isinstance(text, str) and text.startswith(
+        ("File saved to workspace:", "Document saved to workspace:")
+    )
+
+
+def _expanded_mention_blocks(
+    title: str,
+    document_id: str,
+    raw: list[ContentBlockParam],
+) -> list[ContentBlockParam]:
+    blocks: list[ContentBlockParam] = [_mention_label(title, document_id)]
+    if raw and not any(_is_workspace_saved_notice(block) for block in raw):
+        blocks.append(_text_block("File contents below:"))
+    blocks.extend(list(raw))
+    return blocks
 
 
 async def _expand_omni_upload(
@@ -212,7 +238,7 @@ async def _expand_omni_mention(
         is_error, raw = cache[document_id]
         if is_error:
             return [_text_block(f"[Document '{title}' could not be loaded]")]
-        return [_text_block(f"[Mentioned document: {title}]")] + list(raw)
+        return _expanded_mention_blocks(title, document_id, list(raw))
 
     tool_context = ToolContext(
         chat_id=chat_id,
@@ -241,7 +267,7 @@ async def _expand_omni_mention(
     # Cache the raw content (no label). Label is built per occurrence.
     raw_content = list(result.content)
     cache[document_id] = (False, raw_content)
-    return [_text_block(f"[Mentioned document: {title}]")] + raw_content
+    return _expanded_mention_blocks(title, document_id, raw_content)
 
 
 def _as_omni_mention(
