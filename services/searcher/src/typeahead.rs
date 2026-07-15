@@ -63,6 +63,8 @@ pub struct ScoredCandidate {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+    pub source_type: String,
+    pub content_type: String,
 }
 
 pub struct TypeaheadEntry {
@@ -70,6 +72,8 @@ pub struct TypeaheadEntry {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+    pub source_type: String,
+    pub content_type: String,
 }
 
 struct TitleData {
@@ -117,6 +121,9 @@ impl TitleIndex {
         let mut keys: Vec<(Vec<u8>, u64)> = Vec::new();
 
         for row in rows {
+            let Some(content_type) = row.content_type else {
+                continue;
+            };
             let normalized = normalize(&row.title);
             if normalized.is_empty() {
                 continue;
@@ -127,6 +134,8 @@ impl TitleIndex {
                 title: row.title,
                 url: row.url,
                 source_id: row.source_id,
+                source_type: row.source_type,
+                content_type,
             });
             normalized_titles.push(normalized.clone());
 
@@ -202,6 +211,8 @@ impl TitleIndex {
                     title: entry.title.clone(),
                     url: entry.url.clone(),
                     source_id: entry.source_id.clone(),
+                    source_type: entry.source_type.clone(),
+                    content_type: entry.content_type.clone(),
                 })
             })
             .collect()
@@ -219,6 +230,8 @@ impl TitleIndex {
                 title: c.title,
                 url: c.url,
                 source_id: c.source_id,
+                source_type: c.source_type,
+                content_type: c.content_type,
             })
             .collect()
     }

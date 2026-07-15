@@ -14,6 +14,8 @@ pub struct TitleEntry {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+    pub source_type: String,
+    pub content_type: Option<String>,
 }
 
 pub struct DocumentRepository {
@@ -98,7 +100,7 @@ impl DocumentRepository {
     pub async fn fetch_all_title_entries(&self) -> Result<Vec<TitleEntry>, DatabaseError> {
         let entries = sqlx::query_as::<_, TitleEntry>(
             r#"
-            SELECT d.id, d.title, d.url, d.source_id
+            SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
             FROM documents d
             JOIN sources s ON d.source_id = s.id
             WHERE NOT s.is_deleted
@@ -125,7 +127,7 @@ impl DocumentRepository {
 
         let entries = sqlx::query_as::<_, TitleEntry>(
             r#"
-            SELECT d.id, d.title, d.url, d.source_id
+            SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
             FROM documents d
             JOIN sources s ON d.source_id = s.id
             WHERE NOT s.is_deleted

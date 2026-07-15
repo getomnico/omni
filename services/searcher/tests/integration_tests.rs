@@ -2649,7 +2649,7 @@ async fn test_typeahead_content_type_allowlist() -> Result<()> {
     fixture.title_index.refresh().await?;
 
     // All 18 allowed docs must be found via a unique word in their title
-    for (title, _content_type) in &entries {
+    for (title, content_type) in &entries {
         // Pick the first word of the title as query
         let query = title.split_whitespace().next().unwrap();
         let (status, resp) = fixture.typeahead(query, Some(20)).await?;
@@ -2660,18 +2660,13 @@ async fn test_typeahead_content_type_allowlist() -> Result<()> {
             query,
             title
         );
-        let titles: Vec<&str> = resp["results"]
-            .as_array()
-            .unwrap()
+        let results = resp["results"].as_array().unwrap();
+        let result = results
             .iter()
-            .map(|r| r["title"].as_str().unwrap())
-            .collect();
-        assert!(
-            titles.contains(title),
-            "allowed type '{}' not found for query '{}'",
-            title,
-            query
-        );
+            .find(|result| result["title"].as_str() == Some(title))
+            .unwrap_or_else(|| panic!("allowed type '{}' not found for query '{}'", title, query));
+        assert_eq!(result["content_type"].as_str(), Some(*content_type));
+        assert_eq!(result["source_type"].as_str(), Some("google_drive"));
     }
 
     // Excluded docs must NOT appear
