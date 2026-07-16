@@ -2,7 +2,6 @@
     import { Button } from '$lib/components/ui/button/index.js'
     import { Badge } from '$lib/components/ui/badge/index.js'
     import { Input } from '$lib/components/ui/input/index.js'
-    import { Textarea } from '$lib/components/ui/textarea/index.js'
     import { Label } from '$lib/components/ui/label/index.js'
     import { Switch } from '$lib/components/ui/switch/index.js'
     import * as Tabs from '$lib/components/ui/tabs/index.js'
@@ -33,7 +32,6 @@
     let editName = $state('')
     let editInstructions = $state('')
     let editIsPublic = $state(false)
-
     let showDeleteConfirm = $state(false)
     let deletingSkill = $state<Skill | null>(null)
 
@@ -62,7 +60,6 @@
     )
 
     function resetNewForm() {
-        showNewForm = false
         newName = ''
         newInstructions = ''
         newIsPublic = false
@@ -98,7 +95,7 @@
                 }),
             })
             if (res.ok) {
-                resetNewForm()
+                showNewForm = false
                 toast.success('Skill created')
                 invalidateAll()
             } else {
@@ -193,85 +190,81 @@
                 Create and manage workplace skills. Public skills are visible to everyone.
             </p>
         </div>
-        {#if !showNewForm}
-            <Button
-                class="cursor-pointer"
-                onclick={() => {
-                    resetNewForm()
-                    showNewForm = true
-                }}>
-                <Plus class="mr-2 h-4 w-4" />
-                New Skill
-            </Button>
-        {/if}
+        <Button
+            class="cursor-pointer"
+            onclick={() => {
+                resetNewForm()
+                showNewForm = true
+            }}>
+            <Plus class="mr-2 h-4 w-4" />
+            New Skill
+        </Button>
     </div>
 
-    <!-- Create form -->
-    {#if showNewForm}
-        <Card.Root class="mb-6">
-            <Card.Header>
-                <Card.Title>Create Skill</Card.Title>
-                <Card.Description>
+    <!-- Create skill dialog -->
+    <Dialog.Root bind:open={showNewForm}>
+        <Dialog.Content
+            class="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] flex-col sm:max-w-3xl lg:max-w-4xl">
+            <Dialog.Header>
+                <Dialog.Title>Create Skill</Dialog.Title>
+                <Dialog.Description>
                     Write instructions that the AI will use when this skill is loaded.
-                </Card.Description>
-            </Card.Header>
-            <Card.Content>
-                <form
-                    onsubmit={(e) => {
-                        e.preventDefault()
-                        handleCreate()
-                    }}
-                    class="space-y-4">
-                    <div class="space-y-2">
-                        <Label for="new-name">Name</Label>
-                        <Input
-                            id="new-name"
-                            bind:value={newName}
-                            placeholder="e.g., PR Review Checklist" />
+                </Dialog.Description>
+            </Dialog.Header>
+            <form
+                onsubmit={(e) => {
+                    e.preventDefault()
+                    handleCreate()
+                }}
+                class="flex min-h-0 flex-1 flex-col gap-4">
+                <div class="space-y-2">
+                    <Label for="new-name">Name</Label>
+                    <Input
+                        id="new-name"
+                        bind:value={newName}
+                        placeholder="e.g., PR Review Checklist" />
+                </div>
+                <div class="flex min-h-0 flex-1 flex-col space-y-2">
+                    <Label for="new-instructions">Instructions</Label>
+                    <div
+                        id="new-instructions"
+                        bind:innerText={newInstructions}
+                        class="before:text-muted-foreground border-input focus-visible:border-ring focus-visible:ring-ring/50 relative min-h-0 flex-1 cursor-text overflow-y-auto rounded-md border bg-transparent px-3 py-2 text-base break-words whitespace-pre-wrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] md:text-sm"
+                        class:before:content-[attr(data-placeholder)]={!newInstructions.trim()}
+                        class:before:content-none={newInstructions.trim()}
+                        contenteditable="plaintext-only"
+                        role="textbox"
+                        aria-multiline="true"
+                        data-placeholder="Describe the task, what tools to use, and how to format the response...">
                     </div>
-                    <div class="space-y-2">
-                        <Label for="new-instructions">Instructions</Label>
-                        <Textarea
-                            id="new-instructions"
-                            bind:value={newInstructions}
-                            placeholder="Describe the task, what tools to use, and how to format the response..."
-                            rows={6} />
-                    </div>
-                    <div class="flex items-center gap-2">
-                        <Switch
-                            id="new-is-public"
-                            checked={newIsPublic}
-                            onCheckedChange={(v) => (newIsPublic = v)}
-                            class="cursor-pointer" />
-                        <Label for="new-is-public" class="cursor-pointer">Public</Label>
-                    </div>
-                    <div class="flex gap-2">
-                        <Button type="submit" disabled={saving} class="cursor-pointer">
-                            {saving ? 'Creating...' : 'Create'}
-                        </Button>
-                        <Button
-                            variant="outline"
-                            class="cursor-pointer"
-                            onclick={resetNewForm}
-                            type="button">
-                            Cancel
-                        </Button>
-                    </div>
-                </form>
-            </Card.Content>
-        </Card.Root>
-    {/if}
+                </div>
+                <div class="flex items-center gap-2">
+                    <Switch
+                        id="new-is-public"
+                        checked={newIsPublic}
+                        onCheckedChange={(v) => (newIsPublic = v)}
+                        class="cursor-pointer" />
+                    <Label for="new-is-public" class="cursor-pointer">Public</Label>
+                </div>
+                <Dialog.Footer>
+                    <Button
+                        variant="outline"
+                        class="cursor-pointer"
+                        onclick={() => {
+                            showNewForm = false
+                        }}
+                        type="button">Cancel</Button>
+                    <Button type="submit" disabled={saving} class="cursor-pointer"
+                        >{saving ? 'Creating...' : 'Create'}</Button>
+                </Dialog.Footer>
+            </form>
+        </Dialog.Content>
+    </Dialog.Root>
 
     <!-- Edit skill dialog -->
-    <Dialog.Root
-        open={showEditForm}
-        onOpenChange={(open) => {
-            if (!open) {
-                showEditForm = false
-                editingSkill = null
-            }
-        }}>
-        <Dialog.Content>
+    <Dialog.Root bind:open={showEditForm}>
+        <Dialog.Content
+            class="flex h-[calc(100dvh-2rem)] max-h-[calc(100dvh-2rem)] flex-col sm:max-w-3xl lg:max-w-4xl">
             <Dialog.Header>
                 <Dialog.Title>Edit Skill</Dialog.Title>
                 <Dialog.Description
@@ -282,14 +275,24 @@
                     e.preventDefault()
                     handleUpdate()
                 }}
-                class="space-y-4">
+                class="flex min-h-0 flex-1 flex-col gap-4">
                 <div class="space-y-2">
                     <Label for="edit-name">Name</Label>
                     <Input id="edit-name" bind:value={editName} />
                 </div>
-                <div class="space-y-2">
+                <div class="flex min-h-0 flex-1 flex-col space-y-2">
                     <Label for="edit-instructions">Instructions</Label>
-                    <Textarea id="edit-instructions" bind:value={editInstructions} rows={6} />
+                    <div
+                        id="edit-instructions"
+                        bind:innerText={editInstructions}
+                        class="before:text-muted-foreground border-input focus-visible:border-ring focus-visible:ring-ring/50 relative min-h-0 flex-1 cursor-text overflow-y-auto rounded-md border bg-transparent px-3 py-2 text-base break-words whitespace-pre-wrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] md:text-sm"
+                        class:before:content-[attr(data-placeholder)]={!editInstructions.trim()}
+                        class:before:content-none={editInstructions.trim()}
+                        contenteditable="plaintext-only"
+                        role="textbox"
+                        aria-multiline="true"
+                        data-placeholder="Describe the task, what tools to use, and how to format the response...">
+                    </div>
                 </div>
                 <div class="flex items-center gap-2">
                     <Switch
@@ -305,7 +308,6 @@
                         class="cursor-pointer"
                         onclick={() => {
                             showEditForm = false
-                            editingSkill = null
                         }}
                         type="button">Cancel</Button>
                     <Button type="submit" disabled={saving} class="cursor-pointer"
