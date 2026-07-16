@@ -378,6 +378,7 @@ export const skills = pgTable(
             .notNull()
             .references(() => user.id, { onDelete: 'cascade' }),
         name: text('name').notNull(),
+        description: text('description').notNull(),
         instructions: text('instructions').notNull(),
         visibility: text('visibility').$type<'private' | 'public'>().notNull().default('private'),
         createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' })

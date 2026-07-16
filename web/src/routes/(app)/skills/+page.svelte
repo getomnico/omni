@@ -22,6 +22,7 @@
 
     let showNewForm = $state(false)
     let newName = $state('')
+    let newDescription = $state('')
     let newInstructions = $state('')
     let newIsPublic = $state(false)
     let saving = $state(false)
@@ -30,6 +31,7 @@
     let showEditForm = $state(false)
     let editingSkill = $state<Skill | null>(null)
     let editName = $state('')
+    let editDescription = $state('')
     let editInstructions = $state('')
     let editIsPublic = $state(false)
     let showDeleteConfirm = $state(false)
@@ -42,6 +44,7 @@
         if (!query) return true
         return (
             skill.name.toLocaleLowerCase().includes(query) ||
+            skill.description.toLocaleLowerCase().includes(query) ||
             skill.instructions.toLocaleLowerCase().includes(query) ||
             `library:${skill.id}`.toLocaleLowerCase().includes(query)
         )
@@ -61,6 +64,7 @@
 
     function resetNewForm() {
         newName = ''
+        newDescription = ''
         newInstructions = ''
         newIsPublic = false
     }
@@ -68,6 +72,7 @@
     function openEdit(skill: Skill) {
         editingSkill = skill
         editName = skill.name
+        editDescription = skill.description
         editInstructions = skill.instructions
         editIsPublic = skill.visibility === 'public'
         showEditForm = true
@@ -79,8 +84,8 @@
     }
 
     async function handleCreate() {
-        if (!newName.trim() || !newInstructions.trim()) {
-            toast.error('Name and instructions are required')
+        if (!newName.trim() || !newDescription.trim() || !newInstructions.trim()) {
+            toast.error('Name, description, and instructions are required')
             return
         }
         saving = true
@@ -90,6 +95,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: newName.trim(),
+                    description: newDescription.trim(),
                     instructions: newInstructions.trim(),
                     visibility: newIsPublic ? 'public' : 'private',
                 }),
@@ -111,8 +117,8 @@
 
     async function handleUpdate() {
         if (!editingSkill) return
-        if (!editName.trim() || !editInstructions.trim()) {
-            toast.error('Name and instructions are required')
+        if (!editName.trim() || !editDescription.trim() || !editInstructions.trim()) {
+            toast.error('Name, description, and instructions are required')
             return
         }
         saving = true
@@ -122,6 +128,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: editName.trim(),
+                    description: editDescription.trim(),
                     instructions: editInstructions.trim(),
                     visibility: editIsPublic ? 'public' : 'private',
                 }),
@@ -224,6 +231,14 @@
                         bind:value={newName}
                         placeholder="e.g., PR Review Checklist" />
                 </div>
+                <div class="space-y-2">
+                    <Label for="new-description">Description</Label>
+                    <Input
+                        id="new-description"
+                        bind:value={newDescription}
+                        maxlength={500}
+                        placeholder="Briefly explain what this skill does and when it should be used..." />
+                </div>
                 <div class="flex min-h-0 flex-1 flex-col space-y-2">
                     <Label for="new-instructions">Instructions</Label>
                     <div
@@ -280,6 +295,14 @@
                     <Label for="edit-name">Name</Label>
                     <Input id="edit-name" bind:value={editName} />
                 </div>
+                <div class="space-y-2">
+                    <Label for="edit-description">Description</Label>
+                    <Input
+                        id="edit-description"
+                        bind:value={editDescription}
+                        maxlength={500}
+                        placeholder="Briefly explain what this skill does and when it should be used..." />
+                </div>
                 <div class="flex min-h-0 flex-1 flex-col space-y-2">
                     <Label for="edit-instructions">Instructions</Label>
                     <div
@@ -325,7 +348,7 @@
             <Input
                 id="skill-filter"
                 bind:value={filterQuery}
-                placeholder="Search by name, instructions, or library:<id>"
+                placeholder="Search by name, description, instructions, or library:<id>"
                 class="pl-9" />
         </div>
     </div>
@@ -386,7 +409,7 @@
                                         {/if}
                                     </div>
                                     <p class="text-muted-foreground mt-1 line-clamp-2 text-sm">
-                                        {skill.instructions}
+                                        {skill.description}
                                     </p>
                                     <p class="text-muted-foreground mt-1 text-xs">
                                         Updated {formatDateTime(
@@ -456,7 +479,7 @@
                                         <Badge variant="secondary">Shared</Badge>
                                     </div>
                                     <p class="text-muted-foreground mt-1 line-clamp-2 text-sm">
-                                        {skill.instructions}
+                                        {skill.description}
                                     </p>
                                     <p class="text-muted-foreground mt-1 text-xs">
                                         ID: library:{skill.id}

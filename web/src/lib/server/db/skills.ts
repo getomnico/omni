@@ -49,6 +49,7 @@ export class SkillRepository {
     async create(data: {
         userId: string
         name: string
+        description: string
         instructions: string
         visibility?: SkillVisibility
     }): Promise<Skill> {
@@ -59,6 +60,7 @@ export class SkillRepository {
                 id,
                 ownerId: data.userId,
                 name: data.name,
+                description: data.description,
                 instructions: data.instructions,
                 visibility: data.visibility || 'private',
             })
@@ -75,6 +77,7 @@ export class SkillRepository {
         userId: string,
         data: Partial<{
             name: string
+            description: string
             instructions: string
             visibility: SkillVisibility
         }>,
@@ -106,8 +109,8 @@ export class SkillRepository {
     async clone(sourceId: string, newOwnerId: string): Promise<Skill | null> {
         const id = ulid()
         const rows = await this.db.execute<Skill>(sql`
-            INSERT INTO skills (id, owner_id, name, instructions, visibility)
-            SELECT ${id}, ${newOwnerId}, name, instructions, 'private'
+            INSERT INTO skills (id, owner_id, name, description, instructions, visibility)
+            SELECT ${id}, ${newOwnerId}, name, description, instructions, 'private'
             FROM skills
             WHERE id = ${sourceId}
               AND visibility = 'public'
@@ -115,6 +118,7 @@ export class SkillRepository {
                 id,
                 owner_id AS "ownerId",
                 name,
+                description,
                 instructions,
                 visibility,
                 created_at AS "createdAt",

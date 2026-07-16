@@ -6,6 +6,11 @@ export type SkillVisibility = (typeof SKILL_VISIBILITY_VALUES)[number]
 export const createSkillSchema = z
     .object({
         name: z.string().trim().min(1, 'Name is required'),
+        description: z
+            .string()
+            .trim()
+            .min(1, 'Description is required')
+            .max(500, 'Description must be 500 characters or less'),
         instructions: z.string().trim().min(1, 'Instructions are required'),
         visibility: z.enum(SKILL_VISIBILITY_VALUES).default('private'),
     })
@@ -14,6 +19,12 @@ export const createSkillSchema = z
 export const updateSkillSchema = z
     .object({
         name: z.string().trim().min(1, 'Name is required').optional(),
+        description: z
+            .string()
+            .trim()
+            .min(1, 'Description is required')
+            .max(500, 'Description must be 500 characters or less')
+            .optional(),
         instructions: z.string().trim().min(1, 'Instructions are required').optional(),
         visibility: z.enum(SKILL_VISIBILITY_VALUES).optional(),
     })
@@ -32,6 +43,7 @@ export interface SkillResponse {
     id: string
     ownerId: string
     name: string
+    description: string
     instructions: string
     visibility: SkillVisibility
     createdAt: string

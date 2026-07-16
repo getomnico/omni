@@ -5,11 +5,14 @@ CREATE TABLE IF NOT EXISTS skills (
     id CHAR(26) PRIMARY KEY,
     owner_id CHAR(26) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    description TEXT NOT NULL,
     instructions TEXT NOT NULL,
     visibility TEXT NOT NULL DEFAULT 'private',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT skills_name_not_blank CHECK (btrim(name) <> ''),
+    CONSTRAINT skills_description_not_blank CHECK (btrim(description) <> ''),
+    CONSTRAINT skills_description_max_length CHECK (char_length(description) <= 500),
     CONSTRAINT skills_instructions_not_blank CHECK (btrim(instructions) <> ''),
     CONSTRAINT skills_visibility_check CHECK (visibility IN ('private', 'public'))
 );

@@ -23,7 +23,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         parsed = createSkillSchema.parse(await request.json())
     } catch {
         return json(
-            { error: 'Invalid skill payload. name and instructions are required.' },
+            { error: 'Invalid skill payload. name, description, and instructions are required.' },
             { status: 400 },
         )
     }
@@ -33,6 +33,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         const skill = await repo.create({
             userId: locals.user.id,
             name: parsed.name,
+            description: parsed.description,
             instructions: parsed.instructions,
             visibility: parsed.visibility,
         })

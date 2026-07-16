@@ -7,6 +7,7 @@ const ownedSkill = {
     id: 'owned-skill',
     ownerId: 'user-1',
     name: 'Owned',
+    description: 'Owner skill description.',
     instructions: 'Owner instructions.',
     visibility: 'private',
     createdAt: new Date(),
@@ -17,6 +18,7 @@ const publicSkill = {
     id: 'public-skill',
     ownerId: 'user-2',
     name: 'Public',
+    description: 'Public skill description.',
     instructions: 'Public instructions.',
     visibility: 'public',
     createdAt: new Date(),
@@ -70,11 +72,64 @@ describe('skills API routes', () => {
         repo.create.mockClear()
         const response = await postCollection({
             locals: locals(),
-            request: jsonRequest({ name: '   ', instructions: 'Do it.' }),
+            request: jsonRequest({
+                name: '   ',
+                description: 'Desc.',
+                instructions: 'Do it.',
+            }),
         } as never)
 
         expect(response.status).toBe(400)
         expect(repo.create).not.toHaveBeenCalled()
+    })
+
+    it('rejects missing description in create payload', async () => {
+        repo.create.mockClear()
+        const response = await postCollection({
+            locals: locals(),
+            request: jsonRequest({
+                name: 'Valid',
+                instructions: 'Do it.',
+            }),
+        } as never)
+
+        expect(response.status).toBe(400)
+        expect(repo.create).not.toHaveBeenCalled()
+    })
+
+    it('passes a trimmed description when creating a skill', async () => {
+        repo.create.mockClear()
+        const response = await postCollection({
+            locals: locals(),
+            request: jsonRequest({
+                name: 'New Skill',
+                description: '  Use this for release notes.  ',
+                instructions: 'Write release notes.',
+            }),
+        } as never)
+
+        expect(response.status).toBe(201)
+        expect(repo.create).toHaveBeenCalledWith({
+            userId: 'user-1',
+            name: 'New Skill',
+            description: 'Use this for release notes.',
+            instructions: 'Write release notes.',
+            visibility: 'private',
+        })
+    })
+
+    it('passes description updates to the owner-scoped repository mutation', async () => {
+        repo.update.mockClear()
+        const response = await PUT({
+            locals: locals(),
+            params: { skillId: ownedSkill.id },
+            request: jsonRequest({ description: '  Use when reviewing pull requests.  ' }),
+        } as never)
+
+        expect(response.status).toBe(200)
+        expect(repo.update).toHaveBeenCalledWith(ownedSkill.id, 'user-1', {
+            description: 'Use when reviewing pull requests.',
+        })
     })
 
     it('returns 404 for invisible skill reads', async () => {

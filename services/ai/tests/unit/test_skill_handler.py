@@ -233,9 +233,11 @@ def test_google_workspace_connector_skills_do_not_instruct_local_gws_auth_or_ins
 @dataclass
 class _FakeSkill:
     """Minimal stand-in matching the fields SkillHandler reads from Skill."""
+
     id: str
     owner_id: str
     name: str
+    description: str
     instructions: str
     visibility: str
     created_at: datetime.datetime
@@ -273,6 +275,7 @@ async def test_library_skill_loads_via_namespaced_id(tmp_path):
         id=skill_id,
         owner_id="user-1",
         name="My Library Skill",
+        description="Do the thing quickly.",
         instructions="# Library Skill\n\nDo the thing.",
         visibility="public",
         created_at=datetime.datetime.now(),
@@ -306,6 +309,7 @@ async def test_library_skill_not_loadable_by_non_owner_when_private(tmp_path):
         id="01J00000000000000000000001",
         owner_id="user-1",
         name="Private Skill",
+        description="Secret description.",
         instructions="Secret instructions",
         visibility="private",
         created_at=datetime.datetime.now(),
@@ -340,6 +344,7 @@ async def test_library_skills_included_in_search_allowed_ids(tmp_path):
         id="01J00000000000000000000002",
         owner_id="user-1",
         name="Public Library Skill",
+        description="Public library description.",
         instructions="Public library instructions",
         visibility="public",
         created_at=datetime.datetime.now(),
@@ -376,6 +381,7 @@ async def test_library_skills_published_as_capabilities(tmp_path):
         id="01J00000000000000000000003",
         owner_id="user-1",
         name="Lib Skill",
+        description="Lib description.",
         instructions="Lib instructions",
         visibility="public",
         created_at=datetime.datetime.now(),
@@ -409,6 +415,7 @@ async def test_library_skill_search_returns_exact_library_id(tmp_path):
                 id=skill_id,
                 owner_id="user-1",
                 name="PR Review",
+                description="Review pull requests with a checklist.",
                 instructions="Review pull requests with a checklist.",
                 visibility="public",
                 created_at=datetime.datetime.now(),
@@ -445,6 +452,7 @@ async def test_library_skill_uses_configured_owner_when_context_has_no_user(tmp_
                 id=skill_id,
                 owner_id="agent-owner",
                 name="Owner Private Skill",
+                description="Private owner description.",
                 instructions="Private owner instructions.",
                 visibility="private",
                 created_at=datetime.datetime.now(),
@@ -467,3 +475,74 @@ async def test_library_skill_uses_configured_owner_when_context_has_no_user(tmp_
 
     assert not result.is_error
     assert result.content[0]["text"] == "Private owner instructions."
+
+
+@pytest.mark.asyncio
+async def test_library_skill_capability_uses_explicit_description(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    searcher = _FakeSearcherClient(include_excel=False)
+    skill_id = "01J00000000000000000000006"
+    lib_skill = _FakeSkill(
+        id=skill_id,
+        owner_id="user-1",
+        name="Explicit Desc Skill",
+        description="Explicit short description for this skill.",
+        instructions="# Detailed Instructions\n\nStep-by-step guide.",
+        visibility="public",
+        created_at=datetime.datetime.now(),
+        updated_at=datetime.datetime.now(),
+    )
+    fake_repo = _FakeSkillsRepository(skills=[lib_skill])
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+        skill_user_id="user-1",
+    )
+
+    await handler.publish_skill_capabilities()
+
+    assert searcher.upserts
+    cap = next(c for c in searcher.upserts[0].capabilities if c.id == f"skill:library:{skill_id}")
+    assert cap.description == "Explicit short description for this skill."
+    assert cap.data["description"] == "Explicit short description for this skill."
+    assert "Explicit short description for this skill." in cap.search_text
+    assert "# Detailed Instructions" not in cap.description
+
+
+@pytest.mark.asyncio
+async def test_library_skill_search_snippet_prefers_description(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    searcher = _FakeSearcherClient(include_excel=False)
+    skill_id = "01J00000000000000000000007"
+    lib_skill = _FakeSkill(
+        id=skill_id,
+        owner_id="user-1",
+        name="Snippet Skill",
+        description="Snippet description content.",
+        instructions="Long body content that should not appear in snippet when description is available.",
+        visibility="public",
+        created_at=datetime.datetime.now(),
+        updated_at=datetime.datetime.now(),
+    )
+    fake_repo = _FakeSkillsRepository(skills=[lib_skill])
+    handler = SkillHandler(
+        skills_dir,
+        searcher_client=searcher,
+        skills_repository=fake_repo,
+        skill_user_id="user-1",
+    )
+
+    await handler.publish_skill_capabilities()
+    result = await handler.execute(
+        "skill_search",
+        {"query": "snippet"},
+        ToolContext(chat_id="c1", user_id="user-1"),
+    )
+
+    assert not result.is_error
+    text = result.content[0]["text"]
+    assert "Snippet description content." in text
+    assert "Long body content that should not appear" not in text

@@ -24,6 +24,7 @@ class Skill:
     id: str
     owner_id: str
     name: str
+    description: str
     instructions: str
     visibility: Literal["private", "public"]
     created_at: datetime
@@ -46,7 +47,7 @@ class SkillsRepository:
         pool = await self._get_pool()
         rows = await pool.fetch(
             """
-            SELECT id, owner_id, name, instructions, visibility,
+            SELECT id, owner_id, name, description, instructions, visibility,
                    created_at, updated_at
             FROM skills
             WHERE owner_id = $1 OR visibility = 'public'
@@ -61,7 +62,7 @@ class SkillsRepository:
         pool = await self._get_pool()
         row = await pool.fetchrow(
             """
-            SELECT id, owner_id, name, instructions, visibility,
+            SELECT id, owner_id, name, description, instructions, visibility,
                    created_at, updated_at
             FROM skills
             WHERE id = $1

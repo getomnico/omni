@@ -397,8 +397,12 @@ class SkillHandler:
             if skill_id not in all_ids:
                 continue
             title = result.data.get("title") or skill_id
-            body = result.data.get("body") or result.data.get("description") or ""
-            matches.append((skill_id, title, self._snippet(body)))
+            snippet_text = (
+                result.data.get("description")
+                or result.data.get("body")
+                or ""
+            )
+            matches.append((skill_id, title, self._snippet(snippet_text)))
         return matches
 
     async def publish_skill_capabilities(self) -> None:
@@ -488,19 +492,20 @@ class SkillHandler:
             )
         for lib_id, lib_skill in self._library_skills.items():
             body = lib_skill.instructions
+            description = lib_skill.description
             capabilities.append(
                 CapabilityUpsert(
                     id=f"skill:{lib_id}",
                     capability_type="skill",
                     name=lib_id,
-                    description=self._snippet(body, max_chars=240),
+                    description=description,
                     publisher_id=f"omni:skill-library:{lib_skill.id}",
-                    search_text=f"{lib_id} {lib_skill.name}\n{body}",
+                    search_text=f"{lib_id} {lib_skill.name} {description}\n{body}",
                     user_id=lib_skill.owner_id,
                     data={
                         "skill_id": lib_id,
                         "title": lib_skill.name,
-                        "description": self._snippet(body, max_chars=240),
+                        "description": description,
                         "body": body,
                         "user_id": lib_skill.owner_id,
                     },
