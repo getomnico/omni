@@ -39,13 +39,16 @@
         TextMessageContent,
         ToolMessageContent,
         UploadMessageContent,
+        MentionMessageContent,
         MessageContent,
         ApprovalRequiredEvent,
         OAuthRequired,
         OAuthRequiredEvent,
         OmniUploadBlock,
+        OmniMentionBlock,
     } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
+    import type { MentionedDocument } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolMessage from '$lib/components/tool-message.svelte'
@@ -70,6 +73,7 @@
     import * as HoverCard from '$lib/components/ui/hover-card'
     import { copyTextToClipboard } from '$lib/utils'
     import {
+        getDocumentIconPath,
         getIconFromSearchResult,
         getSourceDisplayName,
         getSourceIconPath,
@@ -125,8 +129,10 @@
     })
 
     let userMessage = $state('')
+    let mentionedDocs = $state<MentionedDocument[]>([])
+    let isSending = $state(false)
 
-    type UserMessageBlock = OmniUploadBlock | TextBlockParam
+    type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
 
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
     type UploadResponse = {
@@ -775,10 +781,11 @@
 
     async function handleEdit(origMessageId: string, newContent: string) {
         editingMessageId = null
+        const trimmedContent = newContent.trim()
         const response = await fetch(`/api/chat/${data.chat.id}/messages/${origMessageId}/edit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: newContent }),
+            body: JSON.stringify({ content: trimmedContent }),
         })
 
         if (!response.ok) {
@@ -791,9 +798,13 @@
             return
         }
 
-        const { messageId } = await response.json()
+        const { messageId, message } = (await response.json()) as {
+            messageId: string
+            message: ChatMessage['message']
+        }
 
-        // Find the original message's parent to set the branch selection
+        // Use the server-built message so retry/edit preserves the original
+        // mention and upload blocks exactly.
         const origMsg = chatMessages.find((m) => m.id === origMessageId)
         const parentKey = branchSelectionKey(origMsg?.parentId)
 
@@ -801,8 +812,8 @@
             id: messageId,
             chatId: data.chat.id,
             parentId: origMsg?.parentId ?? null,
-            message: { role: 'user', content: newContent },
-            contentText: newContent,
+            message,
+            contentText: trimmedContent,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -989,7 +1000,11 @@
                 const userMessageContent: MessageContent =
                     typeof message.content === 'string'
                         ? [{ id: 0, type: 'text', text: message.content }]
-                        : (message.content as Array<ContentBlockParam | OmniUploadBlock>)
+                        : (
+                              message.content as Array<
+                                  ContentBlockParam | OmniUploadBlock | OmniMentionBlock
+                              >
+                          )
                               .map((b, bi): MessageContent[number] | null => {
                                   if (b.type === 'text') {
                                       return { id: bi, type: 'text', text: b.text }
@@ -1003,6 +1018,20 @@
                                           id: bi,
                                           type: 'upload',
                                           uploadId: b.source.upload_id,
+                                      }
+                                  }
+                                  if (
+                                      b.type === 'document' &&
+                                      'source' in b &&
+                                      b.source.type === 'omni_mention'
+                                  ) {
+                                      return {
+                                          id: bi,
+                                          type: 'mention',
+                                          documentId: b.source.document_id,
+                                          title: b.source.title,
+                                          sourceType: b.source.source_type,
+                                          contentType: b.source.content_type,
                                       }
                                   }
                                   return null
@@ -1939,19 +1968,22 @@
     }
 
     async function handleSubmit() {
+        if (isSending) return
+
         const userMsg = userMessage.trim()
         const readyAttachments = pendingUploads.filter((u) => !u.uploading)
         if (pendingUploads.some((u) => u.uploading)) {
             return
         }
-        if (!userMsg && readyAttachments.length === 0) return
+        if (!userMsg && readyAttachments.length === 0 && mentionedDocs.length === 0) return
 
         const displayPath = getDisplayPath(chatMessages)
         const parentId = displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
 
         const attachmentIds = readyAttachments.map((u) => u.id)
+        const submitMentionedDocs = [...mentionedDocs]
 
-        userMessage = ''
+        isSending = true
 
         let response: Response
         try {
@@ -1965,16 +1997,17 @@
                     role: 'user',
                     parentId,
                     attachmentIds,
+                    mentionedDocuments: submitMentionedDocs,
                 }),
             })
         } catch (err) {
-            userMessage = userMsg
+            isSending = false
             console.error('Failed to send message to chat session', err)
             return
         }
 
         if (!response.ok) {
-            userMessage = userMsg
+            isSending = false
             if (response.status === 409) {
                 void resumeActiveStreamIfNeeded()
                 toast.info('The previous response is still in progress. Reconnecting to it now.')
@@ -1984,25 +2017,36 @@
             return
         }
 
+        // Success — build optimistic message and clear composer
         const { messageId } = await response.json()
 
         let messageContent: string | UserMessageBlock[]
-        if (attachmentIds.length > 0) {
+        const mentionBlocks: UserMessageBlock[] = submitMentionedDocs.map((doc) => ({
+            type: 'document',
+            source: {
+                type: 'omni_mention',
+                document_id: doc.document_id,
+                title: doc.title,
+                ...(doc.source_type ? { source_type: doc.source_type } : {}),
+                ...(doc.content_type ? { content_type: doc.content_type } : {}),
+            },
+        }))
+        const hasRichBlocks = mentionBlocks.length > 0 || attachmentIds.length > 0
+        if (hasRichBlocks) {
             for (const up of pendingUploads) {
                 uploadFilenames[up.id] = up.filename
             }
-            const blocks: UserMessageBlock[] = attachmentIds.map((id) => ({
+            const uploadBlocks: UserMessageBlock[] = attachmentIds.map((id) => ({
                 type: 'document',
                 source: { type: 'omni_upload', upload_id: id },
             }))
+            const blocks: UserMessageBlock[] = [...mentionBlocks, ...uploadBlocks]
             if (userMsg) blocks.push({ type: 'text', text: userMsg })
             messageContent = blocks
         } else {
             messageContent = userMsg
         }
 
-        // The DB column is typed as Anthropic's MessageParam; our custom omni_upload
-        // source isn't part of that union, so narrow to MessageParam via unknown.
         const newUserMessage: ChatMessage = {
             id: messageId,
             chatId: data.chat.id,
@@ -2015,10 +2059,14 @@
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
+
+        // Clear composer state only on success. Failure leaves DOM intact.
+        userMessage = ''
+        mentionedDocs = []
+        pendingUploads = []
+        isSending = false
         chatMessages = [...chatMessages, newUserMessage]
         selectBranch(newUserMessage.parentId, newUserMessage.id)
-
-        pendingUploads = []
         isAwayFromBottom = false
 
         scrollUserMessageToTop()
@@ -2163,7 +2211,29 @@
         {@const uploads = message.content.filter(
             (b): b is UploadMessageContent => b.type === 'upload',
         )}
+        {@const mentions = message.content.filter(
+            (b): b is MentionMessageContent => b.type === 'mention',
+        )}
         <div class="flex max-w-[80%] flex-col items-end gap-1">
+            {#if mentions.length > 0}
+                <div class="mb-2 flex flex-wrap justify-end gap-1">
+                    {#each mentions as m (m.id)}
+                        {@const iconPath = getDocumentIconPath(m.sourceType, m.contentType)}
+                        <span
+                            class="bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-full border px-1.5 py-0.5 align-baseline text-sm select-none">
+                            {#if iconPath}
+                                <img
+                                    src={iconPath}
+                                    alt=""
+                                    class="h-3.5 w-3.5 shrink-0 object-contain" />
+                            {:else}
+                                <FileText class="h-3.5 w-3.5 shrink-0" />
+                            {/if}
+                            <span class="truncate">{m.title}</span>
+                        </span>
+                    {/each}
+                </div>
+            {/if}
             {#if uploads.length > 0}
                 <div class="mb-2 flex flex-wrap justify-end gap-1">
                     {#each uploads as up (up.uploadId)}
@@ -2826,6 +2896,7 @@
                     <UserInput
                         bind:this={userInputRef}
                         bind:value={userMessage}
+                        bind:mentionedDocs
                         inputMode="chat"
                         onSubmit={handleSubmit}
                         onInput={(v) => (userMessage = v)}
@@ -2839,6 +2910,12 @@
                         }}
                         {isStreaming}
                         {stopInProgress}
+                        isLoading={isSending}
+                        canSubmit={!isSending &&
+                            !pendingUploads.some((u) => u.uploading) &&
+                            (userMessage.trim().length > 0 ||
+                                mentionedDocs.length > 0 ||
+                                pendingUploads.filter((u) => !u.uploading).length > 0)}
                         onStop={handleStop}
                         maxWidth="max-w-4xl" />
                 </div>

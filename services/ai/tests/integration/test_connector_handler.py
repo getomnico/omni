@@ -7,18 +7,19 @@ based on the document's permissions JSONB, using a real ParadeDB instance.
 import pytest
 
 from db.documents import DocumentsRepository
+from tests.helpers import create_test_document, create_test_source, create_test_user
 from tools.connector_handler import ConnectorAction, ConnectorToolHandler
 from tools.registry import ToolContext
-from tests.helpers import create_test_user, create_test_source, create_test_document
 
 pytestmark = pytest.mark.integration
 
 
-def _ctx(user_email: str | None) -> ToolContext:
+def _ctx(user_email: str | None, user_groups: list[str] | None = None) -> ToolContext:
     return ToolContext(
         chat_id="test-chat",
         user_id="test-user",
         user_email=user_email,
+        user_groups=user_groups,
     )
 
 
@@ -47,6 +48,31 @@ async def test_user_id(db_pool) -> str:
 
 
 class TestConnectorHandlerDocumentPermissions:
+    @pytest.mark.asyncio
+    async def test_missing_identity_fails_closed(self, db_pool, test_user_id):
+        source_id = await create_test_source(db_pool, test_user_id, "google_drive")
+        doc_id = await create_test_document(
+            db_pool,
+            source_id,
+            "secret.pdf",
+            "content",
+            permissions={"public": False, "users": ["alice@co.com"], "groups": []},
+        )
+        handler = ConnectorToolHandler(
+            connector_manager_url="http://localhost:0",
+            user_id="test-user",
+            documents_repo=DocumentsRepository(db_pool),
+        )
+        _register_fetch_file(handler, source_id)
+
+        result = await handler.execute(
+            "google_drive__fetch_file",
+            {"document_id": doc_id},
+            _ctx(None),
+        )
+        assert result.is_error
+        assert "not found" in result.content[0]["text"].lower()
+
     @pytest.mark.asyncio
     async def test_unauthorized_user_denied(self, db_pool, test_user_id):
         source_id = await create_test_source(db_pool, test_user_id, "google_drive")

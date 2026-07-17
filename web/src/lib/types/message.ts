@@ -7,6 +7,18 @@ export type OmniUploadBlock = {
     source: { type: 'omni_upload'; upload_id: string }
 }
 
+export type MentionedDocument = {
+    document_id: string
+    title: string
+    source_type?: string
+    content_type?: string
+}
+
+export type OmniMentionBlock = {
+    type: 'document'
+    source: { type: 'omni_mention' } & MentionedDocument
+}
+
 export type TextMessageContent = {
     id: number
     type: 'text'
@@ -105,7 +117,18 @@ export type UploadMessageContent = {
     uploadId: string
 }
 
-export type MessageContent = Array<TextMessageContent | ToolMessageContent | UploadMessageContent>
+export type MentionMessageContent = {
+    id: number
+    type: 'mention'
+    documentId: string
+    title: string
+    sourceType?: string
+    contentType?: string
+}
+
+export type MessageContent = Array<
+    TextMessageContent | ToolMessageContent | UploadMessageContent | MentionMessageContent
+>
 export type ProcessedMessage = {
     id: number
     // IDs of the raw chat_messages rows represented by this display message.

@@ -133,3 +133,33 @@ async def test_health_check_uses_reasoning_model_token_floor():
 
     assert await provider.health_check() is True
     assert responses.params["max_output_tokens"] == 1024
+
+
+def test_convert_messages_handles_only_user_text_documents():
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    text_document = {
+        "type": "document",
+        "title": "Report.pdf",
+        "source": {"type": "text", "data": "Q3 revenue grew 14%."},
+    }
+    binary_document = {
+        "type": "document",
+        "source": {"type": "base64", "data": "ignored"},
+    }
+
+    converted = provider._convert_messages(
+        [
+            {"role": "user", "content": [text_document, binary_document]},
+            {"role": "assistant", "content": [text_document]},
+        ]
+    )
+
+    assert converted == [
+        {
+            "role": "user",
+            "content": (
+                'Document title: "Report.pdf"\n'
+                "Document content:\nQ3 revenue grew 14%."
+            ),
+        }
+    ]

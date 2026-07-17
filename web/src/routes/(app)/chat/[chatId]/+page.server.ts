@@ -72,24 +72,34 @@ async function resolveUploadFilenames(
 }
 
 export const load = async ({ params, locals, fetch, depends }) => {
+    if (!locals.user?.id) {
+        error(401, 'Authentication required')
+    }
+
     const chat = await chatRepository.get(params.chatId)
     if (!chat) {
-        // throw 404
         error(404, 'Chat not found')
+    }
+
+    if (chat.userId !== locals.user.id) {
+        error(403, 'Forbidden')
     }
 
     depends(`app:chat:${params.chatId}`)
 
-    // Agent chats: fetch agent info and enforce admin access
     let agent: { id: string; name: string; agentType: string } | null = null
     if (chat.agentId) {
         const agentRecord = await getAgent(chat.agentId)
-        if (agentRecord?.agentType === 'org' && locals.user?.role !== 'admin') {
+        if (!agentRecord) {
+            error(404, 'Chat agent not found')
+        }
+        if (agentRecord.agentType === 'org' && locals.user.role !== 'admin') {
             error(403, 'Admin access required')
         }
-        if (agentRecord) {
-            agent = { id: agentRecord.id, name: agentRecord.name, agentType: agentRecord.agentType }
+        if (agentRecord.agentType === 'user' && agentRecord.userId !== locals.user.id) {
+            error(403, 'Forbidden')
         }
+        agent = { id: agentRecord.id, name: agentRecord.name, agentType: agentRecord.agentType }
     }
 
     const messages = await chatMessageRepository.getByChatId(chat.id)

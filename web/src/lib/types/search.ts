@@ -130,6 +130,8 @@ export interface TypeaheadResult {
     title: string
     url: string | null
     source_id: string
+    source_type: string
+    content_type: string
 }
 
 export interface TypeaheadResponse {

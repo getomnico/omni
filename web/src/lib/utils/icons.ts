@@ -76,23 +76,39 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.DARWINBOX]: darwinboxIcon,
 }
 
-// Get icon based on source type and content type
-export function getDocumentIconPath(sourceType: string, contentType: string): string | null {
-    // For Google Drive, check content type to determine specific icon
+// Get icon based on source type and content type.
+// sourceType and contentType may be undefined for historical mention blocks.
+export function getDocumentIconPath(
+    sourceType: string | null | undefined,
+    contentType: string | null | undefined,
+): string | null {
+    // Guard against null/undefined before includes or record indexing
     if (sourceType === SourceType.GOOGLE_DRIVE) {
-        if (contentType === 'document' || GOOGLE_DOCS_MIMETYPES.includes(contentType)) {
+        if (
+            contentType &&
+            (contentType === 'document' || GOOGLE_DOCS_MIMETYPES.includes(contentType))
+        ) {
             return googleDocsIcon
         }
-        if (contentType === 'spreadsheet' || GOOGLE_SHEETS_MIMETYPES.includes(contentType)) {
+        if (
+            contentType &&
+            (contentType === 'spreadsheet' || GOOGLE_SHEETS_MIMETYPES.includes(contentType))
+        ) {
             return googleSheetsIcon
         }
-        if (contentType === 'presentation' || GOOGLE_SLIDES_MIMETYPES.includes(contentType)) {
+        if (
+            contentType &&
+            (contentType === 'presentation' || GOOGLE_SLIDES_MIMETYPES.includes(contentType))
+        ) {
             return googleSlidesIcon
         }
         return googleDriveIcon
     }
 
-    return SOURCE_TYPE_ICONS[sourceType] ?? null
+    if (sourceType) {
+        return SOURCE_TYPE_ICONS[sourceType] ?? null
+    }
+    return null
 }
 
 export function getSourceIconPath(sourceType: string): string | null {

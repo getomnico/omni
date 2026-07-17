@@ -7,7 +7,9 @@ use axum::{
 };
 use common::SearcherTestFixture;
 use serde_json::{json, Value};
-use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
+use shared::db::repositories::{
+    DocumentRepository, GroupRepository, PersonRepository, PersonUpsert,
+};
 use shared::models::DocumentPermissions;
 use tower::ServiceExt;
 use ulid::Ulid;
@@ -2560,5 +2562,516 @@ async fn test_multilingual_cross_script_no_interference() -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Typeahead content-type filtering and ACL tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_typeahead_content_type_allowlist() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let pub_perm = serde_json::json!({"public": true, "users": [], "groups": []});
+
+    // Table-driven: seed one doc for each of the 18 confirmed allowlist values
+    let entries = [
+        ("normalized doc", "document"),
+        ("normalized spreadsheet", "spreadsheet"),
+        ("normalized presentation", "presentation"),
+        ("normalized pdf", "pdf"),
+        ("normalized page", "page"),
+        ("mime text/plain", "text/plain"),
+        ("mime text/markdown", "text/markdown"),
+        ("mime text/csv", "text/csv"),
+        ("explicit application/pdf", "application/pdf"),
+        (
+            "ms docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        ("ms doc", "application/msword"),
+        (
+            "ms xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        ("ms xls", "application/vnd.ms-excel"),
+        (
+            "ms pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+        ("ms ppt", "application/vnd.ms-powerpoint"),
+        ("gs doc", "application/vnd.google-apps.document"),
+        ("gs sheet", "application/vnd.google-apps.spreadsheet"),
+        ("gs slides", "application/vnd.google-apps.presentation"),
+    ];
+    for (title, content_type) in &entries {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id).bind(source_id).bind(format!("ext-{}", &doc_id))
+        .bind(title).bind("Content").bind(content_type)
+        .bind(&pub_perm).execute(pool).await?;
+    }
+
+    // Excluded: email, email_thread, contact, message, event, issue, unknown, NULL
+    let excluded = [
+        ("Email Doc", "email"),
+        ("Email Thread Doc", "email_thread"),
+        ("Contact Doc", "contact"),
+        ("Message Doc", "message"),
+        ("Event Doc", "event"),
+        ("Issue Doc", "issue"),
+        ("Unknown Type", "some_random_type"),
+    ];
+    for (title, content_type) in &excluded {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id).bind(source_id).bind(format!("ext-{}", &doc_id))
+        .bind(title).bind("Content").bind(content_type)
+        .bind(&pub_perm).execute(pool).await?;
+    }
+
+    // NULL type excluded
+    let null_id = ulid::Ulid::new().to_string();
+    sqlx::query(
+        "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+    )
+    .bind(&null_id).bind(source_id).bind(format!("ext-{}", &null_id))
+    .bind("Null Doc").bind("Content").bind(None::<String>)
+    .bind(&pub_perm).execute(pool).await?;
+
+    fixture.title_index.refresh().await?;
+
+    // All 18 allowed docs must be found via a unique word in their title
+    for (title, content_type) in &entries {
+        // Pick the first word of the title as query
+        let query = title.split_whitespace().next().unwrap();
+        let (status, resp) = fixture.typeahead(query, Some(20)).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "query '{}' failed for {}",
+            query,
+            title
+        );
+        let results = resp["results"].as_array().unwrap();
+        let result = results
+            .iter()
+            .find(|result| result["title"].as_str() == Some(title))
+            .unwrap_or_else(|| panic!("allowed type '{}' not found for query '{}'", title, query));
+        assert_eq!(result["content_type"].as_str(), Some(*content_type));
+        assert_eq!(result["source_type"].as_str(), Some("google_drive"));
+    }
+
+    // Excluded docs must NOT appear
+    for (title, _) in &excluded {
+        let query = title.split_whitespace().next().unwrap().to_lowercase();
+        let (status, resp) = fixture.typeahead(&query, Some(20)).await?;
+        assert_eq!(status, StatusCode::OK);
+        let titles: Vec<&str> = resp["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["title"].as_str().unwrap())
+            .collect();
+        assert!(
+            !titles.contains(title),
+            "excluded type '{}' appeared",
+            title
+        );
+    }
+
+    // NULL type must NOT appear
+    let (status, resp) = fixture.typeahead("null", Some(20)).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(!titles.contains(&"Null Doc"), "NULL content_type appeared");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_public_and_acl_paths() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    // Create another user for denied/other-user checks
+    let other_user_id = ulid::Ulid::new().to_string();
+    sqlx::query("INSERT INTO users (id, email, password_hash, created_at, updated_at) VALUES ($1, $2, 'hash', NOW(), NOW()) ON CONFLICT (id) DO NOTHING")
+        .bind(&other_user_id).bind("other@example.com").execute(pool).await?;
+
+    // Group membership for group-granted access
+    let group_id = ulid::Ulid::new().to_string();
+    sqlx::query("INSERT INTO groups (id, source_id, email, display_name, synced_at) VALUES ($1, $2, $3, $4, NOW())")
+        .bind(&group_id).bind(source_id).bind("team@example.com").bind("Team").execute(pool).await?;
+    sqlx::query("INSERT INTO group_memberships (id, group_id, member_email, synced_at) VALUES ($1, $2, $3, NOW())")
+        .bind(ulid::Ulid::new().to_string()).bind(&group_id).bind("test@example.com").execute(pool).await?;
+
+    let pub_perm = serde_json::json!({"public": true, "users": [], "groups": []});
+    let user_perm =
+        serde_json::json!({"public": false, "users": ["test@example.com"], "groups": []});
+    let domain_perm = serde_json::json!({"public": false, "users": [], "groups": ["example.com"]});
+    let group_perm =
+        serde_json::json!({"public": false, "users": [], "groups": ["team@example.com"]});
+    let denied_perm =
+        serde_json::json!({"public": false, "users": ["alice@example.com"], "groups": []});
+
+    let docs: Vec<(&str, &serde_json::Value)> = vec![
+        ("Public Doc", &pub_perm),
+        ("User Grant Doc", &user_perm),
+        ("Domain Grant Doc", &domain_perm),
+        ("Group Grant Doc", &group_perm),
+        ("Denied Doc", &denied_perm),
+    ];
+    for (title, perm) in &docs {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id).bind(source_id).bind(format!("ext-{}", &doc_id))
+        .bind(title).bind("Content").bind("document")
+        .bind(perm).execute(pool).await?;
+    }
+
+    fixture.title_index.refresh().await?;
+
+    // Default user sees public, user-granted, domain-granted, group-granted; NOT denied
+    let (status, resp) = fixture.typeahead("doc", Some(10)).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(titles.contains(&"Public Doc"));
+    assert!(titles.contains(&"User Grant Doc"));
+    assert!(titles.contains(&"Domain Grant Doc"));
+    assert!(titles.contains(&"Group Grant Doc"));
+    assert!(!titles.contains(&"Denied Doc"));
+
+    // Other user sees only public
+    let (status, resp) = fixture
+        .typeahead_with_user("doc", Some(10), &other_user_id)
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(titles.contains(&"Public Doc"));
+    assert!(!titles.contains(&"User Grant Doc"));
+    assert!(!titles.contains(&"Denied Doc"));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_freshness_after_perm_change_and_source_delete() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let pub_perm = serde_json::json!({"public": true, "users": [], "groups": []});
+    let priv_perm =
+        serde_json::json!({"public": false, "users": ["alice@example.com"], "groups": []});
+
+    let doc_id = ulid::Ulid::new().to_string();
+    sqlx::query(
+        "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+    )
+    .bind(&doc_id).bind(source_id).bind(format!("ext-{}", &doc_id))
+    .bind("Freshness Doc").bind("Content").bind("document")
+    .bind(&pub_perm).execute(pool).await?;
+
+    fixture.title_index.refresh().await?;
+
+    // Doc should be visible after initial refresh
+    let (status, resp) = fixture.typeahead("freshness", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(
+        titles.contains(&"Freshness Doc"),
+        "should be visible after refresh"
+    );
+
+    // Change permissions to deny WITHOUT refreshing the index.
+    sqlx::query("UPDATE documents SET permissions = $1::jsonb WHERE id = $2")
+        .bind(&priv_perm)
+        .bind(&doc_id)
+        .execute(pool)
+        .await?;
+
+    // Doc must still be in the FST (not refreshed) but filtered out by request-time ACL
+    let (status, resp) = fixture.typeahead("freshness", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(
+        !titles.contains(&"Freshness Doc"),
+        "should be hidden after permission change even without refresh"
+    );
+
+    // Restore public permissions WITHOUT refreshing — doc should become visible again
+    sqlx::query("UPDATE documents SET permissions = $1::jsonb WHERE id = $2")
+        .bind(&pub_perm)
+        .bind(&doc_id)
+        .execute(pool)
+        .await?;
+
+    let (status, resp) = fixture.typeahead("freshness", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(
+        titles.contains(&"Freshness Doc"),
+        "should be visible again after restoring public permissions"
+    );
+
+    // Now soft-delete the source WITHOUT refreshing.
+    sqlx::query("UPDATE sources SET is_deleted = TRUE WHERE id = $1")
+        .bind(source_id)
+        .execute(pool)
+        .await?;
+
+    // Doc must still be in FST but filtered by sources JOIN + NOT is_deleted
+    let (status, resp) = fixture.typeahead("freshness", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    assert!(
+        !titles.contains(&"Freshness Doc"),
+        "should be hidden after source delete without refresh"
+    );
+
+    // Restore source for other tests
+    sqlx::query("UPDATE sources SET is_deleted = FALSE WHERE id = $1")
+        .bind(source_id)
+        .execute(pool)
+        .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_fills_after_denied_candidates_within_cap() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let denied_perm =
+        serde_json::json!({"public": false, "users": ["alice@example.com"], "groups": []});
+    let pub_perm = serde_json::json!({"public": true, "users": [], "groups": []});
+
+    // 80 denied docs with short title — higher FST rank, all in batch 1 (batch_size=100)
+    for i in 0..80 {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id).bind(source_id).bind(format!("ext-{}", &doc_id))
+        .bind(format!("Doc {}", i)).bind("Content").bind("document")
+        .bind(&denied_perm).execute(pool).await?;
+    }
+
+    // 5 accessible docs with distinct, progressively longer titles.
+    // All score below all 80 denied docs, so they sit in batch 2.
+    // Within batch 2, shortest accessible title scores highest.
+    let accessible = [
+        "Doc zzz aaaaa",
+        "Doc zzz bbbbbb",
+        "Doc zzz ccccccc",
+        "Doc zzz dddddddd",
+        "Doc zzz eeeeeeeee",
+    ];
+    for title in &accessible {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id).bind(source_id).bind(format!("ext-{}", &doc_id))
+        .bind(title).bind("Content").bind("document")
+        .bind(&pub_perm).execute(pool).await?;
+    }
+
+    fixture.title_index.refresh().await?;
+
+    let (status, resp) = fixture.typeahead("doc", Some(5)).await?;
+    assert_eq!(status, StatusCode::OK);
+    let titles: Vec<&str> = resp["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["title"].as_str().unwrap())
+        .collect();
+    // All 5 accessible docs appear despite 80 denied higher-ranked docs filtered out.
+    // With the 100-candidate cap, all 80 denied + 5 accessible = 85 candidates fit in one batch. Only accessible survive.
+    // Only accessible survive. Within accessible, shortest title has highest FST score.
+    assert_eq!(titles.len(), 5, "expected 5 results, got {:?}", titles);
+    assert_eq!(titles[0], "Doc zzz aaaaa");
+    assert_eq!(titles[1], "Doc zzz bbbbbb");
+    assert_eq!(titles[2], "Doc zzz ccccccc");
+    assert_eq!(titles[3], "Doc zzz dddddddd");
+    assert_eq!(titles[4], "Doc zzz eeeeeeeee");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_candidate_set_is_capped_at_100() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let source_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
+    let permissions = serde_json::json!({"public": true, "users": [], "groups": []});
+
+    for i in 0..105 {
+        let doc_id = ulid::Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO documents (id, source_id, external_id, title, content, content_type, permissions, metadata, attributes, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'Content', 'document', $5::jsonb, '{}'::jsonb, '{}'::jsonb, NOW(), NOW())",
+        )
+        .bind(&doc_id)
+        .bind(source_id)
+        .bind(format!("cap-ext-{i}"))
+        .bind(format!("Cap candidate {i:03}"))
+        .bind(&permissions)
+        .execute(pool)
+        .await?;
+    }
+
+    fixture.title_index.refresh().await?;
+    let candidates = fixture.title_index.search_candidates("cap").await;
+    assert_eq!(candidates.len(), 100);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_title_entry_keyset_pagination_has_no_duplicates_or_omissions() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let repo = DocumentRepository::new(pool);
+    let content_types = vec!["document".to_string()];
+    let mut after_id: Option<String> = None;
+    let mut ids = Vec::new();
+
+    loop {
+        let page = repo
+            .fetch_title_entries_by_types_paginated(&content_types, after_id.as_deref(), 7)
+            .await?;
+        if page.is_empty() {
+            break;
+        }
+        after_id = page.last().map(|entry| entry.id.clone());
+        ids.extend(page.into_iter().map(|entry| entry.id));
+    }
+
+    let expected: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM documents d JOIN sources s ON s.id = d.source_id WHERE NOT s.is_deleted AND d.content_type = 'document'",
+    )
+    .fetch_one(pool)
+    .await?;
+    let unique: std::collections::HashSet<_> = ids.iter().collect();
+    assert_eq!(ids.len(), expected as usize);
+    assert_eq!(unique.len(), ids.len());
+    assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_queries_shorter_than_three_characters_return_empty() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let (_doc_ids, _) = fixture.seed_mentionable_data().await?;
+    for query in ["", "a", "ab", "文", "文件"] {
+        let (status, response) = fixture.typeahead(query, None).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert!(response["results"].as_array().unwrap().is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_is_case_insensitive_but_not_typo_tolerant() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let (_doc_ids, _) = fixture.seed_mentionable_data().await?;
+    fixture.title_index.refresh().await?;
+
+    let (_, lower) = fixture.typeahead("planning", None).await?;
+    let (_, upper) = fixture.typeahead("PLANNING", None).await?;
+    assert_eq!(lower["results"], upper["results"]);
+
+    let (_, typo) = fixture.typeahead("plannign", None).await?;
+    assert!(typo["results"].as_array().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_missing_user_id_returns_400() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let uri = "/typeahead?q=test&limit=5";
+    let request = axum::http::Request::builder()
+        .method(axum::http::Method::GET)
+        .uri(uri)
+        .body(axum::body::Body::empty())?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_unknown_user_returns_empty() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let (_doc_ids, _) = fixture.seed_mentionable_data().await?;
+    let (status, resp) = fixture
+        .typeahead_with_user("doc", None, "nonexistent-user-id")
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resp["results"].as_array().unwrap().is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_typeahead_inactive_user_returns_empty() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let (_doc_ids, _) = fixture.seed_mentionable_data().await?;
+    sqlx::query("UPDATE users SET is_active = FALSE WHERE id = $1")
+        .bind("01JGF7V3E0Y2R1X8P5Q7W9T4N6")
+        .execute(fixture.test_env.db_pool.pool())
+        .await?;
+    let (status, resp) = fixture.typeahead("doc", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(resp["results"].as_array().unwrap().is_empty());
     Ok(())
 }

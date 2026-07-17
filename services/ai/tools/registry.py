@@ -21,6 +21,7 @@ class ToolContext:
     chat_id: str
     user_id: str | None
     user_email: str | None = None
+    user_groups: list[str] | None = None
     user_configuration: UserConfiguration | None = None
     original_user_query: str | None = None
     skip_permission_check: bool = False
