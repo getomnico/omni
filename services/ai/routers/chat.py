@@ -830,7 +830,7 @@ class StreamChatHandler:
                 is not None,
             )
 
-        # ---- Common setup ----
+        # ---- Common setup (repair, compaction, etc.) ----
         intervention_tool_call_ids = {
             approval.tool_call_id
             for approval in pending_interventions
@@ -840,40 +840,25 @@ class StreamChatHandler:
             messages, intervention_tool_call_ids
         )
 
-        # Query latest compaction on the raw active path before any
-        # message-count-changing operations (repair/drop).
-        compactions_repo = CompactionsRepository()
-        active_path_ids = [row.id for row in chat_messages]
-        latest_compaction = await compactions_repo.get_latest_for_chat_path(
-            chat_id, active_path_ids
+        messages, repaired_tool_calls = repair_interrupted_tool_calls(
+            messages, preserve_tool_call_ids=preserved_batch_ids
         )
-
-        # Compute split index: only expand content for messages after the
-        # compaction anchor. The prefix (already compacted) stays raw.
-        mention_anchor_index: int | None = None
-        if latest_compaction is not None:
-            mention_anchor_index = next(
-                (
-                    i
-                    for i, row in enumerate(chat_messages)
-                    if row.id == latest_compaction.anchor_message_id
-                ),
-                None,
+        if repaired_tool_calls:
+            logger.warning(
+                f"Inserted {repaired_tool_calls} failed tool_result placeholder(s) for interrupted tool calls in chat {chat_id}"
+            )
+        before = len(messages)
+        messages = drop_empty_assistant_messages(messages)
+        dropped = before - len(messages)
+        if dropped:
+            logger.warning(
+                f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
             )
 
-        if mention_anchor_index is not None:
-            expand_prefix = messages[: mention_anchor_index + 1]
-            expand_suffix = messages[mention_anchor_index + 1 :]
-        else:
-            expand_prefix = []
-            expand_suffix = messages
-
-        # Expand uploads/mentions on suffix only (these preserve message
-        # count, so indices stay aligned for compaction below).
         storage = request.app.state.content_storage
         if storage is not None:
-            expand_suffix = await expand_uploads(
-                expand_suffix,
+            messages = await expand_uploads(
+                messages,
                 chat_id=chat_id,
                 storage=storage,
                 uploads_repo=UploadsRepository(),
@@ -896,8 +881,8 @@ class StreamChatHandler:
                     detail="Failed to verify permissions for document mentions. Please try again.",
                 ) from error
 
-        expand_suffix = await expand_mentions(
-            expand_suffix,
+        messages = await expand_mentions(
+            messages,
             chat_id=chat_id,
             doc_handler=DocumentToolHandler(
                 content_storage=request.app.state.content_storage,
@@ -911,9 +896,23 @@ class StreamChatHandler:
             user_groups=user_groups,
         )
 
-        messages = expand_prefix + expand_suffix
+        last_message_role = messages[-1].get("role") if messages else None
+        if not pending_interventions and last_message_role != "user":
+            logger.info(f"Last message is not from user, no processing needed. Chat ID: {chat_id}")
 
-        # Compaction sees expanded content for accurate token estimation.
+            async def empty_generator():
+                yield end_of_stream(
+                    EndOfStreamReason.NO_NEW_MESSAGE,
+                    message="No new user message to process.",
+                ).encode()
+
+            return StreamingResponse(
+                empty_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
+        # Compaction
         secondary_provider = _resolve_secondary_provider(request.app.state)
 
         def _on_compaction_usage(usage):
@@ -947,7 +946,7 @@ class StreamChatHandler:
             chat_id=chat_id,
             chat_messages=chat_messages,
             messages=messages,
-            compactions_repo=compactions_repo,
+            compactions_repo=CompactionsRepository(),
             target_provider=llm_provider,
             tools=initial_tools,
             system_prompt=system_prompt,
@@ -964,35 +963,6 @@ class StreamChatHandler:
             summarizer_context.tokens,
             summarizer_context.source,
         )
-
-        # After compaction, apply repair/drop (may change message count).
-        messages, repaired_tool_calls = repair_interrupted_tool_calls(
-            messages, preserve_tool_call_ids=preserved_batch_ids
-        )
-        messages = drop_empty_assistant_messages(messages)
-
-        if repaired_tool_calls:
-            logger.info(
-                "Inserted %d failed tool_result placeholder(s) for interrupted tool calls in chat %s",
-                repaired_tool_calls,
-                chat_id,
-            )
-
-        last_message_role = messages[-1].get("role") if messages else None
-        if not pending_interventions and last_message_role != "user":
-            logger.info(f"Last message is not from user, no processing needed. Chat ID: {chat_id}")
-
-            async def empty_generator():
-                yield end_of_stream(
-                    EndOfStreamReason.NO_NEW_MESSAGE,
-                    message="No new user message to process.",
-                ).encode()
-
-            return StreamingResponse(
-                empty_generator(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
 
         # Extract first user message for caching
         original_user_query = None
