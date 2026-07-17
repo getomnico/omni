@@ -855,6 +855,24 @@ class StreamChatHandler:
                 f"Dropped {dropped} empty assistant message(s) from history for chat {chat_id}"
             )
 
+        # Check for no-new-user or pending intervention BEFORE expanding uploads
+        # and mentions, so completed-stream reconnects do not refetch.
+        last_message_role = messages[-1].get("role") if messages else None
+        if not pending_interventions and last_message_role != "user":
+            logger.info(f"Last message is not from user, no processing needed. Chat ID: {chat_id}")
+
+            async def empty_generator():
+                yield end_of_stream(
+                    EndOfStreamReason.NO_NEW_MESSAGE,
+                    message="No new user message to process.",
+                ).encode()
+
+            return StreamingResponse(
+                empty_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
         storage = request.app.state.content_storage
         if storage is not None:
             messages = await expand_uploads(
@@ -895,22 +913,6 @@ class StreamChatHandler:
             skip_permission_check=tool_skip_perm,
             user_groups=user_groups,
         )
-
-        last_message_role = messages[-1].get("role") if messages else None
-        if not pending_interventions and last_message_role != "user":
-            logger.info(f"Last message is not from user, no processing needed. Chat ID: {chat_id}")
-
-            async def empty_generator():
-                yield end_of_stream(
-                    EndOfStreamReason.NO_NEW_MESSAGE,
-                    message="No new user message to process.",
-                ).encode()
-
-            return StreamingResponse(
-                empty_generator(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-            )
 
         # Compaction
         secondary_provider = _resolve_secondary_provider(request.app.state)
