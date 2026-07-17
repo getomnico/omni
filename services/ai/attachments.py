@@ -109,24 +109,13 @@ def _mention_label(title: str, document_id: str) -> TextBlockParam:
     return _text_block(f"[Mentioned document: {safe_title}]\n[_ref:{document_id}]")
 
 
-def _is_workspace_saved_notice(block: ContentBlockParam) -> bool:
-    if block.get("type") != "text":
-        return False
-    text = block.get("text")
-    return isinstance(text, str) and text.startswith(
-        ("File saved to workspace:", "Document saved to workspace:")
-    )
-
-
 def _expanded_mention_blocks(
     title: str,
     document_id: str,
     raw: list[ContentBlockParam],
 ) -> list[ContentBlockParam]:
     blocks: list[ContentBlockParam] = [_mention_label(title, document_id)]
-    if raw and not any(_is_workspace_saved_notice(block) for block in raw):
-        blocks.append(_text_block("File contents below:"))
-    blocks.extend(list(raw))
+    blocks.extend(raw)
     return blocks
 
 
