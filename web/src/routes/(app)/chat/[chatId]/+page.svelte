@@ -288,6 +288,7 @@
     }
 
     let thinkingText = $state(defaultVerbs[0])
+    let isCompacting = $state(false)
     let thinkingVerbIndex = 0
     let thinkingRotateInterval: ReturnType<typeof setInterval> | null = null
     let thinkingSlowTimer: ReturnType<typeof setTimeout> | null = null
@@ -331,6 +332,7 @@
     }
 
     function startThinkingText() {
+        isCompacting = false
         lastToolContext = null
         thinkingVerbIndex = Math.floor(Math.random() * defaultVerbs.length)
         thinkingText = defaultVerbs[thinkingVerbIndex]
@@ -347,6 +349,7 @@
     }
 
     function stopThinkingText() {
+        isCompacting = false
         if (thinkingRotateInterval) {
             clearInterval(thinkingRotateInterval)
             thinkingRotateInterval = null
@@ -1570,6 +1573,26 @@
                 reconnectAttempts = 0
             })
 
+            eventSource.addEventListener('compaction_start', (event) => {
+                if (!isCurrentStream()) return
+                streamLastEventId = event.lastEventId || streamLastEventId
+                lastStreamEventAt = Date.now()
+                reconnectAttempts = 0
+                stopThinkingText()
+                isCompacting = true
+                thinkingText = 'Summarizing conversation'
+                updateScrollState()
+            })
+
+            eventSource.addEventListener('compaction_end', (event) => {
+                if (!isCurrentStream()) return
+                streamLastEventId = event.lastEventId || streamLastEventId
+                lastStreamEventAt = Date.now()
+                reconnectAttempts = 0
+                if (isCompacting) startThinkingText()
+                updateScrollState()
+            })
+
             eventSource.addEventListener('message', (event) => {
                 if (!isCurrentStream()) return
                 streamLastEventId = event.lastEventId || streamLastEventId
@@ -1578,6 +1601,7 @@
                 try {
                     const data: MessageStreamEvent | ToolResultBlockParam = JSON.parse(event.data)
                     if (data.type === 'message_start') {
+                        if (isCompacting) startThinkingText()
                         const messageId = data.message.id
                         if (!messageId) {
                             missingStreamMessageId('message_start')

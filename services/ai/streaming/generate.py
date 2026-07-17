@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Iterable
+from dataclasses import dataclass
 from typing import cast
 
 from anthropic import MessageStreamEvent
@@ -18,6 +19,7 @@ from anthropic.types import (
     MessageParam,
     TextBlockParam,
     TextCitationParam,
+    ToolParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
@@ -28,6 +30,8 @@ from config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_TOP_P,
 )
+from db.compactions import CompactionsRepository
+from db.models import ChatMessage, UserConfiguration
 from db.tool_approvals import ToolApproval, ToolApprovalStatus, ToolApprovalType
 from db.usage import UsageRepository
 from memory import MemoryMode
@@ -68,6 +72,16 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class CompactionStart:
+    """Internal marker emitted before a compaction pass starts."""
+
+
+@dataclass(frozen=True)
+class CompactionEnd:
+    """Internal marker emitted after a compaction pass finishes."""
+
+
 async def event_stream_with_context_retry(
     turn_tools: list[dict],
     conversation_messages: list[MessageParam],
@@ -78,7 +92,7 @@ async def event_stream_with_context_retry(
     compactor: ConversationCompactor,
     latest_compaction_summary: str | None,
     summarizer_context_window_tokens: int,
-) -> AsyncIterator[MessageStreamEvent]:
+) -> AsyncIterator[MessageStreamEvent | CompactionStart | CompactionEnd]:
     """Stream events from the LLM provider with one automatic compaction retry
     on context-overflow errors.
 
@@ -136,12 +150,20 @@ async def event_stream_with_context_retry(
                     "Chat %s hit provider context limit; retrying once after forced compaction",
                     chat_id,
                 )
+                should_emit_progress = (
+                    compactor.select_legacy_compaction_split(conversation_messages)
+                    is not None
+                )
+                if should_emit_progress:
+                    yield CompactionStart()
                 conversation_messages[:] = await compactor.compact_conversation(
                     chat_id,
                     conversation_messages,
                     previous_summary=latest_compaction_summary,
                     summarizer_context_window_tokens=summarizer_context_window_tokens,
                 )
+                if should_emit_progress:
+                    yield CompactionEnd()
                 continue
             raise
 
@@ -346,6 +368,164 @@ def oauth_event_from_approval(approval: ToolApproval) -> OAuthRequiredEvent:
 
 
 # ---------------------------------------------------------------------------
+# Prepared chat stream helper
+# ---------------------------------------------------------------------------
+
+
+async def prepare_and_stream_chat(
+    *,
+    chat_id: str,
+    redis_client,
+    chat_messages: list[ChatMessage],
+    messages: list[MessageParam],
+    compactor: ConversationCompactor,
+    compactions_repo: CompactionsRepository,
+    target_provider: LLMProvider,
+    initial_tools: list[ToolParam],
+    llm_provider: LLMProvider,
+    chat_user_id: str,
+    tool_user_id: str | None = None,
+    user_email: str | None = None,
+    user_configuration: UserConfiguration | None = None,
+    tool_skip_perm: bool = False,
+    system_prompt: str,
+    registry: ToolRegistry,
+    always_on_handlers: list[ToolHandler],
+    connector_handler: ConnectorToolHandler | None,
+    loaded_toolsets: set[str],
+    memory_provider=None,
+    memory_write_key: str | None = None,
+    effective_mode=MemoryMode.OFF,
+    approvals_repo=None,
+    pending_interventions: list[ToolApproval] | None = None,
+    max_output_tokens: int = DEFAULT_MAX_TOKENS,
+) -> AsyncIterator[str]:
+    compaction_started = asyncio.Event()
+    continue_compaction = asyncio.Event()
+    prepare_task: asyncio.Task | None = None
+    start_wait_task: asyncio.Task | None = None
+    emitted_compaction_start = False
+
+    async def on_compaction_start() -> None:
+        compaction_started.set()
+        await continue_compaction.wait()
+
+    try:
+        prepare_task = asyncio.create_task(
+            compactor.prepare_chat_conversation(
+                chat_id=chat_id,
+                chat_messages=chat_messages,
+                messages=messages,
+                compactions_repo=compactions_repo,
+                target_provider=target_provider,
+                tools=initial_tools,
+                system_prompt=system_prompt,
+                max_output_tokens=max_output_tokens,
+                on_compaction_start=on_compaction_start,
+            )
+        )
+        start_wait_task = asyncio.create_task(compaction_started.wait())
+        completed, _ = await asyncio.wait(
+            {prepare_task, start_wait_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if start_wait_task in completed:
+            emitted_compaction_start = True
+            try:
+                yield sse_event("compaction_start", {})
+            finally:
+                continue_compaction.set()
+        else:
+            start_wait_task.cancel()
+            await asyncio.gather(start_wait_task, return_exceptions=True)
+            start_wait_task = None
+
+        prepared = await prepare_task
+        prepare_task = None
+        if emitted_compaction_start:
+            yield sse_event("compaction_end", {})
+        prepared_messages = prepared.messages
+        latest_compaction = prepared.latest_compaction
+        summarizer_context = prepared.summarizer_context
+        logger.info(
+            "Resolved context windows for chat %s: model=%s (%s), summarizer=%s (%s)",
+            chat_id,
+            prepared.model_context.tokens,
+            prepared.model_context.source,
+            summarizer_context.tokens,
+            summarizer_context.source,
+        )
+
+        original_user_query = None
+        for msg in prepared_messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    original_user_query = content
+                    break
+                if isinstance(content, list):
+                    text_parts = [
+                        block.get("text", "")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    if text_parts:
+                        original_user_query = " ".join(text_parts)
+                        break
+
+        async for event in stream_generator(
+            chat_id,
+            redis_client,
+            prepared_messages,
+            llm_provider,
+            chat_user_id,
+            tool_user_id=tool_user_id,
+            user_email=user_email,
+            user_configuration=user_configuration,
+            tool_skip_perm=tool_skip_perm,
+            system_prompt=system_prompt,
+            registry=registry,
+            always_on_handlers=always_on_handlers,
+            connector_handler=connector_handler,
+            loaded_toolsets=loaded_toolsets,
+            compactor=compactor,
+            latest_compaction_summary=(
+                latest_compaction.summary if latest_compaction else None
+            ),
+            summarizer_context_window_tokens=summarizer_context.tokens,
+            memory_provider=memory_provider,
+            memory_write_key=memory_write_key,
+            effective_mode=effective_mode,
+            approvals_repo=approvals_repo,
+            pending_interventions=pending_interventions,
+            original_user_query=original_user_query,
+        ):
+            yield event
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "Failed to prepare conversation for chat %s: %s",
+            chat_id,
+            exc,
+            exc_info=True,
+        )
+        yield stream_error_sse(exc)
+    finally:
+        continue_compaction.set()
+        pending_tasks = [
+            task
+            for task in (prepare_task, start_wait_task)
+            if task is not None and not task.done()
+        ]
+        for task in pending_tasks:
+            task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
+
+# ---------------------------------------------------------------------------
 # The main generator
 # ---------------------------------------------------------------------------
 
@@ -541,6 +721,13 @@ async def stream_generator(
                 cancelled = False
                 last_cancel_check_at = 0.0
                 async for event in stream:
+                    if isinstance(event, CompactionStart):
+                        yield sse_event("compaction_start", {})
+                        continue
+                    if isinstance(event, CompactionEnd):
+                        yield sse_event("compaction_end", {})
+                        continue
+
                     logger.debug(f"Received event: {event} (index: {event_index})")
                     event_index += 1
 

@@ -7,7 +7,7 @@ callers in durable compaction tables.
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -525,6 +525,7 @@ Summary:"""
         tools: list[ToolParam],
         system_prompt: str,
         max_output_tokens: int,
+        on_compaction_start: Callable[[], Awaitable[None]] | None = None,
     ) -> PreparedConversation:
         model_context = await target_provider.get_context_window_tokens()
         summarizer_context = await self.llm_provider.get_context_window_tokens()
@@ -590,6 +591,8 @@ Summary:"""
             )
 
         anchor_row = segment_rows[split.anchor_index]
+        if on_compaction_start is not None:
+            await on_compaction_start()
         summary_result = await self.create_summary_result(
             split.old_messages,
             previous_summary=(latest_compaction.summary if has_prior_summary else None),
@@ -716,6 +719,17 @@ Summary:"""
             summarizer_context=summarizer_context,
         )
 
+    def select_legacy_compaction_split(
+        self, messages: list[MessageParam]
+    ) -> CompactionSplit | None:
+        if not ENABLE_CONVERSATION_COMPACTION:
+            return None
+
+        split = self.select_compaction_split(messages)
+        if not split.old_messages:
+            return None
+        return split
+
     async def compact_conversation(
         self,
         chat_id: str,
@@ -729,11 +743,8 @@ Summary:"""
         `create_summary_result`, and `make_summary_message` so they can store the
         returned summary and anchor in Postgres.
         """
-        if not ENABLE_CONVERSATION_COMPACTION:
-            return messages
-
-        split = self.select_compaction_split(messages)
-        if not split.old_messages:
+        split = self.select_legacy_compaction_split(messages)
+        if split is None:
             return messages
 
         result = await self.create_summary_result(

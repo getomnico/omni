@@ -38,14 +38,14 @@ from config import (
     SANDBOX_URL,
 )
 from db import ChatsRepository, CompactionsRepository, MessagesRepository, SkillsRepository
-from db.documents import DocumentsRepository
 from db.configuration import ConfigurationRepository
+from db.documents import DocumentsRepository
 from db.models import Chat, Source, UserConfiguration
 from db.tool_approvals import (
     ToolApproval,
+    ToolApprovalsRepository,
     ToolApprovalStatus,
     ToolApprovalType,
-    ToolApprovalsRepository,
 )
 from db.uploads import UploadsRepository
 from db.usage import UsageRepository
@@ -67,8 +67,8 @@ from streaming.generate import (
     drop_empty_assistant_messages,
     latest_intervention_tool_batch_ids,
     message_content_blocks,
+    prepare_and_stream_chat,
     repair_interrupted_tool_calls,
-    stream_generator,
     unanswered_tool_calls,
 )
 from streaming.persist import (
@@ -77,9 +77,9 @@ from streaming.persist import (
     persist_and_transform,
 )
 from streaming.run import (
-    SSE_HEADERS,
     _CANCEL_TTL,
     _RUN_LOCK_TTL,
+    SSE_HEADERS,
     _run_tasks_by_chat,
     cancel_key,
     clear_producer_task,
@@ -94,18 +94,18 @@ from tools import (
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
-    WebToolHandler,
     ToolContext,
     ToolHandler,
     ToolRegistry,
+    WebToolHandler,
 )
 from tools.connector_handler import (
     SearchOperator,
     ToolsetSummary,
     sources_from_sync_overview_response,
 )
-from tools.meta_handler import MetaToolHandler, OnLoad
 from tools.mcp_capability_handler import McpCapabilityHandler
+from tools.meta_handler import MetaToolHandler, OnLoad
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -941,55 +941,18 @@ class StreamChatHandler:
             loaded_toolsets,
         )
 
-        prepared = await compactor.prepare_chat_conversation(
+        parent_id = chat_messages[-1].id if chat_messages else None
+        gen = prepare_and_stream_chat(
             chat_id=chat_id,
+            redis_client=redis_client,
             chat_messages=chat_messages,
             messages=messages,
+            compactor=compactor,
             compactions_repo=CompactionsRepository(),
             target_provider=llm_provider,
-            tools=initial_tools,
-            system_prompt=system_prompt,
-            max_output_tokens=DEFAULT_MAX_TOKENS,
-        )
-        messages = prepared.messages
-        latest_compaction = prepared.latest_compaction
-        summarizer_context = prepared.summarizer_context
-        logger.info(
-            "Resolved context windows for chat %s: model=%s (%s), summarizer=%s (%s)",
-            chat_id,
-            prepared.model_context.tokens,
-            prepared.model_context.source,
-            summarizer_context.tokens,
-            summarizer_context.source,
-        )
-
-        # Extract first user message for caching
-        original_user_query = None
-        for msg in messages:
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    original_user_query = content
-                    break
-                elif isinstance(content, list):
-                    text_parts = [
-                        block.get("text", "")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
-                    if text_parts:
-                        original_user_query = " ".join(text_parts)
-                        break
-
-        parent_id = chat_messages[-1].id if chat_messages else None
-
-        # ---- Build and run the generator ----
-        gen = stream_generator(
-            chat_id,
-            redis_client,
-            messages,
-            llm_provider,
-            chat.user_id,
+            initial_tools=initial_tools,
+            llm_provider=llm_provider,
+            chat_user_id=chat.user_id,
             tool_user_id=tool_user_id,
             user_email=user_email,
             user_configuration=user_configuration,
@@ -999,17 +962,12 @@ class StreamChatHandler:
             always_on_handlers=build_result.always_on_handlers,
             connector_handler=build_result.connector_handler,
             loaded_toolsets=loaded_toolsets,
-            compactor=compactor,
-            latest_compaction_summary=(
-                latest_compaction.summary if latest_compaction else None
-            ),
-            summarizer_context_window_tokens=summarizer_context.tokens,
             memory_provider=memory_provider,
             memory_write_key=memory_write_key,
             effective_mode=effective_mode,
             approvals_repo=approvals_repo,
             pending_interventions=pending_interventions,
-            original_user_query=original_user_query,
+            max_output_tokens=DEFAULT_MAX_TOKENS,
         )
 
         if redis_client is None:
