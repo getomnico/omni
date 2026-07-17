@@ -171,7 +171,7 @@ class TestExpandMentionsRealStorage:
         call = recorder.calls[0]
         assert call["context_user_id"] == "org-agent"
         assert call["context_skip_perm"] is True
-        assert call["kwargs"].get("mention_document_id") == doc_id
+        assert call["kwargs"] == {}
 
     @pytest.mark.asyncio
     async def test_user_id_propagated(self, db_pool, test_user_id):
@@ -267,42 +267,6 @@ class TestExpandMentionsRealStorage:
         assert any('Mentioned document: "First Title"' in t for t in texts)
         assert any('Mentioned document: "Second Title"' in t for t in texts)
         assert any(text in t for t in texts)
-
-    @pytest.mark.asyncio
-    async def test_deterministic_path_passed_in_kwargs(self, db_pool, test_user_id):
-        """expand_mentions should pass mention_document_id to doc_handler."""
-        source_id = await create_test_source(db_pool, test_user_id, "google_drive")
-        doc_id = await create_test_document(
-            db_pool,
-            source_id,
-            "test.txt",
-            "content",
-            permissions={"public": True, "users": [], "groups": []},
-            content_type="text/plain",
-            content_id=str(ULID()),
-        )
-
-        inner = DocumentToolHandler(
-            content_storage=AsyncMock(),
-            documents_repo=DocumentsRepository(db_pool),
-        )
-        recorder = RecordingDocumentHandler(inner)
-
-        messages: list[MessageParam] = [
-            MessageParam(role="user", content=[_mention_block(doc_id, "Test")])
-        ]
-
-        await expand_mentions(
-            messages,
-            chat_id="test-chat",
-            doc_handler=recorder,
-            user_id="test-user",
-            user_email="anyone@co.com",
-        )
-
-        assert len(recorder.calls) == 1
-        assert recorder.calls[0]["kwargs"].get("mention_document_id") == doc_id
-
 
 class TestExpandMentionsPermissions:
     """Permission boundary tests."""
@@ -686,12 +650,10 @@ class TestExpandMentionsEdgeCases:
         assert omission_count == 2, (
             f"Expected all 2 assistant mention blocks to be replaced, got {omission_count}"
         )
-    """Tests for the deterministic sandbox path and stat-before-read flow."""
+    """Tests for deterministic sandbox paths and stat-before-read."""
 
     @pytest.mark.asyncio
-    async def test_normal_binary_uses_x_file_name(self, db_pool, test_user_id):
-        """Ordinary (non-mention) read_document on binary should use the
-        decoded x-file-name header as the sandbox filename."""
+    async def test_binary_uses_authoritative_workspace_path(self, db_pool, test_user_id):
         source_id = await create_test_source(db_pool, test_user_id, "google_drive")
         doc_id = await create_test_document(
             db_pool,
@@ -742,27 +704,26 @@ class TestExpandMentionsEdgeCases:
                 ToolContext(chat_id="test-chat", user_id="test-user", user_email="anyone@co.com"),
             )
 
-        assert recorded_path == "decoded-name.xlsx", (
-            f"Expected decoded x-file-name, got {recorded_path!r}"
-        )
+        assert recorded_path is not None
+        assert recorded_path.startswith(f"document_{doc_id}_")
+        assert recorded_path.endswith("original.xlsx")
         assert not result.is_error
 
     @pytest.mark.asyncio
-    async def test_deterministic_path_uses_authoritative_id(self, db_pool, test_user_id):
-        """The deterministic path should use doc.id from the DB, not mention_document_id."""
+    async def test_workspace_path_uses_authoritative_document(self, db_pool, test_user_id):
         source_id = await create_test_source(db_pool, test_user_id, "google_drive")
         doc_id = await create_test_document(
             db_pool,
             source_id,
             "AuthTitle",
-            "Content.",
+            "x" * (32_000 + 1),
             permissions={"public": True, "users": [], "groups": []},
             content_type="text/plain",
             content_id=str(ULID()),
         )
 
         mock_storage = AsyncMock()
-        mock_storage.get_text.return_value = "Content."
+        mock_storage.get_text.return_value = "x" * (32_000 + 1)
 
         from unittest.mock import MagicMock
 
@@ -774,8 +735,6 @@ class TestExpandMentionsEdgeCases:
             documents_repo=DocumentsRepository(db_pool),
             sandbox_url="http://sandbox.test",
         )
-
-        different_id = str(ULID())
 
         with patch("tools.document_handler.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -790,15 +749,11 @@ class TestExpandMentionsEdgeCases:
                     user_id="test-user",
                     user_email="anyone@co.com",
                 ),
-                mention_document_id=different_id,
             )
 
         assert not result.is_error
         posted_path = mock_client.post.call_args[1]["json"]["path"]
         assert doc_id in posted_path, f"Expected doc.id in path, got {posted_path}"
-        assert different_id not in posted_path, (
-            f"mention_document_id should NOT appear, got {posted_path}"
-        )
         assert "AuthTitle" in posted_path, (
             f"Expected authoritative title in path, got {posted_path}"
         )

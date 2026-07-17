@@ -254,7 +254,6 @@ async def _expand_omni_mention(
             "read_document",
             {"id": document_id, "name": title},
             tool_context,
-            mention_document_id=document_id,
         )
     except Exception as e:
         logger.warning(f"expand_mentions: failed to fetch document {document_id}: {e}")
