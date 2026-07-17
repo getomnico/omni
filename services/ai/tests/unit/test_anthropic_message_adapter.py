@@ -1,4 +1,4 @@
-from providers.content_blocks import extract_text_document
+from providers.anthropic_message_adapter import extract_text_document
 
 
 def test_extract_text_document_delimits_and_escapes_title():
