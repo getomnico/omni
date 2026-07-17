@@ -20,6 +20,7 @@
     import type { MentionedDocument } from '$lib/types/message'
     import { getDocumentIconPath } from '$lib/utils/icons'
     import { formatProviderName } from '$lib/utils/providers.js'
+    import { hasMinimumQueryLength } from '$lib/utils/query'
 
     interface PopoverItem {
         label: string
@@ -300,7 +301,7 @@
         mentionAnchorNode = node as Text
         mentionAnchorOffset = atIndex
 
-        if (query.length < 3) {
+        if (!hasMinimumQueryLength(query)) {
             if (debounceTimer) clearTimeout(debounceTimer)
             mentionActive = true
             mentionQuery = query
@@ -481,6 +482,17 @@
 
     function changeInputMode(newMode: InputMode) {
         inputMode = newMode
+        if (newMode === 'search') {
+            // Remove mention chips from DOM when switching to search mode;
+            // preserve ordinary text by replacing each chip with its text.
+            if (inputRef) {
+                const chips = inputRef.querySelectorAll('[data-document-id]')
+                for (const chip of chips) {
+                    chip.replaceWith(chip.textContent || '')
+                }
+            }
+            mentionedDocs = []
+        }
         closeMention()
         // Recompute controlled value from current DOM for the new mode
         // (search includes chip titles; chat excludes them).

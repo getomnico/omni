@@ -129,6 +129,12 @@ class ConversationCompactor:
                     if isinstance(block, dict):
                         if block.get("type") == "text":
                             total_chars += len(block.get("text", ""))
+                        elif block.get("type") == "document":
+                            source = block.get("source")
+                            if isinstance(source, dict) and source.get("type") == "text":
+                                data = source.get("data")
+                                if isinstance(data, str):
+                                    total_chars += len(data)
                         elif block.get("type") == "tool_use":
                             total_chars += len(json.dumps(block.get("input", {})))
                         elif block.get("type") == "tool_result":
@@ -140,6 +146,15 @@ class ConversationCompactor:
                                     if isinstance(item, dict):
                                         if item.get("type") == "text":
                                             total_chars += len(item.get("text", ""))
+                                        elif item.get("type") == "document":
+                                            source = item.get("source")
+                                            if (
+                                                isinstance(source, dict)
+                                                and source.get("type") == "text"
+                                            ):
+                                                data = source.get("data")
+                                                if isinstance(data, str):
+                                                    total_chars += len(data)
                                         elif item.get("type") == "search_result":
                                             total_chars += len(item.get("title", ""))
                                             total_chars += len(item.get("source", ""))
@@ -326,11 +341,26 @@ class ConversationCompactor:
         if isinstance(content, str):
             return content[:500]
         if isinstance(content, list):
-            search_count = sum(
-                1 for item in content if item["type"] == "search_result"
-            )
-            if search_count > 0:
-                return f"[{search_count} search results]"
+            search_count = 0
+            document_texts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "search_result":
+                    search_count += 1
+                elif item.get("type") == "document":
+                    source = item.get("source")
+                    if isinstance(source, dict) and source.get("type") == "text":
+                        data = source.get("data")
+                        if isinstance(data, str):
+                            document_texts.append(data)
+
+            parts: list[str] = []
+            if search_count:
+                parts.append(f"[{search_count} search results]")
+            parts.extend(document_texts)
+            if parts:
+                return "\n".join(parts)
             return f"[{len(content)} content blocks]"
         return "[tool result]"
 
@@ -351,6 +381,21 @@ class ConversationCompactor:
                 block_type = block["type"]
                 if block_type == "text":
                     text_parts.append(block["text"])
+                elif block_type == "document":
+                    source = block.get("source")
+                    data = source.get("data") if isinstance(source, dict) else None
+                    if (
+                        isinstance(source, dict)
+                        and source.get("type") == "text"
+                        and isinstance(data, str)
+                    ):
+                        text_parts.append(data)
+                    elif isinstance(source, dict):
+                        text_parts.append(
+                            f"[Document block ({source.get('type', 'unknown')} source)]"
+                        )
+                    else:
+                        text_parts.append("[Document block (unknown source)]")
                 elif block_type == "tool_use":
                     text_parts.append(
                         f"[Called tool: {block['name']} with {json.dumps(block['input'])[:200]}...]"

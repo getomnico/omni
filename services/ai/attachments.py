@@ -261,20 +261,18 @@ async def _expand_omni_mention(
 
 
 def _as_omni_mention(
-    block: ContentBlockParam, msg_role: str | None = None
+    block: ContentBlockParam,
 ) -> OmniMentionBlock | None:
     """Narrow `block` to OmniMentionBlock when it carries a valid omni_mention
     source that should be expanded.
 
     A valid mention has outer ``type='document'``, a ``source`` dict with
     ``type='omni_mention'``, a nonempty string ``document_id``, and a nonempty
-    string ``title``.  Returns None if not a mention, is in a non-user role, or
-    has invalid structure.  Always safe to call on any block; never raises."""
-    if msg_role is not None and msg_role != "user":
-        return None
+    string ``title``.  Returns None if not a mention or has invalid structure.
+    Always safe to call on any block; never raises."""
     if block.get("type") != "document":
         return None
-    source = cast(dict, block).get("source")
+    source = block.get("source")
     if not isinstance(source, dict) or source.get("type") != "omni_mention":
         return None
     document_id = source.get("document_id")
@@ -291,7 +289,7 @@ def _has_mention_source(block: ContentBlockParam) -> bool:
     outer type or field validity. Used for provider-invariant sanitization:
     any such block must be either validated+expanded (user role) or replaced
     with safe text (non-user)."""
-    source = cast(dict, block).get("source")
+    source = block.get("source")
     return isinstance(source, dict) and source.get("type") == "omni_mention"
 
 
@@ -319,7 +317,7 @@ async def expand_mentions(
         # mention references only via tool_use input params, not as top-level
         # content blocks, so they should never match _as_omni_mention. Guard
         # here to stay safe against accidental expansion.
-        if msg.get("role") != "user":
+        if msg["role"] != "user":
             # Sanitize any omni_mention blocks found outside user role.
             # Never pass custom blocks through to the provider.
             content = msg["content"]
@@ -347,7 +345,7 @@ async def expand_mentions(
         new_blocks: list[ContentBlockParam] = []
         changed = False
         for block in content:
-            mention_block = _as_omni_mention(block, msg.get("role"))
+            mention_block = _as_omni_mention(block)
             if mention_block is not None:
                 new_blocks.extend(
                     await _expand_omni_mention(

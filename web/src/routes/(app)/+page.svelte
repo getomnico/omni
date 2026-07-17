@@ -126,7 +126,7 @@
 
         if (inputMode === 'search') {
             if (!trimmed) return
-            goto(`/search?q=${encodeURIComponent(trimmed)}`)
+            await goto(`/search?q=${encodeURIComponent(trimmed)}`)
             isSearching = false
             return
         }
@@ -169,7 +169,7 @@
 
             popoverOpen = false
 
-            goto(`/chat/${chatId}`, {
+            await goto(`/chat/${chatId}`, {
                 invalidateAll: true,
                 state: {
                     stream: true,
