@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use shared::{
-    SourceType,
     models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
+    SourceType,
 };
 use std::collections::HashMap;
 
@@ -198,6 +198,8 @@ pub struct CapabilityUpsert {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    pub publisher_id: Option<String>,
+    #[serde(default)]
     pub user_id: Option<String>,
     #[serde(default)]
     pub source_id: Option<String>,
@@ -212,9 +214,22 @@ pub struct CapabilitiesUpsertRequest {
     pub capabilities: Vec<CapabilityUpsert>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CapabilitiesSyncRequest {
+    pub publisher_id: String,
+    pub capability_type: String,
+    pub capabilities: Vec<CapabilityUpsert>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilitiesUpsertResponse {
     pub upserted: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CapabilitiesSyncResponse {
+    pub upserted: usize,
+    pub deleted: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

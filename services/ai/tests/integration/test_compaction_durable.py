@@ -199,6 +199,9 @@ class _DummySearcherClient:
     async def upsert_capabilities(self, request):
         return None
 
+    async def sync_capabilities(self, request):
+        return None
+
     async def search_capabilities(self, request):
         return SimpleNamespace(results=[])
 

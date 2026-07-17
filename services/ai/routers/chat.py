@@ -37,7 +37,7 @@ from config import (
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
-from db import ChatsRepository, CompactionsRepository, MessagesRepository
+from db import ChatsRepository, CompactionsRepository, MessagesRepository, SkillsRepository
 from db.documents import DocumentsRepository
 from db.configuration import ConfigurationRepository
 from db.models import Chat, Source, UserConfiguration
@@ -348,7 +348,10 @@ async def _build_registry(
         skills_dir=skills_dir,
         searcher_client=request.app.state.searcher_tool.client,
         connector_manager_url=CONNECTOR_MANAGER_URL,
+        skills_repository=SkillsRepository(),
+        skill_user_id=chat.user_id,
     )
+    await skill_handler.refresh_library_skills()
     await skill_handler.refresh_connector_skills()
     if skill_handler.has_skills():
         await skill_handler.publish_skill_capabilities()
@@ -453,7 +456,10 @@ async def _build_agent_chat_registry(
         skills_dir=skills_dir,
         searcher_client=request.app.state.searcher_tool.client,
         connector_manager_url=CONNECTOR_MANAGER_URL,
+        skills_repository=SkillsRepository(),
+        skill_user_id=agent.user_id,
     )
+    await skill_handler.refresh_library_skills()
     await skill_handler.refresh_connector_skills()
     if skill_handler.has_skills():
         await skill_handler.publish_skill_capabilities()

@@ -18,7 +18,7 @@ from db.models import Source
 from tools.connector_handler import SourceFilter, sources_from_sync_overview_response
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
-    CapabilitiesUpsertRequest,
+    CapabilitiesSyncRequest,
     CapabilitySearchRequest,
     CapabilityUpsert,
     SearcherClient,
@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 _TOOL_NAMES = {"resource_search", "load_resource", "prompt_search", "load_prompt"}
 _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
-_CAPABILITY_UPSERT_BATCH_SIZE = 500
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _RESOURCE_INLINE_MAX_BYTES = 24_000
 _RESOURCE_PREVIEW_MAX_LINES = 80
@@ -359,12 +358,19 @@ class McpCapabilityHandler:
             if publish_key in self._published_capability_keys:
                 return
             try:
-                for start in range(0, len(capabilities), _CAPABILITY_UPSERT_BATCH_SIZE):
-                    await self._searcher_client.upsert_capabilities(
-                        CapabilitiesUpsertRequest(
-                            capabilities=capabilities[
-                                start : start + _CAPABILITY_UPSERT_BATCH_SIZE
-                            ]
+                grouped: dict[tuple[str, str], list[CapabilityUpsert]] = {}
+                for capability in capabilities:
+                    if not capability.source_id:
+                        continue
+                    grouped.setdefault((capability.source_id, capability.capability_type), []).append(
+                        capability
+                    )
+                for (publisher_id, capability_type), group in grouped.items():
+                    await self._searcher_client.sync_capabilities(
+                        CapabilitiesSyncRequest(
+                            publisher_id=publisher_id,
+                            capability_type=capability_type,
+                            capabilities=group,
                         )
                     )
             except Exception as e:
@@ -586,6 +592,7 @@ class McpCapabilityHandler:
                     capability_type="resource",
                     name=record.name,
                     description=record.description,
+                    publisher_id=record.source_id,
                     source_id=record.source_id,
                     source_type=record.source_type,
                     search_text=(
@@ -611,6 +618,7 @@ class McpCapabilityHandler:
                     capability_type="prompt",
                     name=record.name,
                     description=record.description,
+                    publisher_id=record.source_id,
                     source_id=record.source_id,
                     source_type=record.source_type,
                     search_text=(

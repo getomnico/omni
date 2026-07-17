@@ -1,29 +1,25 @@
-from .connection import get_db_pool, close_db_pool
-from .models import User, Chat, ChatMessage
-from .users import UsersRepository
 from .chats import ChatsRepository
-from .messages import MessagesRepository
-from .embedding_providers import EmbeddingProvidersRepository, EmbeddingProviderRecord
-from .documents import DocumentsRepository, Document, ContentBlob
-from .embedding_queue import EmbeddingQueueRepository, EmbeddingQueueItem, QueueStatus
-from .embeddings import EmbeddingsRepository, Embedding
-from .model_providers import (
-    ModelProvidersRepository,
-    ModelProviderRecord,
-    ModelsRepository,
-)
-from .models import ModelRecord, Source
-from .usage import UsageRepository, UsageSummary
+from .compactions import AgentRunCompaction, ChatCompaction, CompactionsRepository
 from .configuration import ConfigurationRepository
-from .compactions import CompactionsRepository, ChatCompaction, AgentRunCompaction
-from .web_search_providers import WebSearchProvidersRepository, WebSearchProviderRecord
-from .web_fetch_providers import WebFetchProvidersRepository, WebFetchProviderRecord
+from .connection import close_db_pool, get_db_pool
+from .documents import ContentBlob, Document, DocumentsRepository
+from .embedding_providers import EmbeddingProviderRecord, EmbeddingProvidersRepository
+from .embedding_queue import EmbeddingQueueItem, EmbeddingQueueRepository, QueueStatus
+from .embeddings import Embedding, EmbeddingsRepository
+from .messages import MessagesRepository
+from .model_providers import ModelProviderRecord, ModelProvidersRepository, ModelsRepository
+from .models import Chat, ChatMessage, ModelRecord, Source, User
+from .skills import Skill, SkillsRepository
 from .tool_approvals import (
     ToolApproval,
     ToolApprovalStatus,
     ToolApprovalType,
     ToolApprovalsRepository,
 )
+from .usage import UsageRepository, UsageSummary
+from .users import UsersRepository
+from .web_fetch_providers import WebFetchProviderRecord, WebFetchProvidersRepository
+from .web_search_providers import WebSearchProviderRecord, WebSearchProvidersRepository
 
 __all__ = [
     "get_db_pool",
@@ -63,4 +59,6 @@ __all__ = [
     "ToolApprovalStatus",
     "ToolApprovalType",
     "ToolApprovalsRepository",
+    "SkillsRepository",
+    "Skill",
 ]

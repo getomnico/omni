@@ -1,0 +1,196 @@
+import { describe, expect, it, vi } from 'vitest'
+import { GET as getCollection, POST as postCollection } from './+server'
+import { DELETE, GET as getItem, PUT } from './[skillId]/+server'
+import { POST as postClone } from './[skillId]/clone/+server'
+
+const ownedSkill = {
+    id: 'owned-skill',
+    ownerId: 'user-1',
+    name: 'Owned',
+    description: 'Owner skill description.',
+    instructions: 'Owner instructions.',
+    visibility: 'private',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+}
+
+const publicSkill = {
+    id: 'public-skill',
+    ownerId: 'user-2',
+    name: 'Public',
+    description: 'Public skill description.',
+    instructions: 'Public instructions.',
+    visibility: 'public',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+}
+
+const repo = {
+    listVisible: vi.fn(async () => [ownedSkill, publicSkill]),
+    getVisibleById: vi.fn(async (id: string) => {
+        if (id === ownedSkill.id) return ownedSkill
+        if (id === publicSkill.id) return publicSkill
+        return null
+    }),
+    create: vi.fn(async (data) => ({ ...ownedSkill, ...data, id: 'created-skill' })),
+    update: vi.fn(async (id: string, _userId: string, data) => ({ ...ownedSkill, id, ...data })),
+    delete: vi.fn(async () => ownedSkill),
+    clone: vi.fn(async () => ({
+        ...publicSkill,
+        id: 'cloned-skill',
+        ownerId: 'user-1',
+        visibility: 'private',
+    })),
+}
+
+vi.mock('$lib/server/db/skills.js', () => ({
+    SkillRepository: vi.fn(function SkillRepository() {
+        return repo
+    }),
+}))
+
+function locals(userId: string | null = 'user-1') {
+    const logger = { warn: vi.fn() }
+    return userId ? { user: { id: userId }, logger } : { user: null, logger }
+}
+
+function jsonRequest(body: unknown) {
+    return new Request('http://localhost/api/skills', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+    })
+}
+
+describe('skills API routes', () => {
+    it('requires authentication', async () => {
+        const response = await getCollection({ locals: locals(null) } as never)
+        expect(response.status).toBe(401)
+    })
+
+    it('rejects whitespace-only create payloads before repository calls', async () => {
+        repo.create.mockClear()
+        const response = await postCollection({
+            locals: locals(),
+            request: jsonRequest({
+                name: '   ',
+                description: 'Desc.',
+                instructions: 'Do it.',
+            }),
+        } as never)
+
+        expect(response.status).toBe(400)
+        expect(repo.create).not.toHaveBeenCalled()
+    })
+
+    it('rejects missing description in create payload', async () => {
+        repo.create.mockClear()
+        const response = await postCollection({
+            locals: locals(),
+            request: jsonRequest({
+                name: 'Valid',
+                instructions: 'Do it.',
+            }),
+        } as never)
+
+        expect(response.status).toBe(400)
+        expect(repo.create).not.toHaveBeenCalled()
+    })
+
+    it('passes a trimmed description when creating a skill', async () => {
+        repo.create.mockClear()
+        const response = await postCollection({
+            locals: locals(),
+            request: jsonRequest({
+                name: 'New Skill',
+                description: '  Use this for release notes.  ',
+                instructions: 'Write release notes.',
+            }),
+        } as never)
+
+        expect(response.status).toBe(201)
+        expect(repo.create).toHaveBeenCalledWith({
+            userId: 'user-1',
+            name: 'New Skill',
+            description: 'Use this for release notes.',
+            instructions: 'Write release notes.',
+            visibility: 'private',
+        })
+    })
+
+    it('passes description updates to the owner-scoped repository mutation', async () => {
+        repo.update.mockClear()
+        const response = await PUT({
+            locals: locals(),
+            params: { skillId: ownedSkill.id },
+            request: jsonRequest({ description: '  Use when reviewing pull requests.  ' }),
+        } as never)
+
+        expect(response.status).toBe(200)
+        expect(repo.update).toHaveBeenCalledWith(ownedSkill.id, 'user-1', {
+            description: 'Use when reviewing pull requests.',
+        })
+    })
+
+    it('returns 404 for invisible skill reads', async () => {
+        const response = await getItem({
+            locals: locals(),
+            params: { skillId: 'missing-skill' },
+        } as never)
+
+        expect(response.status).toBe(404)
+    })
+
+    it('returns 403 when a visible non-owner attempts mutation', async () => {
+        const updateResponse = await PUT({
+            locals: locals(),
+            params: { skillId: publicSkill.id },
+            request: jsonRequest({ name: 'Nope' }),
+        } as never)
+        const deleteResponse = await DELETE({
+            locals: locals(),
+            params: { skillId: publicSkill.id },
+        } as never)
+
+        expect(updateResponse.status).toBe(403)
+        expect(deleteResponse.status).toBe(403)
+    })
+
+    it('deletes owned skills and prunes their capability publisher', async () => {
+        const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }))
+        vi.stubGlobal('fetch', fetchMock)
+        repo.delete.mockClear()
+
+        const response = await DELETE({
+            locals: locals(),
+            params: { skillId: ownedSkill.id },
+        } as never)
+
+        expect(response.status).toBe(200)
+        expect(repo.delete).toHaveBeenCalledWith(ownedSkill.id, 'user-1')
+        expect(fetchMock).toHaveBeenCalledWith(
+            expect.stringContaining('/capabilities/sync'),
+            expect.objectContaining({
+                method: 'POST',
+                body: JSON.stringify({
+                    publisher_id: `omni:skill-library:${ownedSkill.id}`,
+                    capability_type: 'skill',
+                    capabilities: [],
+                }),
+            }),
+        )
+        vi.unstubAllGlobals()
+    })
+
+    it('clones through the server-side repository', async () => {
+        repo.clone.mockClear()
+        const response = await postClone({
+            locals: locals(),
+            params: { skillId: publicSkill.id },
+            request: jsonRequest({}),
+        } as never)
+
+        expect(response.status).toBe(201)
+        expect(repo.clone).toHaveBeenCalledWith(publicSkill.id, 'user-1')
+    })
+})

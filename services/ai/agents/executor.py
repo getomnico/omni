@@ -43,7 +43,7 @@ from config import (
     DEFAULT_TOP_P,
     SANDBOX_URL,
 )
-from db import CompactionsRepository
+from db import CompactionsRepository, SkillsRepository
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.models import Source, UserConfiguration
@@ -290,7 +290,10 @@ async def _build_agent_registry(
         skills_dir=skills_dir,
         searcher_client=app_state.searcher_tool.client,
         connector_manager_url=CONNECTOR_MANAGER_URL,
+        skills_repository=SkillsRepository(),
+        skill_user_id=agent.user_id,
     )
+    await skill_handler.refresh_library_skills()
     await skill_handler.refresh_connector_skills()
     if skill_handler.has_skills():
         await skill_handler.publish_skill_capabilities()

@@ -6,7 +6,7 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use common::SearcherTestFixture;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use shared::db::repositories::{GroupRepository, PersonRepository, PersonUpsert};
 use shared::models::DocumentPermissions;
 use tower::ServiceExt;
@@ -188,6 +188,91 @@ async fn test_capability_search_indexes_search_text() -> Result<()> {
         .is_empty());
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_capability_sync_prunes_stale_rows_for_publisher_and_type() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+
+    let first_sync = json!({
+        "publisher_id": "src-gmail-1",
+        "capability_type": "tool",
+        "capabilities": [
+            {
+                "id": "tool:gmail__send_email",
+                "capability_type": "tool",
+                "name": "gmail__send_email",
+                "description": "Send email",
+                "source_id": "src-gmail-1",
+                "source_type": "gmail",
+                "search_text": "Gmail send email quokka",
+                "data": { "tool_name": "gmail__send_email" }
+            },
+            {
+                "id": "tool:gmail__old_tool",
+                "capability_type": "tool",
+                "name": "gmail__old_tool",
+                "description": "Old tool",
+                "source_id": "src-gmail-1",
+                "source_type": "gmail",
+                "search_text": "Gmail old tool quokka",
+                "data": { "tool_name": "gmail__old_tool" }
+            }
+        ]
+    });
+    let response = sync_capabilities(&fixture, first_sync).await?;
+    assert_eq!(response["upserted"], 2);
+    assert_eq!(response["deleted"], 0);
+
+    let second_sync = json!({
+        "publisher_id": "src-gmail-1",
+        "capability_type": "tool",
+        "capabilities": [
+            {
+                "id": "tool:gmail__send_email",
+                "capability_type": "tool",
+                "name": "gmail__send_email",
+                "description": "Send email updated",
+                "source_id": "src-gmail-1",
+                "source_type": "gmail",
+                "search_text": "Gmail send email updated quokka",
+                "data": { "tool_name": "gmail__send_email" }
+            }
+        ]
+    });
+    let response = sync_capabilities(&fixture, second_sync).await?;
+    assert_eq!(response["upserted"], 1);
+    assert_eq!(response["deleted"], 1);
+
+    let search_response = search_capabilities(
+        &fixture,
+        json!({
+            "capability_type": "tool",
+            "query": "quokka",
+            "limit": 10
+        }),
+    )
+    .await?;
+    assert_capability_present(&search_response, "tool:gmail__send_email", "quokka");
+    assert!(!search_response["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|result| result["id"] == "tool:gmail__old_tool"));
+
+    Ok(())
+}
+
+async fn sync_capabilities(fixture: &SearcherTestFixture, body: Value) -> Result<Value> {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/capabilities/sync")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 async fn search_capabilities(fixture: &SearcherTestFixture, body: Value) -> Result<Value> {
