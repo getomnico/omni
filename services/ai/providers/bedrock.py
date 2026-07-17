@@ -39,8 +39,10 @@ from anthropic.types.raw_message_delta_event import Delta
 from botocore.exceptions import ClientError
 
 from . import LLMProvider, TokenUsage
-from .anthropic_message_adapter import build_messages_for_anthropic_api
-from .content_blocks import extract_text_document
+from .anthropic_message_adapter import (
+    build_messages_for_anthropic_api,
+    extract_text_document,
+)
 from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)

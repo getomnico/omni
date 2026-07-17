@@ -39,7 +39,7 @@ from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
 from . import ContextWindowInfo, LLMProvider, TokenUsage
-from .content_blocks import extract_text_document
+from .anthropic_message_adapter import extract_text_document
 from .types import ProviderError, ProviderType
 
 
