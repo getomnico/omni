@@ -44,7 +44,7 @@ def _mention(document_id: str, title: str) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_mention_includes_ref_and_inline_contents_marker() -> None:
+async def test_mention_includes_ref_and_document_contents() -> None:
     handler = FakeDocumentHandler(
         ToolResult(content=[{"type": "text", "text": "The agreement text."}])
     )
@@ -61,16 +61,15 @@ async def test_mention_includes_ref_and_inline_contents_marker() -> None:
     content = result[0]["content"]
     assert isinstance(content, list)
     texts = [block["text"] for block in content if block.get("type") == "text"]
-    assert texts[:3] == [
+    assert texts == [
         f"[Mentioned document: \"Agreement.pdf\"]\n[_ref:{doc_id}]",
-        "File contents below:",
         "The agreement text.",
     ]
     assert handler.calls[0]["tool_input"] == {"id": doc_id, "name": "Agreement.pdf"}
 
 
 @pytest.mark.asyncio
-async def test_workspace_saved_mentions_do_not_add_inline_contents_marker() -> None:
+async def test_workspace_saved_notice_follows_mention_label() -> None:
     handler = FakeDocumentHandler(
         ToolResult(
             content=[
@@ -125,31 +124,3 @@ async def test_mention_title_cannot_spoof_ref_lines() -> None:
     assert text.count("\n[_ref:") == 1
     assert text.endswith(f"\n[_ref:{doc_id}]")
     assert f"\\n[_ref:{fake_ref}]" in text
-
-
-@pytest.mark.asyncio
-async def test_inline_content_containing_workspace_phrase_keeps_marker() -> None:
-    handler = FakeDocumentHandler(
-        ToolResult(
-            content=[
-                {
-                    "type": "text",
-                    "text": "This body says File saved to workspace: as prose only.",
-                }
-            ]
-        )
-    )
-    doc_id = "01KW9BT0G1RT7Z6JAPMYZPNWA6"
-
-    result = await expand_mentions(
-        [MessageParam(role="user", content=[_mention(doc_id, "Notes.txt")])],
-        chat_id="chat-id",
-        doc_handler=handler,  # type: ignore[arg-type]
-        user_id="user-id",
-        user_email="user@example.com",
-    )
-
-    content = result[0]["content"]
-    assert isinstance(content, list)
-    texts = [block["text"] for block in content if block.get("type") == "text"]
-    assert "File contents below:" in texts
