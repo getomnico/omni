@@ -8,7 +8,7 @@ from urllib.parse import unquote
 import httpx
 from anthropic.types import ToolParam
 
-from db.documents import DocumentsRepository
+from db.documents import Document, DocumentsRepository
 from storage import ContentStorage, PostgresContentStorage
 from tools.registry import ToolContext, ToolResult
 from tools.sandbox import write_binary_to_sandbox, write_text_to_sandbox
@@ -26,6 +26,22 @@ def _safe_basename(title: str) -> str:
     safe = "".join(c for c in title if c.isalnum() or c in ".-_")
     safe = safe.strip(".-")
     return safe[:128] or "document"
+
+
+def _workspace_path(
+    doc: Document,
+    document_name: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
+    """Build a stable sandbox path from the document version and read range."""
+    parts = ["document", _safe_basename(doc.id)]
+    if doc.content_id:
+        parts.append(_safe_basename(doc.content_id))
+    if start_line is not None or end_line is not None:
+        parts.append(f"lines-{start_line or 1}-{end_line or 'end'}")
+    parts.append(_safe_basename(doc.title or document_name))
+    return "_".join(parts)
 
 
 # Content types considered binary (not extracted text).
@@ -148,8 +164,6 @@ class DocumentToolHandler:
         tool_name: str,
         tool_input: dict,
         context: ToolContext,
-        *,
-        mention_document_id: str | None = None,
     ) -> ToolResult:
         if tool_name != "read_document":
             return ToolResult(
@@ -199,33 +213,6 @@ class DocumentToolHandler:
                     is_error=True,
                 )
 
-            # When mention_document_id is set (expand_mentions path), use a
-            # deterministic workspace path and stat-before-read to avoid
-            # re-fetching cross-turn. The path includes the authoritative
-            # doc.id and the blob content_id (when available) for freshness.
-            # Docs without content_id (e.g. source-fetched binaries) skip
-            # stat reuse and are always re-fetched.
-            deterministic_path = None
-            if mention_document_id and self._sandbox_url and doc.content_id:
-                safe_title = _safe_basename(doc.title or "document")
-                deterministic_path = f"mention_{doc.id}_{doc.content_id}_{safe_title}"
-                stat_result = await self._stat_sandbox_path(deterministic_path, context.chat_id)
-                if stat_result:
-                    size_kb = stat_result.get("size_bytes", 0) / 1024
-                    return ToolResult(
-                        content=[
-                            {
-                                "type": "text",
-                                "text": f"File saved to workspace: {deterministic_path} ({size_kb:.1f} KB)",
-                            }
-                        ],
-                    )
-            elif mention_document_id and self._sandbox_url and not doc.content_id:
-                # No content_id — build a deterministic write path but skip
-                # stat reuse; always re-fetch to avoid stale data.
-                safe_title = _safe_basename(doc.title or "document")
-                deterministic_path = f"mention_{doc.id}_{safe_title}"
-
             is_binary = doc.content_type in BINARY_CONTENT_TYPES
 
             has_extracted_text = False
@@ -248,9 +235,7 @@ class DocumentToolHandler:
                 and self._connector_manager_url
                 and doc.source_id
             ):
-                return await self._fetch_binary(
-                    doc, document_name, context, deterministic_path=deterministic_path
-                )
+                return await self._fetch_binary(doc, document_name, context)
             else:
                 return await self._read_text(
                     doc,
@@ -258,7 +243,6 @@ class DocumentToolHandler:
                     start_line,
                     end_line,
                     context,
-                    deterministic_path=deterministic_path,
                 )
 
         except Exception as e:
@@ -289,18 +273,11 @@ class DocumentToolHandler:
 
     async def _fetch_binary(
         self,
-        doc,
+        doc: Document,
         document_name: str,
         context: ToolContext,
-        *,
-        deterministic_path: str | None = None,
     ) -> ToolResult:
-        """Fetch binary file from source via connector-manager and write to sandbox.
-
-        For deterministic (mention) paths, the caller provides a pre-computed
-        path; for ordinary tool calls the filename from the response header
-        or document_name is used.
-        """
+        """Fetch a binary file from its source and write it to the sandbox."""
         logger.info(
             f"Fetching binary file '{document_name}' (id={doc.id}) from source {doc.source_id}"
         )
@@ -334,11 +311,9 @@ class DocumentToolHandler:
 
             binary_data = resp.content
             header_name = resp.headers.get("x-file-name")
-            # Use the decoded header name for ordinary tool calls; for
-            # deterministic mention paths use the caller-provided path.
             file_name = (
-                deterministic_path
-                if deterministic_path
+                _workspace_path(doc, document_name)
+                if self._sandbox_url
                 else (unquote(header_name) if header_name else document_name)
             )
 
@@ -348,13 +323,11 @@ class DocumentToolHandler:
 
     async def _read_text(
         self,
-        doc,
+        doc: Document,
         document_name: str,
         start_line: int | None,
         end_line: int | None,
         context: ToolContext,
-        *,
-        deterministic_path: str | None = None,
     ) -> ToolResult:
         """Read text document content, returning directly or writing to sandbox."""
         if not doc.content_id:
@@ -372,12 +345,7 @@ class DocumentToolHandler:
 
         if _is_pdf_extraction_failure(doc.content_type, content):
             if self._connector_manager_url and self._sandbox_url and doc.source_id:
-                return await self._fetch_binary(
-                    doc,
-                    document_name,
-                    context,
-                    deterministic_path=deterministic_path,
-                )
+                return await self._fetch_binary(doc, document_name, context)
             return ToolResult(
                 content=[
                     {
@@ -414,18 +382,20 @@ class DocumentToolHandler:
             )
 
         if self._sandbox_url:
-            filepath = deterministic_path
-            if not filepath:
-                filepath = document_name or doc.title or f"document_{doc.id}"
-                if "." not in filepath:
-                    filepath += ".txt"
+            filepath = _workspace_path(doc, document_name, start_line, end_line)
+            if "." not in filepath:
+                filepath += ".txt"
 
             size_kb = len(content.encode("utf-8")) / 1024
             message = (
-                f"File saved to workspace: {filepath} ({size_kb:.1f} KB)"
-                if deterministic_path
-                else f"Document saved to workspace: {filepath} ({size_kb:.1f} KB). Use read_file or run_python to process it."
+                f"Document saved to workspace: {filepath} ({size_kb:.1f} KB). "
+                "Use read_file or run_python to process it."
             )
+            if doc.content_id:
+                stat_result = await self._stat_sandbox_path(filepath, context.chat_id)
+                if stat_result:
+                    return ToolResult(content=[{"type": "text", "text": message}])
+
             return await write_text_to_sandbox(
                 self._sandbox_url,
                 content,
