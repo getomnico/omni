@@ -8,6 +8,7 @@ import {
   SyncRequestSchema,
   CancelRequestSchema,
   ActionRequestSchema,
+  OAuthCredentialReadyRequestSchema,
   ResourceRequestSchema,
   PromptRequestSchema,
   createSyncResponseStarted,
@@ -72,6 +73,28 @@ export function createServer(connector: Connector): Express {
 
   app.get("/manifest", async (_req: Request, res: Response) => {
     const manifest = await connector.getManifest(connectorUrl);
+    res.json(manifest);
+  });
+
+  app.post("/oauth/credential-ready", async (req: Request, res: Response) => {
+    const parseResult = OAuthCredentialReadyRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: "Invalid request body" });
+      return;
+    }
+
+    const changed = await connector.oauthCredentialReady(parseResult.data);
+    if (!changed) {
+      res.status(204).send();
+      return;
+    }
+
+    const manifest = await connector.getManifest(connectorUrl);
+    try {
+      await getSdkClient().register(manifest);
+    } catch (err) {
+      logger.warn({ err }, "OAuth credential-ready manifest registration failed");
+    }
     res.json(manifest);
   });
 

@@ -55,6 +55,14 @@ export class McpAdapter {
     this.server = server;
   }
 
+  hasCachedCatalog(): boolean {
+    return (
+      this.cachedActions !== null &&
+      this.cachedResources !== null &&
+      this.cachedPrompts !== null
+    );
+  }
+
   private async withSession<T>(
     env: Record<string, string> | undefined,
     headers: Record<string, string> | undefined,
@@ -292,11 +300,18 @@ export class McpAdapter {
     const actions: ActionDefinition[] = [];
     for (const tool of tools) {
       const isReadOnly = tool.annotations?.readOnlyHint === true;
+      const meta = (tool as { _meta?: Record<string, unknown> })._meta;
+      const requiredScopes = Array.isArray(meta?.required_scopes)
+        ? meta.required_scopes.filter(
+            (scope): scope is string => typeof scope === 'string'
+          )
+        : [];
       actions.push({
         name: tool.name,
         description: tool.description ?? '',
         input_schema: tool.inputSchema ?? { type: 'object', properties: {} },
         mode: isReadOnly ? 'read' : 'write',
+        required_scopes: requiredScopes,
         source_types: [],
         admin_only: false,
       });

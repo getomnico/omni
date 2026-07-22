@@ -104,8 +104,8 @@ from tools.connector_handler import (
     ToolsetSummary,
     fetch_active_sources_from_connector_manager,
 )
+from tools.meta_handler import MetaToolHandler, OnLoad, exact_tool_names_for_query
 from tools.mcp_capability_handler import McpCapabilityHandler
-from tools.meta_handler import MetaToolHandler, OnLoad
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.sandbox_handler import SandboxToolHandler
 from tools.search_handler import fetch_operator_values
@@ -197,6 +197,10 @@ def _loaded_tools_from_meta_call(
     tool_input: dict[str, object],
     connector_handler: ConnectorToolHandler,
 ) -> set[str]:
+    if tool_name == "tool_search":
+        query = tool_input.get("query")
+        if isinstance(query, str):
+            return exact_tool_names_for_query(query, connector_handler.actions)
     if tool_name == "load_tool":
         requested = tool_input.get("tool_name")
         if isinstance(requested, str) and requested in connector_handler.actions:

@@ -60,6 +60,7 @@ describe('McpAdapter (stdio)', () => {
     expect(greet.description).toBe('Greet someone by name');
     const add = actions.find((a) => a.name === 'add')!;
     expect(add.mode).toBe('write');
+    expect(add.required_scopes).toEqual(['numbers:write']);
   });
 
   it('lists resources', async () => {
@@ -234,6 +235,7 @@ describe('Connector MCP integration', () => {
     await connector.bootstrapMcp({});
     const manifest: ConnectorManifest = await connector.getManifest('http://test:8000');
     expect(manifest.mcp_enabled).toBe(true);
+    expect(manifest.mcp_catalog_loaded).toBe(true);
     const actionNames = manifest.actions.map((a) => a.name);
     expect(actionNames).toContain('greet');
     expect(actionNames).toContain('add');

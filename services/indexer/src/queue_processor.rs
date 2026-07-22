@@ -1,5 +1,5 @@
-use crate::AppState;
 use crate::people_extractor;
+use crate::AppState;
 use anyhow::{Context, Result};
 use shared::db::repositories::{
     DocumentRepository, GroupRepository, PersonRepository, SyncRunRepository,
@@ -14,7 +14,7 @@ use shared::storage::gc::{ContentBlobGC, GCConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{Duration, MissedTickBehavior, interval};
+use tokio::time::{interval, Duration, MissedTickBehavior};
 use tracing::{debug, error, info, warn};
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
@@ -110,7 +110,9 @@ impl BatchingConfig {
                 SyncType::Realtime => (self.realtime_batch_size, self.realtime_max_age_secs),
             };
 
-            if metrics.count >= size_threshold {
+            if metrics.has_completed_sync {
+                ready.push((sync_type.clone(), format!("{} sync completed", sync_type)));
+            } else if metrics.count >= size_threshold {
                 ready.push((
                     sync_type.clone(),
                     format!(
@@ -168,6 +170,7 @@ struct PendingMetrics {
     count: i64,
     oldest_age_secs: i64,
     size_bytes: i64,
+    has_completed_sync: bool,
 }
 
 type PendingBySyncType = HashMap<SyncType, PendingMetrics>;
@@ -194,6 +197,7 @@ fn summarize_pending(summary: &shared::queue::QueueSummary) -> (PendingBySyncTyp
                         count: entry.count,
                         oldest_age_secs,
                         size_bytes: entry.size_bytes,
+                        has_completed_sync: entry.has_completed_sync,
                     },
                 );
             }
@@ -1363,6 +1367,7 @@ mod tests {
                 count: 2,
                 oldest: Some(chrono::Utc::now()),
                 size_bytes: 150,
+                has_completed_sync: false,
             }],
         };
 
@@ -1381,5 +1386,30 @@ mod tests {
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].0, SyncType::Incremental);
         assert!(ready[0].1.contains("pending bytes 150 >= 100"));
+    }
+
+    #[test]
+    fn test_completed_sync_is_ready_below_batch_threshold() {
+        let summary = QueueSummary {
+            entries: vec![QueueSummaryEntry {
+                sync_type: Some(SyncType::Full),
+                status: EventStatus::Pending,
+                count: 4,
+                oldest: Some(chrono::Utc::now()),
+                size_bytes: 100,
+                has_completed_sync: true,
+            }],
+        };
+
+        let (by_sync_type, orphan_count) = summarize_pending(&summary);
+        let ready = BatchingConfig::default().ready_sync_types(
+            &by_sync_type,
+            orphan_count,
+            DEFAULT_BATCH_MAX_BYTES,
+        );
+
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].0, SyncType::Full);
+        assert!(ready[0].1.contains("sync completed"));
     }
 }
