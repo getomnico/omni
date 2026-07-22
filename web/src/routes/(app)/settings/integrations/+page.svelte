@@ -12,8 +12,10 @@
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
+    import windshiftLogo from '$lib/images/icons/windshift.png'
     import { Globe, HardDrive, Mail, Trash2 } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
+    import WindshiftConnectorSetup from '$lib/components/windshift-connector-setup.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { formatDate, getSourceNoun } from '$lib/utils/sources'
     import { SourceType } from '$lib/types'
@@ -117,10 +119,12 @@
     }
 
     let showGoogleOAuthSetup = $state(false)
+    let showWindshiftSetup = $state(false)
 
     let hasGoogleDrive = $derived(data.userSources.some((s) => s.sourceType === 'google_drive'))
     let hasGmail = $derived(data.userSources.some((s) => s.sourceType === 'gmail'))
     let hasAllGoogleSources = $derived(hasGoogleDrive && hasGmail)
+    let hasWindshift = $derived(data.userSources.some((s) => s.sourceType === 'windshift'))
 
     function handleGoogleOAuthSetupSuccess() {
         showGoogleOAuthSetup = false
@@ -258,7 +262,7 @@
 
         <!-- Available Connections -->
         <!-- TODO: Generate these cards from OAuth-capable, admin-configured providers instead of Google-specific state. -->
-        {#if data.googleOAuthConfigured}
+        {#if data.googleOAuthConfigured || data.windshiftBaseUrl}
             <div class="space-y-4">
                 <div>
                     <h2 class="text-xl font-semibold">Available Integrations</h2>
@@ -266,41 +270,84 @@
                 </div>
 
                 <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                    <Card class="flex flex-col">
-                        <CardHeader>
-                            <CardTitle class="flex items-center gap-3">
-                                <div
-                                    class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
-                                    <img
-                                        src={googleLogo}
-                                        alt="Google"
-                                        class="h-6 w-6 object-contain" />
-                                </div>
-                                <span>Google</span>
-                                {#if hasAllGoogleSources}
-                                    <span
-                                        class="ml-auto inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
-                                        Connected
-                                    </span>
-                                {/if}
-                            </CardTitle>
-                        </CardHeader>
-                        <CardContent class="flex-1">
-                            <p class="text-muted-foreground text-sm">
-                                Connect your own Google Drive and Gmail with read-only access.
-                            </p>
-                        </CardContent>
-                        {#if !hasAllGoogleSources}
-                            <CardFooter>
-                                <Button
-                                    size="sm"
-                                    class="cursor-pointer"
-                                    onclick={() => (showGoogleOAuthSetup = true)}>
-                                    Connect your Google account
-                                </Button>
-                            </CardFooter>
-                        {/if}
-                    </Card>
+                    {#if data.googleOAuthConfigured}
+                        <Card class="flex flex-col">
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-3">
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                        <img
+                                            src={googleLogo}
+                                            alt="Google"
+                                            class="h-6 w-6 object-contain" />
+                                    </div>
+                                    <span>Google</span>
+                                    {#if hasAllGoogleSources}
+                                        <span
+                                            class="ml-auto inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                            Connected
+                                        </span>
+                                    {/if}
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent class="flex-1">
+                                <p class="text-muted-foreground text-sm">
+                                    Connect your own Google Drive and Gmail with read-only access.
+                                </p>
+                            </CardContent>
+                            {#if !hasAllGoogleSources}
+                                <CardFooter>
+                                    <Button
+                                        size="sm"
+                                        class="cursor-pointer"
+                                        onclick={() => (showGoogleOAuthSetup = true)}>
+                                        Connect your Google account
+                                    </Button>
+                                </CardFooter>
+                            {/if}
+                        </Card>
+                    {/if}
+
+                    {#if data.windshiftBaseUrl}
+                        <Card class="flex flex-col">
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-3">
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                        <img
+                                            src={windshiftLogo}
+                                            alt="Windshift"
+                                            class="h-6 w-6 object-contain" />
+                                    </div>
+                                    <span>Windshift</span>
+                                    {#if hasWindshift}
+                                        <span
+                                            class="ml-auto inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                            Connected
+                                        </span>
+                                    {/if}
+                                </CardTitle>
+                            </CardHeader>
+                            <CardContent class="flex-1 space-y-2">
+                                <p class="text-muted-foreground text-sm">
+                                    Index work items from the Windshift workspaces you can access.
+                                </p>
+                                <code class="bg-muted block rounded px-2 py-1 text-xs break-all">
+                                    {data.windshiftBaseUrl}
+                                </code>
+                            </CardContent>
+                            {#if !hasWindshift}
+                                <CardFooter>
+                                    <Button
+                                        size="sm"
+                                        class="cursor-pointer"
+                                        onclick={() => (showWindshiftSetup = true)}>
+                                        Connect your Windshift account
+                                    </Button>
+                                </CardFooter>
+                            {/if}
+                        </Card>
+                    {/if}
                 </div>
             </div>
         {:else if data.userSources.length === 0}
@@ -318,6 +365,11 @@
     connectedSourceTypes={data.userSources.map((s) => s.sourceType)}
     onSuccess={handleGoogleOAuthSetupSuccess}
     onCancel={() => (showGoogleOAuthSetup = false)} />
+
+<WindshiftConnectorSetup
+    open={showWindshiftSetup}
+    baseUrl={data.windshiftBaseUrl}
+    onCancel={() => (showWindshiftSetup = false)} />
 
 <AlertDialog.Root
     open={sourceToDisconnect !== null}
