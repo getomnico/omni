@@ -5,6 +5,7 @@ import type {
   ActionDefinition,
   SearchOperator,
   OAuthManifestConfig,
+  OAuthCredentialReadyRequest,
 } from './models.js';
 import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
@@ -102,6 +103,21 @@ export abstract class Connector<
     }
   }
 
+  /**
+   * React to a newly stored OAuth credential. MCP-backed connectors use it to
+   * restore their authenticated catalog after OAuth or a connector restart.
+   */
+  async oauthCredentialReady(
+    request: OAuthCredentialReadyRequest
+  ): Promise<boolean> {
+    const adapter = await this.getMcpAdapter();
+    if (!adapter) {
+      return false;
+    }
+    await this.bootstrapMcp(request.credentials as TCredentials);
+    return adapter.hasCachedCatalog();
+  }
+
   prepareMcpAuth(credentials: TCredentials): {
     env?: Record<string, string>;
     headers?: Record<string, string>;
@@ -140,6 +156,7 @@ export abstract class Connector<
       extra_schema: this.extraSchema,
       attributes_schema: this.attributesSchema,
       mcp_enabled: adapter !== undefined,
+      mcp_catalog_loaded: adapter?.hasCachedCatalog() ?? false,
       resources: adapter ? await adapter.getResourceDefinitions() : [],
       prompts: adapter ? await adapter.getPromptDefinitions() : [],
       oauth: this.oauthConfig,

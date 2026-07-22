@@ -6,8 +6,8 @@ import pytest
 
 from tools.connector_handler import ConnectorAction, ConnectorToolHandler
 from tools.meta_handler import MetaToolHandler
-from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
 from tools.registry import ToolContext
+from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
 
 
 def _make_action(
@@ -146,6 +146,49 @@ async def test_tool_search_returns_matches_without_loading(actions):
 
 
 @pytest.mark.asyncio
+async def test_tool_search_loads_unique_exact_action_name_match(actions):
+    handler = _make_handler(actions)
+    loaded: set[str] = set()
+    fired: list[set[str]] = []
+
+    async def on_load(newly: set[str]) -> None:
+        fired.append(newly)
+
+    searcher = _FakeSearcherClient(["gmail__list_threads"])
+    meta = MetaToolHandler(handler, loaded, on_load, searcher_client=searcher)
+    result = await meta.execute("tool_search", {"query": "list_threads"}, _ctx())
+
+    assert not result.is_error
+    assert loaded == {"gmail__list_threads"}
+    assert fired == [{"gmail__list_threads"}]
+    assert "Exact match loaded and now callable: gmail__list_threads" in result.content[
+        0
+    ]["text"]
+
+
+@pytest.mark.asyncio
+async def test_tool_search_loads_all_tools_for_exact_source_match(actions):
+    handler = _make_handler(actions)
+    loaded: set[str] = set()
+    fired: list[set[str]] = []
+
+    async def on_load(newly: set[str]) -> None:
+        fired.append(newly)
+
+    searcher = _FakeSearcherClient(["gmail__send_email"])
+    meta = MetaToolHandler(handler, loaded, on_load, searcher_client=searcher)
+    result = await meta.execute("tool_search", {"query": "gmail"}, _ctx())
+
+    gmail_tools = {"gmail__send_email", "gmail__list_threads"}
+    assert not result.is_error
+    assert loaded == gmail_tools
+    assert fired == [gmail_tools]
+    assert "Exact match loaded and now callable: 2 matching source tools" in result.content[
+        0
+    ]["text"]
+
+
+@pytest.mark.asyncio
 async def test_tool_search_uses_searcher_without_loading(actions):
     handler = _make_handler(actions)
     loaded: set[str] = set()
@@ -176,11 +219,17 @@ async def test_publish_tool_capabilities_skips_unchanged_refresh(actions):
     await meta.publish_tool_capabilities()
     await meta.publish_tool_capabilities()
 
-    assert len(searcher.upserts) == 1
+    assert len(searcher.upserts) == 4
+    assert {call.publisher_id for call in searcher.upserts} == {
+        "src-gmail-1",
+        "src-outlook-1",
+        "src-drive-1",
+        "src-slack-1",
+    }
 
 
 @pytest.mark.asyncio
-async def test_publish_tool_capabilities_chunks_large_batches():
+async def test_publish_tool_capabilities_groups_by_publisher():
     many_actions = [
         _make_action(
             f"src-{idx}",
@@ -196,7 +245,8 @@ async def test_publish_tool_capabilities_chunks_large_batches():
 
     await meta.publish_tool_capabilities()
 
-    assert [len(call.capabilities) for call in searcher.upserts] == [500, 1]
+    assert len(searcher.upserts) == 501
+    assert all(len(call.capabilities) == 1 for call in searcher.upserts)
 
 
 @pytest.mark.asyncio
