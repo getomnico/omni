@@ -192,6 +192,7 @@ pub enum SourceType {
     Nextcloud,
     GoogleAds,
     Darwinbox,
+    Windshift,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -217,6 +218,7 @@ pub enum ServiceProvider {
     #[serde(rename = "google_ads")]
     GoogleAds,
     Darwinbox,
+    Windshift,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

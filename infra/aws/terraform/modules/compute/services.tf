@@ -480,6 +480,33 @@ resource "aws_ecs_service" "linear_connector" {
   })
 }
 
+# Windshift Connector Service
+resource "aws_ecs_service" "windshift_connector" {
+  count = contains(var.enabled_connectors, "windshift") ? 1 : 0
+
+  name            = "omni-${var.customer_name}-windshift-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.windshift_connector[0].arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.windshift_connector[0].arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-windshift-connector"
+  })
+}
+
 # ClickUp Connector Service
 resource "aws_ecs_service" "clickup_connector" {
   count = contains(var.enabled_connectors, "clickup") ? 1 : 0

@@ -118,6 +118,11 @@ output "linear_connector_service_name" {
   value       = try(aws_ecs_service.linear_connector[0].name, null)
 }
 
+output "windshift_connector_service_name" {
+  description = "Windshift connector service name"
+  value       = try(aws_ecs_service.windshift_connector[0].name, null)
+}
+
 output "clickup_connector_service_name" {
   description = "ClickUp connector service name"
   value       = try(aws_ecs_service.clickup_connector[0].name, null)

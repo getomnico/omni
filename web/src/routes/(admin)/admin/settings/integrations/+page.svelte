@@ -290,7 +290,7 @@
 
                     {#if data.connectedSources.length > 0}
                         <div class="space-y-2">
-                            {#each data.connectedSources as source}
+                            {#each data.connectedSources as source (source.id)}
                                 {@const noun = getSourceNoun(source.sourceType as SourceType)}
                                 {@const sync = latestSyncRuns.get(source.id)}
                                 {@const health = sourceHealth.get(source.id)}
@@ -498,7 +498,7 @@
                     </div>
 
                     <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                        {#each data.availableIntegrations as integration}
+                        {#each data.availableIntegrations as integration (integration.id)}
                             <Card class="flex flex-col">
                                 <CardHeader>
                                     <CardTitle class="flex items-center gap-3">
@@ -575,7 +575,7 @@
                                 <div>Last updated</div>
                                 <div class="text-right"></div>
                             </div>
-                            {#each data.oauthProviders as provider}
+                            {#each data.oauthProviders as provider (provider.provider)}
                                 <div
                                     class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
                                     <div class="flex items-center gap-2 font-medium">

@@ -919,6 +919,51 @@ resource "aws_ecs_task_definition" "linear_connector" {
   })
 }
 
+# Windshift Connector Task Definition
+resource "aws_ecs_task_definition" "windshift_connector" {
+  count = contains(var.enabled_connectors, "windshift") ? 1 : 0
+
+  family                   = "omni-${var.customer_name}-windshift-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-windshift-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-windshift-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4018
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "windshift-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4018" },
+      { name = "CONNECTOR_HOST_NAME", value = "windshift-connector" },
+      { name = "WINDSHIFT_BASE_URL", value = var.windshift_base_url }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-windshift-connector"
+  })
+}
+
 # ClickUp Connector Task Definition
 resource "aws_ecs_task_definition" "clickup_connector" {
   count = contains(var.enabled_connectors, "clickup") ? 1 : 0

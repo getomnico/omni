@@ -71,6 +71,22 @@ export function callbackUrl(): string {
     return `${app.publicUrl}/api/oauth/callback`
 }
 
+/** Return the public service URL represented by an OAuth authorization endpoint. */
+export function oauthServiceBaseUrl(authEndpoint: string): string {
+    const authorizationPath = '/oauth/authorize'
+    try {
+        const url = new URL(authEndpoint)
+        if (url.pathname.endsWith(authorizationPath)) {
+            url.pathname = url.pathname.slice(0, -authorizationPath.length) || '/'
+        }
+        url.search = ''
+        url.hash = ''
+        return url.toString().replace(/\/$/, '')
+    } catch {
+        return authEndpoint.replace(/\/oauth\/authorize\/?$/, '').replace(/\/$/, '')
+    }
+}
+
 /// Fetch a connector manifest from connector-manager by source_type. Returns
 /// the manifest's oauth block, or null if the connector either isn't
 /// registered or doesn't declare an OAuth config.
@@ -113,7 +129,18 @@ async function loadClientCreds(
     const clientId = storedConfig.oauth_client_id
     const clientSecret = storedConfig.oauth_client_secret
 
-    if (clientId && isClientConfigComplete(storedConfig, tokenEndpointAuthMethod)) {
+    const dynamicRegistrationIsCurrent =
+        !manifestConfig ||
+        !isAutoManagedOAuthProvider(manifestConfig) ||
+        storedConfig.oauth_dynamic_client_registration !== 'true' ||
+        (storedConfig.oauth_registration_endpoint === manifestConfig.registration_endpoint &&
+            storedConfig.oauth_redirect_uri === callbackUrl())
+
+    if (
+        clientId &&
+        isClientConfigComplete(storedConfig, tokenEndpointAuthMethod) &&
+        dynamicRegistrationIsCurrent
+    ) {
         return {
             clientId,
             clientSecret: clientSecret || undefined,
@@ -147,14 +174,7 @@ async function dynamicallyRegisterClient(
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
             },
-            body: JSON.stringify({
-                client_name: 'Omni ClickUp MCP',
-                redirect_uris: [redirectUri],
-                grant_types: ['authorization_code'],
-                response_types: ['code'],
-                token_endpoint_auth_method: 'none',
-                scope,
-            }),
+            body: JSON.stringify(dynamicRegistrationPayload(provider, redirectUri, scope)),
         })
     } catch {
         return null
@@ -167,6 +187,8 @@ async function dynamicallyRegisterClient(
         oauth_client_id: data.client_id,
         oauth_token_endpoint_auth_method: 'none',
         oauth_dynamic_client_registration: 'true',
+        oauth_registration_endpoint: config.registration_endpoint!,
+        oauth_redirect_uri: redirectUri,
     }
     await upsertConnectorConfig(provider, stored, null)
 
@@ -175,6 +197,28 @@ async function dynamicallyRegisterClient(
         tokenEndpointAuthMethod: 'none',
         authEndpoint: existingConfig.oauth_auth_endpoint || undefined,
         tokenEndpoint: existingConfig.oauth_token_endpoint || undefined,
+    }
+}
+
+export function dynamicRegistrationPayload(provider: string, redirectUri: string, scope: string) {
+    const providerName =
+        provider === 'clickup'
+            ? 'ClickUp'
+            : provider
+                  .split(/[-_\s]+/)
+                  .filter(Boolean)
+                  .map((part) => part[0].toUpperCase() + part.slice(1))
+                  .join(' ')
+    return {
+        client_name: `Omni ${providerName} MCP`,
+        redirect_uris: [redirectUri],
+        grant_types:
+            provider === 'windshift'
+                ? ['authorization_code', 'refresh_token']
+                : ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none' as const,
+        scope,
     }
 }
 
