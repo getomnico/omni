@@ -115,6 +115,8 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         client_id: clientCreds.clientId,
         ...(clientCreds.clientSecret ? { client_secret: clientCreds.clientSecret } : {}),
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
+        token_endpoint_auth_method: clientCreds.tokenEndpointAuthMethod,
+        ...(config.resource ? { resource: config.resource } : {}),
     })
 
     const notifyOAuthCredentialReady = async (sourceId: string, userId?: string) => {
@@ -232,6 +234,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     // connect_source flow: for each requested source_type, create or refresh this
     // user's personal source. Org-level sources are managed separately under
     // /admin/settings/integrations.
+    const connectedSourceIds: string[] = []
     for (const sourceType of flow.sourceTypes) {
         const sourcesOfType = await getSourcesByType(sourceType)
         const existing = sourcesOfType.find((s) => s.scope === 'user' && s.createdBy === user.id)
@@ -258,6 +261,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 config: { granted_scopes: effectiveGrantedScopes },
                 expiresAt,
             })
+            connectedSourceIds.push(existing.id)
             continue
         }
 
@@ -284,8 +288,31 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             config: { granted_scopes: effectiveGrantedScopes },
             expiresAt,
         })
+        connectedSourceIds.push(newSource.id)
 
         logger.info(`Created personal source ${newSource.id} (${sourceType}) for user ${user.id}`)
+    }
+
+    const connectorManagerUrl = getConfig().services.connectorManagerUrl
+    for (const sourceId of connectedSourceIds) {
+        await notifyOAuthCredentialReady(sourceId, user.id)
+        try {
+            const syncResponse = await fetch(`${connectorManagerUrl}/sync/${sourceId}`, {
+                method: 'POST',
+            })
+            if (!syncResponse.ok && syncResponse.status !== 409) {
+                logger.warn('Failed to trigger personal source sync after OAuth', {
+                    sourceId,
+                    status: syncResponse.status,
+                    body: await syncResponse.text(),
+                })
+            }
+        } catch (syncError) {
+            logger.warn('Failed to trigger personal source sync after OAuth', {
+                sourceId,
+                syncError,
+            })
+        }
     }
 
     throw redirect(302, flow.returnTo ?? '/settings/integrations?success=connected')

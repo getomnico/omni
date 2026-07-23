@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 from anthropic.types import ToolParam
 
@@ -33,6 +33,37 @@ _DEFAULT_LIMIT = 10
 _MAX_LIMIT = 25
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 OnLoad = Callable[[set[str]], Awaitable[None]]
+
+
+def exact_tool_names_for_query(
+    query: str, actions: Mapping[str, ConnectorAction]
+) -> set[str]:
+    """Return a unique exact action or every tool for an exact source query."""
+    query_tokens = set(_TOKEN_RE.findall(query.lower()))
+    if not query_tokens:
+        return set()
+
+    exact_action_matches = {
+        tool_name
+        for tool_name, action in actions.items()
+        if query_tokens
+        in (
+            set(_TOKEN_RE.findall(tool_name.lower())),
+            set(_TOKEN_RE.findall(action.action_name.lower())),
+        )
+    }
+    if len(exact_action_matches) == 1:
+        return exact_action_matches
+
+    return {
+        tool_name
+        for tool_name, action in actions.items()
+        if query_tokens
+        in (
+            set(_TOKEN_RE.findall(action.source_type.lower())),
+            set(_TOKEN_RE.findall(action.source_name.lower())),
+        )
+    }
 
 
 class MetaToolHandler:
@@ -193,7 +224,26 @@ class MetaToolHandler:
                 else ""
             )
             lines.append(f"- {tool_name} — {desc}")
-        lines.append("Call load_tool with the exact tool name for any tools you need.")
+
+        exact_tool_names = exact_tool_names_for_query(query, self._ch.actions)
+        if exact_tool_names:
+            newly_loaded = await self._mark_loaded(exact_tool_names)
+            tool_label = (
+                next(iter(exact_tool_names))
+                if len(exact_tool_names) == 1
+                else f"{len(exact_tool_names)} matching source tools"
+            )
+            if newly_loaded:
+                lines.append(
+                    f"Exact match loaded and now callable: {tool_label}. "
+                    "Call it on your next turn."
+                )
+            else:
+                lines.append(
+                    f"Exact match already loaded and callable: {tool_label}."
+                )
+        else:
+            lines.append("Call load_tool with the exact tool name for any tools you need.")
 
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 

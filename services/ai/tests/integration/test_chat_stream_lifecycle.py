@@ -17,6 +17,7 @@ which defaults to 15 s.  If the LLM never writes events (e.g. it's gated at
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from unittest.mock import AsyncMock
 
@@ -841,10 +842,8 @@ class TestLockAndHeartbeat:
         # Wait for the producer task to finish its cleanup
         producer_task = chat_module._run_tasks_by_chat.get(chat_id)
         if producer_task is not None:
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(producer_task, timeout=5)
-            except (asyncio.CancelledError, Exception):
-                pass
 
         event_types = [et for et, _d, _sid in events]
         assert (
@@ -915,7 +914,7 @@ class TestStreamStatusPending:
         parent_id = active[-1].id
 
         tool_use_id = "toolu_for_approval"
-        assistant_msg = await msgs_repo.create(
+        await msgs_repo.create(
             chat_id,
             {
                 "role": "assistant",
@@ -970,10 +969,11 @@ class TestPartialAssistant:
     def test_partial_assistant_strips_empty_text_blocks(self):
         """Empty text blocks are removed; non-empty text blocks are kept.
         Tool inputs with string JSON are parsed to dict."""
+        from anthropic.types import TextBlockParam, ToolUseBlockParam
+
         from streaming.persist import (
             partial_assistant_message as _partial_assistant_message,
         )
-        from anthropic.types import TextBlockParam, ToolUseBlockParam
 
         blocks: list[TextBlockParam | ToolUseBlockParam] = [
             TextBlockParam(type="text", text="   "),  # stripped
@@ -996,10 +996,11 @@ class TestPartialAssistant:
 
     def test_partial_assistant_returns_none_when_all_blocks_empty(self):
         """All-empty blocks → returns None."""
+        from anthropic.types import TextBlockParam
+
         from streaming.persist import (
             partial_assistant_message as _partial_assistant_message,
         )
-        from anthropic.types import TextBlockParam
 
         result = _partial_assistant_message(
             [
@@ -1011,10 +1012,11 @@ class TestPartialAssistant:
 
     def test_partial_assistant_parses_empty_tool_input(self):
         """Empty string tool input becomes empty dict."""
+        from anthropic.types import ToolUseBlockParam
+
         from streaming.persist import (
             partial_assistant_message as _partial_assistant_message,
         )
-        from anthropic.types import ToolUseBlockParam
 
         result = _partial_assistant_message(
             [
@@ -1470,13 +1472,11 @@ class TestEmptyRowDelete:
     empty assistant row is deleted from the DB."""
 
     @pytest.mark.asyncio
-    async def test_early_cancel_deletes_empty_assistant_row(
+    async def test_early_cancel_does_not_persist_empty_assistant(
         self, seeded_chat, redis_client, redis_keys
     ):
-        """LLM yields ``message_start`` (which triggers an early-persisted
-        assistant row), then cancel fires before any content block.  The
-        empty row should be deleted, leaving zero assistant rows in the DB
-        for this chat."""
+        """Cancel after ``message_start`` but before content leaves no empty
+        assistant event or database row."""
         import routers.chat as chat_module
 
         chat_id, _user_id, model_id = seeded_chat
@@ -1504,16 +1504,14 @@ class TestEmptyRowDelete:
         # Wait for the producer task to finish its cleanup
         producer_task = chat_module._run_tasks_by_chat.get(chat_id)
         if producer_task is not None:
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(producer_task, timeout=5)
-            except (asyncio.CancelledError, Exception):
-                pass
 
         event_types = [et for et, _d, _sid in events]
-        # Should only have message_start + end_of_stream, no content
+        # The pending message_start is suppressed because no content arrived.
         msg_count = sum(1 for et, _, _ in events if et == "message")
-        assert msg_count == 1, (
-            f"Expected 1 message event (message_start), got {msg_count}. "
+        assert msg_count == 0, (
+            f"Expected no message events, got {msg_count}. "
             f"Event types: {event_types}"
         )
 
@@ -1661,10 +1659,11 @@ class TestMultiTurn:
         user_with_tool_result = None
         for um in user_msgs:
             content = um.message.get("content", [])
-            if isinstance(content, list):
-                if any(b.get("type") == "tool_result" for b in content):
-                    user_with_tool_result = um
-                    break
+            if isinstance(content, list) and any(
+                b.get("type") == "tool_result" for b in content
+            ):
+                user_with_tool_result = um
+                break
         assert user_with_tool_result is not None, (
             "No user message with tool_result found. " "Tool was not executed."
         )
@@ -2507,3 +2506,41 @@ class TestStandaloneEndpoints:
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
         assert assistant_msgs, "No assistant message persisted after retry"
+
+    @pytest.mark.asyncio
+    async def test_empty_provider_response_retries_once(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Retry a provider turn containing only message_start/message_stop."""
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("empty", None), ("text", "Recovered after an empty response.")],
+            model_id,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(et == "end_of_stream" for et, _, _ in events)
+        assert len(llm.calls) == 2
+        retry_messages = llm.calls[1]["messages"]
+        assert retry_messages[-1] == {
+            "role": "user",
+            "content": (
+                "Continue the original request. If the last result discovered or "
+                "loaded a tool, call the appropriate available tool now. Do not stop "
+                "without either making the next tool call or giving the user a clear "
+                "explanation."
+            ),
+        }
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert len(assistant_msgs) == 1
+        text = " ".join(
+            block["text"]
+            for block in assistant_msgs[0].message["content"]
+            if block.get("type") == "text"
+        )
+        assert text == "Recovered after an empty response."

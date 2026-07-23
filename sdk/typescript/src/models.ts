@@ -73,6 +73,7 @@ export const ActionDefinitionSchema = z.object({
   description: z.string(),
   input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
+  required_scopes: z.array(z.string()).default([]),
   source_types: z.array(z.string()).default([]),
   admin_only: z.boolean().default(false),
 });
@@ -171,6 +172,7 @@ export const ConnectorManifestSchema = z.object({
   extra_schema: z.record(z.unknown()).optional(),
   attributes_schema: z.record(z.unknown()).optional(),
   mcp_enabled: z.boolean().default(false),
+  mcp_catalog_loaded: z.boolean().default(false),
   resources: z.array(McpResourceDefinitionSchema).default([]),
   prompts: z.array(McpPromptDefinitionSchema).default([]),
   oauth: OAuthManifestConfigSchema.nullable().optional(),
@@ -220,6 +222,17 @@ export const ActionRequestSchema = z.object({
   credentials: z.record(z.unknown()),
 });
 export type ActionRequest = z.infer<typeof ActionRequestSchema>;
+
+export const OAuthCredentialReadyRequestSchema = z.object({
+  source_id: z.string(),
+  user_id: z.string().nullable().optional(),
+  provider: z.string(),
+  flow: z.string(),
+  credentials: z.record(z.unknown()).default({}),
+});
+export type OAuthCredentialReadyRequest = z.infer<
+  typeof OAuthCredentialReadyRequestSchema
+>;
 
 export const ActionResponseSchema = z.object({
   status: z.string(),

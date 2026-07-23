@@ -334,6 +334,34 @@ describe('SdkClient', () => {
     });
   });
 
+  describe('getUserEmailForSource', () => {
+    it('returns the source owner email', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-123/user-email`, () =>
+          HttpResponse.json({ email: 'owner@example.com' })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getUserEmailForSource('source-123')).resolves.toBe(
+        'owner@example.com'
+      );
+    });
+
+    it('rejects an invalid response', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-123/user-email`, () =>
+          HttpResponse.json({})
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getUserEmailForSource('source-123')).rejects.toThrow(
+        'invalid response'
+      );
+    });
+  });
+
   describe('error handling', () => {
     it('throws SdkClientError on non-2xx response', async () => {
       server.use(

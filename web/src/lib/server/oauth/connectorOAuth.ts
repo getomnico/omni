@@ -232,6 +232,26 @@ function scopesForFlow(
     return [...out]
 }
 
+export function scopesForExistingSourceUserFlow(
+    config: OAuthManifestConfig,
+    sourceType: string,
+    mode: 'read' | 'write',
+    requiredScopes?: string[],
+): string[] {
+    const readScopes = config.scopes[sourceType]?.read ?? []
+    if (mode === 'read') return readScopes
+
+    const writeScopes = config.scopes[sourceType]?.write ?? []
+    const requestedWriteScopes = requiredScopes?.length ? [...new Set(requiredScopes)] : writeScopes
+    const invalidScopes = requestedWriteScopes.filter((scope) => !writeScopes.includes(scope))
+    if (invalidScopes.length > 0) {
+        throw new Error(
+            `Unsupported write scopes for source_type=${sourceType}: ${invalidScopes.join(', ')}`,
+        )
+    }
+    return [...new Set([...readScopes, ...requestedWriteScopes])]
+}
+
 /// Build the authorization URL for a given flow.
 export async function generateAuthUrl(args: {
     flow: Extract<OAuthFlow, { type: 'connect_source' }>
@@ -328,6 +348,7 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
     approvalId?: string
     approvalChatId?: string
     mode: 'read' | 'write'
+    requiredScopes?: string[]
 }): Promise<{ url: string; requiredScopes: string[] }> {
     const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
     if (!manifestConfig) {
@@ -338,10 +359,12 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
 
-    const readScopes = manifestConfig.scopes[args.sourceType]?.read ?? []
-    const writeScopes = manifestConfig.scopes[args.sourceType]?.write ?? []
-    const actionScopes =
-        args.mode === 'write' ? [...new Set([...readScopes, ...writeScopes])] : readScopes
+    const actionScopes = scopesForExistingSourceUserFlow(
+        manifestConfig,
+        args.sourceType,
+        args.mode,
+        args.requiredScopes,
+    )
     if (actionScopes.length === 0) {
         throw new Error(`No ${args.mode} action scopes declared for source_type=${args.sourceType}`)
     }
@@ -403,6 +426,7 @@ export async function generateAuthUrlForUserWrite(args: {
     returnTo?: string
     approvalId?: string
     approvalChatId?: string
+    requiredScopes?: string[]
 }): Promise<{ url: string; requiredScopes: string[] }> {
     return generateAuthUrlForExistingSourceUserFlow({ ...args, mode: 'write' })
 }
