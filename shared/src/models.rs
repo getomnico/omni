@@ -192,6 +192,7 @@ pub enum SourceType {
     Nextcloud,
     GoogleAds,
     Darwinbox,
+    Windshift,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -217,6 +218,7 @@ pub enum ServiceProvider {
     #[serde(rename = "google_ads")]
     GoogleAds,
     Darwinbox,
+    Windshift,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -752,6 +754,10 @@ pub struct ActionDefinition {
     pub input_schema: JsonValue,
     #[serde(default)]
     pub mode: ActionMode,
+    /// OAuth scopes required to invoke this action, when declared by the
+    /// connector or its upstream MCP tool metadata.
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
     /// Restrict this action to a subset of the connector's `source_types`.
     /// Empty = applies to all source_types the connector supports.
     #[serde(default)]

@@ -71,6 +71,22 @@ export function callbackUrl(): string {
     return `${app.publicUrl}/api/oauth/callback`
 }
 
+/** Return the public service URL represented by an OAuth authorization endpoint. */
+export function oauthServiceBaseUrl(authEndpoint: string): string {
+    const authorizationPath = '/oauth/authorize'
+    try {
+        const url = new URL(authEndpoint)
+        if (url.pathname.endsWith(authorizationPath)) {
+            url.pathname = url.pathname.slice(0, -authorizationPath.length) || '/'
+        }
+        url.search = ''
+        url.hash = ''
+        return url.toString().replace(/\/$/, '')
+    } catch {
+        return authEndpoint.replace(/\/oauth\/authorize\/?$/, '').replace(/\/$/, '')
+    }
+}
+
 /// Fetch a connector manifest from connector-manager by source_type. Returns
 /// the manifest's oauth block, or null if the connector either isn't
 /// registered or doesn't declare an OAuth config.
@@ -113,7 +129,18 @@ async function loadClientCreds(
     const clientId = storedConfig.oauth_client_id
     const clientSecret = storedConfig.oauth_client_secret
 
-    if (clientId && isClientConfigComplete(storedConfig, tokenEndpointAuthMethod)) {
+    const dynamicRegistrationIsCurrent =
+        !manifestConfig ||
+        !isAutoManagedOAuthProvider(manifestConfig) ||
+        storedConfig.oauth_dynamic_client_registration !== 'true' ||
+        (storedConfig.oauth_registration_endpoint === manifestConfig.registration_endpoint &&
+            storedConfig.oauth_redirect_uri === callbackUrl())
+
+    if (
+        clientId &&
+        isClientConfigComplete(storedConfig, tokenEndpointAuthMethod) &&
+        dynamicRegistrationIsCurrent
+    ) {
         return {
             clientId,
             clientSecret: clientSecret || undefined,
@@ -147,14 +174,7 @@ async function dynamicallyRegisterClient(
                 'Content-Type': 'application/json',
                 Accept: 'application/json',
             },
-            body: JSON.stringify({
-                client_name: 'Omni ClickUp MCP',
-                redirect_uris: [redirectUri],
-                grant_types: ['authorization_code'],
-                response_types: ['code'],
-                token_endpoint_auth_method: 'none',
-                scope,
-            }),
+            body: JSON.stringify(dynamicRegistrationPayload(provider, redirectUri, scope)),
         })
     } catch {
         return null
@@ -167,6 +187,8 @@ async function dynamicallyRegisterClient(
         oauth_client_id: data.client_id,
         oauth_token_endpoint_auth_method: 'none',
         oauth_dynamic_client_registration: 'true',
+        oauth_registration_endpoint: config.registration_endpoint!,
+        oauth_redirect_uri: redirectUri,
     }
     await upsertConnectorConfig(provider, stored, null)
 
@@ -175,6 +197,28 @@ async function dynamicallyRegisterClient(
         tokenEndpointAuthMethod: 'none',
         authEndpoint: existingConfig.oauth_auth_endpoint || undefined,
         tokenEndpoint: existingConfig.oauth_token_endpoint || undefined,
+    }
+}
+
+export function dynamicRegistrationPayload(provider: string, redirectUri: string, scope: string) {
+    const providerName =
+        provider === 'clickup'
+            ? 'ClickUp'
+            : provider
+                  .split(/[-_\s]+/)
+                  .filter(Boolean)
+                  .map((part) => part[0].toUpperCase() + part.slice(1))
+                  .join(' ')
+    return {
+        client_name: `Omni ${providerName} MCP`,
+        redirect_uris: [redirectUri],
+        grant_types:
+            provider === 'windshift'
+                ? ['authorization_code', 'refresh_token']
+                : ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none' as const,
+        scope,
     }
 }
 
@@ -230,6 +274,26 @@ function scopesForFlow(
         for (const s of set[mode]) out.add(s)
     }
     return [...out]
+}
+
+export function scopesForExistingSourceUserFlow(
+    config: OAuthManifestConfig,
+    sourceType: string,
+    mode: 'read' | 'write',
+    requiredScopes?: string[],
+): string[] {
+    const readScopes = config.scopes[sourceType]?.read ?? []
+    if (mode === 'read') return readScopes
+
+    const writeScopes = config.scopes[sourceType]?.write ?? []
+    const requestedWriteScopes = requiredScopes?.length ? [...new Set(requiredScopes)] : writeScopes
+    const invalidScopes = requestedWriteScopes.filter((scope) => !writeScopes.includes(scope))
+    if (invalidScopes.length > 0) {
+        throw new Error(
+            `Unsupported write scopes for source_type=${sourceType}: ${invalidScopes.join(', ')}`,
+        )
+    }
+    return [...new Set([...readScopes, ...requestedWriteScopes])]
 }
 
 /// Build the authorization URL for a given flow.
@@ -328,6 +392,7 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
     approvalId?: string
     approvalChatId?: string
     mode: 'read' | 'write'
+    requiredScopes?: string[]
 }): Promise<{ url: string; requiredScopes: string[] }> {
     const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
     if (!manifestConfig) {
@@ -338,10 +403,12 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
 
-    const readScopes = manifestConfig.scopes[args.sourceType]?.read ?? []
-    const writeScopes = manifestConfig.scopes[args.sourceType]?.write ?? []
-    const actionScopes =
-        args.mode === 'write' ? [...new Set([...readScopes, ...writeScopes])] : readScopes
+    const actionScopes = scopesForExistingSourceUserFlow(
+        manifestConfig,
+        args.sourceType,
+        args.mode,
+        args.requiredScopes,
+    )
     if (actionScopes.length === 0) {
         throw new Error(`No ${args.mode} action scopes declared for source_type=${args.sourceType}`)
     }
@@ -403,6 +470,7 @@ export async function generateAuthUrlForUserWrite(args: {
     returnTo?: string
     approvalId?: string
     approvalChatId?: string
+    requiredScopes?: string[]
 }): Promise<{ url: string; requiredScopes: string[] }> {
     return generateAuthUrlForExistingSourceUserFlow({ ...args, mode: 'write' })
 }

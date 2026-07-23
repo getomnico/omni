@@ -327,6 +327,12 @@ variable "enabled_connectors" {
   default     = ["web"]
 }
 
+variable "windshift_base_url" {
+  description = "Public Windshift base URL used by the Windshift connector"
+  type        = string
+  default     = ""
+}
+
 variable "sandbox_url" {
   description = "URL of the sandbox service for code execution"
   type        = string

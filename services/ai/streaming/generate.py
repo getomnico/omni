@@ -62,6 +62,12 @@ from tools.turn_builder import build_turn_tools
 
 logger = logging.getLogger(__name__)
 
+_EMPTY_RESPONSE_RECOVERY_PROMPT = (
+    "Continue the original request. If the last result discovered or loaded a tool, "
+    "call the appropriate available tool now. Do not stop without either making the "
+    "next tool call or giving the user a clear explanation."
+)
+
 
 # ---------------------------------------------------------------------------
 # Per-iteration event stream provider (with compaction retry)
@@ -493,6 +499,7 @@ async def stream_generator(
 
         # ----- Main agent loop -------------------------------------------------
         model_iteration = 0
+        empty_response_retries = 0
         loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
         for _ in range(loop_passes):
             if await is_run_cancelled(redis_client, chat_id):
@@ -538,6 +545,7 @@ async def stream_generator(
 
                 event_index = 0
                 message_stop_received = False
+                pending_message_start_sse: str | None = None
                 cancelled = False
                 last_cancel_check_at = 0.0
                 async for event in stream:
@@ -641,10 +649,22 @@ async def stream_generator(
                         logger.info("Message stop received.")
                         message_stop_received = True
 
-                    logger.debug(
-                        f"Yielding event to client: {event.to_json(indent=None)}"
-                    )
-                    yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
+                    event_json = event.to_json(indent=None)
+                    event_sse = f"event: message\ndata: {event_json}\n\n"
+                    if event.type == "message_start":
+                        # Hold this until the provider emits actual content. If
+                        # it immediately stops, the retry below stays invisible
+                        # and the persistence wrapper does not create an empty
+                        # assistant row.
+                        pending_message_start_sse = event_sse
+                    elif event.type == "message_stop" and not content_blocks:
+                        pass
+                    else:
+                        if pending_message_start_sse is not None:
+                            yield pending_message_start_sse
+                            pending_message_start_sse = None
+                        logger.debug("Yielding event to client: %s", event_json)
+                        yield event_sse
 
                     if message_stop_received:
                         break
@@ -658,6 +678,23 @@ async def stream_generator(
                     break
 
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
+                has_text = any(
+                    b["type"] == "text" and str(b.get("text", "")).strip()
+                    for b in content_blocks
+                )
+                if not tool_calls and not has_text and empty_response_retries < 1:
+                    empty_response_retries += 1
+                    logger.warning(
+                        "Provider returned an empty response in iteration %s; "
+                        "retrying once with a continuation prompt",
+                        model_iteration,
+                    )
+                    conversation_messages.append(
+                        MessageParam(
+                            role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT
+                        )
+                    )
+                    continue
                 parse_errors = parse_tool_call_inputs(
                     cast(list[ToolUseBlockParam], tool_calls)
                 )

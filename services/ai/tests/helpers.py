@@ -296,7 +296,10 @@ def create_mock_llm_multi(
         idx = min(call_count, len(responses) - 1)
         call_count += 1
         kind, data = responses[idx]
-        if kind == "tool_call":
+        if kind == "empty":
+            yield message_start_event()
+            yield RawMessageStopEvent(type="message_stop")
+        elif kind == "tool_call":
             for evt in tool_call_events(data):
                 yield evt
         else:
@@ -433,6 +436,7 @@ class GatedRecordingLLM:
 
     Each response entry follows the same convention as ``create_mock_llm_multi``:
 
+    * ``("empty", None)``
     * ``("text", "response string")``
     * ``("tool_call", {"name": ..., "input": ..., "id": ...})``
 
@@ -449,6 +453,10 @@ class GatedRecordingLLM:
     PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
     model_name = "gated-test"
     provider_type = "test"
+
+    @property
+    def supports_citations(self) -> bool:
+        return False
 
     def __init__(
         self,
@@ -504,7 +512,10 @@ class GatedRecordingLLM:
 
         idx = min(call_idx, len(self.responses) - 1)
         kind, payload = self.responses[idx]
-        if kind == "tool_call":
+        if kind == "empty":
+            yield message_start_event()
+            yield RawMessageStopEvent(type="message_stop")
+        elif kind == "tool_call":
             for event in tool_call_events(
                 payload["input"],
                 tool_name=payload.get("name", "search_documents"),

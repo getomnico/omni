@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Literal, TypedDict
+from urllib.parse import urlencode
 
 import httpx
 import redis.asyncio as aioredis
@@ -81,6 +82,7 @@ class ConnectorAction:
     description: str
     input_schema: dict
     mode: SourceMode
+    required_scopes: list[str] | None = None
     admin_only: bool = False
     hidden: bool = False
 
@@ -237,6 +239,7 @@ class ConnectorToolHandler:
                                 "input_schema", {"type": "object", "properties": {}}
                             ),
                             mode=action_def.get("mode", "write"),
+                            required_scopes=action_def.get("required_scopes", []),
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
                         )
@@ -274,9 +277,11 @@ class ConnectorToolHandler:
             base_tool_name = f"{action.source_type}__{action.action_name}"
 
             # Apply action_whitelist: skip actions not in whitelist
-            if self._action_whitelist is not None:
-                if base_tool_name not in self._action_whitelist:
-                    continue
+            if (
+                self._action_whitelist is not None
+                and base_tool_name not in self._action_whitelist
+            ):
+                continue
 
             occurrence = base_name_counts.get(base_tool_name, 0)
             base_name_counts[base_tool_name] = occurrence + 1
@@ -325,7 +330,7 @@ class ConnectorToolHandler:
         sample_tool_names (up to 3 for the LLM to skim).
         """
         by_source: dict[str, list[ConnectorAction]] = {}
-        for tool_name, action in self._actions.items():
+        for _tool_name, action in self._actions.items():
             by_source.setdefault(action.source_id, []).append(action)
 
         toolsets: list[ToolsetSummary] = []
@@ -372,7 +377,7 @@ class ConnectorToolHandler:
         async with pool.acquire() as conn:
             user_credential = await conn.fetchrow(
                 """
-                SELECT id
+                SELECT id, provider, config
                 FROM service_credentials
                 WHERE source_id = $1 AND user_id = $2
                 LIMIT 1
@@ -381,7 +386,36 @@ class ConnectorToolHandler:
                 context.user_id,
             )
             if user_credential is not None:
-                return None
+                required_scopes = set(action.required_scopes or [])
+                config = user_credential["config"] or {}
+                if isinstance(config, str):
+                    try:
+                        config = json.loads(config)
+                    except json.JSONDecodeError:
+                        config = {}
+                if not isinstance(config, Mapping):
+                    config = {}
+                granted_scopes = set(config.get("granted_scopes") or [])
+                missing_scopes = sorted(required_scopes - granted_scopes)
+                if not missing_scopes:
+                    return None
+
+                provider = user_credential["provider"]
+                if not provider:
+                    return None
+                query = urlencode(
+                    {
+                        "source_id": action.source_id,
+                        "flow": "user_write",
+                        "required_scopes": ",".join(missing_scopes),
+                    }
+                )
+                return OAuthRequiredPayload(
+                    source_id=action.source_id,
+                    source_type=action.source_type,
+                    provider=provider,
+                    oauth_start_url=f"/api/oauth/start?{query}",
+                )
 
             org_credential = await conn.fetchrow(
                 """

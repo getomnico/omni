@@ -200,6 +200,7 @@ module "compute" {
   agents_enabled             = var.agents_enabled
 
   enabled_connectors       = var.enabled_connectors
+  windshift_base_url      = var.windshift_base_url
   sandbox_url              = var.sandbox_url
   agent_max_iterations     = var.agent_max_iterations
   approval_timeout_seconds = var.approval_timeout_seconds

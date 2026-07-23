@@ -43,6 +43,7 @@ jobs:
       linear-connector: ${{ steps.filter.outputs.linear-connector }}
       nextcloud-connector: ${{ steps.filter.outputs.nextcloud-connector }}
       paperless-connector: ${{ steps.filter.outputs.paperless-connector }}
+      windshift-connector: ${{ steps.filter.outputs.windshift-connector }}
       docling: ${{ steps.filter.outputs.docling }}
       deployment: ${{ steps.filter.outputs.deployment }}
       cli: ${{ steps.filter.outputs.cli }}
@@ -218,6 +219,11 @@ jobs:
             paperless-connector:
               - 'connectors/paperless/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            windshift-connector:
+              - 'connectors/windshift/**'
+              - 'sdk/typescript/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
             deployment:
@@ -533,6 +539,15 @@ jobs:
       connector-type: typescript
     secrets: inherit
 
+  build-windshift-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.windshift-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: windshift
+      connector-type: typescript
+    secrets: inherit
+
   # ---------------------------------------------------------------------------
   # Release: build all images from scratch on tag push
   # ---------------------------------------------------------------------------
@@ -632,6 +647,8 @@ jobs:
           - connector-name: paperless
             connector-type: python
           - connector-name: linear
+            connector-type: typescript
+          - connector-name: windshift
             connector-type: typescript
     uses: ./.github/workflows/build-connector.yml
     with:

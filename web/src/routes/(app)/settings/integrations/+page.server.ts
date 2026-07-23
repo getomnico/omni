@@ -5,6 +5,11 @@ import { sources, documents } from '$lib/server/db/schema'
 import { eq, and, count, inArray } from 'drizzle-orm'
 import { updateSourceById } from '$lib/server/db/sources'
 import { sourcesRepository } from '$lib/server/repositories/sources'
+import {
+    getOAuthManifestForSourceType,
+    oauthServiceBaseUrl,
+} from '$lib/server/oauth/connectorOAuth'
+import { SourceType } from '$lib/types'
 import type { PageServerLoad, Actions } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -13,6 +18,14 @@ export const load: PageServerLoad = async ({ locals }) => {
     }
 
     const googleConnectorConfig = await getConnectorConfigPublic('google')
+
+    let windshiftBaseUrl: string | null = null
+    try {
+        const oauth = await getOAuthManifestForSourceType(SourceType.WINDSHIFT)
+        if (oauth?.auth_endpoint) windshiftBaseUrl = oauthServiceBaseUrl(oauth.auth_endpoint)
+    } catch (err) {
+        locals.logger.warn('Failed to load the Windshift connector URL', err)
+    }
 
     const userSources = await sourcesRepository.getByUserId(locals.user.id)
 
@@ -39,6 +52,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         googleOAuthConfigured: !!(
             googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
         ),
+        windshiftBaseUrl,
         userSources,
         latestSyncRuns,
         documentCounts,

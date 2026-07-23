@@ -466,7 +466,8 @@ impl EventQueue {
                 q.status,
                 COUNT(*) as count,
                 MIN(q.created_at) as oldest,
-                COALESCE(SUM(COALESCE(cb.size_bytes, 0)), 0)::BIGINT as size_bytes
+                COALESCE(SUM(COALESCE(cb.size_bytes, 0)), 0)::BIGINT as size_bytes,
+                COALESCE(BOOL_OR(s.status = 'completed'), false) as has_completed_sync
             FROM connector_events_queue q
             LEFT JOIN sync_runs s ON q.sync_run_id = s.id
             LEFT JOIN content_blobs cb ON cb.id = CASE
@@ -488,6 +489,7 @@ impl EventQueue {
             let count: i64 = row.get("count");
             let oldest: Option<chrono::DateTime<chrono::Utc>> = row.get("oldest");
             let size_bytes: i64 = row.get("size_bytes");
+            let has_completed_sync: bool = row.get("has_completed_sync");
 
             let sync_type = match sync_type_str.as_deref() {
                 None => None,
@@ -511,6 +513,7 @@ impl EventQueue {
                 count,
                 oldest,
                 size_bytes,
+                has_completed_sync,
             });
         }
 
@@ -673,6 +676,7 @@ pub struct QueueSummaryEntry {
     pub count: i64,
     pub oldest: Option<chrono::DateTime<chrono::Utc>>,
     pub size_bytes: i64,
+    pub has_completed_sync: bool,
 }
 
 #[derive(Debug)]

@@ -209,6 +209,23 @@ describe('SyncContext.shouldIndexUser', () => {
   });
 });
 
+describe('SyncContext.getUserEmailForSource', () => {
+  it('returns the owner email for its source', async () => {
+    server.use(
+      http.get(`${BASE_URL}/sdk/source/source-owner/user-email`, () =>
+        HttpResponse.json({ email: 'owner@example.com' })
+      )
+    );
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync-owner',
+      'source-owner'
+    );
+
+    await expect(ctx.getUserEmailForSource()).resolves.toBe('owner@example.com');
+  });
+});
+
 describe('SyncContext.incrementUpdated', () => {
   it('POSTs the count to /sdk/sync/:id/updated', async () => {
     const calls: Array<{ syncRunId: string; count: number }> = [];

@@ -140,7 +140,12 @@ export const load: PageServerLoad = async ({ locals }) => {
             // Group by connector_id to build integration list
             const integrationMap = new Map<
                 string,
-                { id: string; name: string; description: string; connected: boolean }
+                {
+                    id: string
+                    name: string
+                    description: string
+                    connected: boolean
+                }
             >()
             const sourceTypesByOAuthProvider = new Map<string, Set<string>>()
             const oauthManifestByProvider = new Map<string, OAuthManifestConfig>()
@@ -202,13 +207,16 @@ export const load: PageServerLoad = async ({ locals }) => {
                 })
                 .sort((a, b) => a.displayName.localeCompare(b.displayName))
 
-            availableIntegrations = Array.from(integrationMap.values()).sort((a, b) => {
-                const idxA = CONNECTOR_DISPLAY_ORDER.indexOf(a.id)
-                const idxB = CONNECTOR_DISPLAY_ORDER.indexOf(b.id)
-                const orderA = idxA === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxA
-                const orderB = idxB === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxB
-                return orderA !== orderB ? orderA - orderB : a.id.localeCompare(b.id)
-            })
+            availableIntegrations = Array.from(integrationMap.values())
+                // Windshift is a personal OAuth source. Users connect it under My Integrations.
+                .filter((integration) => integration.id !== 'windshift')
+                .sort((a, b) => {
+                    const idxA = CONNECTOR_DISPLAY_ORDER.indexOf(a.id)
+                    const idxB = CONNECTOR_DISPLAY_ORDER.indexOf(b.id)
+                    const orderA = idxA === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxA
+                    const orderB = idxB === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxB
+                    return orderA !== orderB ? orderA - orderB : a.id.localeCompare(b.id)
+                })
         }
     } catch (error) {
         locals.logger.error('Failed to fetch connector manager data', error)
