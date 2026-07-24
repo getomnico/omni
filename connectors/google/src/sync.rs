@@ -991,7 +991,10 @@ impl SyncManager {
         // mid-sync.
         let existing_state = existing_state.unwrap_or_default();
 
-        let result = match source.source_type {
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+
+        let result = match native_source_type {
             SourceType::GoogleDrive => {
                 self.sync_drive_source_internal(
                     source,
@@ -1027,7 +1030,7 @@ impl SyncManager {
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
         };
 
-        if result.is_ok() && source.source_type == SourceType::GoogleDrive {
+        if result.is_ok() && native_source_type == SourceType::GoogleDrive {
             self.ensure_webhook_registered(source_id).await;
         }
 
@@ -2289,7 +2292,10 @@ impl SyncManager {
         ctx: &SyncContext,
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
-        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
+
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
         // Parse folder-path filters. Malformed config is a sync error.
         let parsed_filters = match crate::models::parse_folder_path_filters(&source.config) {
@@ -2612,7 +2618,9 @@ impl SyncManager {
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
 
-        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
         let (_drive_cutoff_date, gmail_cutoff_date) = self.get_cutoff_date()?;
         info!("Using Gmail cutoff date: {}", gmail_cutoff_date);
@@ -4911,7 +4919,14 @@ impl SyncManager {
         service_creds: &ServiceCredential,
         ctx: &SyncContext,
     ) -> HashSet<String> {
-        let service_auth = match self.create_auth(service_creds, source.source_type).await {
+        let native_source_type = match SourceType::try_from(source.source_type.as_str()) {
+            Ok(source_type) => source_type,
+            Err(e) => {
+                warn!("Skipping group sync for unsupported source type: {}", e);
+                return HashSet::new();
+            }
+        };
+        let service_auth = match self.create_auth(service_creds, native_source_type).await {
             Ok(auth) => auth,
             Err(e) => {
                 warn!("Failed to create auth for group sync: {}", e);

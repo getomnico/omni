@@ -51,6 +51,23 @@ def sources_from_sync_overview_response(payload: object) -> list[Source]:
     return sources
 
 
+async def fetch_active_sources_from_connector_manager(
+    connector_manager_url: str,
+    timeout: float = 10.0,
+) -> list[Source]:
+    """Fetch active source rows, including remote MCP rows.
+
+    Connector-manager's legacy /sources endpoint is sync-overview oriented and
+    excludes remote MCP sources because they never sync. Tool prefetch paths must
+    use /sources/active so action/resource manifests can join active rows by
+    (integration_type, source_type) without re-enabling sync.
+    """
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(f"{connector_manager_url.rstrip('/')}/sources/active")
+        resp.raise_for_status()
+        return sources_from_sync_overview_response(resp.json())
+
+
 class ToolsetSummary(TypedDict):
     source_id: str
     source_type: str
@@ -83,6 +100,7 @@ class ConnectorAction:
     mode: SourceMode
     admin_only: bool = False
     hidden: bool = False
+    integration_type: str = "connector"
 
 
 class ConnectorToolHandler:
@@ -170,28 +188,36 @@ class ConnectorToolHandler:
                 if self._prefetched_sources is not None:
                     sources = self._prefetched_sources
                 else:
-                    sources_resp = await client.get(
-                        f"{self._connector_manager_url}/sources"
+                    sources = await fetch_active_sources_from_connector_manager(
+                        self._connector_manager_url
                     )
-                    sources_resp.raise_for_status()
-                    sources = sources_from_sync_overview_response(sources_resp.json())
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
             return []
 
-        # Build a mapping from source_type to list of active sources
-        source_by_type: dict[str, list[Source]] = {}
+        # Build a mapping from (integration_type, source_type) to active sources.
+        source_by_identity: dict[tuple[str, str], list[Source]] = {}
         for source in sources:
             if source.is_active and not source.is_deleted:
-                source_by_type.setdefault(source.source_type, []).append(source)
+                source_by_identity.setdefault(
+                    (source.integration_type, source.source_type), []
+                ).append(source)
 
         # Extract search operators from connector manifests
         search_operators: list[SearchOperator] = []
         for connector in connectors:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
+            integration_type = (
+                manifest.get("integration_type", "connector")
+                if manifest
+                else "connector"
+            )
             if not manifest or not connector.get("healthy"):
+                continue
+
+            if (integration_type, source_type) not in source_by_identity:
                 continue
 
             display_name = manifest.get("display_name", source_type)
@@ -217,6 +243,11 @@ class ConnectorToolHandler:
         for connector in connectors:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
+            integration_type = (
+                manifest.get("integration_type", "connector")
+                if manifest
+                else "connector"
+            )
             if not manifest or not connector.get("healthy"):
                 continue
 
@@ -224,8 +255,10 @@ class ConnectorToolHandler:
                 action_source_types = action_def.get("source_types") or []
                 if action_source_types and source_type not in action_source_types:
                     continue
-                # Find matching active sources for this connector type
-                for source in source_by_type.get(source_type, []):
+                # Find matching active sources for this integration/source type.
+                for source in source_by_identity.get(
+                    (integration_type, source_type), []
+                ):
                     actions.append(
                         ConnectorAction(
                             source_id=source.id,
@@ -239,6 +272,7 @@ class ConnectorToolHandler:
                             mode=action_def.get("mode", "write"),
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
+                            integration_type=integration_type,
                         )
                     )
 
@@ -384,6 +418,15 @@ class ConnectorToolHandler:
             if user_credential is not None:
                 return None
 
+            source_row = await conn.fetchrow(
+                """
+                SELECT integration_type, config
+                FROM sources
+                WHERE id = $1
+                LIMIT 1
+                """,
+                action.source_id,
+            )
             org_credential = await conn.fetchrow(
                 """
                 SELECT provider
@@ -394,10 +437,21 @@ class ConnectorToolHandler:
                 action.source_id,
             )
 
-        if org_credential is None:
-            return None
+        if source_row and source_row["integration_type"] == "remote_mcp":
+            config = source_row["config"] or {}
+            if isinstance(config, str):
+                try:
+                    config = json.loads(config)
+                except json.JSONDecodeError:
+                    config = {}
+            if not isinstance(config, dict) or config.get("auth_type") != "oauth":
+                return None
+            provider = "remote_mcp"
+        else:
+            if org_credential is None:
+                return None
+            provider = org_credential["provider"]
 
-        provider = org_credential["provider"]
         if not provider:
             return None
 

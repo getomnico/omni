@@ -68,7 +68,10 @@ pub enum SourceScope {
 pub struct Source {
     pub id: String,
     pub name: String,
-    pub source_type: SourceType,
+    pub source_type: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub integration_type: IntegrationType,
     pub config: JsonValue,
     pub is_active: bool,
     pub is_deleted: bool,
@@ -88,6 +91,16 @@ pub struct Source {
 }
 
 impl Source {
+    pub fn native_source_type(&self) -> Result<SourceType, String> {
+        if self.integration_type != IntegrationType::Connector {
+            return Err(format!(
+                "source {} has integration_type {:?}, not connector",
+                self.id, self.integration_type
+            ));
+        }
+        SourceType::try_from(self.source_type.as_str())
+    }
+
     pub fn get_user_whitelist(&self) -> Vec<String> {
         self.user_whitelist
             .as_ref()
@@ -194,6 +207,101 @@ pub enum SourceType {
     Darwinbox,
 }
 
+impl SourceType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceType::GoogleDrive => "google_drive",
+            SourceType::Gmail => "gmail",
+            SourceType::GoogleChat => "google_chat",
+            SourceType::Confluence => "confluence",
+            SourceType::Jira => "jira",
+            SourceType::Slack => "slack",
+            SourceType::Github => "github",
+            SourceType::LocalFiles => "local_files",
+            SourceType::FileSystem => "file_system",
+            SourceType::Web => "web",
+            SourceType::Notion => "notion",
+            SourceType::Hubspot => "hubspot",
+            SourceType::OneDrive => "one_drive",
+            SourceType::SharePoint => "share_point",
+            SourceType::Outlook => "outlook",
+            SourceType::OutlookCalendar => "outlook_calendar",
+            SourceType::MsTeams => "ms_teams",
+            SourceType::Fireflies => "fireflies",
+            SourceType::Imap => "imap",
+            SourceType::Clickup => "clickup",
+            SourceType::Linear => "linear",
+            SourceType::PaperlessNgx => "paperless_ngx",
+            SourceType::Nextcloud => "nextcloud",
+            SourceType::GoogleAds => "google_ads",
+            SourceType::Darwinbox => "darwinbox",
+        }
+    }
+}
+
+impl std::fmt::Display for SourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SourceType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        SourceType::try_from(value)
+    }
+}
+
+impl TryFrom<&str> for SourceType {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "google_drive" => Ok(SourceType::GoogleDrive),
+            "gmail" => Ok(SourceType::Gmail),
+            "google_chat" => Ok(SourceType::GoogleChat),
+            "confluence" => Ok(SourceType::Confluence),
+            "jira" => Ok(SourceType::Jira),
+            "slack" => Ok(SourceType::Slack),
+            "github" => Ok(SourceType::Github),
+            "local_files" => Ok(SourceType::LocalFiles),
+            "file_system" => Ok(SourceType::FileSystem),
+            "web" => Ok(SourceType::Web),
+            "notion" => Ok(SourceType::Notion),
+            "hubspot" => Ok(SourceType::Hubspot),
+            "one_drive" => Ok(SourceType::OneDrive),
+            "share_point" => Ok(SourceType::SharePoint),
+            "outlook" => Ok(SourceType::Outlook),
+            "outlook_calendar" => Ok(SourceType::OutlookCalendar),
+            "ms_teams" => Ok(SourceType::MsTeams),
+            "fireflies" => Ok(SourceType::Fireflies),
+            "imap" => Ok(SourceType::Imap),
+            "clickup" => Ok(SourceType::Clickup),
+            "linear" => Ok(SourceType::Linear),
+            "paperless_ngx" => Ok(SourceType::PaperlessNgx),
+            "nextcloud" => Ok(SourceType::Nextcloud),
+            "google_ads" => Ok(SourceType::GoogleAds),
+            "darwinbox" => Ok(SourceType::Darwinbox),
+            other => Err(format!("unknown source type: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationType {
+    Connector,
+    RemoteMcp,
+}
+
+impl Default for IntegrationType {
+    fn default() -> Self {
+        IntegrationType::Connector
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
 #[sqlx(type_name = "varchar", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
@@ -217,6 +325,9 @@ pub enum ServiceProvider {
     #[serde(rename = "google_ads")]
     GoogleAds,
     Darwinbox,
+    #[sqlx(rename = "remote_mcp")]
+    #[serde(rename = "remote_mcp")]
+    RemoteMcp,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -821,7 +932,9 @@ pub struct ConnectorManifest {
     pub connector_id: String,
     pub connector_url: String,
     #[serde(default)]
-    pub source_types: Vec<SourceType>,
+    pub integration_type: IntegrationType,
+    #[serde(default)]
+    pub source_types: Vec<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -1318,7 +1431,8 @@ mod tests {
         Source {
             id: "src-1".to_string(),
             name: "Test".to_string(),
-            source_type: SourceType::Web,
+            source_type: SourceType::Web.to_string(),
+            integration_type: IntegrationType::Connector,
             config: json!({}),
             is_active: true,
             is_deleted: false,
@@ -1333,6 +1447,20 @@ mod tests {
             updated_at: OffsetDateTime::now_utc(),
             created_by: "admin".to_string(),
         }
+    }
+
+    #[test]
+    fn integration_type_uses_text_sqlx_type_and_snake_case_json() {
+        use sqlx::{Postgres, Type, TypeInfo};
+
+        assert_eq!(
+            <IntegrationType as Type<Postgres>>::type_info().name(),
+            "text"
+        );
+        assert_eq!(
+            serde_json::to_string(&IntegrationType::RemoteMcp).unwrap(),
+            "\"remote_mcp\""
+        );
     }
 
     #[test]

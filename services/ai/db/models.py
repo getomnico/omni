@@ -415,6 +415,7 @@ class Source:
     source_type: str
     is_active: bool
     is_deleted: bool
+    integration_type: str = "connector"
 
     @classmethod
     def from_row(cls, row: Mapping[str, object]) -> "Source":
@@ -423,6 +424,7 @@ class Source:
             name=cast(str, row["name"]),
             source_type=cast(str, row["source_type"]),
             is_active=cast(bool, row["is_active"]),
+            integration_type=cast(str, row.get("integration_type", "connector")),
             is_deleted=cast(bool, row["is_deleted"]),
         )
 

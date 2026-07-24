@@ -20,6 +20,22 @@ impl ServiceCredentialsRepo {
         })
     }
 
+    /// Fetch a credential row by id.
+    pub async fn find_by_id(&self, id: &str) -> Result<Option<ServiceCredential>> {
+        let mut creds = sqlx::query_as::<_, ServiceCredential>(
+            "SELECT * FROM service_credentials WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(ref mut creds) = creds {
+            self.decrypt_credentials_in_place(creds)?;
+        }
+
+        Ok(creds)
+    }
+
     /// Fetch the org-wide credential row for a source (`user_id IS NULL`).
     pub async fn find_org_credential(&self, source_id: &str) -> Result<Option<ServiceCredential>> {
         let mut creds = sqlx::query_as::<_, ServiceCredential>(

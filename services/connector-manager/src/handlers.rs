@@ -24,8 +24,8 @@ use serde_json::{json, Value};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
 use shared::models::{
-    ActionMode, ConnectorManifest, GlobalConfiguration, SearchOperator, ServiceCredential,
-    ServiceProvider, Source, SourceType, SyncRun, SyncType,
+    ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType, SearchOperator,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -183,6 +183,10 @@ pub async fn list_schedules(
         .find_active_sources()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let sources: Vec<Source> = sources
+        .into_iter()
+        .filter(source_supports_data_sync)
+        .collect();
 
     let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
     let latest_runs = sync_run_repo
@@ -210,10 +214,7 @@ pub async fn list_schedules(
             ScheduleInfo {
                 source_id: source.id,
                 source_name: source.name,
-                source_type: serde_json::to_value(&source.source_type)
-                    .ok()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_default(),
+                source_type: source.source_type,
                 sync_interval_seconds: source.sync_interval_seconds,
                 next_sync_at: next_sync_at.map(|t| t.to_string()),
                 last_sync_at: last_sync_at.map(|t| t.to_string()),
@@ -239,7 +240,28 @@ pub async fn list_sources(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok(Json(build_source_sync_overviews(&state, sources).await?))
+    let syncable_sources = sources
+        .into_iter()
+        .filter(source_supports_data_sync)
+        .collect();
+    Ok(Json(
+        build_source_sync_overviews(&state, syncable_sources).await?,
+    ))
+}
+
+pub async fn list_active_sources_for_capabilities(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SourceSyncOverview>>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_active_sources()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .into_iter()
+        .filter(|source| !source.is_deleted)
+        .collect();
+
+    Ok(Json(build_source_identity_overviews(sources)))
 }
 
 pub async fn get_source(
@@ -252,6 +274,7 @@ pub async fn get_source(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .filter(|source| !source.is_deleted)
+        .filter(source_supports_data_sync)
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
     let mut overviews = build_source_sync_overviews(&state, vec![source]).await?;
@@ -260,6 +283,25 @@ pub async fn get_source(
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
     Ok(Json(overview))
+}
+
+fn source_supports_data_sync(source: &Source) -> bool {
+    source.integration_type == IntegrationType::Connector
+}
+
+fn build_source_identity_overviews(sources: Vec<Source>) -> Vec<SourceSyncOverview> {
+    sources
+        .into_iter()
+        .map(|source| SourceSyncOverview {
+            sync_runs: Vec::new(),
+            source: Source {
+                connector_state: None,
+                checkpoint: None,
+                ..source
+            },
+            health: SourceHealth::Healthy,
+        })
+        .collect()
 }
 
 async fn build_source_sync_overviews(
@@ -334,7 +376,9 @@ pub async fn list_connectors(
 
     for manifest in manifests {
         let url = manifest.connector_url.clone();
-        let healthy = if !url.is_empty() {
+        let healthy = if remote_mcp_in_process_manifest_is_healthy(&manifest) {
+            true
+        } else if !url.is_empty() {
             client.health_check(&url).await
         } else {
             false
@@ -351,6 +395,10 @@ pub async fn list_connectors(
     }
 
     Ok(Json(connectors))
+}
+
+fn remote_mcp_in_process_manifest_is_healthy(manifest: &ConnectorManifest) -> bool {
+    manifest.integration_type == IntegrationType::RemoteMcp && manifest.connector_url.is_empty()
 }
 
 pub async fn execute_action(
@@ -386,10 +434,11 @@ pub async fn execute_action(
             ApiError::BadRequest("user_id is required in transient mode".to_string())
         })?;
 
+
         // Look up the connector manifest by source_type.
         let manifest = manifests
             .iter()
-            .find(|m| m.source_types.contains(&source_type))
+            .find(|m| m.source_types.contains(&source_type.to_string()))
             .ok_or_else(|| {
                 ApiError::NotFound(format!(
                     "Connector not registered for type: {:?}",
@@ -423,6 +472,11 @@ pub async fn execute_action(
                 request.action
             )));
         }
+
+        // Resolve user/admin from user_id (required in transient mode).
+        let user_id = request.user_id.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("user_id is required in transient mode".to_string())
+        })?;
 
         let user_repo = UserRepository::new(state.db_pool.pool());
         let user = user_repo
@@ -483,11 +537,41 @@ pub async fn execute_action(
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::NotFound(format!("Source not found: {source_id}")))?;
 
-        source_type = db_source.source_type;
+        source_type = SourceType::try_from(db_source.source_type.as_str())
+            .map_err(|e| ApiError::Internal(format!("Invalid source type: {}", e)))?;
+
+        if db_source.integration_type == IntegrationType::RemoteMcp {
+            if !db_source.is_active || db_source.is_deleted {
+                return Err(ApiError::BadRequest(format!(
+                    "Remote MCP source is inactive or deleted: {}",
+                    source_id
+                )));
+            }
+            let result = state
+                .remote_mcp_gateway
+                .execute_action(
+                    &db_source,
+                    &request.action,
+                    request.params.clone(),
+                    request.user_id.as_deref(),
+                )
+                .await
+                .map_err(remote_mcp_gateway_error_to_api_error)?;
+            let body =
+                serde_json::to_vec(&result).map_err(|e| ApiError::Internal(e.to_string()))?;
+            return axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )
+                .body(axum::body::Body::from(body))
+                .map_err(|e| ApiError::Internal(e.to_string()));
+        }
 
         let manifest = manifests
             .iter()
-            .find(|m| m.source_types.contains(&source_type))
+            .find(|m| m.source_types.contains(&source_type.to_string()))
             .ok_or_else(|| {
                 ApiError::NotFound(format!(
                     "Connector not registered for type: {:?}",
@@ -540,7 +624,7 @@ pub async fn execute_action(
         {
             CredentialResolution::Resolved(c) => c,
             CredentialResolution::NeedsUserAuth { provider } => {
-                return Ok(needs_user_auth_response(&source_id, source_type, provider)?);
+                return Ok(needs_user_auth_response(&source_id, source_type.to_string(), provider)?);
             }
             CredentialResolution::NoCredentials => {
                 return Err(ApiError::NotFound(format!(
@@ -840,14 +924,58 @@ async fn resolve_credentials(
 struct NeedsUserAuthResponse {
     error: &'static str,
     source_id: String,
-    source_type: SourceType,
+    source_type: String,
     provider: ServiceProvider,
     oauth_start_url: String,
 }
 
+fn remote_mcp_gateway_error_to_api_error(
+    err: crate::remote_mcp::gateway::GatewayError,
+) -> ApiError {
+    match err {
+        crate::remote_mcp::gateway::GatewayError::NeedsUserAuth {
+            source_id,
+            source_type,
+            provider,
+        } => ApiError::PreconditionFailedJson(json!({
+            "error": "needs_user_auth",
+            "source_id": source_id,
+            "source_type": source_type,
+            "provider": provider,
+            "oauth_start_url": format!("/api/oauth/start?source_id={}", source_id),
+        })),
+        crate::remote_mcp::gateway::GatewayError::MissingCredentials(source_id) => {
+            ApiError::NotFound(format!("Credentials not found for source: {source_id}"))
+        }
+        crate::remote_mcp::gateway::GatewayError::SourceInactive(source_id) => {
+            ApiError::BadRequest(format!(
+                "Remote MCP source is inactive or deleted: {source_id}"
+            ))
+        }
+        crate::remote_mcp::gateway::GatewayError::SourceNotFound(source_id) => {
+            ApiError::NotFound(format!("Source not found: {source_id}"))
+        }
+        crate::remote_mcp::gateway::GatewayError::NotRemoteMcp(source_id) => {
+            ApiError::BadRequest(format!("Source is not remote MCP: {source_id}"))
+        }
+        crate::remote_mcp::gateway::GatewayError::InvalidConfig { source_id, message } => {
+            ApiError::BadRequest(format!(
+                "Invalid remote MCP config for {source_id}: {message}"
+            ))
+        }
+        crate::remote_mcp::gateway::GatewayError::UnsupportedAuthType {
+            source_id,
+            auth_type,
+        } => ApiError::BadRequest(format!(
+            "Unsupported remote MCP auth type for {source_id}: {auth_type:?}"
+        )),
+        other => ApiError::Internal(other.to_string()),
+    }
+}
+
 fn needs_user_auth_response(
     source_id: &str,
-    source_type: SourceType,
+    source_type: String,
     provider: ServiceProvider,
 ) -> Result<axum::response::Response, ApiError> {
     let body = NeedsUserAuthResponse {
@@ -895,7 +1023,12 @@ pub async fn list_actions(
                 if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
                     continue;
                 }
-                if !action.source_types.is_empty() && !action.source_types.contains(source_type) {
+                if !action.source_types.is_empty()
+                    && !action
+                        .source_types
+                        .iter()
+                        .any(|action_source_type| action_source_type.as_str() == source_type)
+                {
                     continue;
                 }
                 if action.hidden {
@@ -983,7 +1116,43 @@ pub async fn read_resource(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if !source.is_active || source.is_deleted {
+            return Err(ApiError::BadRequest(format!(
+                "Remote MCP source is inactive or deleted: {}",
+                source.id
+            )));
+        }
+        let manifests = get_registered_manifests(&state.redis_client).await;
+        let manifest = manifests.iter().find(|m| {
+            m.integration_type == source.integration_type
+                && m.source_types.contains(&source.source_type)
+        });
+        if !manifest
+            .map(|m| {
+                m.resources.iter().any(|resource| {
+                    request.uri == resource.uri_template
+                        || request
+                            .uri
+                            .starts_with(resource.uri_template.trim_end_matches('*'))
+                })
+            })
+            .unwrap_or(false)
+        {
+            return Err(ApiError::NotFound(format!(
+                "Resource not advertised: {}",
+                request.uri
+            )));
+        }
+        let result = state
+            .remote_mcp_gateway
+            .read_resource(&source, &request.uri, request.user_id.as_deref())
+            .await
+            .map_err(remote_mcp_gateway_error_to_api_error)?;
+        return Ok(Json(result));
+    }
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -1035,7 +1204,41 @@ pub async fn get_prompt(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if !source.is_active || source.is_deleted {
+            return Err(ApiError::BadRequest(format!(
+                "Remote MCP source is inactive or deleted: {}",
+                source.id
+            )));
+        }
+        let manifests = get_registered_manifests(&state.redis_client).await;
+        let manifest = manifests.iter().find(|m| {
+            m.integration_type == source.integration_type
+                && m.source_types.contains(&source.source_type)
+        });
+        if !manifest
+            .map(|m| m.prompts.iter().any(|prompt| prompt.name == request.name))
+            .unwrap_or(false)
+        {
+            return Err(ApiError::NotFound(format!(
+                "Prompt not advertised: {}",
+                request.name
+            )));
+        }
+        let result = state
+            .remote_mcp_gateway
+            .get_prompt(
+                &source,
+                &request.name,
+                request.arguments.clone(),
+                request.user_id.as_deref(),
+            )
+            .await
+            .map_err(remote_mcp_gateway_error_to_api_error)?;
+        return Ok(Json(result));
+    }
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -1092,7 +1295,29 @@ pub async fn oauth_credential_ready(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if request.user_id.is_none() {
+            match state.remote_mcp_gateway.refresh_catalog(&source.id).await {
+                Ok(manifest) => {
+                    return Ok(Json(json!({
+                        "status": "completed",
+                        "catalog_updated": true,
+                        "connector_id": manifest.connector_id,
+                    })));
+                }
+                Err(err) => {
+                    warn!(source_id = %source.id, error = %err, "remote MCP OAuth credential-ready catalog refresh failed");
+                    return Err(remote_mcp_gateway_error_to_api_error(err));
+                }
+            }
+        }
+        return Ok(Json(json!({
+            "status": "delivered",
+            "catalog_updated": false,
+        })));
+    }
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -1202,12 +1427,16 @@ pub async fn list_skills(
 
     for manifest in manifests {
         for skill in &manifest.skills {
-            let source_types = if skill.source_types.is_empty() {
-                &manifest.source_types
+            let source_types: Vec<String> = if skill.source_types.is_empty() {
+                manifest.source_types.clone()
             } else {
-                &skill.source_types
+                skill
+                    .source_types
+                    .iter()
+                    .map(|source_type| source_type.to_string())
+                    .collect()
             };
-            for source_type in source_types {
+            for source_type in &source_types {
                 let matching_sources: Vec<_> = sources
                     .iter()
                     .filter(|source| source.source_type == *source_type)
@@ -1328,6 +1557,9 @@ pub enum ApiError {
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
 
+    #[error("Precondition failed")]
+    PreconditionFailedJson(Value),
+
     #[error("Too many requests: {message} (retry after {retry_after_secs}s)")]
     TooManyRequests {
         message: String,
@@ -1349,6 +1581,9 @@ impl From<SyncError> for ApiError {
             }
             SyncError::SourceInactive(id) => {
                 ApiError::BadRequest(format!("Source is inactive: {}", id))
+            }
+            SyncError::SourceDoesNotSync(id) => {
+                ApiError::BadRequest(format!("Source does not support data sync: {}", id))
             }
             SyncError::SyncAlreadyRunning(id) => {
                 ApiError::Conflict(format!("Sync already running for source: {}", id))
@@ -1399,6 +1634,9 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             ApiError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
+            ApiError::PreconditionFailedJson(body) => {
+                return (StatusCode::PRECONDITION_FAILED, Json(body.clone())).into_response();
+            }
             ApiError::TooManyRequests { .. } => unreachable!(),
         };
 
@@ -1558,9 +1796,7 @@ pub async fn sdk_register(
         .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
 
     // Aggregate search operators from all registered connectors
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg("connector:manifest:*")
-        .query_async(&mut conn)
+    let keys = scan_redis_keys(&mut conn, "connector:manifest:*")
         .await
         .unwrap_or_default();
 
@@ -1667,6 +1903,30 @@ pub async fn sdk_register(
     }))
 }
 
+async fn scan_redis_keys(
+    conn: &mut redis::aio::MultiplexedConnection,
+    pattern: &str,
+) -> redis::RedisResult<Vec<String>> {
+    let mut cursor: u64 = 0;
+    let mut keys = Vec::new();
+    loop {
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            .cursor_arg(cursor)
+            .arg("MATCH")
+            .arg(pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query_async(conn)
+            .await?;
+        keys.extend(batch);
+        if next_cursor == 0 {
+            break;
+        }
+        cursor = next_cursor;
+    }
+    Ok(keys)
+}
+
 /// Scan Redis for all registered connector manifests.
 pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<ConnectorManifest> {
     let mut conn = match redis_client.get_multiplexed_async_connection().await {
@@ -1677,9 +1937,7 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
         }
     };
 
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg("connector:manifest:*")
-        .query_async(&mut conn)
+    let keys = scan_redis_keys(&mut conn, "connector:manifest:*")
         .await
         .unwrap_or_default();
 
@@ -1697,11 +1955,15 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
 /// Look up the connector URL for a given source type from the Redis registry.
 pub async fn get_connector_url_for_source(
     redis_client: &redis::Client,
-    source_type: SourceType,
+    source_type: &str,
 ) -> Option<String> {
     let manifests = get_registered_manifests(redis_client).await;
     for manifest in manifests {
-        if manifest.source_types.contains(&source_type) {
+        if manifest
+            .source_types
+            .iter()
+            .any(|manifest_source_type| manifest_source_type == source_type)
+        {
             return Some(manifest.connector_url);
         }
     }
@@ -1712,10 +1974,14 @@ pub async fn get_connector_url_for_source(
 /// Returns an empty vec when no connector is registered for the source_type.
 pub async fn get_sync_modes_for_source(
     redis_client: &redis::Client,
-    source_type: SourceType,
+    source_type: &str,
 ) -> Vec<SyncType> {
     for manifest in get_registered_manifests(redis_client).await {
-        if manifest.source_types.contains(&source_type) {
+        if manifest
+            .source_types
+            .iter()
+            .any(|manifest_source_type| manifest_source_type == source_type)
+        {
             return manifest.sync_modes;
         }
     }
@@ -2577,12 +2843,19 @@ pub async fn sdk_get_source_sync_config(
         .map(|c| c.credentials)
         .unwrap_or_else(|| serde_json::json!({}));
 
+    let source_type = SourceType::try_from(source.source_type.as_str()).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Source {} cannot be served to a native connector SDK: {}",
+            source.id, e
+        ))
+    })?;
+
     Ok(Json(SdkSourceSyncConfigResponse {
         config: source.config,
         credentials,
         connector_state: source.connector_state,
         checkpoint: source.checkpoint,
-        source_type: source.source_type,
+        source_type,
         user_filter_mode: source.user_filter_mode,
         user_whitelist: source.user_whitelist,
         user_blacklist: source.user_blacklist,
@@ -2819,7 +3092,8 @@ mod tests {
             sync_modes: vec![SyncType::Full],
             connector_id: "test-connector".to_string(),
             connector_url: "http://test-connector:4000".to_string(),
-            source_types: vec![SourceType::Notion],
+            integration_type: shared::models::IntegrationType::Connector,
+            source_types: vec![SourceType::Notion.to_string()],
             description: None,
             actions: vec![shared::models::ActionDefinition {
                 name: "export_data_source_csv".to_string(),
@@ -2841,6 +3115,18 @@ mod tests {
             skills: Vec::new(),
             oauth: None,
         }
+    }
+
+    #[test]
+    fn remote_mcp_in_process_manifest_is_healthy_without_connector_url() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.integration_type = IntegrationType::RemoteMcp;
+        manifest.connector_url = String::new();
+
+        assert!(remote_mcp_in_process_manifest_is_healthy(&manifest));
+
+        manifest.integration_type = IntegrationType::Connector;
+        assert!(!remote_mcp_in_process_manifest_is_healthy(&manifest));
     }
 
     #[test]

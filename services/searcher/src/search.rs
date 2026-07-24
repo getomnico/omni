@@ -6,19 +6,19 @@ use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::SourceType;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
 };
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
+use shared::SourceType;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
 };
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

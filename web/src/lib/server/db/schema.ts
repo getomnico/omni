@@ -37,6 +37,7 @@ export const sources = pgTable('sources', {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
     sourceType: text('source_type').notNull(),
+    integrationType: text('integration_type').notNull().default('connector'),
     config: jsonb('config').notNull().default({}),
     isActive: boolean('is_active').notNull().default(true),
     isDeleted: boolean('is_deleted').notNull().default(false),

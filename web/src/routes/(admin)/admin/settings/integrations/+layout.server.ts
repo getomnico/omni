@@ -13,6 +13,7 @@ function mapSource(source: Record<string, unknown>): Source {
         id: source.id as string,
         name: source.name as string,
         sourceType: source.source_type as string,
+        integrationType: (source.integration_type as string | undefined) ?? 'connector',
         config: source.config,
         isActive: source.is_active as boolean,
         isDeleted: source.is_deleted as boolean,

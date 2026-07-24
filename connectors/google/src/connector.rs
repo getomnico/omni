@@ -1197,7 +1197,9 @@ impl Connector for GoogleConnector {
                 }
             }
             _ => {
-                create_service_auth(creds, source.source_type).map_err(|e| {
+                let native_source_type = SourceType::try_from(source.source_type.as_str())
+                    .map_err(SyncRequestValidationError::BadRequest)?;
+                create_service_auth(creds, native_source_type).map_err(|e| {
                     SyncRequestValidationError::BadRequest(format!(
                         "Invalid Google service-account credentials: {}",
                         e

@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
 import { ulid } from 'ulid'
+import { eq } from 'drizzle-orm'
 import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
 import { OAuthStateManager } from '$lib/server/oauth/state'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
@@ -12,7 +13,7 @@ import { getConfig } from '$lib/server/config'
 import { getSourceById, getSourcesByType } from '$lib/server/db/sources'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals'
 import { getSourceDisplayName } from '$lib/utils/icons'
-import { SourceType } from '$lib/types'
+import { IntegrationType, SourceType } from '$lib/types'
 
 function isSafeLocalPath(value: string): boolean {
     return value.startsWith('/') && !value.startsWith('//')
@@ -53,10 +54,12 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     let failureReturnTo: string | null = null
+    let pendingProvider: string | null = null
     try {
         const pendingState = await OAuthStateManager.getState(stateToken)
         if (pendingState?.user_id === user.id) {
             failureReturnTo = returnToFromStateMetadata(pendingState.metadata)
+            pendingProvider = pendingState.metadata?.provider ?? null
         }
     } catch (err) {
         logger.warn('Failed to read OAuth state for failure redirect', { err: String(err) })
@@ -67,6 +70,9 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         exchange = await exchangeCodeAndIdentify(code, stateToken, {
             principalEmailOverrides: {
                 clickup: user.email,
+                ...(pendingProvider?.startsWith('remote_mcp:')
+                    ? { [pendingProvider]: user.email }
+                    : {}),
             },
         })
     } catch (err) {
@@ -78,6 +84,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     const { tokens, state, principalEmail, config, clientCreds } = exchange
+    const credentialProvider = config.credential_provider ?? config.provider
 
     if (state.user_id !== user.id) {
         throw error(403, 'OAuth state does not match the signed-in user')
@@ -117,7 +124,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
     })
 
-    const notifyOAuthCredentialReady = async (sourceId: string, userId?: string) => {
+    const notifyOAuthCredentialReady = async (
+        sourceId: string,
+        userId?: string,
+    ): Promise<Record<string, unknown> | null> => {
         try {
             const cmUrl = getConfig().services.connectorManagerUrl
             const resp = await fetch(`${cmUrl}/oauth/credential-ready`, {
@@ -130,18 +140,22 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                     flow: flow.type === 'user_write' ? 'user_write' : 'user_read',
                 }),
             })
+            const body = (await resp.json().catch(() => null)) as Record<string, unknown> | null
             if (!resp.ok) {
                 logger.warn('OAuth credential-ready notification failed', {
                     sourceId,
                     status: resp.status,
-                    body: await resp.text(),
+                    body,
                 })
+                return null
             }
+            return body
         } catch (err) {
             logger.warn('OAuth credential-ready notification failed', {
                 sourceId,
                 err: String(err),
             })
+            return null
         }
     }
 
@@ -158,7 +172,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
 
         await serviceCredentialsRepository.create({
             sourceId: flow.sourceId,
-            provider: config.provider,
+            provider: credentialProvider,
             authType: 'oauth',
             principalEmail,
             credentials: {
@@ -169,7 +183,24 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             expiresAt,
         })
 
-        await notifyOAuthCredentialReady(flow.sourceId)
+        const credentialReady = await notifyOAuthCredentialReady(flow.sourceId)
+
+        if (source.integrationType === IntegrationType.REMOTE_MCP) {
+            if (credentialReady?.status !== 'completed') {
+                throw redirect(
+                    302,
+                    withErrorParam(
+                        flow.returnTo ?? '/admin/settings/integrations',
+                        'oauth_catalog_refresh_failed',
+                    ),
+                )
+            }
+            await db
+                .update(sources)
+                .set({ isActive: true, updatedAt: new Date() })
+                .where(eq(sources.id, flow.sourceId))
+            throw redirect(302, flow.returnTo ?? '/admin/settings/integrations?success=connected')
+        }
 
         try {
             await fetch(`/api/sources/${flow.sourceId}/sync`, {
@@ -194,7 +225,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         await serviceCredentialsRepository.createForUser({
             sourceId: flow.sourceId,
             userId: user.id,
-            provider: config.provider,
+            provider: credentialProvider,
             authType: 'oauth',
             principalEmail,
             credentials: {
@@ -248,7 +279,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             await serviceCredentialsRepository.createForUser({
                 sourceId: existing.id,
                 userId: user.id,
-                provider: config.provider,
+                provider: credentialProvider,
                 authType: 'oauth',
                 principalEmail,
                 credentials: {
@@ -277,7 +308,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         await serviceCredentialsRepository.createForUser({
             sourceId: newSource.id,
             userId: user.id,
-            provider: config.provider,
+            provider: credentialProvider,
             authType: 'oauth',
             principalEmail,
             credentials: credentialsWithRefreshFallback({}),

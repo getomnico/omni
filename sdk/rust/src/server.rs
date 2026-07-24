@@ -18,7 +18,7 @@ use axum::{
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use serde::de::DeserializeOwned;
-use shared::models::{ConnectorSkillDefinition, SyncSlotClass, SyncType};
+use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -482,11 +482,21 @@ where
         .register_sync(&sync_run_id, request.sync_mode)
         .await;
 
+    let native_source_type = SourceType::try_from(source.source_type.as_str()).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(SyncResponse::error(format!(
+                "source {} is not a native connector source: {}",
+                source_id, e
+            ))),
+        )
+    })?;
+
     let ctx = SyncContext::new_with_resume(
         state.sdk_client.clone(),
         sync_run_id.clone(),
         source_id.clone(),
-        source.source_type,
+        native_source_type,
         request.sync_mode,
         request.is_resume,
         cancelled,

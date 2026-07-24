@@ -6,7 +6,7 @@ use dashmap::DashMap;
 use redis::Client as RedisClient;
 use shared::db::error::DatabaseError;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SourceType, SyncSlotClass, SyncStatus, SyncType};
+use shared::models::{IntegrationType, SyncSlotClass, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -91,8 +91,12 @@ impl SyncManager {
             return Err(SyncError::SourceInactive(source_id.to_string()));
         }
 
+        if source.integration_type == IntegrationType::RemoteMcp {
+            return Err(SyncError::SourceDoesNotSync(source_id.to_string()));
+        }
+
         // Get connector URL from registry
-        let connector_url = get_connector_url_for_source(&self.redis_client, source.source_type)
+        let connector_url = get_connector_url_for_source(&self.redis_client, &source.source_type)
             .await
             .ok_or_else(|| {
                 SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type))
@@ -214,7 +218,7 @@ impl SyncManager {
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?
             .ok_or_else(|| SyncError::SourceNotFound(sync_run.source_id.clone()))?;
 
-        let connector_url = get_connector_url_for_source(&self.redis_client, source.source_type)
+        let connector_url = get_connector_url_for_source(&self.redis_client, &source.source_type)
             .await
             .ok_or_else(|| {
                 SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type))
@@ -327,7 +331,7 @@ impl SyncManager {
 
             let connector_url = match get_connector_url_for_source(
                 &self.redis_client,
-                source.source_type,
+                &source.source_type,
             )
             .await
             {
@@ -454,7 +458,7 @@ impl SyncManager {
         };
 
         let connector_url =
-            match get_connector_url_for_source(&self.redis_client, source.source_type).await {
+            match get_connector_url_for_source(&self.redis_client, &source.source_type).await {
                 Some(url) => url,
                 None => {
                     // Connector is still unregistered. Attempt was counted
@@ -558,9 +562,9 @@ impl SyncManager {
             return Ok(vec![]);
         }
 
-        let source_type_map: HashMap<String, SourceType> = inactive_sources
+        let source_type_map: HashMap<String, String> = inactive_sources
             .iter()
-            .map(|s| (s.id.clone(), s.source_type))
+            .map(|s| (s.id.clone(), s.source_type.clone()))
             .collect();
         let source_ids: Vec<String> = inactive_sources.into_iter().map(|s| s.id).collect();
 
@@ -579,7 +583,7 @@ impl SyncManager {
                 "Cancelling sync {} for inactive/deleted source {}",
                 run.id, run.source_id
             );
-            if let Some(&source_type) = source_type_map.get(&run.source_id) {
+            if let Some(source_type) = source_type_map.get(&run.source_id) {
                 if let Some(connector_url) =
                     get_connector_url_for_source(&self.redis_client, source_type).await
                 {
@@ -613,7 +617,7 @@ impl SyncManager {
         let timeout_minutes = self.config.stale_sync_timeout_minutes as i64;
         let cutoff = OffsetDateTime::now_utc() - time::Duration::minutes(timeout_minutes);
 
-        let stale_syncs: Vec<(String, String, SourceType)> = sqlx::query_as(
+        let stale_syncs: Vec<(String, String, String)> = sqlx::query_as(
             r#"
             SELECT sr.id, sr.source_id, s.source_type
             FROM sync_runs sr
@@ -638,7 +642,7 @@ impl SyncManager {
             );
 
             if let Some(connector_url) =
-                get_connector_url_for_source(&self.redis_client, source_type).await
+                get_connector_url_for_source(&self.redis_client, &source_type).await
             {
                 if let Err(e) = self
                     .connector_client
@@ -703,6 +707,9 @@ pub enum SyncError {
 
     #[error("Source is inactive: {0}")]
     SourceInactive(String),
+
+    #[error("Source does not support data sync: {0}")]
+    SourceDoesNotSync(String),
 
     #[error("Sync already running for source: {0}")]
     SyncAlreadyRunning(String),

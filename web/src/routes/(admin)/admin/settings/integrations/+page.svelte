@@ -41,6 +41,7 @@
         HardDrive,
         KeyRound,
         Mail,
+        Plus,
     } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
@@ -62,7 +63,7 @@
     import DarwinboxConnectorSetup from '$lib/components/darwinbox-connector-setup.svelte'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { Badge } from '$lib/components/ui/badge'
-    import { SourceType } from '$lib/types'
+    import { AuthType, SourceType } from '$lib/types'
     import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
     import { invalidateAll } from '$app/navigation'
     import { page } from '$app/state'
@@ -247,6 +248,12 @@
     function getConfigureUrl(sourceType: SourceType, sourceId: string): string {
         const slug = sourceTypeSlug[sourceType] ?? sourceType
         return `/admin/settings/integrations/${slug}/${sourceId}`
+    }
+
+    function remoteMcpAuthLabel(authType: string | null) {
+        if (authType === AuthType.BEARER_TOKEN) return 'Shared bearer'
+        if (authType === AuthType.OAUTH) return 'Per-user OAuth'
+        return 'Public'
     }
 </script>
 

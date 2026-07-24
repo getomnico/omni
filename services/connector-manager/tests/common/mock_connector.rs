@@ -1,17 +1,17 @@
 use axum::{
-    Router,
     extract::{Path, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
+    Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::time::{Duration, sleep};
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordedSyncRequest {

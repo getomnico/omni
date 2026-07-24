@@ -20,9 +20,9 @@ pub use server::{create_router, serve, serve_with_config, serve_with_extra_route
 pub use shared::models::DocumentAttributes;
 pub use shared::models::{
     ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest,
-    ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions, McpPromptDefinition,
-    McpResourceDefinition, SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType,
-    SyncRun, SyncStatus, SyncType,
+    ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions, IntegrationType,
+    McpPromptDefinition, McpResourceDefinition, SearchOperator, ServiceCredential, ServiceProvider,
+    Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 pub use shared::rate_limiter::{RateLimiter, RetryableError};
 pub use shared::telemetry;

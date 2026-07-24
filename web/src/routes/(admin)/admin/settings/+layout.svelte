@@ -16,6 +16,7 @@
         FileText,
         Brain,
         Globe,
+        Server,
     } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
     import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
@@ -195,6 +196,21 @@
                                 </Sidebar.MenuButton>
                             </Sidebar.MenuItem>
                         {/if}
+                        <Sidebar.MenuItem>
+                            <Sidebar.MenuButton
+                                class={cn(
+                                    (page.url.pathname === '/admin/settings/mcp' ||
+                                        page.url.pathname.startsWith('/admin/settings/mcp/')) &&
+                                        'bg-sidebar-accent text-sidebar-accent-foreground',
+                                )}>
+                                {#snippet child({ props })}
+                                    <a href="/admin/settings/mcp" {...props}>
+                                        <Server class="h-4 w-4" />
+                                        <span>MCP</span>
+                                    </a>
+                                {/snippet}
+                            </Sidebar.MenuButton>
+                        </Sidebar.MenuItem>
                     </Sidebar.Menu>
                 </Sidebar.GroupContent>
             </Sidebar.Group>
@@ -209,8 +225,9 @@
 
     <!-- Main content area -->
     <div class="flex max-h-[100svh] min-h-screen w-full flex-col">
-        <header class="bg-background sticky top-0 z-50 flex h-14 items-center border-b px-4 md:hidden">
-            <Sidebar.Trigger class="cursor-pointer size-11" />
+        <header
+            class="bg-background sticky top-0 z-50 flex h-14 items-center border-b px-4 md:hidden">
+            <Sidebar.Trigger class="size-11 cursor-pointer" />
             <span class="ml-2 text-sm font-medium">Admin Settings</span>
         </header>
         <main class="min-h-0 flex-1">

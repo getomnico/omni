@@ -102,7 +102,7 @@ from tools import (
 from tools.connector_handler import (
     SearchOperator,
     ToolsetSummary,
-    sources_from_sync_overview_response,
+    fetch_active_sources_from_connector_manager,
 )
 from tools.mcp_capability_handler import McpCapabilityHandler
 from tools.meta_handler import MetaToolHandler, OnLoad
@@ -233,10 +233,7 @@ def _loaded_source_ids(
 
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
-            resp.raise_for_status()
-            return sources_from_sync_overview_response(resp.json())
+        return await fetch_active_sources_from_connector_manager(CONNECTOR_MANAGER_URL)
     except Exception as e:
         logger.warning(f"Failed to fetch sources from connector manager: {e}")
         return None

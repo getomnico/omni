@@ -2,6 +2,8 @@ import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
+import { sourcesRepository } from '$lib/server/repositories/sources'
+import { supportsDataSync } from '$lib/types'
 
 type SyncMode = 'incremental' | 'full'
 
@@ -34,6 +36,14 @@ export const POST: RequestHandler = async ({ params, request, fetch }) => {
     }
 
     try {
+        const source = await sourcesRepository.getById(sourceId)
+        if (!source || source.isDeleted) {
+            throw error(404, 'Source not found')
+        }
+        if (!supportsDataSync(source.integrationType)) {
+            throw error(400, 'Source does not support data sync')
+        }
+
         const mode = await getSyncMode(request)
         const config = getConfig()
         const connectorManagerUrl = config.services.connectorManagerUrl

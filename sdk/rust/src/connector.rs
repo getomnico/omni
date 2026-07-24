@@ -13,7 +13,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, SearchOperator,
+    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, IntegrationType, SearchOperator,
     ServiceCredential, Source, SourceType, SyncType,
 };
 
@@ -165,7 +165,12 @@ pub trait Connector: Send + Sync + 'static {
             sync_modes: self.sync_modes(),
             connector_id: self.name().to_string(),
             connector_url,
-            source_types: self.source_types(),
+            integration_type: IntegrationType::Connector,
+            source_types: self
+                .source_types()
+                .into_iter()
+                .map(|source_type| source_type.to_string())
+                .collect(),
             description: self.description(),
             actions: self.actions(),
             search_operators: self.search_operators(),

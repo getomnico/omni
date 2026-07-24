@@ -59,7 +59,11 @@ async fn cleanup_source(pool: &PgPool, source_id: &str) -> Result<(), sqlx::Erro
         return Ok(());
     }
 
-    // No documents left — safe to delete the source row (cascades to sync_runs, etc.)
+    // No documents left. Do not write searcher-owned agent_capabilities from
+    // connector-manager; stale source-scoped capabilities are pruned by the
+    // existing AI/searcher capability sync path.
+
+    // Safe to delete the source row (cascades to sync_runs, credentials, etc.)
     sqlx::query("DELETE FROM sources WHERE id = $1")
         .bind(source_id)
         .execute(pool)

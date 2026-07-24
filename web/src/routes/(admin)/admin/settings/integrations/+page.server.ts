@@ -10,6 +10,7 @@ import {
     type OAuthManifestConfig,
 } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
+import { IntegrationType, supportsDataSync } from '$lib/types'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -52,7 +53,10 @@ interface ConnectorInfo {
         connector_id?: string
         display_name?: string
         description?: string
+        integration_type?: string
         source_types?: string[]
+        actions?: unknown[]
+        resources?: unknown[]
         oauth?: OAuthManifestConfig | null
     }
 }
@@ -102,9 +106,11 @@ function mapSyncRun(run: Record<string, string | number | null>): SyncRun {
 export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
-    const connectedSources = await sourcesRepository.getOrgWide()
-    const sourceIds = connectedSources.map((s) => s.id)
-    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(sourceIds)
+    const orgSources = await sourcesRepository.getOrgWide()
+    const connectedSources = orgSources.filter((source) => supportsDataSync(source.integrationType))
+    const connectedSourceIds = connectedSources.map((source) => source.id)
+    const connectedSourceIdSet = new Set(connectedSourceIds)
+    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(connectedSourceIds)
     const savedOAuthConfigs = await getAllConnectorConfigsPublic()
     const savedOAuthConfigByProvider = new Map(savedOAuthConfigs.map((row) => [row.provider, row]))
 
@@ -128,6 +134,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         if (sourcesResponse.ok) {
             const overviews = (await sourcesResponse.json()) as ConnectorManagerSourceOverview[]
             for (const overview of overviews) {
+                if (!connectedSourceIdSet.has(overview.source.id)) continue
                 sourceHealth.set(overview.source.id, overview.health)
                 if (overview.sync_runs[0]) {
                     latestSyncRuns.set(overview.source.id, mapSyncRun(overview.sync_runs[0]))
@@ -147,6 +154,7 @@ export const load: PageServerLoad = async ({ locals }) => {
             const oauthManifestByProvider = new Map<string, OAuthManifestConfig>()
 
             for (const connector of connectors) {
+                if (connector.manifest?.integration_type === IntegrationType.REMOTE_MCP) continue
                 const connectorId = connector.manifest?.connector_id ?? connector.source_type
                 if (!integrationMap.has(connectorId)) {
                     integrationMap.set(connectorId, {
@@ -184,6 +192,7 @@ export const load: PageServerLoad = async ({ locals }) => {
             oauthProviders = Array.from(sourceTypesByOAuthProvider.keys())
                 .filter(
                     (provider) =>
+                        !provider.startsWith('remote_mcp:') &&
                         !isAutoManagedOAuthProvider(oauthManifestByProvider.get(provider)),
                 )
                 .map((provider) => {

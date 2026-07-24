@@ -8,7 +8,6 @@ from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
-import httpx
 from anthropic.types import (
     BashCodeExecutionToolResultBlockParam,
     CodeExecutionToolResultBlockParam,
@@ -68,7 +67,7 @@ from tools.connector_handler import (
     ConnectorToolHandler,
     SourceFilter,
     ToolsetSummary,
-    sources_from_sync_overview_response,
+    fetch_active_sources_from_connector_manager,
 )
 from tools.email_handler import EmailToolHandler
 from tools.mcp_capability_handler import McpCapabilityHandler
@@ -125,12 +124,9 @@ async def _resolve_llm_provider(state: AppState, agent: Agent) -> ResolvedModel:
 
 
 async def _fetch_sources() -> list[Source] | None:
-    """Fetch all sources from the connector manager."""
+    """Fetch active sources, including remote MCP rows, from connector manager."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{CONNECTOR_MANAGER_URL.rstrip('/')}/sources")
-            resp.raise_for_status()
-            return sources_from_sync_overview_response(resp.json())
+        return await fetch_active_sources_from_connector_manager(CONNECTOR_MANAGER_URL)
     except Exception as e:
         logger.warning(f"Failed to fetch sources: {e}")
         return None

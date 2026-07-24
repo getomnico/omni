@@ -5,6 +5,7 @@ import { sources, documents } from '$lib/server/db/schema'
 import { eq, and, count, inArray } from 'drizzle-orm'
 import { updateSourceById } from '$lib/server/db/sources'
 import { sourcesRepository } from '$lib/server/repositories/sources'
+import { supportsDataSync } from '$lib/types'
 import type { PageServerLoad, Actions } from './$types'
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -14,9 +15,11 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
-    const userSources = await sourcesRepository.getByUserId(locals.user.id)
+    const userSources = (await sourcesRepository.getByUserId(locals.user.id)).filter((source) =>
+        supportsDataSync(source.integrationType),
+    )
 
-    // Load sync status and document counts for personal sources owned by this user
+    // Load sync status and document counts for personal syncable sources owned by this user
     const userSourceIds = userSources.map((s) => s.id)
     const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(userSourceIds)
 
@@ -67,6 +70,9 @@ export const actions: Actions = {
         if (!source) {
             return fail(403, { error: 'Source not found or not owned by you' })
         }
+        if (!supportsDataSync(source.integrationType)) {
+            return fail(400, { error: 'Source does not support data sync' })
+        }
 
         await updateSourceById(sourceId, { isActive: false })
     },
@@ -91,6 +97,9 @@ export const actions: Actions = {
 
         if (!source) {
             return fail(403, { error: 'Source not found or not owned by you' })
+        }
+        if (!supportsDataSync(source.integrationType)) {
+            return fail(400, { error: 'Source does not support data sync' })
         }
 
         await updateSourceById(sourceId, { isActive: true })

@@ -57,7 +57,7 @@ pub struct ScheduleInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectorInfo {
-    pub source_type: SourceType,
+    pub source_type: String,
     pub url: String,
     pub healthy: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,12 +281,16 @@ pub struct SdkWebhookResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteResourceRequest {
     pub source_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub uri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutePromptRequest {
     pub source_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
     pub name: String,
     #[serde(default)]
     pub arguments: Option<JsonValue>,

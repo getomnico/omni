@@ -1,3 +1,12 @@
+export enum IntegrationType {
+    CONNECTOR = 'connector',
+    REMOTE_MCP = 'remote_mcp',
+}
+
+export function supportsDataSync(integrationType?: string | null): boolean {
+    return (integrationType ?? IntegrationType.CONNECTOR) === IntegrationType.CONNECTOR
+}
+
 export enum SourceType {
     GOOGLE_DRIVE = 'google_drive',
     GMAIL = 'gmail',
@@ -41,6 +50,7 @@ export enum ServiceProvider {
     NEXTCLOUD = 'nextcloud',
     GOOGLE_ADS = 'google_ads',
     DARWINBOX = 'darwinbox',
+    REMOTE_MCP = 'remote_mcp',
 }
 
 export enum AuthType {

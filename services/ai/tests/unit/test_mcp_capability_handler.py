@@ -7,7 +7,7 @@ import respx
 from httpx import Response
 
 from db.models import Source
-from tools.mcp_capability_handler import McpCapabilityHandler
+from tools.mcp_capability_handler import McpCapabilityHandler, McpResourceDefinition
 from tools.registry import ToolContext
 from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
 
@@ -41,11 +41,18 @@ class _FakeSearcherClient:
         return CapabilitySearchResponse(results=results[: request.limit])
 
 
-def _source(source_id: str, source_type: str = "docs", *, active: bool = True) -> Source:
+def _source(
+    source_id: str,
+    source_type: str = "docs",
+    *,
+    active: bool = True,
+    integration_type: str = "connector",
+) -> Source:
     return Source(
         id=source_id,
         name=f"{source_type} source",
         source_type=source_type,
+        integration_type=integration_type,
         is_active=active,
         is_deleted=False,
     )
@@ -53,6 +60,30 @@ def _source(source_id: str, source_type: str = "docs", *, active: bool = True) -
 
 def _ctx() -> ToolContext:
     return ToolContext(chat_id="chat-1", user_id="user-1")
+
+
+def test_mcp_capability_412_returns_oauth_required_result() -> None:
+    handler = McpCapabilityHandler(connector_manager_url="http://cm.test")
+    record = handler._resource_record(
+        _source("src-1", integration_type="remote_mcp"),
+        "docs",
+        "Docs",
+        McpResourceDefinition(uri_template="docs://guide", name="Guide"),
+    )
+    response = Response(
+        412,
+        json={
+            "provider": "remote_mcp",
+            "oauth_start_url": "/api/oauth/start?source_id=src-1",
+        },
+    )
+
+    result = handler._oauth_required_result(response, record)
+
+    assert result is not None
+    assert result.oauth_required is not None
+    assert result.oauth_required.source_id == "src-1"
+    assert result.oauth_required.provider == "remote_mcp"
 
 
 def _manifest() -> dict:
@@ -106,13 +137,19 @@ async def test_publishes_resource_and_prompt_capabilities() -> None:
         )
     )
     handler = McpCapabilityHandler(
-        "http://cm.test", searcher_client=searcher, prefetched_sources=[_source("src-1")]
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[_source("src-1")],
     )
 
     await handler.publish_capabilities()
 
-    assert len(searcher.upserts) == 1
-    capabilities = searcher.upserts[0].capabilities
+    assert len(searcher.upserts) == 2
+    assert {request.capability_type for request in searcher.upserts} == {
+        "resource",
+        "prompt",
+    }
+    capabilities = [cap for request in searcher.upserts for cap in request.capabilities]
     assert {cap.capability_type for cap in capabilities} == {"resource", "prompt"}
     resource_caps = [cap for cap in capabilities if cap.capability_type == "resource"]
     prompt_caps = [cap for cap in capabilities if cap.capability_type == "prompt"]
@@ -129,13 +166,55 @@ async def test_publishes_resource_and_prompt_capabilities() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_empty_remote_mcp_catalog_syncs_empty_capability_publishers() -> None:
+    searcher = _FakeSearcherClient()
+    respx.get("http://cm.test/connectors").mock(
+        return_value=Response(
+            200,
+            json=[
+                {
+                    "source_type": "docs",
+                    "healthy": True,
+                    "manifest": {
+                        "integration_type": "remote_mcp",
+                        "mcp_enabled": True,
+                        "resources": [],
+                        "prompts": [],
+                    },
+                }
+            ],
+        )
+    )
+    handler = McpCapabilityHandler(
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[_source("src-remote", integration_type="remote_mcp")],
+    )
+
+    await handler.publish_capabilities()
+
+    assert len(searcher.upserts) == 2
+    assert {(req.publisher_id, req.capability_type) for req in searcher.upserts} == {
+        ("src-remote", "resource"),
+        ("src-remote", "prompt"),
+    }
+    assert all(req.capabilities == [] for req in searcher.upserts)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_search_uses_allowed_ids_and_source_ids() -> None:
     searcher = _FakeSearcherClient()
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
     handler = McpCapabilityHandler(
-        "http://cm.test", searcher_client=searcher, prefetched_sources=[_source("src-1")]
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[_source("src-1")],
     )
     await handler.refresh()
     resource_id = next(iter(handler._resources))
@@ -165,7 +244,9 @@ async def test_search_uses_allowed_ids_and_source_ids() -> None:
         ),
     ]
 
-    resource_result = await handler.execute("resource_search", {"query": "guide"}, _ctx())
+    resource_result = await handler.execute(
+        "resource_search", {"query": "guide"}, _ctx()
+    )
     prompt_result = await handler.execute("prompt_search", {"query": "debug"}, _ctx())
 
     assert resource_id in resource_result.content[0]["text"]
@@ -181,15 +262,22 @@ async def test_search_uses_allowed_ids_and_source_ids() -> None:
 @respx.mock
 async def test_load_resource_requires_uri_for_templates() -> None:
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
-    handler = McpCapabilityHandler("http://cm.test", prefetched_sources=[_source("src-1")])
+    handler = McpCapabilityHandler(
+        "http://cm.test", prefetched_sources=[_source("src-1")]
+    )
     await handler.refresh()
     template_id = next(
         record.id for record in handler._resources.values() if record.requires_uri
     )
 
-    result = await handler.execute("load_resource", {"resource_id": template_id}, _ctx())
+    result = await handler.execute(
+        "load_resource", {"resource_id": template_id}, _ctx()
+    )
 
     assert result.is_error
     assert "provide a concrete uri" in result.content[0]["text"]
@@ -199,15 +287,28 @@ async def test_load_resource_requires_uri_for_templates() -> None:
 @respx.mock
 async def test_load_resource_applies_line_range() -> None:
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
     respx.post("http://cm.test/resource").mock(
         return_value=Response(
             200,
-            json={"contents": [{"uri": "docs://guide", "text": "one\ntwo\nthree\nfour", "mime_type": "text/plain"}]},
+            json={
+                "contents": [
+                    {
+                        "uri": "docs://guide",
+                        "text": "one\ntwo\nthree\nfour",
+                        "mime_type": "text/plain",
+                    }
+                ]
+            },
         )
     )
-    handler = McpCapabilityHandler("http://cm.test", prefetched_sources=[_source("src-1")])
+    handler = McpCapabilityHandler(
+        "http://cm.test", prefetched_sources=[_source("src-1")]
+    )
     await handler.refresh()
     guide_id = next(
         record.id for record in handler._resources.values() if record.name == "Guide"
@@ -228,15 +329,24 @@ async def test_load_resource_applies_line_range() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_load_resource_large_content_returns_preview_and_reload_instruction() -> None:
+async def test_load_resource_large_content_returns_preview_and_reload_instruction() -> (
+    None
+):
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
     large_text = "\n".join(f"line {idx} " + "x" * 200 for idx in range(1, 220))
     respx.post("http://cm.test/resource").mock(
-        return_value=Response(200, json={"contents": [{"uri": "docs://guide", "text": large_text}]})
+        return_value=Response(
+            200, json={"contents": [{"uri": "docs://guide", "text": large_text}]}
+        )
     )
-    handler = McpCapabilityHandler("http://cm.test", prefetched_sources=[_source("src-1")])
+    handler = McpCapabilityHandler(
+        "http://cm.test", prefetched_sources=[_source("src-1")]
+    )
     await handler.refresh()
     guide_id = next(
         record.id for record in handler._resources.values() if record.name == "Guide"
@@ -255,9 +365,14 @@ async def test_load_resource_large_content_returns_preview_and_reload_instructio
 @respx.mock
 async def test_load_prompt_validates_required_arguments() -> None:
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
-    handler = McpCapabilityHandler("http://cm.test", prefetched_sources=[_source("src-1")])
+    handler = McpCapabilityHandler(
+        "http://cm.test", prefetched_sources=[_source("src-1")]
+    )
     await handler.refresh()
     prompt_id = next(iter(handler._prompts))
 
@@ -271,7 +386,10 @@ async def test_load_prompt_validates_required_arguments() -> None:
 @respx.mock
 async def test_load_prompt_returns_structured_template_tool_result() -> None:
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
     prompt_route = respx.post("http://cm.test/prompt").mock(
         return_value=Response(
@@ -279,14 +397,22 @@ async def test_load_prompt_returns_structured_template_tool_result() -> None:
             json={
                 "description": "Debug prompt",
                 "messages": [
-                    {"role": "user", "content": {"type": "text", "text": "I'm seeing this error:"}},
+                    {
+                        "role": "user",
+                        "content": {"type": "text", "text": "I'm seeing this error:"},
+                    },
                     {"role": "user", "content": {"type": "text", "text": "boom"}},
-                    {"role": "assistant", "content": {"type": "text", "text": "I'll help debug."}},
+                    {
+                        "role": "assistant",
+                        "content": {"type": "text", "text": "I'll help debug."},
+                    },
                 ],
             },
         )
     )
-    handler = McpCapabilityHandler("http://cm.test", prefetched_sources=[_source("src-1")])
+    handler = McpCapabilityHandler(
+        "http://cm.test", prefetched_sources=[_source("src-1")]
+    )
     await handler.refresh()
     prompt_id = next(iter(handler._prompts))
 
@@ -299,13 +425,22 @@ async def test_load_prompt_returns_structured_template_tool_result() -> None:
     assert not result.is_error
     assert prompt_route.calls[0].request.content
     body = json.loads(prompt_route.calls[0].request.content)
-    assert body == {"source_id": "src-1", "name": "debug_error", "arguments": {"error": "boom"}}
+    assert body == {
+        "source_id": "src-1",
+        "user_id": "user-1",
+        "name": "debug_error",
+        "arguments": {"error": "boom"},
+    }
     text = result.content[0]["text"]
     assert "not actual user/assistant chat history" in text
     assert "```json" in text
     data = json.loads(text.split("```json\n", 1)[1].rsplit("\n```", 1)[0])
     assert data["prompt_id"] == prompt_id
-    assert [message["role"] for message in data["messages"]] == ["user", "user", "assistant"]
+    assert [message["role"] for message in data["messages"]] == [
+        "user",
+        "user",
+        "assistant",
+    ]
     assert data["messages"][0]["content"]["text"] == "I'm seeing this error:"
 
 
@@ -313,7 +448,10 @@ async def test_load_prompt_returns_structured_template_tool_result() -> None:
 @respx.mock
 async def test_source_filter_limits_records_to_readable_sources() -> None:
     respx.get("http://cm.test/connectors").mock(
-        return_value=Response(200, json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}])
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
     )
     handler = McpCapabilityHandler(
         "http://cm.test",
@@ -326,3 +464,47 @@ async def test_source_filter_limits_records_to_readable_sources() -> None:
     assert handler.has_capabilities()
     assert {record.source_id for record in handler._resources.values()} == {"src-read"}
     assert {record.source_id for record in handler._prompts.values()} == {"src-read"}
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_remote_mcp_capabilities_match_by_integration_type_and_source_type() -> (
+    None
+):
+    manifest = _manifest() | {"integration_type": "remote_mcp"}
+    respx.get("http://cm.test/connectors").mock(
+        return_value=Response(
+            200,
+            json=[
+                {"source_type": "docs", "healthy": True, "manifest": manifest},
+                {
+                    "source_type": "docs",
+                    "healthy": True,
+                    "manifest": _manifest() | {"integration_type": "connector"},
+                },
+            ],
+        )
+    )
+    handler = McpCapabilityHandler(
+        "http://cm.test",
+        prefetched_sources=[
+            _source("src-native", integration_type="connector"),
+            _source("src-remote", integration_type="remote_mcp"),
+        ],
+    )
+
+    await handler.refresh()
+
+    assert handler.has_capabilities()
+    assert len(handler._resources) == 4
+    assert {record.source_id for record in handler._resources.values()} == {
+        "src-native",
+        "src-remote",
+    }
+    remote_records = [
+        record
+        for record in handler._resources.values()
+        if record.source_id == "src-remote"
+    ]
+    assert remote_records
+    assert all(record.source_type == "docs" for record in remote_records)
