@@ -121,9 +121,17 @@ export async function fetchWithPinnedRemoteMcpDns(
     let next = 0
     const dispatcher = new Agent({
         connect: {
-            lookup(_hostname: string, _options: unknown, callback: (...args: unknown[]) => void) {
+            lookup(
+                _hostname: string,
+                options: { all?: boolean },
+                callback: (err: Error | null, result?: unknown) => void,
+            ) {
                 const record = addresses[next++ % addresses.length]
-                callback(null, record.address, record.family)
+                if (options.all) {
+                    callback(null, [{ address: record.address, family: record.family }])
+                } else {
+                    callback(null, record.address, record.family)
+                }
             },
         },
     } as any)
@@ -230,7 +238,14 @@ async function mcpPost(
 }
 
 function remoteMcpProbeErrorMessage(err: unknown): string {
-    if (err instanceof Error) return err.message
+    if (err instanceof Error) {
+        const cause = err.cause
+        if (cause instanceof Error) {
+            return `${err.message}: ${cause.message}${cause.code ? ` (${cause.code})` : ''}`
+        }
+        if (typeof cause === 'string') return `${err.message}: ${cause}`
+        return err.message
+    }
     if (err && typeof err === 'object') {
         const body = 'body' in err ? (err as { body?: unknown }).body : undefined
         if (body && typeof body === 'object' && 'message' in body) {
