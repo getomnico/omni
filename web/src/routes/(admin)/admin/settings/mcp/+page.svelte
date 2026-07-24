@@ -8,11 +8,16 @@
         CardHeader,
         CardTitle,
     } from '$lib/components/ui/card'
+    import * as Dialog from '$lib/components/ui/dialog'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Badge } from '$lib/components/ui/badge'
     import { AuthType } from '$lib/types'
+    import { Plus, Server } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
+    import type { PageProps } from './$types'
+
+    let { data }: PageProps = $props()
 
     type ProbeResult = {
         ok: boolean
@@ -25,6 +30,13 @@
         error?: string
     }
 
+    let sources = $state(data.sources)
+    let manifestBySourceType = $state(
+        data.manifestBySourceType as Record<string, { toolCount: number; resourceCount: number }>,
+    )
+
+    // Dialog form state
+    let dialogOpen = $state(false)
     let name = $state('')
     let endpointUrl = $state('')
     let sourceType = $state('')
@@ -48,6 +60,23 @@
             bearerToken: includeSecret ? bearerToken : undefined,
             writeToolsEnabled,
         }
+    }
+
+    function resetForm() {
+        name = ''
+        endpointUrl = ''
+        sourceType = ''
+        authType = ''
+        bearerToken = ''
+        writeToolsEnabled = true
+        probe = null
+        isTesting = false
+        isCreating = false
+    }
+
+    function openDialog() {
+        resetForm()
+        dialogOpen = true
     }
 
     async function testConnection() {
@@ -86,6 +115,8 @@
             const body = await response.json().catch(() => null)
             if (!response.ok) throw new Error(body?.message || body?.error || 'Create failed')
             toast.success('Remote MCP server created')
+            dialogOpen = false
+            resetForm()
             await goto(`/admin/settings/mcp/${body.id}`)
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Create failed')
@@ -93,26 +124,98 @@
             isCreating = false
         }
     }
+
+    function authLabel(authType: string | null): string {
+        if (authType === AuthType.BEARER_TOKEN) return 'Bearer'
+        if (authType === AuthType.OAUTH) return 'OAuth'
+        return 'Public'
+    }
 </script>
 
-<svelte:head><title>Add Remote MCP Server</title></svelte:head>
+<svelte:head><title>Remote MCP Servers</title></svelte:head>
 
 <div class="h-full overflow-y-auto p-6 py-8 pb-24">
     <div class="mx-auto max-w-screen-md space-y-6">
-        <div>
-            <h1 class="text-3xl font-bold tracking-tight">Add remote MCP server</h1>
-            <p class="text-muted-foreground mt-2">
-                Configure a remote Streamable HTTP MCP endpoint. Catalogs are discovered at runtime;
-                secrets are write-only.
-            </p>
+        <div class="flex items-center justify-between gap-4">
+            <div>
+                <h1 class="text-3xl font-bold tracking-tight">Remote MCP Servers</h1>
+                <p class="text-muted-foreground mt-2">
+                    Admin-managed remote Streamable HTTP MCP endpoints. Catalogs are discovered at
+                    runtime; secrets are write-only.
+                </p>
+            </div>
+            <Button onclick={openDialog} class="cursor-pointer">
+                <Plus class="h-4 w-4" />
+                Add MCP server
+            </Button>
         </div>
 
-        <Card>
-            <CardHeader>
-                <CardTitle>Connection</CardTitle>
-                <CardDescription>Only remote HTTP(S) MCP endpoints are supported.</CardDescription>
-            </CardHeader>
-            <CardContent class="space-y-5">
+        {#if sources.length > 0}
+            <div class="space-y-2">
+                {#each sources as source}
+                    {@const m = manifestBySourceType[source.sourceType]}
+                    <button
+                        onclick={() => goto(`/admin/settings/mcp/${source.id}`)}
+                        class="bg-card hover:bg-accent flex w-full items-center justify-between gap-4 rounded-lg border px-4 py-3 text-left transition-colors">
+                        <div class="min-w-0 flex-1 space-y-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <Server class="h-4 w-4 shrink-0" />
+                                <span class="font-medium">{source.name}</span>
+                                <Badge variant="outline">{source.sourceType}</Badge>
+                                <Badge variant={m ? 'secondary' : 'outline'}>
+                                    {m ? 'Available' : 'Unavailable'}
+                                </Badge>
+                                <Badge variant="outline">{authLabel(source.authType)}</Badge>
+                                {#if !(source.config as Record<string, unknown>).write_tools_enabled}
+                                    <Badge variant="outline">Read-only</Badge>
+                                {/if}
+                            </div>
+                            <div class="text-muted-foreground text-xs">
+                                {m
+                                    ? `${m.toolCount} tools · ${m.resourceCount} resources`
+                                    : 'Not yet discovered'}
+                                {#if !source.isActive}
+                                    · <span class="text-amber-500">Inactive</span>
+                                {/if}
+                            </div>
+                        </div>
+                    </button>
+                {/each}
+            </div>
+        {:else}
+            <div class="rounded-lg border border-dashed py-12 text-center">
+                <Server class="text-muted-foreground mx-auto h-8 w-8" />
+                <p class="text-muted-foreground mt-3 text-sm">
+                    No remote MCP servers configured yet.
+                </p>
+                <Button variant="outline" onclick={openDialog} class="mt-4 cursor-pointer">
+                    <Plus class="h-4 w-4" />
+                    Add your first MCP server
+                </Button>
+            </div>
+        {/if}
+    </div>
+</div>
+
+<Dialog.Root
+    open={dialogOpen}
+    onOpenChange={(o) => {
+        dialogOpen = o
+        if (!o) resetForm()
+    }}>
+    <Dialog.Portal>
+        <Dialog.Overlay class="fixed inset-0 z-50 bg-black/50" />
+        <Dialog.Content
+            class="bg-background fixed top-[50%] left-[50%] z-50 max-h-[85vh] w-full max-w-2xl translate-x-[-50%] translate-y-[-50%] overflow-y-auto rounded-lg border p-6 shadow-lg">
+            <Dialog.Header>
+                <Dialog.Title>Add remote MCP server</Dialog.Title>
+                <Dialog.Description>
+                    Configure a remote Streamable HTTP MCP endpoint. Only HTTP(S) URLs are
+                    supported.
+                </Dialog.Description>
+            </Dialog.Header>
+
+            <div class="space-y-5 py-4">
                 <div class="space-y-2">
                     <Label for="name">Display name</Label>
                     <Input id="name" bind:value={name} placeholder="Acme MCP" />
@@ -128,7 +231,8 @@
                     <Label for="slug">App/source slug</Label>
                     <Input id="slug" bind:value={sourceType} placeholder="acme" />
                     <p class="text-muted-foreground text-xs">
-                        Immutable after creation. Use lowercase letters, numbers, and underscores.
+                        Immutable after creation. Use 2-50 lowercase letters, numbers, hyphens, or
+                        underscores. Must start with a letter.
                     </p>
                 </div>
                 <div class="space-y-2">
@@ -166,13 +270,6 @@
                     Expose write-capable tools
                 </label>
 
-                <div class="flex gap-2">
-                    <Button variant="outline" onclick={testConnection} disabled={isTesting}
-                        >{isTesting ? 'Testing...' : 'Test connection'}</Button>
-                    <Button onclick={create} disabled={!canCreate || isCreating}
-                        >{isCreating ? 'Creating...' : 'Create'}</Button>
-                </div>
-
                 {#if probe?.ok}
                     <div class="rounded-md border p-3 text-sm">
                         <div class="flex flex-wrap items-center gap-2">
@@ -187,7 +284,14 @@
                         </div>
                     </div>
                 {/if}
-            </CardContent>
-        </Card>
-    </div>
-</div>
+            </div>
+
+            <Dialog.Footer class="flex gap-2">
+                <Button variant="outline" onclick={testConnection} disabled={isTesting}
+                    >{isTesting ? 'Testing...' : 'Test connection'}</Button>
+                <Button onclick={create} disabled={!canCreate || isCreating}
+                    >{isCreating ? 'Creating...' : 'Create'}</Button>
+            </Dialog.Footer>
+        </Dialog.Content>
+    </Dialog.Portal>
+</Dialog.Root>
