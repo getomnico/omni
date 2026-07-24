@@ -1,5 +1,5 @@
 import { db } from '$lib/server/db'
-import { sources, syncRuns } from '$lib/server/db/schema'
+import { sources } from '$lib/server/db/schema'
 import { eq, desc, sql, and } from 'drizzle-orm'
 import type { Source, SyncRun } from '$lib/server/db/schema'
 
@@ -57,37 +57,35 @@ export class SourcesRepository {
             .orderBy(desc(sources.createdAt))
     }
 
-    async getLatestSyncRuns(): Promise<Map<string, SyncRun>> {
-        const rows = await db
-            .select()
-            .from(syncRuns)
-            .where(
-                sql`${syncRuns.id} IN (
-                    SELECT DISTINCT ON (source_id) id
-                    FROM sync_runs
-                    ORDER BY source_id, started_at DESC
-                )`,
-            )
-
-        return new Map(rows.map((sync) => [sync.sourceId, sync]))
-    }
-
     async getLatestSyncRunsForSourceIds(sourceIds: string[]): Promise<Map<string, SyncRun>> {
         if (sourceIds.length === 0) {
             return new Map()
         }
 
-        const rows = await db
-            .select()
-            .from(syncRuns)
-            .where(
-                sql`${syncRuns.id} IN (
-                    SELECT DISTINCT ON (source_id) id
-                    FROM sync_runs
-                    WHERE source_id IN ${sourceIds}
-                    ORDER BY source_id, started_at DESC
-                )`,
-            )
+        const rows = await db.execute<SyncRun>(sql`
+            SELECT sr.id,
+                   sr.source_id AS "sourceId",
+                   sr.sync_type AS "syncType",
+                   sr.started_at AS "startedAt",
+                   sr.completed_at AS "completedAt",
+                   sr.status,
+                   sr.documents_scanned AS "documentsScanned",
+                   sr.documents_processed AS "documentsProcessed",
+                   sr.documents_updated AS "documentsUpdated",
+                   sr.error_message AS "errorMessage",
+                   sr.created_at AS "createdAt",
+                   sr.updated_at AS "updatedAt"
+            FROM sources s
+            CROSS JOIN LATERAL (
+                SELECT *
+                FROM sync_runs
+                WHERE source_id = s.id
+                ORDER BY started_at DESC
+                LIMIT 1
+            ) sr
+            WHERE s.id IN ${sourceIds}
+              AND s.is_deleted = false
+        `)
 
         return new Map(rows.map((sync) => [sync.sourceId, sync]))
     }
