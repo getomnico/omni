@@ -16,7 +16,6 @@
         FileText,
         Brain,
         Globe,
-        Server,
     } from '@lucide/svelte'
     import Button from '$lib/components/ui/button/button.svelte'
     import SidebarUserMenu from '$lib/components/sidebar-user-menu.svelte'
@@ -196,21 +195,6 @@
                                 </Sidebar.MenuButton>
                             </Sidebar.MenuItem>
                         {/if}
-                        <Sidebar.MenuItem>
-                            <Sidebar.MenuButton
-                                class={cn(
-                                    page.url.pathname === '/admin/settings/integrations' &&
-                                        page.url.searchParams.get('tab') === 'mcp' &&
-                                        'bg-sidebar-accent text-sidebar-accent-foreground',
-                                )}>
-                                {#snippet child({ props })}
-                                    <a href="/admin/settings/integrations?tab=mcp" {...props}>
-                                        <Server class="h-4 w-4" />
-                                        <span>MCP</span>
-                                    </a>
-                                {/snippet}
-                            </Sidebar.MenuButton>
-                        </Sidebar.MenuItem>
                     </Sidebar.Menu>
                 </Sidebar.GroupContent>
             </Sidebar.Group>
