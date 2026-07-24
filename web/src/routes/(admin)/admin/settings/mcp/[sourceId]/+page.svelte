@@ -14,26 +14,39 @@
     import { Badge } from '$lib/components/ui/badge'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { AuthType } from '$lib/types'
+    import { Trash2, RefreshCw } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageProps } from './$types'
 
     let { data }: PageProps = $props()
     const source = $derived(data.source)
 
-    let name = $state(data.source.name)
-    let endpointUrl = $state(
-        String((data.source.config as Record<string, unknown>).endpoint_url ?? ''),
+    const initialName = data.source.name
+    const initialEndpointUrl = String(
+        (data.source.config as Record<string, unknown>).endpoint_url ?? '',
     )
-    let authType = $state<string>(data.source.authType ?? '')
+    const initialAuthType: string = data.source.authType ?? ''
+    const initialWriteToolsEnabled =
+        (data.source.config as Record<string, unknown>).write_tools_enabled !== false
+
+    let name = $state(initialName)
+    let endpointUrl = $state(initialEndpointUrl)
+    let authType = $state<string>(initialAuthType)
     let bearerToken = $state('')
-    let writeToolsEnabled = $state(
-        (data.source.config as Record<string, unknown>).write_tools_enabled !== false,
-    )
+    let writeToolsEnabled = $state(initialWriteToolsEnabled)
     let isTesting = $state(false)
     let isSaving = $state(false)
     let isDeleting = $state(false)
     let oauthDialogOpen = $state(false)
     let probeSummary = $state<string | null>(null)
+
+    const hasChanges = $derived(
+        name !== initialName ||
+            endpointUrl !== initialEndpointUrl ||
+            authType !== initialAuthType ||
+            writeToolsEnabled !== initialWriteToolsEnabled ||
+            Boolean(bearerToken),
+    )
 
     function payload(includeSecret = true) {
         return {
@@ -68,6 +81,7 @@
     }
 
     async function save() {
+        if (!hasChanges) return
         isSaving = true
         try {
             const response = await fetch(`/api/remote-mcp/${source.id}`, {
@@ -128,27 +142,32 @@
 
         <Card>
             <CardHeader>
-                <CardTitle>Connection status</CardTitle>
-                <CardDescription
-                    >Available tools and resources are detected automatically.</CardDescription>
-            </CardHeader>
-            <CardContent class="flex flex-wrap items-center gap-3 text-sm">
-                <Badge variant={data.manifest.available ? 'secondary' : 'outline'}
-                    >{data.manifest.available ? 'Available' : 'Unavailable'}</Badge>
-                <span
-                    >{data.manifest.toolCount} tools · {data.manifest.resourceCount} resources</span>
-                {#if probeSummary}<span class="text-muted-foreground"
-                        >Latest probe: {probeSummary}</span
-                    >{/if}
-                <Button variant="outline" size="sm" onclick={testConnection} disabled={isTesting}
-                    >{isTesting ? 'Refreshing...' : 'Test / refresh'}</Button>
-            </CardContent>
-        </Card>
-
-        <Card>
-            <CardHeader>
-                <CardTitle>Connection</CardTitle>
-                <CardDescription>The connection ID can't be changed later.</CardDescription>
+                <div class="flex items-start justify-between gap-4">
+                    <div>
+                        <CardTitle>Connection</CardTitle>
+                        <CardDescription>The connection ID can't be changed later.</CardDescription>
+                    </div>
+                    <div class="flex shrink-0 items-center gap-2 text-sm">
+                        <Badge variant={data.manifest.available ? 'secondary' : 'outline'}>
+                            {data.manifest.available ? 'Available' : 'Unavailable'}
+                        </Badge>
+                        <span class="text-muted-foreground">
+                            {data.manifest.toolCount} tools · {data.manifest.resourceCount}{' '}
+                            resources
+                        </span>
+                        {#if probeSummary}
+                            <span class="text-muted-foreground">{probeSummary}</span>
+                        {/if}
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onclick={testConnection}
+                            disabled={isTesting}
+                            class="cursor-pointer">
+                            <RefreshCw class="h-3.5 w-3.5" class:animate-spin={isTesting} />
+                        </Button>
+                    </div>
+                </div>
             </CardHeader>
             <CardContent class="space-y-5">
                 <div class="space-y-2">
@@ -188,13 +207,23 @@
                     <input type="checkbox" bind:checked={writeToolsEnabled} />
                     Expose write-capable tools
                 </label>
-                <div class="flex flex-wrap gap-2">
-                    <Button onclick={save} disabled={isSaving}
-                        >{isSaving ? 'Saving...' : 'Save and test'}</Button>
-                    <Button variant="outline" onclick={testConnection} disabled={isTesting}
-                        >Test only</Button>
-                    <Button variant="destructive" onclick={deleteSource} disabled={isDeleting}
-                        >{isDeleting ? 'Deleting...' : 'Delete'}</Button>
+                <div class="flex flex-wrap items-center gap-2">
+                    <Button
+                        onclick={save}
+                        disabled={!hasChanges || isSaving}
+                        class="cursor-pointer">
+                        <RefreshCw class="h-4 w-4" class:animate-spin={isSaving} />
+                        {isSaving ? 'Saving...' : 'Save'}
+                    </Button>
+                    <Button
+                        variant="destructive"
+                        outline
+                        onclick={deleteSource}
+                        disabled={isDeleting}
+                        class="cursor-pointer">
+                        <Trash2 class="h-4 w-4" />
+                        {isDeleting ? 'Deleting...' : 'Delete'}
+                    </Button>
                 </div>
             </CardContent>
         </Card>
