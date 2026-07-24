@@ -145,7 +145,6 @@
                 <div class="flex items-start justify-between gap-4">
                     <div>
                         <CardTitle>Connection</CardTitle>
-                        <CardDescription>The connection ID can't be changed later.</CardDescription>
                     </div>
                     <div class="flex shrink-0 items-center gap-2 text-sm">
                         <Badge variant={data.manifest.available ? 'secondary' : 'outline'}>
