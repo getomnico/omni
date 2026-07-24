@@ -64,7 +64,7 @@ function bearerTokenFromCredential(
     return typeof token === 'string' ? token : null
 }
 
-export function remoteMcpPutTransition(
+function remoteMcpPutTransition(
     existingIsActive: boolean,
     previousConfig: Partial<RemoteMcpConfig>,
     nextConfig: RemoteMcpConfig,

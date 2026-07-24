@@ -162,12 +162,15 @@ function parseSlugCandidate(name: string | null): string | null {
         .replace(/[^a-z0-9]+/g, '_')
         .replace(/^_+|_+$/g, '')
         .slice(0, 50)
-    return /^[a-z][a-z0-9_]{1,49}$/.test(slug) ? slug : null
+    return /^[a-z][a-z0-9_-]{1,49}$/.test(slug) ? slug : null
 }
 
 export function validateRemoteMcpSlug(sourceType: string): string {
-    if (!/^[a-z][a-z0-9_]{1,49}$/.test(sourceType)) {
-        throw error(400, 'sourceType must match ^[a-z][a-z0-9_]{1,49}$')
+    if (!/^[a-z][a-z0-9_-]{1,49}$/.test(sourceType)) {
+        throw error(
+            400,
+            'Invalid slug. Use 2-50 lowercase letters, numbers, hyphens, or underscores. Must start with a letter.',
+        )
     }
     return sourceType
 }

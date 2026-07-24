@@ -33,7 +33,7 @@ ALTER TABLE sources ADD CONSTRAINT sources_source_type_check CHECK (
       'google_ads', 'darwinbox'
     ))
     OR
-    (integration_type = 'remote_mcp' AND source_type ~ '^[a-z][a-z0-9_]{1,49}$')
+    (integration_type = 'remote_mcp' AND source_type ~ '^[a-z][a-z0-9_-]{1,49}$')
 );
 
 -- At most one non-deleted remote MCP source may claim an app slug. Native/native

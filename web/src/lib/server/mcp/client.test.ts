@@ -63,6 +63,7 @@ describe('remote MCP client validation', () => {
 
     it('validates immutable source slug shape', () => {
         expect(validateRemoteMcpSlug('github_mcp')).toBe('github_mcp')
+        expect(validateRemoteMcpSlug('my-mcp-server')).toBe('my-mcp-server')
         expect(() => validateRemoteMcpSlug('Remote-MCP')).toThrow()
         expect(() => validateRemoteMcpSlug('1github')).toThrow()
     })
