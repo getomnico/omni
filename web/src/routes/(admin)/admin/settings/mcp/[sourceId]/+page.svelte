@@ -14,7 +14,7 @@
     import { Badge } from '$lib/components/ui/badge'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { AuthType } from '$lib/types'
-    import { Trash2, RefreshCw } from '@lucide/svelte'
+    import { RefreshCw } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import type { PageProps } from './$types'
 
@@ -211,16 +211,13 @@
                         onclick={save}
                         disabled={!hasChanges || isSaving}
                         class="cursor-pointer">
-                        <RefreshCw class="h-4 w-4 {isSaving ? 'animate-spin' : ''}" />
                         {isSaving ? 'Saving...' : 'Save'}
                     </Button>
                     <Button
                         variant="destructive"
-                        outline
                         onclick={deleteSource}
                         disabled={isDeleting}
                         class="cursor-pointer">
-                        <Trash2 class="h-4 w-4" />
                         {isDeleting ? 'Deleting...' : 'Delete'}
                     </Button>
                 </div>
