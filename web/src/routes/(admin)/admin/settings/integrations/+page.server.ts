@@ -103,7 +103,8 @@ export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     const connectedSources = await sourcesRepository.getOrgWide()
-    const latestSyncRuns = await sourcesRepository.getLatestSyncRuns()
+    const sourceIds = connectedSources.map((s) => s.id)
+    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(sourceIds)
     const savedOAuthConfigs = await getAllConnectorConfigsPublic()
     const savedOAuthConfigByProvider = new Map(savedOAuthConfigs.map((row) => [row.provider, row]))
 
