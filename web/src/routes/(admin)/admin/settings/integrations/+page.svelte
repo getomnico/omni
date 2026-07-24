@@ -45,6 +45,7 @@
     } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
+    import McpTabContent from '$lib/components/mcp-tab-content.svelte'
     import GoogleAdsConnectorSetup from '$lib/components/google-ads-connector-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
@@ -86,7 +87,13 @@
     let sourceHealth = $state<Map<SourceId, 'healthy' | 'unhealthy'>>(data.sourceHealth)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
-    let activeTab = $state(page.url.searchParams.get('tab') === 'oauth' ? 'oauth' : 'sources')
+    let activeTab = $state(
+        page.url.searchParams.get('tab') === 'oauth'
+            ? 'oauth'
+            : page.url.searchParams.get('tab') === 'mcp'
+              ? 'mcp'
+              : 'sources',
+    )
     let activeOAuthProvider = $state<OAuthProvider | null>(null)
     let redirectUriCopied = $state(false)
     const googleAdsOAuthConfigured = $derived(
@@ -282,6 +289,11 @@
                     value="oauth"
                     class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
                     OAuth Apps
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                    value="mcp"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
+                    MCP
                 </Tabs.Trigger>
             </Tabs.List>
 
@@ -655,6 +667,9 @@
                         </div>
                     {/if}
                 </div>
+            </Tabs.Content>
+            <Tabs.Content value="mcp" class="space-y-4">
+                <McpTabContent data={data.mcpTab} />
             </Tabs.Content>
         </Tabs.Root>
     </div>

@@ -103,7 +103,7 @@ function mapSyncRun(run: Record<string, string | number | null>): SyncRun {
     }
 }
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, fetch }) => {
     requireAdmin(locals)
 
     const orgSources = await sourcesRepository.getOrgWide()
@@ -224,6 +224,44 @@ export const load: PageServerLoad = async ({ locals }) => {
         locals.logger.error('Failed to fetch connector manager data', error)
     }
 
+    // Load MCP tab data
+    let mcpTab: {
+        sources: {
+            id: string
+            name: string
+            sourceType: string
+            authType: string | null
+            config: Record<string, unknown>
+            isActive: boolean
+        }[]
+        manifestBySourceType: Record<string, { toolCount: number; resourceCount: number }>
+    } = { sources: [], manifestBySourceType: {} }
+
+    try {
+        const sourceResponse = await fetch('/api/remote-mcp')
+        if (sourceResponse.ok) {
+            mcpTab.sources = await sourceResponse.json()
+        }
+
+        const connectorsResponse = await fetch(`${config.services.connectorManagerUrl}/connectors`)
+        if (connectorsResponse.ok) {
+            const connectors: {
+                source_type: string
+                manifest?: { integration_type?: string; actions?: unknown[]; resources?: unknown[] }
+            }[] = await connectorsResponse.json()
+            for (const c of connectors) {
+                if (c.manifest?.integration_type === IntegrationType.REMOTE_MCP) {
+                    mcpTab.manifestBySourceType[c.source_type] = {
+                        toolCount: c.manifest.actions?.length ?? 0,
+                        resourceCount: c.manifest.resources?.length ?? 0,
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        locals.logger.warn('Failed to fetch MCP tab data', error)
+    }
+
     return {
         connectedSources,
         latestSyncRuns,
@@ -231,5 +269,6 @@ export const load: PageServerLoad = async ({ locals }) => {
         availableIntegrations,
         oauthProviders,
         oauthRedirectUri: callbackUrl(),
+        mcpTab,
     }
 }
