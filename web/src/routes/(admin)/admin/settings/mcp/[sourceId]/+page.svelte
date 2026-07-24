@@ -94,9 +94,9 @@
             const body = await response.json().catch(() => null)
             if (!response.ok) throw new Error(body?.message || body?.error || 'Save failed')
             bearerToken = ''
-            probeSummary = `${body.probe?.toolCount ?? 0} tools · ${body.probe?.resourceCount ?? 0} resources`
             toast.success('Remote MCP server updated')
             await invalidateAll()
+            probeSummary = null
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Save failed')
         } finally {
@@ -152,12 +152,13 @@
                         <Badge variant={data.manifest.available ? 'secondary' : 'outline'}>
                             {data.manifest.available ? 'Available' : 'Unavailable'}
                         </Badge>
-                        <span class="text-muted-foreground">
-                            {data.manifest.toolCount} tools · {data.manifest.resourceCount}{' '}
-                            resources
-                        </span>
                         {#if probeSummary}
                             <span class="text-muted-foreground">{probeSummary}</span>
+                        {:else}
+                            <span class="text-muted-foreground">
+                                {data.manifest.toolCount} tools · {data.manifest.resourceCount}{' '}
+                                resources
+                            </span>
                         {/if}
                         <Tooltip.Root>
                             <Tooltip.Trigger>
