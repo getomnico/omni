@@ -35,13 +35,14 @@
     let oauthDialogOpen = $state(false)
     let probeSummary = $state<string | null>(null)
 
-    function payload() {
+    function payload(includeSecret = true) {
         return {
             name: name.trim(),
             sourceType: source.sourceType,
             endpointUrl: endpointUrl.trim(),
             authType: authType || null,
-            bearerToken: bearerToken || undefined,
+            bearerToken: includeSecret ? bearerToken : undefined,
+            sourceId: source.id,
             writeToolsEnabled,
         }
     }
@@ -53,7 +54,7 @@
             const response = await fetch('/api/remote-mcp/test', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(payload()),
+                body: JSON.stringify(payload(!!bearerToken)),
             })
             const body = await response.json().catch(() => null)
             if (!response.ok || !body?.ok) throw new Error(body?.error || 'Probe failed')
@@ -72,7 +73,7 @@
             const response = await fetch(`/api/remote-mcp/${source.id}`, {
                 method: 'PUT',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(payload()),
+                body: JSON.stringify(payload(!!bearerToken)),
             })
             const body = await response.json().catch(() => null)
             if (!response.ok) throw new Error(body?.message || body?.error || 'Save failed')
