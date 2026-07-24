@@ -171,7 +171,7 @@
                                         class="h-3.5 w-3.5 {isTesting ? 'animate-spin' : ''}" />
                                 </Button>
                             </Tooltip.Trigger>
-                            <Tooltip.Content side="bottom">Test connection</Tooltip.Content>
+                            <Tooltip.Content side="bottom">Refresh</Tooltip.Content>
                         </Tooltip.Root>
                     </div>
                 </div>
