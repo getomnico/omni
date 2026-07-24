@@ -67,10 +67,16 @@ export class SourcesRepository {
             .from(syncRuns)
             .where(
                 sql`${syncRuns.id} IN (
-                    SELECT DISTINCT ON (source_id) id
-                    FROM sync_runs
-                    WHERE source_id IN ${sourceIds}
-                    ORDER BY source_id, started_at DESC
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY source_id
+                                   ORDER BY started_at DESC
+                               ) AS rn
+                        FROM sync_runs
+                        WHERE source_id IN ${sourceIds}
+                    ) ranked
+                    WHERE rn = 1
                 )`,
             )
 
