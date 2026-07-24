@@ -140,8 +140,8 @@
             <div>
                 <h1 class="text-3xl font-bold tracking-tight">Remote MCP Servers</h1>
                 <p class="text-muted-foreground mt-2">
-                    Admin-managed remote Streamable HTTP MCP endpoints. Catalogs are discovered at
-                    runtime; secrets are write-only.
+                    Connect to remote MCP servers. Available tools and resources are detected
+                    automatically.
                 </p>
             </div>
             <Button onclick={openDialog} class="cursor-pointer">
@@ -210,8 +210,7 @@
             <Dialog.Header>
                 <Dialog.Title>Add remote MCP server</Dialog.Title>
                 <Dialog.Description>
-                    Configure a remote Streamable HTTP MCP endpoint. Only HTTP(S) URLs are
-                    supported.
+                    Connect to a remote MCP server. Only HTTP or HTTPS URLs are supported.
                 </Dialog.Description>
             </Dialog.Header>
 
@@ -231,7 +230,7 @@
                     <Label for="slug">App/source slug</Label>
                     <Input id="slug" bind:value={sourceType} placeholder="acme" />
                     <p class="text-muted-foreground text-xs">
-                        Immutable after creation. Use 2-50 lowercase letters, numbers, hyphens, or
+                        Can't be changed later. Use 2-50 lowercase letters, numbers, hyphens, or
                         underscores. Must start with a letter.
                     </p>
                 </div>
@@ -254,15 +253,11 @@
                             type="password"
                             bind:value={bearerToken}
                             placeholder="Paste token" />
-                        <p class="text-muted-foreground text-xs">
-                            Stored encrypted and never returned by the API.
-                        </p>
                     </div>
                 {/if}
                 {#if authType === AuthType.OAUTH}
                     <p class="text-muted-foreground rounded-md border p-3 text-sm">
-                        After creation, configure this server's OAuth client and authorize an admin
-                        bootstrap credential on the edit page.
+                        After creation, configure OAuth and authorize admin access on the edit page.
                     </p>
                 {/if}
                 <label class="flex items-center gap-2 text-sm">

@@ -95,7 +95,7 @@
     async function deleteSource() {
         if (
             !confirm(
-                `Delete ${source.name}? This removes the runtime MCP manifest and credentials.`,
+                `Delete ${source.name}? This permanently removes the connection and all stored credentials.`,
             )
         )
             return
@@ -127,9 +127,9 @@
 
         <Card>
             <CardHeader>
-                <CardTitle>Runtime catalog</CardTitle>
+                <CardTitle>Connection status</CardTitle>
                 <CardDescription
-                    >Catalog data is discovered by Connector Manager and stored only in Redis.</CardDescription>
+                    >Available tools and resources are detected automatically.</CardDescription>
             </CardHeader>
             <CardContent class="flex flex-wrap items-center gap-3 text-sm">
                 <Badge variant={data.manifest.available ? 'secondary' : 'outline'}
@@ -147,8 +147,7 @@
         <Card>
             <CardHeader>
                 <CardTitle>Connection</CardTitle>
-                <CardDescription
-                    >Source slug is immutable. Secrets are write-only and never displayed.</CardDescription>
+                <CardDescription>The connection ID can't be changed later.</CardDescription>
             </CardHeader>
             <CardContent class="space-y-5">
                 <div class="space-y-2">
@@ -204,25 +203,24 @@
                 <CardHeader>
                     <CardTitle>OAuth</CardTitle>
                     <CardDescription
-                        >OAuth clients for remote MCP are scoped to this source: <code
-                            >{data.oauth.provider}</code
+                        >OAuth settings for this connection: <code>{data.oauth.provider}</code
                         >.</CardDescription>
                 </CardHeader>
                 <CardContent class="space-y-4">
                     <div class="flex flex-wrap items-center gap-2 text-sm">
                         <Badge variant={data.oauth.configured ? 'secondary' : 'outline'}
                             >{data.oauth.configured
-                                ? 'Client configured'
-                                : 'Client not configured'}</Badge>
-                        <span>Users authorize individually before invoking protected tools.</span>
+                                ? 'OAuth configured'
+                                : 'OAuth not configured'}</Badge>
+                        <span>Each user authorizes individually before using protected tools.</span>
                     </div>
                     <div class="flex flex-wrap gap-2">
                         <Button variant="outline" onclick={() => (oauthDialogOpen = true)}
                             >{data.oauth.configured
-                                ? 'Edit OAuth client'
-                                : 'Add OAuth client'}</Button>
+                                ? 'Edit OAuth settings'
+                                : 'Add OAuth settings'}</Button>
                         <Button onclick={startOAuth} disabled={!data.oauth.configured}
-                            >Authorize admin bootstrap</Button>
+                            >Authorize admin access</Button>
                     </div>
                 </CardContent>
             </Card>
