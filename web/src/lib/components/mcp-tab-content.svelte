@@ -5,6 +5,7 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Badge } from '$lib/components/ui/badge'
+    import * as Select from '$lib/components/ui/select'
     import { AuthType } from '$lib/types'
     import { Plus, Server } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
@@ -234,14 +235,23 @@
                 </div>
                 <div class="space-y-2">
                     <Label for="mcp-auth">Authentication</Label>
-                    <select
-                        id="mcp-auth"
-                        bind:value={authType}
-                        class="border-input bg-background w-full rounded-md border px-3 py-2 text-sm">
-                        <option value="">Public / no credentials</option>
-                        <option value={AuthType.BEARER_TOKEN}>Shared bearer token</option>
-                        <option value={AuthType.OAUTH}>Per-user OAuth</option>
-                    </select>
+                    <Select.Root type="single" bind:value={authType}>
+                        <Select.Trigger id="mcp-auth" class="w-full cursor-pointer">
+                            {authType === AuthType.BEARER_TOKEN
+                                ? 'Shared bearer token'
+                                : authType === AuthType.OAUTH
+                                  ? 'Per-user OAuth'
+                                  : 'Public / no credentials'}
+                        </Select.Trigger>
+                        <Select.Content>
+                            <Select.Item value="" class="cursor-pointer"
+                                >Public / no credentials</Select.Item>
+                            <Select.Item value={AuthType.BEARER_TOKEN} class="cursor-pointer"
+                                >Shared bearer token</Select.Item>
+                            <Select.Item value={AuthType.OAUTH} class="cursor-pointer"
+                                >Per-user OAuth</Select.Item>
+                        </Select.Content>
+                    </Select.Root>
                 </div>
                 {#if authType === AuthType.BEARER_TOKEN}
                     <div class="space-y-2">
