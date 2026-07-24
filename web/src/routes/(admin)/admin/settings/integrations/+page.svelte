@@ -669,7 +669,9 @@
                 </div>
             </Tabs.Content>
             <Tabs.Content value="mcp" class="space-y-4">
-                <McpTabContent data={data.mcpTab} />
+                <McpTabContent
+                    sources={data.mcpTab.sources}
+                    manifestBySourceType={data.mcpTab.manifestBySourceType} />
             </Tabs.Content>
         </Tabs.Root>
     </div>
