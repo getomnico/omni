@@ -163,7 +163,7 @@
                             onclick={testConnection}
                             disabled={isTesting}
                             class="cursor-pointer">
-                            <RefreshCw class="h-3.5 w-3.5" class:animate-spin={isTesting} />
+                            <RefreshCw class="h-3.5 w-3.5 {isTesting ? 'animate-spin' : ''}" />
                         </Button>
                     </div>
                 </div>
@@ -211,7 +211,7 @@
                         onclick={save}
                         disabled={!hasChanges || isSaving}
                         class="cursor-pointer">
-                        <RefreshCw class="h-4 w-4" class:animate-spin={isSaving} />
+                        <RefreshCw class="h-4 w-4 {isSaving ? 'animate-spin' : ''}" />
                         {isSaving ? 'Saving...' : 'Save'}
                     </Button>
                     <Button
