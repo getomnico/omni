@@ -862,6 +862,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["file_id"]
                 }),
+                required_scopes: Vec::new(),
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
@@ -879,6 +880,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": []
                 }),
+                required_scopes: Vec::new(),
                 source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
                 hidden: false,
@@ -903,6 +905,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["schema"]
                 }),
+                required_scopes: Vec::new(),
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
@@ -955,6 +958,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["service", "resource", "method"]
                 }),
+                required_scopes: Vec::new(),
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
