@@ -131,6 +131,13 @@ function replayStreamResponse(sampleStream: string, chatId: string): Response {
                 for (const event of events) {
                     if (cancelled) return
                     let eventToSend = event
+                    if (event.startsWith('event: test_sleep')) {
+                        const durationMs = Number.parseInt(eventData(event) ?? '0', 10)
+                        for (let elapsed = 0; elapsed < durationMs && !cancelled; elapsed += 100) {
+                            await sleep(Math.min(100, durationMs - elapsed))
+                        }
+                        continue
+                    }
                     if (event.startsWith('event: message_id')) {
                         eventToSend = `event: message_id\ndata: sample-${runId}-${messageIdCounter++}`
                     } else if (event.startsWith('event: save_message')) {
@@ -492,7 +499,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                         controller.enqueue(encoder.encode(redactedEvent))
                                         continue
                                     }
-                                } catch (parseError) {
+                                } catch {
                                     // If parsing fails, forward as-is
                                 }
                             }

@@ -1195,6 +1195,84 @@ test('chat keeps prior messages visible when reloaded during an active stream', 
     }
 })
 
+test('chat keeps compaction indicator visible after reload during compaction', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `reload-compaction-stream-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+        await writeFile(
+            fixturePath,
+            ['event: compaction_start\ndata: {}\n\n', 'event: test_sleep\ndata: 15000\n\n'].join(
+                '',
+            ),
+        )
+
+        let streamActive = false
+        await page.route(`**/api/chat/${seeded.chatId}/stream/status`, async (route) => {
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    active: streamActive,
+                    running: streamActive,
+                    resumable: false,
+                    pendingApproval: false,
+                    pendingOAuth: false,
+                }),
+            })
+        })
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            const requestBody = (await route.request().postDataJSON()) as {
+                content: string
+                parentId?: string
+            }
+            const messageId = ulid()
+            const sql = postgres(dbConfig)
+            await sql`
+                INSERT INTO chat_messages (id, chat_id, parent_id, message_seq_num, message, content_text)
+                VALUES (
+                    ${messageId},
+                    ${seeded!.chatId},
+                    ${requestBody.parentId ?? null},
+                    2,
+                    ${sql.json({ role: 'user', content: requestBody.content })},
+                    ${requestBody.content}
+                )
+            `
+            await sql.end()
+            streamActive = true
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId }),
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Reload during compaction')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByText('Reload during compaction')).toBeVisible()
+        await expect(page.getByText('Summarizing conversation...')).toBeVisible()
+
+        await page.reload({ waitUntil: 'domcontentloaded' })
+
+        await expect(page.getByText('What tools can you use?')).toBeVisible()
+        await expect(page.getByText('Reload during compaction')).toBeVisible()
+        await expect(page.getByText('Summarizing conversation...')).toBeVisible()
+        await expect(page.locator('.omni-composer-send.rounded-full')).toBeVisible()
+        streamActive = false
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
+        await cleanupChat(seeded)
+    }
+})
+
 test('approval card can be approved after reload', async ({ page }) => {
     let seeded: SeededChat | null = null
     const fixtureName = `approval-reload-${ulid()}.sse`

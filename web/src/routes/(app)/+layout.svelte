@@ -49,7 +49,6 @@
     import { themeStore } from '$lib/themes/store.svelte'
     import { applyTheme } from '$lib/themes/engine'
     import ThemePicker from '$lib/components/theme-picker.svelte'
-    import { formatDate } from '$lib/utils/datetime'
 
     interface Props {
         data: LayoutData
@@ -58,7 +57,6 @@
 
     let { data, children }: Props = $props()
 
-    type ChatDateGroup = { key: string; label: string; items: Chat[] }
     type SerializedChat = Omit<Chat, 'createdAt' | 'updatedAt'> & {
         createdAt: string
         updatedAt: string
@@ -99,46 +97,6 @@
     )
     let recentChats = $derived<Chat[]>([...data.recentChats, ...additionalRecentChats])
     let recentHasMore = $derived(additionalRecentHasMore ?? data.recentChatsHasMore)
-    let recentChatGroups = $derived(groupChatsByDate(recentChats, data.user.configuration.timezone))
-
-    function dayKey(date: Date, zone?: string | null): string {
-        const parts = new Intl.DateTimeFormat('en-US', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            timeZone: zone || undefined,
-        }).formatToParts(date)
-        const get = (type: string) => parts.find((part) => part.type === type)?.value ?? ''
-        return `${get('year')}-${get('month')}-${get('day')}`
-    }
-
-    function groupLabel(date: Date, zone?: string | null): string {
-        const today = new Date()
-        const yesterday = new Date(today)
-        yesterday.setDate(today.getDate() - 1)
-
-        const key = dayKey(date, zone)
-        if (key === dayKey(today, zone)) return 'Today'
-        if (key === dayKey(yesterday, zone)) return 'Yesterday'
-        return formatDate(date, zone)
-    }
-
-    function groupChatsByDate(items: Chat[], zone?: string | null): ChatDateGroup[] {
-        const groups: ChatDateGroup[] = []
-
-        for (const chat of items) {
-            const date = chat.updatedAt
-            const key = dayKey(date, zone)
-            let group = groups[groups.length - 1]
-            if (!group || group.key !== key) {
-                group = { key, label: groupLabel(date, zone), items: [] }
-                groups.push(group)
-            }
-            group.items.push(chat)
-        }
-
-        return groups
-    }
 
     function deserializeChat(chat: SerializedChat): Chat {
         return {
@@ -428,7 +386,7 @@
                     <!-- Starred chats -->
                     {#if data.starredChats.length > 0}
                         <p
-                            class="text-muted-foreground mt-2 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
+                            class="text-muted-foreground mt-2 p-1.5 text-xs font-semibold group-data-[collapsible=icon]:hidden">
                             Starred
                         </p>
                         <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
@@ -444,17 +402,11 @@
                         Recent chats
                     </p>
                     {#if recentChats.length > 0}
-                        {#each recentChatGroups as group (group.key)}
-                            <p
-                                class="text-muted-foreground mt-2 p-1.5 text-xs group-data-[collapsible=icon]:hidden">
-                                {group.label}
-                            </p>
-                            <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
-                                {#each group.items as chat (chat.id)}
-                                    {@render chatItem(chat)}
-                                {/each}
-                            </SidebarMenu>
-                        {/each}
+                        <SidebarMenu class="gap-1 group-data-[collapsible=icon]:hidden">
+                            {#each recentChats as chat (chat.id)}
+                                {@render chatItem(chat)}
+                            {/each}
+                        </SidebarMenu>
                         {#if recentHasMore}
                             <Button
                                 variant="ghost"
