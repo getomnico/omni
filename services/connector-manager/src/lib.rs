@@ -57,6 +57,10 @@ pub fn create_app(state: AppState) -> Router {
         )
         .route("/sources/:source_id", get(handlers::get_source))
         .route("/connectors", get(handlers::list_connectors))
+        .route(
+            "/remote-mcp/:source_id/refresh",
+            post(handlers::refresh_remote_mcp_catalog),
+        )
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
         .route("/resource", post(handlers::read_resource))

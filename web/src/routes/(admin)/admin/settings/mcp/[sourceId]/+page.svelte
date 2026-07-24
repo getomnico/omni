@@ -74,7 +74,10 @@
             const body = await response.json().catch(() => null)
             if (!response.ok || !body?.ok) throw new Error(body?.error || 'Probe failed')
             probeSummary = `${body.toolCount ?? 0} tools · ${body.resourceCount ?? 0} resources`
-            toast.success('Remote MCP connection succeeded')
+            toast.success('Remote MCP connection refreshed')
+            // Re-fetch page data to show the Connector Manager's updated manifest
+            await invalidateAll()
+            probeSummary = null
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Probe failed')
         } finally {

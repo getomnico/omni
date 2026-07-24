@@ -4,6 +4,7 @@ import { and, eq, isNull } from 'drizzle-orm'
 import { db } from '$lib/server/db'
 import { serviceCredentials } from '$lib/server/db/schema'
 import { decryptConfig } from '$lib/server/crypto/encryption'
+import { getConfig } from '$lib/server/config'
 import { AuthType, ServiceProvider } from '$lib/types'
 import { probeRemoteMcpServer, remoteMcpConfigFromInput } from '$lib/server/mcp/client'
 
@@ -48,5 +49,21 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         bearerToken,
     })
 
-    return json(probe, { status: probe.ok ? 200 : 400 })
+    // If probing succeeded and a sourceId was provided, trigger Connector Manager
+    // to refresh its Redis catalog so the page shows live data on reload.
+    const sourceId = body.sourceId ?? body.source_id
+    let refreshResult: Record<string, unknown> | null = null
+    if (probe.ok && sourceId) {
+        try {
+            const cmUrl = getConfig().services.connectorManagerUrl
+            const refreshResp = await fetch(`${cmUrl}/remote-mcp/${sourceId}/refresh`, {
+                method: 'POST',
+            })
+            if (refreshResp.ok) refreshResult = await refreshResp.json()
+        } catch {
+            // Non-critical: catalog refresh failure doesn't fail the probe
+        }
+    }
+
+    return json({ ...probe, refreshResult }, { status: probe.ok ? 200 : 400 })
 }

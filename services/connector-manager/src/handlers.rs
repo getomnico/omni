@@ -1414,6 +1414,38 @@ pub async fn oauth_credential_ready(
     }
 }
 
+/// Trigger an immediate catalog refresh for a remote MCP source.
+pub async fn refresh_remote_mcp_catalog(
+    Path(source_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+    if source.integration_type != IntegrationType::RemoteMcp {
+        return Err(ApiError::BadRequest("Not a remote MCP source".to_string()));
+    }
+
+    match state.remote_mcp_gateway.refresh_catalog(&source.id).await {
+        Ok(manifest) => {
+            info!(source_id = %source.id, connector_id = %manifest.connector_id, "Remote MCP catalog refreshed");
+            Ok(Json(json!({
+                "status": "ok",
+                "tool_count": manifest.actions.len(),
+                "resource_count": manifest.resources.len(),
+            })))
+        }
+        Err(err) => {
+            warn!(source_id = %source.id, error = %err, "Remote MCP catalog refresh failed");
+            Err(remote_mcp_gateway_error_to_api_error(err))
+        }
+    }
+}
+
 pub async fn list_skills(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
