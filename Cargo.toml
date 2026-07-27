@@ -62,11 +62,12 @@ futures-util = "0.3"
 
 # OpenTelemetry dependencies
 opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio", "metrics", "logs", "experimental_trace_batch_span_processor_with_async_runtime", "experimental_logs_batch_log_processor_with_async_runtime"] }
+opentelemetry-otlp = { version = "0.32", features = ["http-proto", "http-json", "reqwest-client", "trace", "metrics", "logs"] }
 opentelemetry-semantic-conventions = "0.32"
 tracing-opentelemetry = "0.33"
 opentelemetry-http = "0.32"
+opentelemetry-appender-tracing = "0.32"
 
 # Test dependencies
 testcontainers = { version = "0.21", features = ["watchdog"] }

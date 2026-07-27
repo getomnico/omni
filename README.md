@@ -47,6 +47,11 @@ The agent runtime can execute code in a sandboxed container on an isolated Docke
 
 See the full [architecture documentation](https://docs.getomni.co/architecture) for more details.
 
+OpenTelemetry traces, metrics, and logs are exported from the five core
+services (web, AI, searcher, indexer, connector-manager).
+See [docs/observability.md](docs/observability.md) for signal flow,
+metric inventory, and endpoint configuration.
+
 ## Deployment
 
 Omni can be deployed entirely on your own infra. See our deployment guides:

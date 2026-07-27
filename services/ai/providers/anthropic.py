@@ -123,18 +123,14 @@ class AnthropicProvider(LLMProvider):
             if tools:
                 request_params["tools"] = tools
                 logger.info(
-                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    f"Sending request with {len(tools)} tools"
                 )
             else:
-                logger.info(f"Sending request without tools")
+                logger.info("Sending request without tools")
 
             logger.info(
                 f"Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
             )
-            logger.debug(
-                f"Full request params: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}"
-            )
-            logger.debug(f"Messages: {json.dumps(msg_list, indent=2)}")
 
             if system_prompt:
                 request_params["system"] = system_prompt
@@ -142,38 +138,24 @@ class AnthropicProvider(LLMProvider):
             stream: AsyncStream[MessageStreamEvent] = await self.client.messages.create(
                 **request_params,
             )
-            logger.info(f"Stream created successfully, starting to process events")
+            logger.info("Stream created successfully")
 
             event_count = 0
             async for event in stream:
                 event_count += 1
-                logger.debug(f"Event {event_count}: {event.type}")
                 if event.type == "content_block_start":
-                    logger.info(f"Content block start: type={event.content_block.type}")
-                    if event.content_block.type == "tool_use":
-                        logger.info(
-                            f"Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})"
-                        )
-                elif event.type == "content_block_delta":
-                    if event.delta.type == "text_delta":
-                        logger.debug(f"Text delta: '{event.delta.text}'")
-                    elif event.delta.type == "input_json_delta":
-                        logger.debug(f"JSON delta: {event.delta.partial_json}")
-                elif event.type == "citation":
-                    logger.info(f"Citation: {event.citation}")
+                    logger.info("Content block start")
                 elif event.type == "content_block_stop":
-                    logger.info(
-                        f"Content block stop at index {getattr(event, 'index', '<unknown>')}"
-                    )
+                    logger.info("Content block stop")
                 elif event.type == "message_delta":
-                    logger.info(f"Message delta stop reason: {event.delta.stop_reason}")
+                    logger.info("Message delta received")
                 elif event.type == "message_stop":
-                    logger.info(f"Message completed after {event_count} events")
+                    logger.info("Message completed")
 
                 yield event
 
         except Exception as e:
-            logger.error(f"Failed to stream from Anthropic: {str(e)}", exc_info=True)
+            logger.error("Failed to stream from Anthropic")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -222,7 +204,7 @@ class AnthropicProvider(LLMProvider):
             return content, usage
 
         except Exception as e:
-            logger.error(f"Failed to generate response from Anthropic: {str(e)}")
+            logger.error("Failed to generate response from Anthropic")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

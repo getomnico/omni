@@ -3,7 +3,7 @@
 import logging
 from enum import StrEnum
 from typing import Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from asyncpg import Pool
 
@@ -30,6 +30,8 @@ class EmbeddingQueueItem:
     error_message: Optional[str]
     retry_count: int
     created_at: datetime
+    traceparent: Optional[str] = field(default=None)
+    tracestate: Optional[str] = field(default=None)
 
 
 class EmbeddingQueueRepository:
@@ -50,7 +52,8 @@ class EmbeddingQueueRepository:
 
         row = await pool.fetchrow(
             """
-            SELECT id, document_id, status, error_message, retry_count, created_at
+            SELECT id, document_id, status, error_message, retry_count, created_at,
+                   traceparent, tracestate
             FROM embedding_queue
             WHERE id = $1
             """,
@@ -107,7 +110,8 @@ class EmbeddingQueueRepository:
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, document_id, status, error_message, retry_count, created_at
+            RETURNING id, document_id, status, error_message, retry_count, created_at,
+                      traceparent, tracestate
             """,
             max_retries,
             limit,

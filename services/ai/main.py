@@ -33,7 +33,7 @@ from services import (
     start_batch_processor,
 )
 from state import AppState
-from telemetry import init_telemetry
+from telemetry import init_telemetry, shutdown_telemetry
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -87,21 +87,24 @@ async def startup_event():
                 raise
             except Exception as e:
                 app.state.memory_provider = None
-                logger.warning(f"Memory initialization failed: {e}")
+                logger.warning(f"Memory initialization failed: {type(e).__name__}")
         else:
             app.state.memory_provider = None
             logger.info("MEMORY_ENABLED=false — memory feature disabled")
-    except Exception as e:
-        logger.error(f"Failed to initialize services: {e}")
-        raise e
+    except Exception:
+        logger.error("Failed to initialize services")
+        raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown."""
-    if hasattr(app.state, "embedding_queue"):
-        await app.state.embedding_queue.stop()
-    await shutdown_providers(app.state)
+    try:
+        if hasattr(app.state, "embedding_queue"):
+            await app.state.embedding_queue.stop()
+        await shutdown_providers(app.state)
+    finally:
+        shutdown_telemetry()
 
 
 if __name__ == "__main__":

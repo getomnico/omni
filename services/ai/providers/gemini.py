@@ -237,7 +237,7 @@ class GeminiProvider(LLMProvider):
                 )
                 return self._context_window_info
         except Exception as e:
-            logger.debug("Failed to fetch Gemini model metadata for %s: %s", self.model, e)
+            logger.debug("Failed to fetch Gemini model metadata for %s", self.model)
         self._context_window_info = await super().get_context_window_tokens()
         return self._context_window_info
 
@@ -268,11 +268,14 @@ class GeminiProvider(LLMProvider):
             if tools:
                 config.tools = _convert_tools_to_gemini(tools)
                 logger.info(
-                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    "Sending request with %s tools", len(tools)
                 )
 
             logger.info(
-                f"Model: {active_model}, Messages: {len(contents)}, Max tokens: {config.max_output_tokens}"
+                "Model: %s, Messages: %s, Max tokens: %s",
+                active_model,
+                len(contents),
+                config.max_output_tokens,
             )
 
             # Emit message_start
@@ -401,7 +404,7 @@ class GeminiProvider(LLMProvider):
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
-            logger.error(f"Failed to stream from Gemini: {str(e)}", exc_info=True)
+            logger.error("Failed to stream from Gemini")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -446,7 +449,7 @@ class GeminiProvider(LLMProvider):
             return response.text, usage
 
         except Exception as e:
-            logger.error(f"Failed to generate response: {str(e)}")
+            logger.error("Failed to generate response")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

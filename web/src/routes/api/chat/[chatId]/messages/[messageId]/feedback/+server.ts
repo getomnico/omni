@@ -42,10 +42,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     }
 
     logger.debug('Submitting feedback', {
-        chatId,
-        messageId,
         feedbackType: feedbackRequest.feedbackType,
-        userId: locals.user.id,
     })
 
     try {
@@ -57,11 +54,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         )
 
         logger.info('Feedback submitted successfully', {
-            chatId,
-            messageId,
-            feedbackId: feedback.id,
             feedbackType: feedback.feedbackType,
-            userId: locals.user.id,
         })
 
         return json(
@@ -73,7 +66,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             { status: 200 },
         )
     } catch (error) {
-        logger.error('Error submitting feedback', error, { chatId, messageId })
+        logger.error('Error submitting feedback', error)
         return json(
             {
                 error: 'Failed to submit feedback',
@@ -98,29 +91,17 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'User not authenticated' }, { status: 401 })
     }
 
-    logger.debug('Deleting feedback', {
-        chatId,
-        messageId,
-        userId: locals.user.id,
-    })
+    logger.debug('Deleting feedback')
 
     try {
         const deleted = await responseFeedbackRepository.delete(messageId, locals.user.id)
 
         if (!deleted) {
-            logger.warn('No feedback found to delete', {
-                chatId,
-                messageId,
-                userId: locals.user.id,
-            })
+            logger.warn('No feedback found to delete')
             return json({ error: 'No feedback found' }, { status: 404 })
         }
 
-        logger.info('Feedback deleted successfully', {
-            chatId,
-            messageId,
-            userId: locals.user.id,
-        })
+        logger.info('Feedback deleted successfully')
 
         return json(
             {
@@ -129,7 +110,7 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
             { status: 200 },
         )
     } catch (error) {
-        logger.error('Error deleting feedback', error, { chatId, messageId })
+        logger.error('Error deleting feedback', error)
         return json(
             {
                 error: 'Failed to delete feedback',

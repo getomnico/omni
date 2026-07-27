@@ -26,7 +26,7 @@ use sync_manager::SyncManager;
 use tokio::sync::Semaphore;
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -185,7 +185,16 @@ pub async fn run_server() -> AnyhowResult<()> {
     info!("Connector Manager service listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(telemetry::shutdown_signal())
+        .await
+    {
+        error!("Server error: {}", e);
+        telemetry::shutdown_telemetry().await;
+        return Err(e.into());
+    }
+
+    telemetry::shutdown_telemetry().await;
     Ok(())
 }

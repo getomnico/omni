@@ -43,7 +43,7 @@ export const GET: RequestHandler = async ({ url }) => {
     }
 
     // Redirect to Google OAuth
-    logger.info('Redirecting to Google:', authUrl)
+    logger.info('Redirecting to Google OAuth')
     throw redirect(302, authUrl)
 }
 

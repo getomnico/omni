@@ -20,15 +20,16 @@ use futures_util::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 use shared::{
-    models::UserConfiguration, ConfigurationRepository, DocumentRepository, GroupRepository,
+    metrics, models::UserConfiguration, ConfigurationRepository, DocumentRepository, GroupRepository,
     PersonRepository, Repository, UserRepository,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 /// A stream wrapper that collects chunks for caching while forwarding them to the client
 struct CachingStream<S> {
@@ -70,7 +71,7 @@ where
                 Poll::Ready(Some(Ok(chunk.into_bytes())))
             }
             Poll::Ready(Some(Err(e))) => {
-                error!("AI stream error: {}", e);
+                error!("AI stream error");
                 Poll::Ready(Some(Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     e.to_string(),
@@ -89,7 +90,7 @@ where
                         {
                             let _: Result<(), _> =
                                 conn.set_ex(&cache_key, buffer.as_str(), 600).await;
-                            info!("Cached AI response for key: {}", cache_key);
+                            info!("Cached AI response");
                         }
                     }
                 });
@@ -151,27 +152,53 @@ pub async fn search(
     State(state): State<AppState>,
     Json(mut request): Json<SearchRequest>,
 ) -> SearcherResult<Json<Value>> {
-    info!("Received search request: {:?}", request);
-    hydrate_user_configuration(&state, &mut request).await?;
+    let request_query_len = request.query.len();
+    info!(query_len = request_query_len, "Received search request");
 
-    let search_engine = SearchEngine::new(
-        state.db_pool,
-        state.redis_client,
-        state.ai_client,
-        state.config,
-        state.operator_registry,
-    )
-    .await?;
+    // ------------------------------------------------------------------
+    // Inner async block — single timing/error measurement across
+    // hydration, SearchEngine construction, engine search and response
+    // serialization.  Result count is recorded only on full success.
+    // ------------------------------------------------------------------
+    let start = Instant::now();
 
-    let response = match search_engine.search(request.clone()).await {
-        Ok(response) => response,
+    let inner_result: SearcherResult<(Value, u64, SearchEngine)> = async {
+        hydrate_user_configuration(&state, &mut request).await?;
+
+        let search_engine = SearchEngine::new(
+            state.db_pool,
+            state.redis_client,
+            state.ai_client,
+            state.config,
+            state.operator_registry,
+        )
+        .await?;
+
+        let response = search_engine.search(request.clone()).await?;
+        let result_count = response.results.len() as u64;
+        let value = serde_json::to_value(response)?;
+
+        Ok((value, result_count, search_engine))
+    }
+    .await;
+
+    let duration = start.elapsed().as_secs_f64();
+
+    let (value, _result_count, search_engine) = match inner_result {
+        Ok(result) => {
+            metrics::SEARCHER_SEARCH_DURATION.record(duration, &[]);
+            metrics::SEARCHER_SEARCH_RESULTS.record(result.1, &[]);
+            result
+        }
         Err(e) => {
+            metrics::SEARCHER_SEARCH_ERRORS.add(1, &[]);
+            metrics::SEARCHER_SEARCH_DURATION.record(duration, &[]);
             error!("Search engine error: {}", e);
-            return Err(SearcherError::Internal(e));
+            return Err(e);
         }
     };
 
-    // Store search history if user_id is provided
+    // Store search history if user_id is provided (nonfatal)
     if let Some(user_id) = &request.user_id {
         let is_generated = request.is_generated_query.unwrap_or(false);
 
@@ -191,17 +218,14 @@ pub async fn search(
         }
     }
 
-    Ok(Json(serde_json::to_value(response)?))
+    Ok(Json(value))
 }
 
 pub async fn recent_searches(
     State(state): State<AppState>,
     Query(query): Query<RecentSearchesRequest>,
 ) -> SearcherResult<Json<Value>> {
-    info!(
-        "Received recent searches request for user: {}",
-        query.user_id
-    );
+    info!("Received recent searches request");
 
     let search_engine = SearchEngine::new(
         state.db_pool,
@@ -221,7 +245,8 @@ pub async fn ai_answer(
     State(state): State<AppState>,
     Json(mut request): Json<SearchRequest>,
 ) -> Result<axum::response::Response<Body>, axum::http::StatusCode> {
-    info!("Received AI answer request: {:?}", request);
+    let answer_query_len = request.query.len();
+    info!("Received AI answer request");
     hydrate_user_configuration(&state, &mut request)
         .await
         .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
@@ -242,7 +267,7 @@ pub async fn ai_answer(
     // Try to get cached AI response first
     if let Ok(mut conn) = state.redis_client.get_multiplexed_async_connection().await {
         if let Ok(cached_answer) = conn.get::<_, String>(&cache_key).await {
-            info!("Cache hit for AI answer query: '{}'", request.query);
+            info!("AI answer cache hit");
             let response = axum::response::Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/plain; charset=utf-8")
@@ -254,27 +279,26 @@ pub async fn ai_answer(
     }
 
     // Cache miss - generate fresh response
-    info!("Cache miss for AI answer query: '{}'", request.query);
+    info!("AI answer cache miss");
 
     // Get RAG context by running hybrid search
     let context = match search_engine.get_rag_context(&request).await {
         Ok(context) => context,
         Err(e) => {
-            error!("Failed to get RAG context: {}", e);
+            error!("Failed to get RAG context");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
     // Build RAG prompt with context and citation instructions
     let prompt = search_engine.build_rag_prompt(&request.query, &context);
-    info!("Built RAG prompt of length: {}", prompt.len());
-    debug!("RAG prompt: {}", prompt);
+    info!("Built RAG prompt");
 
     // Stream AI response
     let ai_stream = match state.ai_client.stream_prompt(&prompt).await {
         Ok(stream) => stream,
         Err(e) => {
-            error!("Failed to start AI stream: {}", e);
+            error!("Failed to start AI stream");
             return Err(StatusCode::BAD_GATEWAY);
         }
     };
@@ -421,23 +445,12 @@ pub async fn suggested_questions(
     let user = match user_repo.find_by_id(request.user_id.clone()).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            error!("User not found for user_id {}", request.user_id);
-            return Err(SearcherError::NotFound(format!(
-                "User not found for user_id {}",
-                request.user_id
-            )));
+            error!("User not found");
+            return Err(SearcherError::NotFound("User not found".to_string()));
         }
         Err(e) => {
-            error!(
-                "Failed to fetch user for user_id {}: {:?}",
-                request.user_id, e
-            );
-            return Err(anyhow!(
-                "Failed to fetch user for user_id {}: {:?}",
-                request.user_id,
-                e
-            )
-            .into());
+            error!("Failed to fetch user");
+            return Err(anyhow!("Failed to fetch user: {:?}", e).into());
         }
     };
 

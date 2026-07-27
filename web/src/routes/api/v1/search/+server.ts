@@ -95,7 +95,10 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         user_configuration: locals.apiKeyScope === 'admin' ? undefined : locals.user.configuration,
     }
 
-    logger.debug('Agent search request', { query: queryData.query, mode: queryData.mode })
+    logger.debug('Agent search request', {
+        queryLength: queryData.query?.length ?? 0,
+        mode: queryData.mode,
+    })
 
     try {
         const response = await fetch(`${env.SEARCHER_URL}/search`, {
@@ -107,7 +110,6 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         if (!response.ok) {
             logger.error('Searcher service error', undefined, {
                 status: response.status,
-                query: queryData.query,
             })
             return json(
                 { error: 'Search service unavailable', status: response.status },
@@ -118,7 +120,6 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         const results = await response.json()
 
         logger.info('Agent search completed', {
-            query: queryData.query,
             results_count: results.results?.length ?? 0,
             total_count: results.total_count,
             query_time_ms: results.query_time_ms,
@@ -126,7 +127,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
 
         return json(results)
     } catch (error) {
-        logger.error('Search request failed', error as Error, { query: queryData.query })
+        logger.error('Search request failed', error as Error)
         return json({ error: 'Search request failed' }, { status: 500 })
     }
 }

@@ -59,7 +59,7 @@ export const POST: RequestHandler = async ({ params, request, fetch }) => {
                 // If response isn't JSON, use the text
                 errorMessage = (await syncResponse.text()) || errorMessage
             }
-            logger.error(`Sync failed for source ${sourceId}`, {
+            logger.error('Sync failed', {
                 error: errorMessage,
                 status: syncResponse.status,
                 syncMode: mode,

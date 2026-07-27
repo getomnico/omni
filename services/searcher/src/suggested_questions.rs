@@ -1,6 +1,6 @@
 use crate::models::{SuggestedQuestion, SuggestedQuestionsResponse};
 use crate::{Result as SearcherResult, SearcherError};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use dashmap::DashSet;
 use futures_util::StreamExt;
 use redis::AsyncCommands;
@@ -104,17 +104,11 @@ impl SuggestedQuestionsGenerator {
             "Cache miss for suggested questions, checking for in-flight generations for this user before proceeding."
         );
         if self.in_flight.contains(user_email) {
-            info!(
-                "Suggested questions generation already in progress for user {}",
-                user_email
-            );
+            info!("Suggested questions generation already in progress");
             return Ok(SuggestedQuestionsResponse { questions: vec![] });
         }
 
-        info!(
-            "No in-flight generation found, starting new generation task for user {}",
-            user_email
-        );
+        info!("No in-flight generation found, starting new generation task");
         tokio::spawn({
             let user_email = user_email.to_string();
             let in_flight = Arc::clone(&self.in_flight);
@@ -135,26 +129,20 @@ impl SuggestedQuestionsGenerator {
                     {
                         Ok(count) => {
                             info!(
-                                "Successfully generated and cached {} suggested questions for user {}",
-                                count, user_email
+                                "Successfully generated and cached {} suggested questions",
+                                count
                             );
                             // Remove the user from the in-flight map to allow future requests to go through
                             in_flight.remove(&user_email);
                         }
-                        Err(e) => {
-                            error!(
-                                "Failed to generate suggested questions for user {}: {:?}",
-                                user_email, e
-                            );
+                        Err(_) => {
+                            error!("Failed to generate suggested questions");
                             // Remove the user from the in-flight map to allow future requests to go through
                             in_flight.remove(&user_email);
                         }
                     }
                 } else {
-                    info!(
-                        "Another generation task started for user {} while we were waiting",
-                        user_email
-                    );
+                    info!("Another generation task started while we were waiting");
                 }
             }
         });
@@ -221,10 +209,7 @@ impl SuggestedQuestionsGenerator {
                     let content_ids: Vec<String> =
                         docs.iter().filter_map(|d| d.content_id.clone()).collect();
 
-                    debug!(
-                        "Fetching content IDs {:?} for generating suggested questions",
-                        content_ids
-                    );
+                    debug!("Fetching content for generating suggested questions");
                     let content_map = content_storage.batch_get_text(content_ids).await?;
 
                     // Build contents vector in the same order as documents
@@ -250,9 +235,7 @@ impl SuggestedQuestionsGenerator {
                         }
 
                         debug!(
-                            "Processing document {} [id={}] (content length: {} chars)",
-                            doc.title,
-                            doc.id,
+                            "Processing document (content length: {} chars)",
                             content.len()
                         );
 
@@ -269,23 +252,14 @@ impl SuggestedQuestionsGenerator {
                                 // Two different documents can produce the same generic
                                 // suggestion; keep the displayed suggestions distinct.
                                 if !seen_questions.insert(question.to_lowercase()) {
-                                    debug!(
-                                        "Skipping duplicate suggestion text from document {}",
-                                        doc.id
-                                    );
+                                    debug!("Skipping duplicate suggestion text");
                                     continue;
                                 }
                                 questions.push(SuggestedQuestion {
                                     question: question.clone(),
                                     document_id: doc.id.clone(),
                                 });
-                                info!(
-                                    "Generated suggestion {}/{}: \"{}\" (from document: {})",
-                                    questions.len(),
-                                    num_questions,
-                                    question,
-                                    doc.id
-                                );
+                                info!("Generated suggestion {}/{}", questions.len(), num_questions);
 
                                 // Cache the questions
                                 debug!("Serializing {} question(s) to JSON", questions.len());
@@ -302,10 +276,7 @@ impl SuggestedQuestionsGenerator {
                                     .context("Failed to connect to Redis")?;
 
                                 let cache_key = format!("{}:{}", REDIS_CACHE_KEY, user_email);
-                                debug!(
-                                    "Caching questions in Redis with key: {}, TTL: {}s",
-                                    cache_key, CACHE_TTL_SECONDS
-                                );
+                                debug!("Caching questions in Redis (TTL: {}s)", CACHE_TTL_SECONDS);
                                 redis_conn
                                     .set_ex::<_, _, ()>(cache_key, &json_str, CACHE_TTL_SECONDS)
                                     .await
@@ -317,8 +288,8 @@ impl SuggestedQuestionsGenerator {
                                     CACHE_TTL_SECONDS / 3600
                                 );
                             }
-                            Err(e) => {
-                                warn!("Failed to generate suggestion for document {}: {}", doc.id, e);
+                            Err(_) => {
+                                warn!("Failed to generate suggestion");
                             }
                         }
 
@@ -333,17 +304,14 @@ impl SuggestedQuestionsGenerator {
 
                     if num_docs_fetched < needed {
                         debug!(
-                            "User {} has only {} documents, skipping further attempts",
-                            user_email, num_docs_fetched
+                            "User has only {} documents, skipping further attempts",
+                            num_docs_fetched
                         );
                         break;
                     }
                 }
-                Err(e) => {
-                    error!(
-                        "Failed to fetch random documents on attempt {}: {}",
-                        attempts, e
-                    );
+                Err(_) => {
+                    error!("Failed to fetch random documents on attempt {}", attempts);
                 }
             }
         }
@@ -376,11 +344,7 @@ impl SuggestedQuestionsGenerator {
         expect_question_mark: bool,
     ) -> Result<String> {
         let excerpt = if content.len() > 2000 {
-            debug!(
-                "Truncating content from {} to 2000 chars for document {}",
-                content.len(),
-                document_id
-            );
+            debug!("Truncating content from {} to 2000 chars", content.len());
             safe_str_slice(content, 0, 2000)
         } else {
             content
@@ -410,25 +374,18 @@ impl SuggestedQuestionsGenerator {
         let normalized =
             output.trim_end_matches(|c: char| c == '.' || c == '!' || c.is_whitespace());
         if normalized.eq_ignore_ascii_case("skip") {
-            info!(
-                "Document {} deemed unsuitable for suggestion (model returned SKIP)",
-                document_id
-            );
-            return Err(anyhow!("Document unsuitable for suggestion generation (SKIP)"));
+            info!("Document deemed unsuitable for suggestion (model returned SKIP)");
+            return Err(anyhow!(
+                "Document unsuitable for suggestion generation (SKIP)"
+            ));
         }
 
         if expect_question_mark && !output.contains('?') {
-            warn!(
-                "Discarding non-question suggestion for document {}: \"{}\"",
-                document_id, output
-            );
+            warn!("Discarding non-question suggestion");
             return Err(anyhow!("Generated suggestion was not a question"));
         }
 
-        info!(
-            "Successfully generated suggestion for document {}: \"{}\"",
-            document_id, output
-        );
+        info!("Successfully generated suggestion");
 
         Ok(output)
     }

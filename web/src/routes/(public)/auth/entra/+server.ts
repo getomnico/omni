@@ -74,7 +74,7 @@ export const GET: RequestHandler = async ({ url }) => {
         throw redirect(302, '/login?error=oauth_error')
     }
 
-    logger.info('Redirecting to Entra:', authUrl)
+    logger.info('Redirecting to Entra')
     throw redirect(302, authUrl)
 }
 

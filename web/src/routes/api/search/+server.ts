@@ -32,7 +32,7 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     }
 
     logger.debug('Sending search request to searcher service', {
-        query: queryData.query,
+        queryLength: queryData.query.length,
         mode: queryData.mode,
     })
 
@@ -48,8 +48,6 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         if (!response.ok) {
             logger.error('Search service error', undefined, {
                 status: response.status,
-                statusText: response.statusText,
-                query: queryData.query,
             })
             return json(
                 {
@@ -62,13 +60,12 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
 
         const searchResults = await response.json()
         logger.info('Search completed successfully', {
-            query: queryData.query,
             resultsCount: searchResults.results?.length || 0,
         })
 
         return json(searchResults)
     } catch (error) {
-        logger.error('Error calling search service', error, { query: queryData.query })
+        logger.error('Error calling search service', error)
         return json(
             {
                 error: 'Failed to perform search',

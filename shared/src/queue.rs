@@ -1,6 +1,7 @@
 use crate::utils::generate_ulid;
 use anyhow::Result;
 use sqlx::{PgPool, Row};
+use tracing::Instrument;
 
 use crate::models::{ConnectorEvent, ConnectorEventQueueItem, EventStatus, SyncType};
 
@@ -26,24 +27,42 @@ impl EventQueue {
     }
 
     pub async fn enqueue(&self, source_id: &str, event: &ConnectorEvent) -> Result<String> {
+        let queue_name = "connector_events_queue";
         let id = generate_ulid();
         let event_type = event_type_str(event);
 
-        sqlx::query(
-            r#"
-            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
-            VALUES ($1, $2, $3, $4, $5)
-            "#,
-        )
-        .bind(&id)
-        .bind(event.sync_run_id())
-        .bind(source_id)
-        .bind(event_type)
-        .bind(serde_json::to_value(event)?)
-        .execute(&self.pool)
-        .await?;
+        // Build PRODUCER span and instrument the full INSERT with the span.
+        // inject_active_context is called from inside the instrumented block
+        // so the producer span is active during injection and the DB write.
+        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
 
-        Ok(id)
+        async move {
+            let carrier = crate::telemetry::queue::inject_active_context();
+
+            if let Err(e) = sqlx::query(
+                r#"
+                INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload, traceparent, tracestate)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                "#,
+            )
+            .bind(&id)
+            .bind(event.sync_run_id())
+            .bind(source_id)
+            .bind(event_type)
+            .bind(serde_json::to_value(event)?)
+            .bind(&carrier.traceparent)
+            .bind(&carrier.tracestate)
+            .execute(&self.pool)
+            .await
+            {
+                crate::telemetry::queue::set_active_span_error();
+                return Err(e.into());
+            }
+
+            Ok(id)
+        }
+        .instrument(producer_span)
+        .await
     }
 
     pub async fn enqueue_batch(
@@ -54,6 +73,13 @@ impl EventQueue {
         if events.is_empty() {
             return Ok(Vec::new());
         }
+
+        let queue_name = "connector_events_queue";
+
+        // Build PRODUCER span and instrument the full batch INSERT with the span.
+        // inject_active_context is called from inside the instrumented block
+        // so the producer span is active during injection and the DB write.
+        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
 
         let mut ids: Vec<String> = Vec::with_capacity(events.len());
         let mut sync_run_ids: Vec<String> = Vec::with_capacity(events.len());
@@ -69,21 +95,40 @@ impl EventQueue {
             payloads.push(serde_json::to_value(event)?);
         }
 
-        sqlx::query(
-            r#"
-            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
-            SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::jsonb[])
-            "#,
-        )
-        .bind(&ids)
-        .bind(&sync_run_ids)
-        .bind(&source_ids)
-        .bind(&event_types)
-        .bind(&payloads)
-        .execute(&self.pool)
-        .await?;
+        async move {
+            let carrier = crate::telemetry::queue::inject_active_context();
 
-        Ok(ids)
+            let traceparents: Vec<Option<String>> = std::iter::repeat(carrier.traceparent.clone())
+                .take(ids.len())
+                .collect();
+            let tracestates: Vec<Option<String>> = std::iter::repeat(carrier.tracestate.clone())
+                .take(ids.len())
+                .collect();
+
+            if let Err(e) = sqlx::query(
+                r#"
+                INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload, traceparent, tracestate)
+                SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::jsonb[], $6::text[], $7::text[])
+                "#,
+            )
+            .bind(&ids)
+            .bind(&sync_run_ids)
+            .bind(&source_ids)
+            .bind(&event_types)
+            .bind(&payloads)
+            .bind(&traceparents)
+            .bind(&tracestates)
+            .execute(&self.pool)
+            .await
+            {
+                crate::telemetry::queue::set_active_span_error();
+                return Err(e.into());
+            }
+
+            Ok(ids)
+        }
+        .instrument(producer_span)
+        .await
     }
 
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<ConnectorEventQueueItem>> {
@@ -141,7 +186,9 @@ impl EventQueue {
                 q.max_retries,
                 q.created_at,
                 q.processed_at,
-                q.error_message
+                q.error_message,
+                q.traceparent,
+                q.tracestate
             "#,
         )
         .bind(batch_size)
@@ -212,7 +259,9 @@ impl EventQueue {
                 q.max_retries,
                 q.created_at,
                 q.processed_at,
-                q.error_message
+                q.error_message,
+                q.traceparent,
+                q.tracestate
             "#,
         )
         .bind(batch_size)
@@ -282,7 +331,9 @@ impl EventQueue {
                 q.max_retries,
                 q.created_at,
                 q.processed_at,
-                q.error_message
+                q.error_message,
+                q.traceparent,
+                q.tracestate
             "#,
         )
         .bind(batch_size)
@@ -307,6 +358,9 @@ impl EventQueue {
                 _ => crate::models::EventStatus::Pending,
             };
 
+            let traceparent: Option<String> = row.try_get("traceparent").ok().flatten();
+            let tracestate: Option<String> = row.try_get("tracestate").ok().flatten();
+
             events.push(ConnectorEventQueueItem {
                 id: row.get("id"),
                 sync_run_id: row.get("sync_run_id"),
@@ -319,6 +373,8 @@ impl EventQueue {
                 created_at: row.get("created_at"),
                 processed_at: row.get("processed_at"),
                 error_message: row.get("error_message"),
+                traceparent,
+                tracestate,
             });
         }
         events
@@ -576,7 +632,7 @@ impl EventQueue {
             r#"
             UPDATE connector_events_queue
             SET status = 'completed', processed_at = NOW()
-            WHERE id = ANY($1)
+            WHERE id = ANY($1) AND status = 'processing'
             "#,
         )
         .bind(&event_ids)
@@ -624,12 +680,18 @@ impl EventQueue {
         Ok(result.rows_affected() as i64)
     }
 
+    /// Mark a batch of connector events as failed or dead-letter, returning
+    /// the count of rows that became `failed` (retryable) and those that
+    /// became `dead_letter` (exhausted retries).
+    ///
+    /// Only rows currently in `processing` state are updated, preventing
+    /// stale/duplicate IDs from inflating counters.
     pub async fn mark_events_dead_letter_batch(
         &self,
         event_ids_with_errors: Vec<(String, String)>,
-    ) -> Result<i64> {
+    ) -> Result<(i64, i64)> {
         if event_ids_with_errors.is_empty() {
-            return Ok(0);
+            return Ok((0, 0));
         }
 
         let event_ids: Vec<String> = event_ids_with_errors
@@ -641,7 +703,7 @@ impl EventQueue {
             .map(|(_, err)| err.clone())
             .collect();
 
-        let result = sqlx::query(
+        let rows: Vec<(String,)> = sqlx::query_as(
             r#"
             UPDATE connector_events_queue
             SET status = CASE 
@@ -655,14 +717,18 @@ impl EventQueue {
                 SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(id, error_message)
             ) AS data_table
             WHERE connector_events_queue.id = data_table.id
+                AND connector_events_queue.status = 'processing'
+            RETURNING connector_events_queue.status
             "#,
         )
         .bind(&event_ids)
         .bind(&error_messages)
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(result.rows_affected() as i64)
+        let dead_letter_count = rows.iter().filter(|(s,)| s == "dead_letter").count() as i64;
+        let failed_count = rows.iter().filter(|(s,)| s == "failed").count() as i64;
+        Ok((failed_count, dead_letter_count))
     }
 }
 
