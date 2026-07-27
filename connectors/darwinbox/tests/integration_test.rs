@@ -286,9 +286,8 @@ fn action_manifest_and_policy_modes_match() {
 
 #[test]
 fn document_acl_is_non_public_and_uses_named_participants() {
-    let mut value = test_config("https://example.darwinbox.in");
-    value["authorization"]["hr_admin_emails"] = json!(["hr@example.com"]);
-    let config: DarwinboxSourceConfig = serde_json::from_value(value).unwrap();
+    let config: DarwinboxSourceConfig =
+        serde_json::from_value(test_config("https://example.darwinbox.in")).unwrap();
     let permissions = document_permissions(
         "employee_profile",
         &config,
@@ -301,7 +300,6 @@ fn document_acl_is_non_public_and_uses_named_participants() {
     assert!(permissions
         .users
         .contains(&"employee@example.com".to_string()));
-    assert!(permissions.users.contains(&"hr@example.com".to_string()));
 }
 
 #[test]

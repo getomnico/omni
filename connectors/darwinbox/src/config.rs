@@ -198,8 +198,6 @@ pub struct DarwinboxAuthorizationConfig {
     #[serde(default)]
     pub allowed_actions: Vec<String>,
     #[serde(default)]
-    pub hr_admin_emails: Vec<String>,
-    #[serde(default)]
     pub recruiter_emails: Vec<String>,
     #[serde(default)]
     pub allowed_report_ids: Vec<String>,
@@ -215,9 +213,8 @@ impl Default for DarwinboxAuthorizationConfig {
             write_acknowledged: false,
             participant_emails: Vec::new(),
             allowed_actions: Vec::new(),
-            hr_admin_emails: Vec::new(),
-            recruiter_emails: Vec::new(),
             allowed_report_ids: Vec::new(),
+            recruiter_emails: Vec::new(),
             max_batch_size: 1,
         }
     }
@@ -355,13 +352,7 @@ impl DarwinboxSourceConfig {
             }
         }
 
-        for email in self
-            .authorization
-            .participant_emails
-            .iter()
-            .chain(self.authorization.hr_admin_emails.iter())
-            .chain(self.authorization.recruiter_emails.iter())
-        {
+        for email in self.authorization.participant_emails.iter() {
             if !email.contains('@') || email.trim().is_empty() {
                 errors.push(format!("invalid authorization email: {email}"));
             }
@@ -401,13 +392,12 @@ pub fn document_permissions(
     _source_id: &str,
     employee_self_email: Option<&str>,
 ) -> omni_connector_sdk::DocumentPermissions {
-    let hr_admins = normalize_emails(&config.authorization.hr_admin_emails);
-    let recruiters = normalize_emails(&config.authorization.recruiter_emails);
     let participants = normalize_emails(&config.authorization.participant_emails);
+    let recruiters = normalize_emails(&config.authorization.recruiter_emails);
 
     match content_type {
         "employee_profile" => {
-            let mut users = hr_admins.clone();
+            let mut users: Vec<String> = Vec::new();
             if let Some(email) = employee_self_email {
                 let normalized = normalize_email(email);
                 if !users.contains(&normalized) {
@@ -432,7 +422,7 @@ pub fn document_permissions(
             groups: vec![],
         },
         "position" => {
-            let users = hr_admins.clone();
+            let users: Vec<String> = Vec::new();
             if users.is_empty() {
                 // Fail closed: empty HR-admin list → nobody can access
                 omni_connector_sdk::DocumentPermissions {
@@ -449,7 +439,7 @@ pub fn document_permissions(
             }
         }
         "job" | "ats_job" => {
-            let mut users = hr_admins.clone();
+            let mut users: Vec<String> = Vec::new();
             for recruiter in &recruiters {
                 if !users.contains(recruiter) {
                     users.push(recruiter.clone());

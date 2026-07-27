@@ -172,24 +172,6 @@ impl Connector for DarwinboxConnector {
                     "read-only mode disabled but no write action modules are enabled".to_string(),
                 ));
             }
-
-            // Validate that report/ATS HR admin lists are non-empty when those
-            // modules are enabled
-            if config.action_modules.reports && config.authorization.hr_admin_emails.is_empty() {
-                return Err(SyncRequestValidationError::BadRequest(
-                    "reports enabled but hr_admin_emails is empty".to_string(),
-                ));
-            }
-
-            if config.action_modules.ats
-                && config.authorization.recruiter_emails.is_empty()
-                && config.authorization.hr_admin_emails.is_empty()
-            {
-                return Err(SyncRequestValidationError::BadRequest(
-                    "ATS actions enabled but both hr_admin_emails and recruiter_emails are empty"
-                        .to_string(),
-                ));
-            }
         }
 
         Ok(())

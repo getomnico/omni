@@ -152,8 +152,6 @@
                             write_acknowledged: writeAcknowledged,
                             participant_emails: participants,
                             allowed_actions: allowedActions,
-                            hr_admin_emails: [],
-                            recruiter_emails: [],
                             allowed_report_ids: [],
                             max_batch_size: 1,
                         },

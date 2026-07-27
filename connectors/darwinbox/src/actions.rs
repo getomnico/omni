@@ -206,14 +206,14 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             name: "fetch_report_ids",
             module: "reports",
             mode: ActionMode::Read,
-            audience: "hr_admin",
+            audience: "",
             is_write: false,
         },
         ActionPolicy {
             name: "run_report",
             module: "reports",
             mode: ActionMode::Read,
-            audience: "hr_admin",
+            audience: "",
             is_write: false,
         },
         // ATS reads
@@ -555,20 +555,6 @@ pub async fn execute_action(
             let reports = direct_reports(&client, &caller_email, &config).await?;
             if reports.is_empty() {
                 return Err(anyhow!("caller has no direct reports"));
-            }
-        }
-        "hr_admin" => {
-            // HR admin: requires explicit email allowlist membership.
-            let email = &caller_email;
-            let is_hr_admin = config
-                .authorization
-                .hr_admin_emails
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(email));
-            if !is_hr_admin {
-                return Err(anyhow!(
-                    "action '{action}' requires email in hr_admin_emails"
-                ));
             }
         }
         "recruiter" => {
