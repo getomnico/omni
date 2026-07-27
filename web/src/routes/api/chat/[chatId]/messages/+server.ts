@@ -51,13 +51,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
-    logger.debug('Fetching chat messages')
+    logger.debug('Fetching chat messages', { chatId })
 
     try {
         // First check if chat exists
         const chat = await chatRepository.get(chatId)
         if (!chat) {
-            logger.warn('Chat not found')
+            logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
         }
 
@@ -73,6 +73,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         const chatMessages = await chatMessageRepository.getByChatId(chatId)
 
         logger.info('Chat messages retrieved successfully', {
+            chatId,
             messageCount: chatMessages.length,
         })
 
@@ -88,7 +89,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
         return json(messages, { status: 200 })
     } catch (error) {
-        logger.error('Error fetching chat messages', error)
+        logger.error('Error fetching chat messages', error, { chatId })
         return json(
             {
                 error: 'Failed to fetch messages',
@@ -128,13 +129,13 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         return json({ error: 'Content or attachments are required' }, { status: 400 })
     }
 
-    logger.debug('Adding message to chat')
+    logger.debug('Adding message to chat', { chatId })
 
     try {
         // First check if chat exists
         const chat = await chatRepository.get(chatId)
         if (!chat) {
-            logger.warn('Chat not found')
+            logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
         }
 
@@ -158,7 +159,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
                 )
             }
         } catch (error) {
-            logger.warn('Could not check stream status before adding message', error)
+            logger.warn('Could not check stream status before adding message', error, { chatId })
         }
 
         // Create the user message in MessageParam format. If there are attachments, build
@@ -185,7 +186,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             ? await chatMessageRepository.getByIdInChat(chatId, parentId)
             : null
         if (parentId && !parentMessage) {
-            logger.warn('Ignoring unknown client-provided parent message id')
+            logger.warn('Ignoring unknown client-provided parent message id', {
+                chatId,
+                parentId,
+            })
             parentId = undefined
             parentMessage = null
         }
@@ -207,14 +211,21 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
                     parentMessage.id,
                 )
                 parentId = savedRepairMessage.id
-                logger.warn('Inserted failed tool_result for interrupted tool call')
+                logger.warn('Inserted failed tool_result for interrupted tool call', {
+                    chatId,
+                    repairMessageId: savedRepairMessage.id,
+                })
             }
         }
 
         // Save message to database
         const savedMessage = await chatMessageRepository.create(chatId, userMessage, parentId)
 
-        logger.info('Message added successfully')
+        logger.info('Message added successfully', {
+            chatId,
+            messageId: savedMessage.id,
+            userId: locals.user.id,
+        })
 
         return json(
             {
@@ -224,7 +235,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             { status: 200 },
         )
     } catch (error) {
-        logger.error('Error adding message', error)
+        logger.error('Error adding message', error, { chatId })
         return json(
             {
                 error: 'Failed to add message',

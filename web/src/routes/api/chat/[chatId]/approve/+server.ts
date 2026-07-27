@@ -134,6 +134,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
         )
 
         logger.info('Tool approval resolved', {
+            chatId,
             decision,
             count: ids.length,
         })
@@ -145,7 +146,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
             denialMessageId,
         })
     } catch (error) {
-        logger.error('Error processing tool approval', error)
+        logger.error('Error processing tool approval', error, { chatId })
         return json(
             {
                 error: 'Failed to process approval',

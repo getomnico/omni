@@ -20,12 +20,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         // No body or invalid JSON is fine — modelId stays undefined
     }
 
-    logger.debug('Creating new chat')
+    logger.debug('Creating new chat', { userId })
 
     try {
         const chat = await chatRepository.create(userId, undefined, modelId)
 
-        logger.info('Chat created successfully')
+        logger.info('Chat created successfully', {
+            userId,
+            chatId: chat.id,
+        })
 
         return json({ chatId: chat.id }, { status: 200 })
     } catch (error) {

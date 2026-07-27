@@ -83,7 +83,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
             redirectUrl.searchParams.set('linked', 'google')
         }
 
-        logger.info(`Google OAuth authentication successful`)
+        logger.info(`Google OAuth authentication successful for user: ${user.id}`)
         successUrl = redirectUrl.toString()
     } catch (error) {
         logger.error('OAuth callback error:', error)

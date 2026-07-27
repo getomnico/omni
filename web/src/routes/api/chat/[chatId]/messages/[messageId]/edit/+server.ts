@@ -48,7 +48,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
                 )
             }
         } catch (error) {
-            logger.warn('Could not check stream status before editing message', error)
+            logger.warn('Could not check stream status before editing message', error, {
+                chatId,
+                messageId,
+            })
         }
 
         // Get the original message to find its parent
@@ -70,7 +73,11 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             originalMessage.parentId ?? undefined,
         )
 
-        logger.info('Message edited (new branch created)')
+        logger.info('Message edited (new branch created)', {
+            chatId,
+            originalMessageId: messageId,
+            newMessageId: savedMessage.id,
+        })
 
         return json(
             {
@@ -80,7 +87,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             { status: 200 },
         )
     } catch (error) {
-        logger.error('Error editing message', error)
+        logger.error('Error editing message', error, { chatId, messageId })
         return json(
             {
                 error: 'Failed to edit message',

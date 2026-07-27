@@ -132,11 +132,15 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             })
             if (!resp.ok) {
                 logger.warn('OAuth credential-ready notification failed', {
+                    sourceId,
                     status: resp.status,
                 })
             }
         } catch (err) {
-            logger.warn('OAuth credential-ready notification failed')
+            logger.warn('OAuth credential-ready notification failed', {
+                sourceId,
+                err: String(err),
+            })
         }
     }
 
@@ -173,7 +177,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 body: JSON.stringify({ sync_mode: 'full' }),
             })
         } catch (syncError) {
-            logger.warn('Failed to trigger post-OAuth sync')
+            logger.warn('Failed to trigger post-OAuth sync', { sourceId: flow.sourceId, syncError })
         }
 
         throw redirect(302, flow.returnTo ?? '/admin/settings/integrations?success=connected')
@@ -280,7 +284,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             expiresAt,
         })
 
-        logger.info('Created personal source')
+        logger.info(`Created personal source ${newSource.id} (${sourceType}) for user ${user.id}`)
     }
 
     throw redirect(302, flow.returnTo ?? '/settings/integrations?success=connected')

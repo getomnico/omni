@@ -91,7 +91,7 @@ const handleLogging: Handle = async ({ event, resolve }) => {
     // The Node auto-instrumentation already creates a server span and extracts
     // the incoming traceparent; we just need its trace ID for logging.
     const requestId = getRequestId() || Logger.generateRequestId()
-    const logger = new Logger('request').withRequest(requestId)
+    const logger = new Logger('request').withRequest(requestId, event.locals.user?.id)
 
     event.locals.requestId = requestId
     event.locals.logger = logger
@@ -153,6 +153,7 @@ export const handleError: HandleServerError = ({ error, event }) => {
 
     logger.error('Unhandled server error', error as Error, {
         method: event.request.method,
+        userId: event.locals.user?.id,
         requestId: event.locals.requestId,
     })
 

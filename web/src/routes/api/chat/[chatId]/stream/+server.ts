@@ -190,11 +190,11 @@ async function triggerTitleGeneration(
         // First check if title already exists
         const chat = await chatRepository.get(chatId)
         if (chat?.title) {
-            logger.debug('Chat already has a title, skipping title generation')
+            logger.debug('Chat already has a title, skipping title generation', { chatId })
             return { status: 'skipped' }
         }
 
-        logger.info('Triggering title generation')
+        logger.info('Triggering title generation', { chatId })
 
         const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/generate_title`, {
             method: 'POST',
@@ -206,6 +206,7 @@ async function triggerTitleGeneration(
         if (response.ok) {
             const result = (await response.json()) as TitleGenerationResponse
             logger.info('Title generation completed', {
+                chatId,
                 status: result.status,
                 reason: result.reason,
             })
@@ -219,12 +220,13 @@ async function triggerTitleGeneration(
         } else {
             const message = await aiErrorMessage(response)
             logger.warn('Title generation failed', {
+                chatId,
                 status: response.status,
             })
             return { status: 'failed', message }
         }
     } catch (error) {
-        logger.warn('Error during title generation', { error })
+        logger.warn('Error during title generation', { error, chatId })
         const message = error instanceof Error ? error.message : 'Failed to generate chat title'
         return { status: 'failed', message }
     }
@@ -247,7 +249,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
 
     const chat = await chatRepository.get(chatId)
     if (!chat) {
-        logger.error('Chat not found')
+        logger.error('Chat not found', undefined, { chatId })
         return json({ error: 'Chat not found' }, { status: 404 })
     }
 
@@ -259,7 +261,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
         }
     }
 
-    logger.debug('Sending GET request to AI service to receive the streaming response')
+    logger.debug('Sending GET request to AI service to receive the streaming response', { chatId })
 
     const abortController = new AbortController()
 
@@ -283,11 +285,12 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
         if (!response.ok) {
             logger.error('AI service error', undefined, {
                 status: response.status,
+                chatId,
             })
             return sseErrorResponse(await aiErrorMessage(response))
         }
 
-        logger.info('Chat stream started successfully')
+        logger.info('Chat stream started successfully', { chatId })
 
         // Create a transformed stream that enriches or redacts selected events
         // before forwarding them to the browser. The AI service's
@@ -331,7 +334,9 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                     logger.warn('Title generation failed')
                                 }
                             })
-                            .catch((err) => logger.error('Failed to generate title for chat', err))
+                            .catch((err) =>
+                                logger.error(`Failed to generate title for chat ${chatId}`, err),
+                            )
                     }
 
                     while (true) {

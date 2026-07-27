@@ -37,11 +37,12 @@ export const POST: RequestHandler = async ({ params, locals }) => {
         })
         if (!response.ok) {
             logger.warn('AI service cancel returned non-OK', {
+                chatId,
                 status: response.status,
             })
         }
     } catch (err) {
-        logger.error('Failed to cancel chat stream', err)
+        logger.error('Failed to cancel chat stream', err, { chatId })
     }
 
     // Best-effort: report success even if the AI service is unreachable.

@@ -42,7 +42,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             locals.user.configuration.timezone = savedTimezone
             savedSettings.timezone = savedTimezone
         } catch (error) {
-            locals.logger.error('Failed to save user timezone setting', error as Error)
+            locals.logger.error('Failed to save user timezone setting', error as Error, {
+                userId: locals.user.id,
+            })
             return json({ error: 'Failed to save user settings' } satisfies UserSettingsResponse, {
                 status: 500,
             })

@@ -26,6 +26,8 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
         if (!response.ok) {
             logger.warn('Artifact proxy failed', undefined, {
+                chatId,
+                path,
                 status: response.status,
             })
             throw error(response.status, 'Artifact not found')
@@ -42,7 +44,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         })
     } catch (err) {
         if ((err as any)?.status) throw err
-        logger.error('Artifact proxy error', err)
+        logger.error('Artifact proxy error', err, { chatId, path })
         throw error(502, 'Failed to fetch artifact')
     }
 }

@@ -90,9 +90,9 @@ export class Logger {
         return childLogger
     }
 
-    withRequest(requestId: string): Logger {
+    withRequest(requestId: string, userId?: string): Logger {
         const childLogger = new Logger()
-        childLogger.logger = this.logger.child({ requestId })
+        childLogger.logger = this.logger.child({ requestId, userId })
         return childLogger
     }
 

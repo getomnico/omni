@@ -55,9 +55,9 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
             } catch {
                 errorMessage = (await response.text()) || errorMessage
             }
-            logger.error('Action failed', {
-                status: response.status,
+            logger.error(`Action ${action} failed for source ${sourceId}`, {
                 error: errorMessage,
+                status: response.status,
             })
             throw error(response.status, errorMessage)
         }

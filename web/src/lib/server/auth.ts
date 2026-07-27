@@ -130,7 +130,7 @@ export async function createUserSession(userId: string) {
             },
         }
     } catch (error) {
-        logger.error('Error creating session', error)
+        logger.error('Error creating session', error, { userId })
         return {
             success: false,
             error: 'Failed to create session',

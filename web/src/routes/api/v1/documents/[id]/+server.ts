@@ -40,7 +40,7 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
         }
     }
 
-    logger.debug('Document content request')
+    logger.debug('Document content request', { documentId })
 
     try {
         const response = await fetch(`${env.SEARCHER_URL}/search`, {
@@ -56,6 +56,7 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
             }
             logger.error('Searcher service error', undefined, {
                 status: response.status,
+                documentId,
             })
             return json({ error: 'Service unavailable' }, { status: 502 })
         }
@@ -104,7 +105,7 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
             updated_at: doc.updated_at,
         })
     } catch (error) {
-        logger.error('Document content request failed', error as Error)
+        logger.error('Document content request failed', error as Error, { documentId })
         return json({ error: 'Failed to fetch document' }, { status: 500 })
     }
 }

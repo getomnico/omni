@@ -11,17 +11,17 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
 
-    logger.debug('Fetching chat details')
+    logger.debug('Fetching chat details', { chatId })
 
     try {
         const chat = await chatRepository.get(chatId)
 
         if (!chat) {
-            logger.warn('Chat not found')
+            logger.warn('Chat not found', { chatId })
             return json({ error: 'Chat not found' }, { status: 404 })
         }
 
-        logger.info('Chat details retrieved successfully')
+        logger.info('Chat details retrieved successfully', { chatId })
 
         // Convert to match AI service response format
         const chatDetails = {
@@ -34,7 +34,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
         return json(chatDetails, { status: 200 })
     } catch (error) {
-        logger.error('Error fetching chat details', error)
+        logger.error('Error fetching chat details', error, { chatId })
         return json(
             {
                 error: 'Failed to fetch chat details',
@@ -75,10 +75,10 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
             if (result) updatedChat = result
         }
 
-        logger.info('Chat updated')
+        logger.info('Chat updated', { chatId })
         return json(updatedChat)
     } catch (error) {
-        logger.error('Error updating chat', error)
+        logger.error('Error updating chat', error, { chatId })
         return json(
             {
                 error: 'Failed to update chat',
@@ -107,10 +107,10 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
 
     try {
         await chatRepository.delete(chatId)
-        logger.info('Chat deleted')
+        logger.info('Chat deleted', { chatId })
         return new Response(null, { status: 204 })
     } catch (error) {
-        logger.error('Error deleting chat', error)
+        logger.error('Error deleting chat', error, { chatId })
         return json(
             {
                 error: 'Failed to delete chat',

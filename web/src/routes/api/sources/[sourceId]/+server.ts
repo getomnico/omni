@@ -94,7 +94,7 @@ export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
                 method: 'POST',
             })
         } catch (err) {
-            logger.warn('Failed to cancel sync', err)
+            logger.warn(`Failed to cancel sync ${sync.id} for source ${sourceId}`, err)
         }
     }
 
