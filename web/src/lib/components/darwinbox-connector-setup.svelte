@@ -417,7 +417,7 @@
                     placeholder="Asia/Kolkata" />
             </div>
             <div class="space-y-3 rounded-md border p-3 text-sm">
-                <div class="font-medium">POC safety controls</div>
+                <div class="font-medium">Safety controls</div>
                 <label class="flex cursor-pointer items-center gap-2">
                     <input type="checkbox" bind:checked={readOnly} />
                     Read-only mode (recommended and enabled by default)
@@ -458,8 +458,8 @@
                     </label>
                 {/if}
                 <p class="text-muted-foreground text-xs">
-                    HR administration, ATS candidate, report, bulk, and unattended actions remain
-                    disabled in hardened POC mode.
+                    HR administration, ATS candidate, bulk, and unattended actions are not yet
+                    implemented.
                 </p>
             </div>
         </div>

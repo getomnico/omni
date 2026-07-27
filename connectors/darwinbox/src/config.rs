@@ -362,14 +362,10 @@ impl DarwinboxSourceConfig {
                 );
             }
         }
-        // High-risk generic HR/ATS/report payloads remain unavailable until
+        // High-risk generic HR/ATS payloads remain unavailable until
         // action-specific provider contracts have been reviewed.
-        if self.action_modules.hr_operations
-            || self.action_modules.ats
-            || self.action_modules.reports
-        {
-            errors
-                .push("HR, ATS, and report actions are not available in hardened mode".to_string());
+        if self.action_modules.hr_operations || self.action_modules.ats {
+            errors.push("HR and ATS actions are not implemented".to_string());
         }
         const UNTYPED_ACTIONS: &[&str] = &[
             "regularize_my_attendance",
@@ -381,8 +377,6 @@ impl DarwinboxSourceConfig {
             "reactivate_employee",
             "upload_employee_document",
             "fetch_employee_history",
-            "fetch_report_ids",
-            "run_report",
             "list_jobs",
             "get_job_detail",
             "get_candidates",
@@ -396,7 +390,7 @@ impl DarwinboxSourceConfig {
                 errors.push(format!("unknown Darwinbox action '{action}'"));
             }
             if UNTYPED_ACTIONS.contains(&action.as_str()) {
-                errors.push(format!("action '{action}' is unavailable in hardened mode"));
+                errors.push(format!("action '{action}' is not implemented"));
             }
         }
 

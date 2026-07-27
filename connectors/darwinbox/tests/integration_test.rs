@@ -58,7 +58,7 @@ fn test_credential() -> ServiceCredential {
     }
 }
 
-fn hardened_config(base_url: &str) -> serde_json::Value {
+fn test_config(base_url: &str) -> serde_json::Value {
     json!({
         "base_url": base_url,
         "read_only": true,
@@ -94,8 +94,7 @@ async fn client_fetch_employees_ignores_sensitive_unknown_fields() {
         })))
         .mount(&server)
         .await;
-    let config: DarwinboxSourceConfig =
-        serde_json::from_value(hardened_config(&server.uri())).unwrap();
+    let config: DarwinboxSourceConfig = serde_json::from_value(test_config(&server.uri())).unwrap();
     let credentials = DarwinboxCredentials::Basic {
         username: "api-user".to_string(),
         password: "secret".to_string(),
@@ -127,7 +126,7 @@ async fn duplicate_self_identity_is_rejected() {
         .mount(&server)
         .await;
 
-    let mut config = hardened_config(&server.uri());
+    let mut config = test_config(&server.uri());
     config["authorization"]["allowed_actions"] = json!(["get_my_profile"]);
     let error = execute_action(
         "get_my_profile",
@@ -149,8 +148,7 @@ async fn token_errors_do_not_expose_provider_body() {
         .respond_with(ResponseTemplate::new(401).set_body_string("SECRET-TOKEN-DIAGNOSTIC"))
         .mount(&server)
         .await;
-    let config: DarwinboxSourceConfig =
-        serde_json::from_value(hardened_config(&server.uri())).unwrap();
+    let config: DarwinboxSourceConfig = serde_json::from_value(test_config(&server.uri())).unwrap();
     let credentials = DarwinboxCredentials::ClientCredentials {
         client_id: "client".to_string(),
         client_secret: "secret".to_string(),
@@ -182,7 +180,7 @@ async fn action_requires_trusted_source_config() {
 
 #[tokio::test]
 async fn self_action_rejects_spoofed_identity_before_provider_call() {
-    let config = hardened_config("https://example.darwinbox.in");
+    let config = test_config("https://example.darwinbox.in");
     let error = execute_action(
         "get_my_leave_balance",
         json!({
@@ -289,7 +287,7 @@ fn action_manifest_and_policy_modes_match() {
 
 #[test]
 fn document_acl_is_non_public_and_uses_named_participants() {
-    let mut value = hardened_config("https://example.darwinbox.in");
+    let mut value = test_config("https://example.darwinbox.in");
     value["authorization"]["hr_admin_emails"] = json!(["hr@example.com"]);
     let config: DarwinboxSourceConfig = serde_json::from_value(value).unwrap();
     let permissions = document_permissions(
@@ -310,7 +308,7 @@ fn document_acl_is_non_public_and_uses_named_participants() {
 #[test]
 fn unknown_document_type_has_empty_acl() {
     let config: DarwinboxSourceConfig =
-        serde_json::from_value(hardened_config("https://example.darwinbox.in")).unwrap();
+        serde_json::from_value(test_config("https://example.darwinbox.in")).unwrap();
     let permissions = document_permissions("future_sensitive_type", &config, "source", None);
     assert!(!permissions.public);
     assert!(permissions.users.is_empty());

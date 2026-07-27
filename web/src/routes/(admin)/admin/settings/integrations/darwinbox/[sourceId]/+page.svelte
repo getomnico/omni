@@ -31,7 +31,7 @@
         <Card.Root>
             <Card.Header>
                 <Card.Title>{data.source.name}</Card.Title>
-                <Card.Description>Manage the fail-closed production POC policy.</Card.Description>
+                <Card.Description>Manage the fail-closed production policy.</Card.Description>
             </Card.Header>
             <Card.Content class="space-y-4">
                 <label class="flex cursor-pointer items-center gap-2">

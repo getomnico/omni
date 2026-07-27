@@ -27,9 +27,7 @@ pub async fn run_sync(
 
     let mut checkpoint = state.unwrap_or_default();
     if checkpoint.schema_version != 0 && checkpoint.schema_version < 2 {
-        bail!(
-            "legacy Darwinbox checkpoint cannot be hardened in place; delete and recreate the source"
-        );
+        bail!("legacy Darwinbox checkpoint is incompatible; delete and recreate the source");
     }
     let policy_fingerprint = serde_json::to_string(config)?;
     if checkpoint.policy_fingerprint.as_deref() != Some(policy_fingerprint.as_str()) {
