@@ -43,24 +43,7 @@
                         name="participant_emails"
                         value={(authorization.participant_emails ?? []).join(', ')} />
                 </div>
-                <div class="space-y-1">
-                    <Label for="target-ids">Approved target employee IDs</Label><Input
-                        id="target-ids"
-                        name="target_employee_ids"
-                        value={(authorization.target_employee_ids ?? []).join(', ')} />
-                </div>
-                <div class="space-y-1">
-                    <Label for="target-emails">Approved target employee emails</Label><Input
-                        id="target-emails"
-                        name="target_employee_emails"
-                        value={(authorization.target_employee_emails ?? []).join(', ')} />
-                </div>
-                <div class="space-y-1">
-                    <Label for="target-departments">Approved target departments</Label><Input
-                        id="target-departments"
-                        name="target_departments"
-                        value={(authorization.target_departments ?? []).join(', ')} />
-                </div>
+
                 {#if !readOnly}
                     <label
                         class="flex cursor-pointer items-start gap-2 rounded border border-amber-300 p-3">

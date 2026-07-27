@@ -1117,7 +1117,6 @@ async fn direct_reports(
                 .as_deref()
                 .map(|id| id == manager_id)
                 .unwrap_or(false)
-                && config.is_target_employee(employee)
         })
         .take(config.authorization.max_batch_size)
         .collect())

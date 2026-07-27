@@ -55,9 +55,6 @@ export const actions: Actions = {
         const form = await request.formData()
         const readOnly = form.has('read_only')
         const participants = csv(form.get('participant_emails'))
-        const targetIds = csv(form.get('target_employee_ids'))
-        const targetEmails = csv(form.get('target_employee_emails'))
-        const targetDepartments = csv(form.get('target_departments'))
         const allowedActions = readOnly ? READ_ACTIONS : [...READ_ACTIONS, ...WRITE_ACTIONS]
 
         const previous = source.config as DarwinboxSourceConfig
@@ -66,7 +63,7 @@ export const actions: Actions = {
             read_only: readOnly,
             employee_scope: {
                 mode: 'include',
-                employee_ids: targetIds,
+                employee_ids: [],
             },
             employee_fields: [
                 'name',
@@ -101,9 +98,7 @@ export const actions: Actions = {
                 actions_enabled: true,
                 write_acknowledged: form.has('write_acknowledged'),
                 participant_emails: participants,
-                target_employee_ids: targetIds,
-                target_employee_emails: targetEmails,
-                target_departments: targetDepartments,
+
                 allowed_actions: allowedActions,
                 hr_admin_emails: [],
                 recruiter_emails: [],

@@ -190,9 +190,6 @@ export interface DarwinboxSourceConfig {
         write_acknowledged?: boolean
         participant_emails?: string[]
         allowed_actions?: string[]
-        target_employee_ids?: string[]
-        target_employee_emails?: string[]
-        target_departments?: string[]
         hr_admin_emails?: string[]
         recruiter_emails?: string[]
         allowed_report_ids?: string[]

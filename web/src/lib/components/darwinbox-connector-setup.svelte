@@ -152,9 +152,6 @@
                             write_acknowledged: writeAcknowledged,
                             participant_emails: participants,
                             allowed_actions: allowedActions,
-                            target_employee_ids: targets,
-                            target_employee_emails: [],
-                            target_departments: [],
                             hr_admin_emails: [],
                             recruiter_emails: [],
                             allowed_report_ids: [],
@@ -234,7 +231,6 @@
         readOnly = true
         writeAcknowledged = false
         participantEmails = ''
-        targetEmployeeIds = ''
     }
 
     function handleCancel() {
@@ -396,13 +392,7 @@
                         bind:value={participantEmails}
                         placeholder="user1@example.com, user2@example.com" />
                 </div>
-                <div class="space-y-1">
-                    <Label for="darwinbox-targets">Approved target employee IDs</Label>
-                    <Input
-                        id="darwinbox-targets"
-                        bind:value={targetEmployeeIds}
-                        placeholder="EMP001, EMP002" />
-                </div>
+
                 {#if !readOnly}
                     <label
                         class="flex cursor-pointer items-start gap-2 rounded border border-amber-300 p-2">

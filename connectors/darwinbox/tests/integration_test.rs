@@ -70,7 +70,6 @@ fn test_config(base_url: &str) -> serde_json::Value {
             "actions_enabled": true,
             "participant_emails": ["a@example.com"],
             "allowed_actions": ["get_my_leave_balance"],
-            "target_employee_ids": ["EMP001"],
             "max_batch_size": 1
         }
     })

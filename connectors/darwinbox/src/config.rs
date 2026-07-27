@@ -198,12 +198,6 @@ pub struct DarwinboxAuthorizationConfig {
     #[serde(default)]
     pub allowed_actions: Vec<String>,
     #[serde(default)]
-    pub target_employee_ids: Vec<String>,
-    #[serde(default)]
-    pub target_employee_emails: Vec<String>,
-    #[serde(default)]
-    pub target_departments: Vec<String>,
-    #[serde(default)]
     pub hr_admin_emails: Vec<String>,
     #[serde(default)]
     pub recruiter_emails: Vec<String>,
@@ -221,9 +215,6 @@ impl Default for DarwinboxAuthorizationConfig {
             write_acknowledged: false,
             participant_emails: Vec::new(),
             allowed_actions: Vec::new(),
-            target_employee_ids: Vec::new(),
-            target_employee_emails: Vec::new(),
-            target_departments: Vec::new(),
             hr_admin_emails: Vec::new(),
             recruiter_emails: Vec::new(),
             allowed_report_ids: Vec::new(),
@@ -243,32 +234,6 @@ impl DarwinboxSourceConfig {
     pub fn is_action_participant(&self, email: &str) -> bool {
         let email = normalize_email(email);
         normalize_emails(&self.authorization.participant_emails).contains(&email)
-    }
-
-    pub fn is_target_employee(&self, employee: &crate::models::EmployeeRecord) -> bool {
-        let auth = &self.authorization;
-        let has_scope = !auth.target_employee_ids.is_empty()
-            || !auth.target_employee_emails.is_empty()
-            || !auth.target_departments.is_empty();
-        if !has_scope {
-            return false;
-        }
-        employee.employee_id.as_deref().is_some_and(|id| {
-            auth.target_employee_ids
-                .iter()
-                .any(|v| v.eq_ignore_ascii_case(id))
-        }) || employee.company_email_id.as_deref().is_some_and(|email| {
-            auth.target_employee_emails
-                .iter()
-                .any(|v| v.eq_ignore_ascii_case(email))
-        }) || employee
-            .department_name
-            .as_deref()
-            .is_some_and(|department| {
-                auth.target_departments
-                    .iter()
-                    .any(|v| v.eq_ignore_ascii_case(department))
-            })
     }
 
     /// Validate the configuration and return an error if it is unsafe or
@@ -339,11 +304,7 @@ impl DarwinboxSourceConfig {
             {
                 errors.push("actions require participant_emails and allowed_actions".to_string());
             }
-            if self.action_modules.manager_workflows
-                && self.authorization.target_employee_ids.is_empty()
-                && self.authorization.target_employee_emails.is_empty()
-                && self.authorization.target_departments.is_empty()
-            {
+            if self.action_modules.manager_workflows {
                 errors.push(
                     "manager workflows require an explicit target employee scope".to_string(),
                 );
@@ -398,7 +359,6 @@ impl DarwinboxSourceConfig {
             .authorization
             .participant_emails
             .iter()
-            .chain(self.authorization.target_employee_emails.iter())
             .chain(self.authorization.hr_admin_emails.iter())
             .chain(self.authorization.recruiter_emails.iter())
         {
