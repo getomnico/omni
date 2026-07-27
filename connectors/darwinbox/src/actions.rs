@@ -816,7 +816,7 @@ fn action(
         description: description.to_string(),
         input_schema,
         mode,
-        required_scopes: Vec::new(),
+        required_scopes: None,
         source_types: source_types.to_vec(),
         admin_only,
         hidden: false,

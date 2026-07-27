@@ -73,7 +73,7 @@ export const ActionDefinitionSchema = z.object({
   description: z.string(),
   input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
-  required_scopes: z.array(z.string()).default([]),
+  required_scopes: z.array(z.string()).optional(),
   source_types: z.array(z.string()).default([]),
   admin_only: z.boolean().default(false),
 });

@@ -305,7 +305,10 @@ export class McpAdapter {
         ? meta.required_scopes.filter(
             (scope): scope is string => typeof scope === 'string'
           )
-        : [];
+        : undefined;
+      if (requiredScopes !== undefined && requiredScopes.length === 0) {
+        // Explicit empty — the action has no scope requirements.
+      }
       actions.push({
         name: tool.name,
         description: tool.description ?? '',

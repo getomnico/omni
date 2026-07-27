@@ -756,8 +756,10 @@ pub struct ActionDefinition {
     pub mode: ActionMode,
     /// OAuth scopes required to invoke this action, when declared by the
     /// connector or its upstream MCP tool metadata.
+    /// `None` means the connector has not declared action-level scopes and
+    /// Omni should fall back to the coarse credential-existence check.
     #[serde(default)]
-    pub required_scopes: Vec<String>,
+    pub required_scopes: Option<Vec<String>>,
     /// Restrict this action to a subset of the connector's `source_types`.
     /// Empty = applies to all source_types the connector supports.
     #[serde(default)]

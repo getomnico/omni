@@ -58,7 +58,7 @@ describe('McpAdapter (stdio)', () => {
     const greet = actions.find((a) => a.name === 'greet')!;
     expect(greet.mode).toBe('read');
     expect(greet.description).toBe('Greet someone by name');
-    expect(greet.required_scopes).toEqual([]);
+    expect(greet.required_scopes).toBeUndefined();
     const add = actions.find((a) => a.name === 'add')!;
     expect(add.mode).toBe('write');
     expect(add.required_scopes).toEqual(['numbers:write']);

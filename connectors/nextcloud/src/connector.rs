@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
@@ -6,7 +6,7 @@ use omni_connector_sdk::{
     SyncContext, SyncType,
 };
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 
 fn guess_mime_type(filename: &str) -> &'static str {
     match filename
@@ -120,7 +120,7 @@ impl Connector for NextcloudConnector {
                 description: "Verify that the provided Nextcloud credentials are valid".into(),
                 input_schema: json!({}),
                 mode: omni_connector_sdk::ActionMode::Read,
-                required_scopes: Vec::new(),
+                required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: false,
@@ -139,7 +139,7 @@ impl Connector for NextcloudConnector {
                     "required": ["file_id"]
                 }),
                 mode: omni_connector_sdk::ActionMode::Read,
-                required_scopes: Vec::new(),
+                required_scopes: None,
                 source_types: Vec::new(),
                 // Internal action with no chat-facing use: hidden from every
                 // chat/MCP tool surface, admins included, but still in the
