@@ -285,7 +285,7 @@ fn action_manifest_and_policy_modes_match() {
 }
 
 #[test]
-fn document_acl_is_non_public_and_uses_named_participants() {
+fn employee_profile_acl_is_user_private() {
     let config: DarwinboxSourceConfig =
         serde_json::from_value(test_config("https://example.darwinbox.in")).unwrap();
     let permissions = document_permissions(
@@ -295,11 +295,36 @@ fn document_acl_is_non_public_and_uses_named_participants() {
         Some("employee@example.com"),
     );
     assert!(!permissions.public);
-    assert!(permissions.groups.is_empty());
-    assert!(permissions.users.contains(&"a@example.com".to_string()));
     assert!(permissions
         .users
         .contains(&"employee@example.com".to_string()));
+    assert!(!permissions.users.contains(&"a@example.com".to_string()));
+}
+
+#[test]
+fn org_master_documents_are_public() {
+    let config: DarwinboxSourceConfig =
+        serde_json::from_value(test_config("https://example.darwinbox.in")).unwrap();
+    for content_type in &[
+        "department",
+        "designation",
+        "office_location",
+        "business_unit",
+        "division",
+        "cost_center",
+        "group_company",
+        "holiday",
+        "position",
+        "job",
+        "ats_job",
+    ] {
+        let permissions = document_permissions(content_type, &config, "source-1", None);
+        assert!(permissions.public, "{content_type} should be public");
+        assert!(
+            permissions.users.is_empty(),
+            "{content_type} should have no user restrictions"
+        );
+    }
 }
 
 #[test]

@@ -392,22 +392,12 @@ pub fn document_permissions(
     _source_id: &str,
     employee_self_email: Option<&str>,
 ) -> omni_connector_sdk::DocumentPermissions {
-    let participants = normalize_emails(&config.authorization.participant_emails);
-    let recruiters = normalize_emails(&config.authorization.recruiter_emails);
-
     match content_type {
         "employee_profile" => {
             let mut users: Vec<String> = Vec::new();
             if let Some(email) = employee_self_email {
                 let normalized = normalize_email(email);
-                if !users.contains(&normalized) {
-                    users.push(normalized);
-                }
-            }
-            for participant in participants {
-                if !users.contains(&participant) {
-                    users.push(participant);
-                }
+                users.push(normalized);
             }
             omni_connector_sdk::DocumentPermissions {
                 public: false,
@@ -416,47 +406,11 @@ pub fn document_permissions(
             }
         }
         "department" | "designation" | "office_location" | "business_unit" | "division"
-        | "cost_center" | "group_company" | "holiday" => omni_connector_sdk::DocumentPermissions {
-            public: false,
-            users: participants,
-            groups: vec![],
-        },
-        "position" => {
-            let users: Vec<String> = Vec::new();
-            if users.is_empty() {
-                // Fail closed: empty HR-admin list → nobody can access
-                omni_connector_sdk::DocumentPermissions {
-                    public: false,
-                    users: vec![],
-                    groups: vec![],
-                }
-            } else {
-                omni_connector_sdk::DocumentPermissions {
-                    public: false,
-                    users,
-                    groups: vec![],
-                }
-            }
-        }
-        "job" | "ats_job" => {
-            let mut users: Vec<String> = Vec::new();
-            for recruiter in &recruiters {
-                if !users.contains(recruiter) {
-                    users.push(recruiter.clone());
-                }
-            }
-            if users.is_empty() {
-                omni_connector_sdk::DocumentPermissions {
-                    public: false,
-                    users: vec![],
-                    groups: vec![],
-                }
-            } else {
-                omni_connector_sdk::DocumentPermissions {
-                    public: false,
-                    users,
-                    groups: vec![],
-                }
+        | "cost_center" | "group_company" | "holiday" | "position" | "job" | "ats_job" => {
+            omni_connector_sdk::DocumentPermissions {
+                public: true,
+                users: vec![],
+                groups: vec![],
             }
         }
         // Unknown/future content types: fail closed
