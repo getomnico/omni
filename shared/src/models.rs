@@ -1237,74 +1237,21 @@ pub struct SkillResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "actor_type", rename_all = "snake_case")]
-pub enum ActionActor {
-    User {
-        user_id: String,
-        email: String,
-        role: UserRole,
-    },
-    System,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionContext {
-    pub actor: ActionActor,
-}
-
-impl ActionContext {
-    pub fn user(user_id: String, email: String, role: UserRole) -> Self {
-        Self {
-            actor: ActionActor::User {
-                user_id,
-                email,
-                role,
-            },
-        }
-    }
-
-    pub fn system() -> Self {
-        Self {
-            actor: ActionActor::System,
-        }
-    }
-
-    pub fn user_id(&self) -> Option<&str> {
-        match &self.actor {
-            ActionActor::User { user_id, .. } => Some(user_id.as_str()),
-            ActionActor::System => None,
-        }
-    }
-
-    pub fn user_email(&self) -> Option<&str> {
-        match &self.actor {
-            ActionActor::User { email, .. } => Some(email.as_str()),
-            ActionActor::System => None,
-        }
-    }
-
-    pub fn is_omni_admin(&self) -> bool {
-        matches!(
-            &self.actor,
-            ActionActor::User {
-                role: UserRole::Admin,
-                ..
-            }
-        )
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {
     pub action: String,
     #[serde(default)]
     pub params: JsonValue,
     #[serde(default)]
     pub credentials: Option<ServiceCredential>,
+    /// Trusted source configuration populated by connector-manager.
+    /// Connectors deserialize their own typed policy from this.
     #[serde(default)]
-    pub action_context: Option<ActionContext>,
+    pub source: Option<Source>,
+    /// Authenticated actor email, resolved by connector-manager.
+    /// None = system/background execution.
+    #[serde(default)]
+    pub actor_email: Option<String>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ApprovedDomain {
     pub id: String,

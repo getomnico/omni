@@ -3,6 +3,7 @@ import { db } from './index'
 import { sources, type Source } from './schema'
 import type {
     ConfluenceSourceConfig,
+    DarwinboxSourceConfig,
     FilesystemSourceConfig,
     ImapSourceConfig,
     JiraSourceConfig,
@@ -31,6 +32,7 @@ export async function updateSourceById(
         config?:
             | WebSourceConfig
             | ConfluenceSourceConfig
+            | DarwinboxSourceConfig
             | JiraSourceConfig
             | FilesystemSourceConfig
             | ImapSourceConfig

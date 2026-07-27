@@ -1,6 +1,6 @@
 use crate::connector_client::ConnectorClient;
 use crate::models::{
-    ActionContext, ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
+    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
     ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, OAuthCredentialReadyRequest,
     PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress,
     TriggerSyncRequest, TriggerSyncResponse, TriggerType,
@@ -10,7 +10,7 @@ use crate::sync_manager::SyncError;
 use crate::AppState;
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse,
@@ -20,6 +20,7 @@ use axum::{
 use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
+
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
 use shared::models::{
@@ -354,6 +355,7 @@ pub async fn list_connectors(
 
 pub async fn execute_action(
     State(state): State<AppState>,
+    _headers: HeaderMap,
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
     info!(
@@ -375,33 +377,40 @@ pub async fn execute_action(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    // Look up the connector manifest to get connector_url and read_only flag
+    // Look up the connector manifest to get connector_url and action metadata
     let manifests = get_registered_manifests(&state.redis_client).await;
     let manifest = manifests
         .iter()
         .find(|m| m.source_types.contains(&source.source_type));
 
-    let connector_url = manifest.map(|m| m.connector_url.clone()).ok_or_else(|| {
-        ApiError::NotFound(format!(
-            "Connector not registered for type: {:?}",
-            source.source_type
-        ))
-    })?;
+    let connector_url = manifest
+        .as_ref()
+        .map(|m| m.connector_url.clone())
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source.source_type
+            ))
+        })?;
 
     let action_def = manifest.and_then(|m| m.actions.iter().find(|a| a.name == request.action));
     let action_mode = action_def.map(|a| a.mode).unwrap_or_default();
-    let action_admin_only = action_def.map(|a| a.admin_only).unwrap_or(false);
+    // Reject unknown action names — they must exist in the manifest
+    let action_def = action_def.ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "Unknown action '{}' for source type {:?}",
+            request.action, source.source_type
+        ))
+    })?;
+    let action_admin_only = action_def.admin_only;
 
-    // TODO: replace this opaque-blob `read_only` lookup with a strongly-typed
-    // SourceConfig. Today every connector pokes its own keys into Source.config
-    // unchecked — `read_only` is the only key the manager itself reads.
+    // Generic read_only enforcement — the source config is the authority.
     let source_read_only = source
         .config
         .get("read_only")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-
-    if let Some(m) = manifest {
+    if let Some(m) = manifest.as_ref() {
         if (m.read_only || source_read_only) && action_mode == ActionMode::Write {
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' is not allowed: source is read-only",
@@ -463,10 +472,8 @@ pub async fn execute_action(
         // If not found, assume the ID is already a source-native ID and pass through
     }
 
-    // Merge source config into params so connectors can access source-level
-    // settings during action execution (e.g., server_url for Nextcloud
-    // fetch_file). Caller-provided param values always take precedence.
-    // Null/missing params is promoted to an empty object so the merge runs.
+    // Merge source config into params for legacy connector compatibility.
+    // Connectors that use the typed context (e.g. Darwinbox) ignore these.
     if params.is_null() {
         params = serde_json::Value::Object(serde_json::Map::new());
     }
@@ -476,16 +483,24 @@ pub async fn execute_action(
         }
     }
 
-    let action_context = if let Some(user_id) = request.user_id.clone() {
+    // Resolve actor email for the execution context
+    let actor_email = if let Some(uid) = request.user_id.as_ref() {
         let user_repo = UserRepository::new(state.db_pool.pool());
         let user = user_repo
-            .find_by_id(user_id.clone())
+            .find_by_id(uid.clone())
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("User not found: {user_id}")))?;
-        Some(ActionContext::user(user_id, user.email, user.role))
+            .ok_or_else(|| ApiError::NotFound(format!("User not found: {uid}")))?;
+        // Enforce admin_only action authorization
+        if action_admin_only && user.role != shared::models::UserRole::Admin {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' requires admin privileges",
+                request.action
+            )));
+        }
+        Some(user.email)
     } else {
-        Some(ActionContext::system())
+        None
     };
 
     info!(
@@ -503,7 +518,8 @@ pub async fn execute_action(
         action: request.action,
         params,
         credentials: Some(creds),
-        action_context,
+        source: Some(source),
+        actor_email,
     };
 
     // Proxy the connector's full HTTP response (status, headers, body) verbatim.
@@ -1178,6 +1194,9 @@ pub enum ApiError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -1254,6 +1273,7 @@ impl IntoResponse for ApiError {
         let (status, message) = match &self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
+            ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             ApiError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),

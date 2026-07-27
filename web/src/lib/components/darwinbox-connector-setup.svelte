@@ -4,8 +4,39 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import * as Select from '$lib/components/ui/select'
-    import { AuthType } from '$lib/types'
+    import { AuthType, type ConnectorListEntry } from '$lib/types'
     import { toast } from 'svelte-sonner'
+
+    /** Derive allowed Darwinbox action names from the registered connector manifest.
+     * Action groups (module→{read,write}) come from Darwinbox's extra_schema.action_groups
+     * derived from its internal action policy table, not from ActionDefinition metadata. */
+    async function deriveDarwinboxActions(
+        selfService: boolean,
+        managerWorkflows: boolean,
+        readOnly: boolean,
+    ): Promise<string[]> {
+        const resp = await fetch('/api/connectors')
+        if (!resp.ok) throw new Error('Failed to load connector actions')
+        const connectors: ConnectorListEntry[] = await resp.json()
+        const darwinbox = connectors.find((c) => c.source_type === 'darwinbox')
+        if (!darwinbox?.manifest) throw new Error('Darwinbox connector not registered')
+        const groups = darwinbox.manifest.extra_schema?.action_groups ?? {}
+        const result: string[] = []
+        function addGroup(name: string) {
+            const group = groups[name]
+            if (!group) return
+            for (const action of group.read) {
+                if (!result.includes(action)) result.push(action)
+            }
+            if (readOnly) return
+            for (const action of group.write) {
+                if (!result.includes(action)) result.push(action)
+            }
+        }
+        if (selfService) addGroup('employee_self_service')
+        if (managerWorkflows) addGroup('manager_workflows')
+        return result
+    }
 
     interface Props {
         open: boolean
@@ -30,10 +61,13 @@
     let refreshToken = $state('')
     let datasetKey = $state('')
     let defaultTimezone = $state('Asia/Kolkata')
-    let enablePositions = $state(false)
-    let enableAts = $state(false)
-    let enableHrActions = $state(false)
-    let enableReports = $state(false)
+    let readOnly = $state(true)
+    let enableEmployeeDirectory = $state(false)
+    let enableSelfService = $state(false)
+    let enableManagerWorkflows = $state(false)
+    let writeAcknowledged = $state(false)
+    let participantEmails = $state('')
+    let targetEmployeeIds = $state('')
     let isSubmitting = $state(false)
 
     async function handleSubmit() {
@@ -63,6 +97,29 @@
                 }
             }
             if (!datasetKey.trim()) throw new Error('Dataset key is required')
+            const participants = participantEmails
+                .split(',')
+                .map((v) => v.trim().toLowerCase())
+                .filter(Boolean)
+            const targets = targetEmployeeIds
+                .split(',')
+                .map((v) => v.trim())
+                .filter(Boolean)
+            if ((enableSelfService || enableManagerWorkflows) && participants.length === 0) {
+                throw new Error('At least one approved participant email is required')
+            }
+            if (enableManagerWorkflows && targets.length === 0) {
+                throw new Error('Manager workflows require target employee IDs')
+            }
+            if (!readOnly && !writeAcknowledged) {
+                throw new Error('Confirm write-mode acknowledgement before continuing')
+            }
+            // Derive allowed actions from registered connector manifest
+            const allowedActions = await deriveDarwinboxActions(
+                enableSelfService,
+                enableManagerWorkflows,
+                readOnly,
+            )
 
             const sourceResponse = await fetch('/api/sources', {
                 method: 'POST',
@@ -71,28 +128,58 @@
                     scope: 'org',
                     name: 'Darwinbox',
                     sourceType: 'darwinbox',
+                    isActive: true,
                     config: {
                         base_url: baseUrl.trim().replace(/\/$/, ''),
+                        read_only: readOnly,
                         default_timezone: defaultTimezone.trim() || null,
+                        employee_scope: enableEmployeeDirectory
+                            ? { mode: 'include', employee_ids: targets }
+                            : null,
+                        employee_fields: enableEmployeeDirectory
+                            ? [
+                                  'name',
+                                  'employee_id',
+                                  'company_email',
+                                  'department',
+                                  'designation',
+                                  'office_location',
+                              ]
+                            : [],
                         sync_modules: {
-                            employee_directory: true,
-                            deleted_employees: true,
-                            org_masters: true,
-                            positions: enablePositions,
-                            holidays: true,
-                            ats_jobs: enableAts,
+                            employee_directory: enableEmployeeDirectory,
+                            deleted_employees: enableEmployeeDirectory,
+                            departments: false,
+                            designations: false,
+                            office_locations: false,
+                            business_units: false,
+                            divisions: false,
+                            cost_centers: false,
+                            group_companies: false,
+                            positions: false,
+                            holidays: false,
+                            ats_jobs: false,
                         },
                         action_modules: {
-                            employee_self_service: true,
-                            manager_workflows: true,
-                            hr_operations: enableHrActions,
-                            ats: enableAts,
-                            reports: enableReports,
+                            employee_self_service: enableSelfService,
+                            manager_workflows: enableManagerWorkflows,
+                            hr_operations: false,
+                            ats: false,
+                            reports: false,
                         },
                         authorization: {
-                            use_darwinbox_permissions: true,
+                            actions_enabled: enableSelfService || enableManagerWorkflows,
+                            write_acknowledged: writeAcknowledged,
+                            participant_emails: participants,
+                            allowed_actions: allowedActions,
+                            target_employee_ids: targets,
+                            target_employee_emails: [],
+                            target_departments: [],
                             hr_admin_emails: [],
                             recruiter_emails: [],
+                            allowed_report_ids: [],
+                            max_batch_size: 1,
+                            max_requests_per_minute: 10,
                         },
                     },
                 }),
@@ -168,10 +255,13 @@
         refreshToken = ''
         datasetKey = ''
         defaultTimezone = 'Asia/Kolkata'
-        enablePositions = false
-        enableAts = false
-        enableHrActions = false
-        enableReports = false
+        readOnly = true
+        enableEmployeeDirectory = false
+        enableSelfService = false
+        enableManagerWorkflows = false
+        writeAcknowledged = false
+        participantEmails = ''
+        targetEmployeeIds = ''
     }
 
     function handleCancel() {
@@ -326,16 +416,51 @@
                     bind:value={defaultTimezone}
                     placeholder="Asia/Kolkata" />
             </div>
-            <div class="space-y-2 rounded-md border p-3 text-sm">
-                <div class="font-medium">Optional modules</div>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enablePositions} /> Sync position master</label>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enableAts} /> Enable ATS jobs/actions</label>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enableHrActions} /> Enable HR lifecycle actions</label>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enableReports} /> Enable report actions</label>
+            <div class="space-y-3 rounded-md border p-3 text-sm">
+                <div class="font-medium">POC safety controls</div>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" bind:checked={readOnly} />
+                    Read-only mode (recommended and enabled by default)
+                </label>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" bind:checked={enableEmployeeDirectory} />
+                    Index the approved employee cohort using safe directory fields
+                </label>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" bind:checked={enableSelfService} />
+                    Enable employee self-service workflows
+                </label>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" bind:checked={enableManagerWorkflows} />
+                    Enable manager workflows for approved target employees
+                </label>
+                <div class="space-y-1">
+                    <Label for="darwinbox-participants">Approved participant emails</Label>
+                    <Input
+                        id="darwinbox-participants"
+                        bind:value={participantEmails}
+                        placeholder="user1@example.com, user2@example.com" />
+                </div>
+                <div class="space-y-1">
+                    <Label for="darwinbox-targets">Approved target employee IDs</Label>
+                    <Input
+                        id="darwinbox-targets"
+                        bind:value={targetEmployeeIds}
+                        placeholder="EMP001, EMP002" />
+                </div>
+                {#if !readOnly}
+                    <label
+                        class="flex cursor-pointer items-start gap-2 rounded border border-amber-300 p-2">
+                        <input type="checkbox" bind:checked={writeAcknowledged} />
+                        <span
+                            >I understand that approved actions can change production Darwinbox data
+                            and require explicit confirmation.</span>
+                    </label>
+                {/if}
+                <p class="text-muted-foreground text-xs">
+                    HR administration, ATS candidate, report, bulk, and unattended actions remain
+                    disabled in hardened POC mode.
+                </p>
             </div>
         </div>
 

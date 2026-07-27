@@ -8,7 +8,7 @@ use omni_connector_sdk::{
     ActionDefinition, ActionMode, ActionResponse, Connector, SearchOperator, ServiceCredential,
     Source, SourceType, SyncContext, SyncType,
 };
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use tracing::info;
 
 use crate::auth::{AtlassianCredentials, AuthManager};
@@ -123,6 +123,8 @@ impl Connector for AtlassianConnector {
         action: &str,
         params: JsonValue,
         credentials: Option<ServiceCredential>,
+        _source: Option<Source>,
+        _actor_email: Option<String>,
     ) -> Result<Response> {
         info!("Action requested: {}", action);
         match action {

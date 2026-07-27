@@ -560,24 +560,12 @@ where
 
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
-    Json(mut request): Json<ActionRequest>,
+    Json(request): Json<ActionRequest>,
 ) -> Result<Response, (StatusCode, Json<ActionResponse>)>
 where
     C: Connector,
 {
     info!("Action requested: {}", request.action);
-
-    if let Some(action_context) = &request.action_context {
-        if request.params.is_null() {
-            request.params = serde_json::Value::Object(serde_json::Map::new());
-        }
-        if let Some(obj) = request.params.as_object_mut() {
-            obj.insert(
-                "_omni_action_context".to_string(),
-                serde_json::to_value(action_context).unwrap_or(serde_json::Value::Null),
-            );
-        }
-    }
 
     // MCP-first dispatch: if the action matches a tool exposed by the
     // connector's MCP server, delegate to the adapter. Falls through to the
@@ -619,7 +607,13 @@ where
 
     state
         .connector
-        .execute_action(&request.action, request.params, request.credentials)
+        .execute_action(
+            &request.action,
+            request.params,
+            request.credentials,
+            request.source,
+            request.actor_email,
+        )
         .await
         .map_err(|error| {
             (

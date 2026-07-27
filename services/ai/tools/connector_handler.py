@@ -348,12 +348,13 @@ class ConnectorToolHandler:
         return tool_name in self._actions
 
     def requires_approval(self, tool_name: str) -> bool:
-        # Pre-authorized when filters are active (background agent context)
-        if self._source_filter is not None or self._action_whitelist is not None:
-            return False
         action = self._actions.get(tool_name)
         if not action:
             return True
+        # Every write action requires interactive approval, regardless of
+        # source filters or action whitelists.
+        if self._source_filter is not None or self._action_whitelist is not None:
+            return False if action.mode == "read" else True
         return action.mode == "write"
 
     async def check_oauth_required(

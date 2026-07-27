@@ -151,13 +151,29 @@ export interface GoogleAdsSourceConfig {
     sync_enabled?: boolean
 }
 
+export interface ConnectorListEntry {
+    source_type: string
+    manifest: {
+        extra_schema?: {
+            action_groups?: Record<string, { read: string[]; write: string[] }>
+        }
+    }
+}
+
 export interface DarwinboxSourceConfig {
     base_url: string
+    read_only?: boolean
     default_timezone?: string
     sync_modules?: {
         employee_directory?: boolean
         deleted_employees?: boolean
-        org_masters?: boolean
+        departments?: boolean
+        designations?: boolean
+        office_locations?: boolean
+        business_units?: boolean
+        divisions?: boolean
+        cost_centers?: boolean
+        group_companies?: boolean
         positions?: boolean
         holidays?: boolean
         ats_jobs?: boolean
@@ -170,10 +186,35 @@ export interface DarwinboxSourceConfig {
         reports?: boolean
     }
     authorization?: {
-        use_darwinbox_permissions?: boolean
+        actions_enabled?: boolean
+        write_acknowledged?: boolean
+        participant_emails?: string[]
+        allowed_actions?: string[]
+        target_employee_ids?: string[]
+        target_employee_emails?: string[]
+        target_departments?: string[]
         hr_admin_emails?: string[]
         recruiter_emails?: string[]
+        allowed_report_ids?: string[]
+        max_batch_size?: number
+        max_requests_per_minute?: number
     }
+    employee_scope?: {
+        mode: 'all' | 'include'
+        employee_ids?: string[]
+        employee_emails?: string[]
+        departments?: string[]
+    } | null
+    employee_fields?: Array<
+        | 'name'
+        | 'employee_id'
+        | 'company_email'
+        | 'department'
+        | 'designation'
+        | 'office_location'
+        | 'manager_employee_id'
+        | 'employee_type'
+    >
 }
 
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {

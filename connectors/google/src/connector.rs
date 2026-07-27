@@ -1141,6 +1141,8 @@ impl Connector for GoogleConnector {
         action: &str,
         params: JsonValue,
         credentials: Option<ServiceCredential>,
+        _source: Option<Source>,
+        _actor_email: Option<String>,
     ) -> Result<axum::response::Response> {
         let creds = match credentials {
             Some(c) => c,

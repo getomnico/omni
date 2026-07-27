@@ -268,10 +268,35 @@ def create_app(connector: "Connector") -> FastAPI:
     @app.post("/action")
     async def execute_action(request: ActionRequest) -> Response:
         logger.info("Action requested: %s", request.action)
+
+        # MCP-first dispatch: if the action matches a tool exposed by the
+        # connector's MCP server, delegate to the adapter. Falls through to
+        # the connector's own execute_action for connector-defined actions.
+        adapter = connector.mcp_adapter
+        if adapter is not None:
+            auth = connector._prepare_mcp_auth(request.credentials)
+            try:
+                actions = await adapter.get_action_definitions(**auth)
+            except Exception:
+                logger.warning("MCP action lookup failed", exc_info=True)
+                actions = []
+            if any(a.name == request.action for a in actions):
+                response = await adapter.execute_tool(
+                    request.action, dict(request.params), **auth
+                )
+                status_code = (
+                    status.HTTP_200_OK
+                    if response.status == "success"
+                    else status.HTTP_400_BAD_REQUEST
+                )
+                return JSONResponse(content=response.model_dump(), status_code=status_code)
+
         return await connector.execute_action(
             request.action,
-            request.params,
+            dict(request.params),
             request.credentials,
+            source=request.source,
+            actor_email=request.actor_email,
         )
 
     @app.post("/resource")

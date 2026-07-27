@@ -7,6 +7,7 @@ import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
 import { getSourcesByType } from '$lib/server/db/sources'
+import { env } from '$env/dynamic/private'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -49,12 +50,19 @@ export const GET: RequestHandler = async ({ locals }) => {
 
     const sanitizedSources = allSources.map((source) => {
         const latestSync = syncRunMap.get(source.id)
+        let sourceConfig = source.config
+        if (locals.user?.role !== 'admin' && source.sourceType === SourceType.DARWINBOX) {
+            const config = structuredClone((source.config ?? {}) as Record<string, unknown>)
+            delete config.authorization
+            delete config.employee_scope
+            sourceConfig = config
+        }
         return {
             id: source.id,
             name: source.name,
             sourceType: source.sourceType,
             scope: source.scope,
-            config: source.config,
+            config: sourceConfig,
             syncStatus: latestSync?.status ?? null,
             isActive: source.isActive,
             lastSyncAt: latestSync?.completedAt ?? null,
@@ -87,7 +95,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     if (scope === 'org' && locals.user.role !== 'admin') {
         throw error(403, 'Only admins can create org-wide sources')
     }
-
     const sourcesOfType = await getSourcesByType(sourceType)
 
     if (scope === 'user') {
@@ -112,7 +119,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             name,
             sourceType,
             scope,
-            config: config || {},
+            config: validatedConfig || {},
             createdBy: locals.user.id,
             isActive: isActive ?? false,
             syncIntervalSeconds: DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType],

@@ -25,7 +25,6 @@ class ToolContext:
     original_user_query: str | None = None
     skip_permission_check: bool = False
 
-
 @dataclass
 class ToolResult:
     """Standardized result from tool execution."""

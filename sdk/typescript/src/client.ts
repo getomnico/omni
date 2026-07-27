@@ -3,6 +3,7 @@ import {
   SdkSourceSyncDataSchema,
   serializeConnectorEvent,
   type ConnectorEventPayload,
+  type ConnectorManifest,
   type SdkSourceSyncData,
 } from './models.js';
 
@@ -250,7 +251,7 @@ export class SdkClient {
     }
   }
 
-  async register(manifest: Record<string, unknown>): Promise<void> {
+  async register(manifest: ConnectorManifest): Promise<void> {
     const response = await this.post('/sdk/register', manifest);
     if (!response.ok) {
       const text = await response.text();

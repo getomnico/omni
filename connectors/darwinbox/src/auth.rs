@@ -103,8 +103,7 @@ pub async fn fetch_token(
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Darwinbox token request failed with HTTP {status}: {body}");
+        anyhow::bail!("Darwinbox token request failed with HTTP {status}");
     }
 
     let token = response

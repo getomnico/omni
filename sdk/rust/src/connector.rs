@@ -146,6 +146,8 @@ pub trait Connector: Send + Sync + 'static {
         action: &str,
         _params: JsonValue,
         _credentials: Option<ServiceCredential>,
+        _source: Option<Source>,
+        _actor_email: Option<String>,
     ) -> Result<Response> {
         Ok(ActionResponse::not_supported(action).into_response_with_status(StatusCode::NOT_FOUND))
     }
