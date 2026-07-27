@@ -83,7 +83,7 @@ async def fetch_operator_values(
                 _operator_values_mem_ts = now
                 return _operator_values_mem
         except Exception as e:
-            logger.warning(f"Failed to read operator values cache: {e}")
+            logger.warning("Failed to read operator values cache")
 
     attribute_keys = [
         op.attribute_key
@@ -96,7 +96,7 @@ async def fetch_operator_values(
     try:
         values = await searcher_client.get_attribute_values(attribute_keys)
     except Exception as e:
-        logger.warning(f"Failed to fetch operator values from searcher: {e}")
+        logger.warning("Failed to fetch operator values from searcher")
         return {}
 
     _operator_values_mem = values
@@ -110,7 +110,7 @@ async def fetch_operator_values(
                 ex=_OPERATOR_VALUES_CACHE_TTL,
             )
         except Exception as e:
-            logger.warning(f"Failed to cache operator values: {e}")
+            logger.warning("Failed to cache operator values")
 
     return values
 
@@ -260,7 +260,7 @@ class SearchToolHandler:
         try:
             params = SearchToolParams.model_validate(tool_input)
         except ValidationError as e:
-            logger.error(f"Invalid search_documents input: {e}")
+            logger.error("Invalid search_documents input")
             return ToolResult(
                 content=[{"type": "text", "text": f"Invalid parameters: {e}"}],
                 is_error=True,
@@ -271,7 +271,9 @@ class SearchToolHandler:
             params.document_id = params.document_id[len("_ref:"):]
 
         logger.info(
-            f"Executing search_documents with query: {params.query}, document_id: {params.document_id}, context: {context}"
+            "Executing search_documents with query present=%s, document_id present=%s",
+            bool(params.query),
+            bool(params.document_id),
         )
         search_user_id = None if context.skip_permission_check else context.user_id
         search_user_email = (
@@ -424,6 +426,6 @@ async def _execute_search_tool(
     try:
         response: SearchResponse = await searcher_tool.handle(search_request)
     except Exception as e:
-        logger.error(f"Search failed: {e}")
+        logger.error("Search failed")
         return []
     return response.results

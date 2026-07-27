@@ -1,12 +1,12 @@
 use pgvector::Vector;
 use serde_json::Value as JsonValue;
 use shared::{
-    SourceType,
     db::error::DatabaseError,
     db::repositories::document,
     models::{AttributeFilter, ChunkResult, DateFilter, Document, Facet, FacetValue},
+    SourceType,
 };
-use sqlx::{FromRow, PgPool, Row, postgres::PgRow};
+use sqlx::{postgres::PgRow, FromRow, PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
@@ -283,7 +283,7 @@ impl SearchDocumentRepository {
             offset_idx = offset_idx,
             min_score_ratio_idx = min_score_ratio_idx,
         );
-        debug!("Full search query: {}", full_query);
+        debug!("Full search query: {} params", param_idx);
 
         let mut query_builder =
             sqlx::query_as::<_, SearchHitWithTotalRow>(&full_query).bind(tantivy_query);

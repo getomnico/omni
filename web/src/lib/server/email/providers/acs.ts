@@ -35,10 +35,10 @@ export class ACSEmailProvider extends EmailProvider {
                 return { success: true, messageId: result.id }
             }
 
-            logger.error('ACS send failed', { status: result.status, to: params.to })
+            logger.error('ACS send failed', { status: result.status })
             return { success: false, error: `Email send failed with status: ${result.status}` }
         } catch (error) {
-            logger.error('Error sending email via ACS', error, { to: params.to })
+            logger.error('Error sending email via ACS', error)
             return { success: false, error: 'Failed to send email' }
         }
     }

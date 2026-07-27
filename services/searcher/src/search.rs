@@ -6,19 +6,19 @@ use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::SourceType;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
 };
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
+use shared::SourceType;
 use shared::{
-    AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
+    metrics, AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
 };
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -115,9 +115,9 @@ impl SearchEngine {
         let start_time = Instant::now();
 
         info!(
-            "Searching for query: '{}', mode: {:?}",
-            request.query,
-            request.search_mode()
+            query_len = request.query.len(),
+            mode = ?request.search_mode(),
+            "Searching"
         );
 
         let mut request = request;
@@ -128,23 +128,15 @@ impl SearchEngine {
         // In case the request contains only user_id, populate user_email for permission filtering
         let user_repo = UserRepository::new(self.db_pool.pool());
         let mut request = match (&request.user_id, &request.user_email) {
-            (Some(user_id), None) => {
-                info!(
-                    "Search request has user_id but no email, fetching email from DB for user ID: {}",
-                    user_id
-                );
-                let res = user_repo.find_by_id(user_id.clone()).await;
-                info!("Fetched user: {:?}", res);
+            (Some(_user_id), None) => {
+                info!("Fetching user email from DB for email-based filtering");
+                let res = user_repo.find_by_id(_user_id.clone()).await;
                 if let Ok(Some(user)) = res {
-                    info!(
-                        "Fetched user email: {} for user ID: {}",
-                        user.email, user_id
-                    );
                     let mut new_request = request.clone();
                     new_request.user_email = Some(user.email);
                     new_request
                 } else {
-                    info!("Failed to fetch user email for user ID: {}", user_id);
+                    info!("No user record found");
                     request
                 }
             }
@@ -164,7 +156,7 @@ impl SearchEngine {
 
         // Handle document_id filter for read_document tool
         if let Some(document_id) = &request.document_id {
-            info!("Document ID filter detected: {}", document_id);
+            info!("Document ID filter detected");
             return self.read_document_by_id(document_id, &request).await;
         }
 
@@ -176,7 +168,11 @@ impl SearchEngine {
             &request.user_configuration,
         )
         .await;
-        info!("Parsed query: {:?}", parsed);
+        info!(
+            "Parsed query: {} filters, {} source_types",
+            parsed.attribute_filters.len(),
+            parsed.source_types.len()
+        );
         let has_parsed_filters = !parsed.attribute_filters.is_empty()
             || !parsed.source_types.is_empty()
             || !parsed.boosted_source_types.is_empty()
@@ -233,11 +229,14 @@ impl SearchEngine {
         if let Ok(mut conn) = self.redis_client.get_multiplexed_async_connection().await {
             if let Ok(cached_response) = conn.get::<_, String>(&cache_key).await {
                 if let Ok(response) = serde_json::from_str::<SearchResponse>(&cached_response) {
-                    info!("Cache hit for request: {:?}", request);
+                    metrics::SEARCHER_CACHE_HIT.add(1, &[]);
+                    info!("Cache hit for search request");
                     return Ok(response);
                 }
             }
         }
+
+        metrics::SEARCHER_CACHE_MISS.add(1, &[]);
 
         let repo = DocumentRepository::new(self.db_pool.pool());
         let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
@@ -488,7 +487,7 @@ impl SearchEngine {
         let content_types = request.content_types.as_deref();
         let attribute_filters = request.attribute_filters.as_ref();
 
-        debug!("Running fulltext search for {}", &request.query);
+        debug!("Running fulltext search");
         let search_hits = repo
             .search(
                 &request.query,
@@ -552,7 +551,7 @@ impl SearchEngine {
         offset: i64,
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
-        info!("Performing semantic search for query: '{}'", request.query);
+        info!("Performing semantic search");
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
 
@@ -686,7 +685,7 @@ impl SearchEngine {
         request: &SearchRequest,
     ) -> Result<SearchResponse> {
         let start_time = Instant::now();
-        info!("Reading document by ID: {}", document_id);
+        info!("Reading document by ID");
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
         let doc = doc_repo
@@ -792,11 +791,8 @@ impl SearchEngine {
                         }
                     }
                 }
-                Err(e) => {
-                    info!(
-                        "Failed to read document content: {}, falling back to chunk retrieval",
-                        e
-                    );
+                Err(_e) => {
+                    info!("Failed to read document content, falling back to chunk retrieval");
                     self.read_document_chunks(document_id, &doc, request)
                         .await?
                 }
@@ -855,10 +851,7 @@ impl SearchEngine {
                 .await?;
             results
         } else {
-            info!(
-                "No query provided, returning first 500 lines from document ID {}",
-                document_id
-            );
+            info!("No query provided, returning first 500 lines");
             if let Some(content_id) = &doc.content_id {
                 let content = self.content_storage.get_text(content_id).await?;
 
@@ -887,10 +880,7 @@ impl SearchEngine {
                     also_in: Vec::new(),
                 }]
             } else {
-                error!(
-                    "Content ID not found for document ID [{}], content ID [{:?}]",
-                    document_id, doc.content_id
-                );
+                error!("Content ID not found for document");
                 vec![]
             }
         };
@@ -899,7 +889,7 @@ impl SearchEngine {
     }
 
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
-        debug!("Generating query embeddings for query '{}'", query);
+        debug!("Generating query embeddings");
         let embeddings = self
             .ai_client
             .generate_embeddings_with_options(
@@ -925,10 +915,7 @@ impl SearchEngine {
         user_groups: &[String],
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
-        info!(
-            "Generating enhanced semantic search results for RAG query: '{}'",
-            request.query
-        );
+        info!("Generating enhanced semantic search results for RAG");
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
         let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
@@ -1047,7 +1034,7 @@ impl SearchEngine {
         user_groups: &[String],
         tantivy_query: Option<&str>,
     ) -> Result<(Vec<SearchResult>, i64)> {
-        info!("Performing hybrid search for query: '{}'", request.query);
+        info!("Performing hybrid search");
         let start_time = Instant::now();
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
@@ -1311,7 +1298,7 @@ impl SearchEngine {
 
     /// Generate RAG context from search request using chunk-based approach with expanded context
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
-        info!("Generating RAG context for query: '{}'", request.query);
+        info!("Generating RAG context");
 
         let user_groups = if let Some(email) = request.user_email() {
             let group_repo = GroupRepository::new(self.db_pool.pool());

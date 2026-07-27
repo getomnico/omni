@@ -183,11 +183,11 @@ async function triggerTitleGeneration(
         // First check if title already exists
         const chat = await chatRepository.get(chatId)
         if (chat?.title) {
-            logger.debug('Chat already has a title, skipping title generation', { chatId })
+            logger.debug('Chat already has a title, skipping title generation')
             return { status: 'skipped' }
         }
 
-        logger.info('Triggering title generation', { chatId })
+        logger.info('Triggering title generation')
 
         const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/generate_title`, {
             method: 'POST',
@@ -199,8 +199,6 @@ async function triggerTitleGeneration(
         if (response.ok) {
             const result = (await response.json()) as TitleGenerationResponse
             logger.info('Title generation completed', {
-                chatId,
-                title: result.title,
                 status: result.status,
                 reason: result.reason,
             })
@@ -214,14 +212,12 @@ async function triggerTitleGeneration(
         } else {
             const message = await aiErrorMessage(response)
             logger.warn('Title generation failed', {
-                chatId,
                 status: response.status,
-                message,
             })
             return { status: 'failed', message }
         }
     } catch (error) {
-        logger.warn('Error during title generation', { error, chatId })
+        logger.warn('Error during title generation', { error })
         const message = error instanceof Error ? error.message : 'Failed to generate chat title'
         return { status: 'failed', message }
     }
@@ -244,7 +240,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
 
     const chat = await chatRepository.get(chatId)
     if (!chat) {
-        logger.error('Chat not found', undefined, { chatId })
+        logger.error('Chat not found')
         return json({ error: 'Chat not found' }, { status: 404 })
     }
 
@@ -256,7 +252,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
         }
     }
 
-    logger.debug('Sending GET request to AI service to receive the streaming response', { chatId })
+    logger.debug('Sending GET request to AI service to receive the streaming response')
 
     const abortController = new AbortController()
 
@@ -280,13 +276,11 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
         if (!response.ok) {
             logger.error('AI service error', undefined, {
                 status: response.status,
-                statusText: response.statusText,
-                chatId,
             })
             return sseErrorResponse(await aiErrorMessage(response))
         }
 
-        logger.info('Chat stream started successfully', { chatId })
+        logger.info('Chat stream started successfully')
 
         // Create a transformed stream that enriches or redacts selected events
         // before forwarding them to the browser. The AI service's
@@ -313,13 +307,11 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
             async start(controller) {
                 try {
                     if (!chat.title) {
-                        logger.info('Generating title for chat', { chatId })
+                        logger.info('Generating title for chat')
                         triggerTitleGeneration(chatId, logger)
                             .then((result) => {
                                 if (result.status === 'generated') {
-                                    logger.info(
-                                        `Generated title for chat ${chatId}: ${result.title}`,
-                                    )
+                                    logger.info('Generated title for chat')
                                     try {
                                         const titleEvent: TitleEvent = { title: result.title }
                                         controller.enqueue(
@@ -329,15 +321,10 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                         // The browser may have disconnected while title generation ran.
                                     }
                                 } else if (result.status === 'failed') {
-                                    logger.warn('Title generation failed', {
-                                        chatId,
-                                        message: result.message,
-                                    })
+                                    logger.warn('Title generation failed')
                                 }
                             })
-                            .catch((err) =>
-                                logger.error(`Failed to generate title for chat ${chatId}`, err),
-                            )
+                            .catch(() => logger.error('Failed to generate title for chat'))
                     }
 
                     while (true) {
@@ -412,9 +399,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                     const enrichedEvent = `${idPrefix}event: oauth_required\ndata: ${JSON.stringify(enriched)}\n\n`
                                     controller.enqueue(encoder.encode(enrichedEvent))
                                 } catch (err) {
-                                    logger.error('Failed to enrich oauth_required event', err, {
-                                        chatId,
-                                    })
+                                    logger.error('Failed to enrich oauth_required event', err)
                                     // Fall back to forwarding the raw event so the
                                     // client at least sees something actionable.
                                     const fallback = `${idPrefix}event: oauth_required\ndata: ${data}\n\n`
@@ -503,7 +488,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                         }
                     }
                 } catch (error) {
-                    logger.error('Error in stream processing', error, { chatId })
+                    logger.error('Error in stream processing', error)
                     const message =
                         error instanceof Error ? error.message : 'Failed to process chat stream'
                     try {
@@ -523,7 +508,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                 // by aborting our upstream read, but do NOT touch the run — it
                 // continues server-side so the client can reconnect and resume.
                 // Generation is ended only via the explicit Stop endpoint.
-                logger.info('Client disconnected from stream proxy', { chatId })
+                logger.info('Client disconnected from stream proxy')
                 try {
                     await reader.cancel()
                 } catch {
@@ -543,7 +528,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
             },
         })
     } catch (error) {
-        logger.error('Error calling AI service', error, { chatId })
+        logger.error('Error calling AI service', error)
         const message = error instanceof Error ? error.message : 'Failed to process request'
         return sseErrorResponse(message)
     }

@@ -143,14 +143,14 @@ pub async fn run_server() -> AnyhowResult<()> {
 
     let title_index = Arc::new(TitleIndex::new(db_pool.clone()));
     if let Err(e) = title_index.refresh().await {
-        error!("Failed initial typeahead index load: {}", e);
+        error!("Failed initial typeahead index load");
     }
     title_index.start_background_refresh(300);
     info!("Typeahead index initialized");
 
     let operator_registry = Arc::new(OperatorRegistry::new(redis_client.clone()));
     if let Err(e) = operator_registry.refresh().await {
-        error!("Failed initial operator registry load: {}", e);
+        error!("Failed initial operator registry load");
     }
     operator_registry.start_background_refresh(60);
     info!("Operator registry initialized");
@@ -169,10 +169,19 @@ pub async fn run_server() -> AnyhowResult<()> {
     let app = create_app(app_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    info!("Searcher service listening on {}", addr);
+    info!("Searcher service listening");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(telemetry::shutdown_signal())
+        .await
+    {
+        error!("Server error");
+        telemetry::shutdown_telemetry().await;
+        return Err(e.into());
+    }
+
+    telemetry::shutdown_telemetry().await;
     Ok(())
 }

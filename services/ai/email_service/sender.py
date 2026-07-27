@@ -61,7 +61,7 @@ class ACSEmailProvider(EmailProvider):
             logger.error("ACS send failed: status=%s", result["status"])
             return SendResult(success=False, error=f"Send failed: {result['status']}")
         except Exception as e:
-            logger.error("ACS send error: %s", e)
+            logger.error("ACS send error")
             return SendResult(success=False, error="Failed to send email via ACS")
 
 
@@ -94,10 +94,10 @@ class ResendEmailProvider(EmailProvider):
                 data = resp.json()
                 return SendResult(success=True, message_id=data.get("id"))
 
-            logger.error("Resend error: status=%d body=%s", resp.status_code, resp.text)
+            logger.error("Resend error: status=%d", resp.status_code)
             return SendResult(success=False, error="Failed to send email via Resend")
         except Exception as e:
-            logger.error("Resend send error: %s", e)
+            logger.error("Resend send error")
             return SendResult(success=False, error="Failed to send email via Resend")
 
 
@@ -135,7 +135,7 @@ class SMTPEmailProvider(EmailProvider):
 
             return SendResult(success=True)
         except Exception as e:
-            logger.error("SMTP send error: %s", e)
+            logger.error("SMTP send error")
             return SendResult(success=False, error="Failed to send email via SMTP")
 
 

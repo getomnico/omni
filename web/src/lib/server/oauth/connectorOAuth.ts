@@ -509,13 +509,6 @@ export async function exchangeCodeAndIdentify(
     logger.info('Starting connector OAuth token exchange', {
         provider: config.provider,
         flow: state.metadata.flow.type,
-        tokenEndpoint,
-        tokenEndpointAuthMethod: creds.tokenEndpointAuthMethod,
-        clientIdPrefix: creds.clientId.slice(0, 12),
-        redirectUri: callbackUrl(),
-        hasPkceVerifier: Boolean(state.metadata.codeVerifier),
-        resource: config.resource ?? null,
-        requestedScopes: state.metadata.requiredScopes,
     })
     const tokenResp = await fetch(tokenEndpoint, {
         method: 'POST',
@@ -529,12 +522,6 @@ export async function exchangeCodeAndIdentify(
             provider: config.provider,
             flow: state.metadata.flow.type,
             status: tokenResp.status,
-            tokenEndpoint,
-            tokenEndpointAuthMethod: creds.tokenEndpointAuthMethod,
-            clientIdPrefix: creds.clientId.slice(0, 12),
-            resource: config.resource ?? null,
-            error: err.error,
-            errorDescription: err.error_description,
         })
         throw new Error(`OAuth token exchange failed: ${err.error} - ${err.error_description}`)
     }
@@ -542,9 +529,6 @@ export async function exchangeCodeAndIdentify(
     logger.info('Connector OAuth token exchange succeeded', {
         provider: config.provider,
         flow: state.metadata.flow.type,
-        tokenType: tokens.token_type,
-        expiresIn: tokens.expires_in,
-        grantedScope: tokens.scope ?? null,
     })
 
     const principalEmailOverride = options.principalEmailOverrides?.[config.provider]
@@ -568,8 +552,6 @@ export async function exchangeCodeAndIdentify(
             provider: config.provider,
             flow: state.metadata.flow.type,
             status: userinfoResp.status,
-            userinfoEndpoint: config.userinfo_endpoint,
-            body: body.slice(0, 500),
         })
         throw new Error(`Failed to fetch userinfo: ${userinfoResp.status}`)
     }
@@ -579,8 +561,6 @@ export async function exchangeCodeAndIdentify(
         logger.warn('Connector OAuth userinfo response missing email field', {
             provider: config.provider,
             flow: state.metadata.flow.type,
-            userinfoEmailField: config.userinfo_email_field,
-            profileKeys: isUserinfoObject(profile) ? Object.keys(profile) : null,
         })
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }

@@ -27,12 +27,12 @@ export abstract class EmailProvider {
     abstract testConnection(): Promise<boolean>
 
     protected async sendAndLog(params: SendEmailParams): Promise<EmailResult> {
-        logger.info(`Sending email to=${params.to} subject="${params.subject}"`)
+        logger.info('Sending email')
         const result = await this.send(params)
         if (result.success) {
-            logger.info(`Email sent to=${params.to} messageId=${result.messageId}`)
+            logger.info('Email sent')
         } else {
-            logger.error(`Email failed to=${params.to}`, { error: result.error })
+            logger.error('Email failed', { error: result.error })
         }
         return result
     }

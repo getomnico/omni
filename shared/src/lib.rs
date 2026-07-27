@@ -7,6 +7,7 @@ pub mod content_storage;
 pub mod db;
 pub mod embedding_queue;
 pub mod encryption;
+pub mod metrics;
 pub mod models;
 pub mod queue;
 pub mod rate_limiter;
@@ -35,10 +36,10 @@ pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats, QueueSummary};
 pub use rate_limiter::{RateLimiter, RetryableError};
-pub use service_auth::{ServiceAuth, create_service_auth};
+pub use service_auth::{create_service_auth, ServiceAuth};
 pub use storage::{
-    ContentMetadata as StorageContentMetadata, ObjectStorage, StorageError,
     factory::{StorageBackend, StorageFactory},
+    ContentMetadata as StorageContentMetadata, ObjectStorage, StorageError,
 };
 pub use traits::Repository;
 

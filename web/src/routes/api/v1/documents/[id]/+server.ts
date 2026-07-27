@@ -22,10 +22,8 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
     const queryData: Record<string, unknown> = {
         query: 'content',
         document_id: documentId,
-        user_email:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
-        user_id:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
+        user_email: locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
+        user_id: locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
         limit: 1,
     }
 
@@ -42,7 +40,7 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
         }
     }
 
-    logger.debug('Document content request', { documentId })
+    logger.debug('Document content request')
 
     try {
         const response = await fetch(`${env.SEARCHER_URL}/search`, {
@@ -58,7 +56,6 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
             }
             logger.error('Searcher service error', undefined, {
                 status: response.status,
-                documentId,
             })
             return json({ error: 'Service unavailable' }, { status: 502 })
         }
@@ -107,7 +104,7 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
             updated_at: doc.updated_at,
         })
     } catch (error) {
-        logger.error('Document content request failed', error as Error, { documentId })
+        logger.error('Document content request failed', error as Error)
         return json({ error: 'Failed to fetch document' }, { status: 500 })
     }
 }

@@ -34,12 +34,12 @@ export const POST: RequestHandler = async ({ url, cookies }) => {
             providerUserId,
         )
 
-        console.log(`Google OAuth credentials removed for user: ${userSession.user.id}`)
+        console.log('Google OAuth credentials removed')
 
         // Redirect back to settings with success message
         throw redirect(302, '/settings/integrations?success=google_unlinked')
     } catch (error) {
-        console.error('OAuth unlink error:', error)
+        console.error('OAuth unlink error')
 
         // Re-throw redirects
         if (error instanceof Response) {

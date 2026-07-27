@@ -1,10 +1,11 @@
-use crate::AppState;
 use crate::people_extractor;
+use crate::AppState;
 use anyhow::{Context, Result};
 use shared::db::repositories::{
     DocumentRepository, GroupRepository, PersonRepository, SyncRunRepository,
 };
 use shared::embedding_queue::EmbeddingQueue;
+use shared::metrics;
 use shared::models::{
     ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
     DocumentPermissions, EventStatus, SyncType,
@@ -14,8 +15,9 @@ use shared::storage::gc::{ContentBlobGC, GCConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{Duration, MissedTickBehavior, interval};
-use tracing::{debug, error, info, warn};
+use tokio::time::{interval, Duration, MissedTickBehavior};
+use tracing::{debug, error, info, warn, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
 // SDK-side buffering already shapes events into the right batch size per sync type,
@@ -450,12 +452,19 @@ impl QueueProcessor {
                             "Queue stats - Pending: {}, Processing: {}, Completed: {}, Failed: {}, Dead Letter: {}",
                             stats.pending, stats.processing, stats.completed, stats.failed, stats.dead_letter
                         );
+                        metrics::record_queue_status(
+                            stats.pending,
+                            stats.processing,
+                            stats.failed,
+                            stats.dead_letter,
+                        );
                     }
                 }
                 _ = retry_interval.tick() => {
                     if let Ok(retried) = self.event_queue.retry_failed_events().await {
                         if retried > 0 {
                             info!("Retried {} failed events", retried);
+                            metrics::INDEXER_EVENTS_RETRIED.add(retried as u64, &[]);
                         }
                     }
                 }
@@ -511,8 +520,8 @@ impl QueueProcessor {
                                             );
                                         }
                                     }
-                                    Err(e) => {
-                                        error!("Content blob GC failed: {}", e);
+                                    Err(_) => {
+                                        error!("Content blob GC failed");
                                     }
                                 }
                             });
@@ -578,7 +587,7 @@ impl QueueProcessor {
                 break;
             }
             batches_dequeued += 1;
-            total_processed += self.process_dequeued_events(events).await?;
+            total_processed += self.process_dequeued_events_instrumented(events).await?;
         }
 
         for (sync_type, reason) in ready {
@@ -605,7 +614,7 @@ impl QueueProcessor {
                     break;
                 }
                 batches_dequeued += 1;
-                total_processed += self.process_dequeued_events(events).await?;
+                total_processed += self.process_dequeued_events_instrumented(events).await?;
             }
         }
 
@@ -616,6 +625,48 @@ impl QueueProcessor {
             );
         }
         Ok(())
+    }
+
+    /// Instrument `process_dequeued_events` with a CONSUMER tracing span.
+    ///
+    /// The span is created as a new root trace (no parent) with bounded messaging
+    /// attributes and native OTel links pointing at the producer spans.
+    async fn process_dequeued_events_instrumented(
+        &self,
+        events: Vec<ConnectorEventQueueItem>,
+    ) -> Result<usize> {
+        let event_count = events.len() as i64;
+
+        // Extract producer SpanContext values deduplicated by (trace_id, span_id).
+        let producer_contexts: Vec<Option<(Option<String>, Option<String>)>> = events
+            .iter()
+            .map(|ev| Some((ev.traceparent.clone(), ev.tracestate.clone())))
+            .collect();
+        let span_contexts = shared::telemetry::queue::collect_span_contexts(&producer_contexts);
+
+        let span = tracing::info_span!(
+            parent: None,
+            "connector_events_queue process",
+            otel.kind = "CONSUMER",
+            messaging.system = "postgresql",
+            messaging.destination = "connector_events_queue",
+            messaging.operation.type = "process",
+            messaging.batch.message_count = event_count,
+        );
+
+        // Initialize the OTel span and add native links before entering
+        // the async work. Clone the span so the original handle is available
+        // for `.instrument()` after adding links.
+        {
+            let _guard = span.clone().entered();
+            for sc in &span_contexts {
+                span.add_link(sc.clone());
+            }
+        }
+
+        async move { self.process_dequeued_events(events).await }
+            .instrument(span)
+            .await
     }
 
     async fn process_dequeued_events(&self, events: Vec<ConnectorEventQueueItem>) -> Result<usize> {
@@ -673,36 +724,50 @@ impl QueueProcessor {
 
             match result {
                 Ok(batch_result) => {
-                    if !batch_result.successful_event_ids.is_empty() {
-                        if let Err(e) = self
+                    let batch_events_count = events_clone.len();
+                    let successful_count = batch_result.successful_event_ids.len();
+                    let failed_count = batch_result.failed_events.len();
+
+                    // Mark completed only after DB transition succeeds.
+                    // Use the actual transitioned count (rows that were in
+                    // 'processing' state) to avoid stale/duplicate inflation.
+                    if successful_count > 0 {
+                        match self
                             .event_queue
                             .mark_events_completed_batch(batch_result.successful_event_ids.clone())
                             .await
                         {
-                            error!(
-                                "Failed to mark {} events as completed: {}",
-                                batch_result.successful_event_ids.len(),
-                                e
-                            );
+                            Ok(completed) if completed > 0 => {
+                                metrics::INDEXER_EVENTS_PROCESSED.add(completed as u64, &[]);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Failed to mark events as completed: {}", e);
+                            }
                         }
                     }
 
-                    if !batch_result.failed_events.is_empty() {
-                        if let Err(e) = self
+                    // Mark dead-letter / retryable failed only after DB transition succeeds.
+                    // `dead_letter` rows (exhausted retries) go to the dead-letter counter;
+                    // `failed` rows (retryable) do not count as dead-letter.
+                    if failed_count > 0 {
+                        match self
                             .event_queue
                             .mark_events_dead_letter_batch(batch_result.failed_events.clone())
                             .await
                         {
-                            error!(
-                                "Failed to mark {} events as failed: {}",
-                                batch_result.failed_events.len(),
-                                e
-                            );
+                            Ok((_retryable, dead_letter)) if dead_letter > 0 => {
+                                metrics::INDEXER_EVENTS_DEAD_LETTER.add(dead_letter as u64, &[]);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Failed to mark events as dead-letter: {}", e);
+                            }
                         }
                     }
 
                     if batch_result.successful_documents_count > 0 {
-                        if let Err(e) = self
+                        if let Err(_) = self
                             .sync_run_repo
                             .increment_progress_by(
                                 &batch_sync_run_id,
@@ -710,25 +775,28 @@ impl QueueProcessor {
                             )
                             .await
                         {
-                            warn!(
-                                "Failed to update sync run progress for {}: {}",
-                                batch_sync_run_id, e
-                            );
+                            warn!("Failed to update sync run progress");
                         }
                     }
 
+                    let batch_duration_val = batch_start_time.elapsed();
+                    metrics::INDEXER_BATCH_DURATION.record(batch_duration_val.as_secs_f64(), &[]);
+                    metrics::INDEXER_BATCH_SIZE.record(batch_events_count as u64, &[]);
+
                     self.extract_and_upsert_people(&events_clone).await;
 
-                    total_processed += batch_result.successful_event_ids.len();
+                    total_processed += successful_count;
 
-                    let batch_duration = batch_start_time.elapsed();
                     info!(
                         "Sync-run batch processing completed: {} successful, {} failed (took {:?}, {:.1} events/sec)",
-                        batch_result.successful_event_ids.len(),
-                        batch_result.failed_events.len(),
-                        batch_duration,
-                        batch_result.successful_event_ids.len() as f64
-                            / batch_duration.as_secs_f64()
+                        successful_count,
+                        failed_count,
+                        batch_duration_val,
+                        if batch_duration_val.as_secs_f64() > 0.0 {
+                            successful_count as f64 / batch_duration_val.as_secs_f64()
+                        } else {
+                            0.0
+                        },
                     );
                 }
                 Err(e) => {
@@ -738,14 +806,21 @@ impl QueueProcessor {
                         .iter()
                         .map(|ev| (ev.id.clone(), err_msg.clone()))
                         .collect();
-                    if let Err(mark_err) =
-                        self.event_queue.mark_events_dead_letter_batch(failed).await
-                    {
-                        error!(
-                            "Failed to mark {} events as failed after batch error: {}",
-                            events_clone.len(),
-                            mark_err
-                        );
+
+                    // Mark dead-letter / retryable failed; only record dead-letter
+                    // metric after DB confirms, and only for rows that actually
+                    // transitioned to dead_letter (exhausted retries).
+                    match self.event_queue.mark_events_dead_letter_batch(failed).await {
+                        Ok((_retryable, dead_letter)) if dead_letter > 0 => {
+                            metrics::INDEXER_EVENTS_DEAD_LETTER.add(dead_letter as u64, &[]);
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!(
+                                "Failed to mark events as dead-letter after batch error: {}",
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -1055,8 +1130,8 @@ impl QueueProcessor {
             Ok(_) => {
                 debug!("Upserted {} people from batch", count);
             }
-            Err(e) => {
-                error!("Failed to upsert people: {}", e);
+            Err(_) => {
+                error!("Failed to upsert people");
             }
         }
     }

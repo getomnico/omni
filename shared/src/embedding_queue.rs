@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
+use tracing::Instrument;
 use ulid::Ulid;
 
 use crate::{db::repositories::EmbeddingProviderRepository, utils::generate_ulid};
@@ -49,6 +50,12 @@ pub struct EmbeddingQueueItem {
     pub created_at: sqlx::types::time::OffsetDateTime,
     pub updated_at: sqlx::types::time::OffsetDateTime,
     pub processed_at: Option<sqlx::types::time::OffsetDateTime>,
+    /// W3C traceparent header stored by the producer for trace propagation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
+    /// W3C tracestate header stored alongside traceparent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracestate: Option<String>,
 }
 
 impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for EmbeddingQueueItem {
@@ -73,6 +80,8 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for EmbeddingQueueItem {
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             processed_at: row.try_get("processed_at")?,
+            traceparent: row.try_get("traceparent").ok().flatten(),
+            tracestate: row.try_get("tracestate").ok().flatten(),
         })
     }
 }
@@ -93,49 +102,26 @@ impl EmbeddingQueue {
     }
 
     pub async fn enqueue(&self, document_id: String) -> Result<Option<String>> {
-        if !self.provider_repo.has_active_provider().await? {
-            return Ok(None);
-        }
+        let queue_name = "embedding_queue";
 
-        let id = Ulid::new().to_string();
+        // Build PRODUCER span covering provider check + INSERT.
+        // inject_active_context is called from inside the instrumented block
+        // so the producer span is active during injection and the DB write.
+        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
 
-        let result = sqlx::query(
-            r#"
-            INSERT INTO embedding_queue (id, document_id)
-            SELECT $1, $2
-            WHERE NOT EXISTS (
-                SELECT 1 FROM embedding_queue
-                WHERE document_id = $2 AND status IN ('pending', 'processing')
-            )
-            "#,
-        )
-        .bind(&id)
-        .bind(&document_id)
-        .execute(&self.pool)
-        .await?;
+        async move {
+            let carrier = crate::telemetry::queue::inject_active_context();
 
-        if result.rows_affected() > 0 {
-            Ok(Some(id))
-        } else {
-            Ok(None)
-        }
-    }
+            if !self.provider_repo.has_active_provider().await? {
+                return Ok(None);
+            }
 
-    pub async fn enqueue_batch(&self, document_ids: Vec<String>) -> Result<Vec<String>> {
-        if !self.provider_repo.has_active_provider().await? {
-            return Ok(vec![]);
-        }
-
-        let mut tx = self.pool.begin().await?;
-        let mut ids = Vec::new();
-
-        for document_id in document_ids {
             let id = Ulid::new().to_string();
 
             let result = sqlx::query(
                 r#"
-                INSERT INTO embedding_queue (id, document_id)
-                SELECT $1, $2
+                INSERT INTO embedding_queue (id, document_id, traceparent, tracestate)
+                SELECT $1, $2, $3, $4
                 WHERE NOT EXISTS (
                     SELECT 1 FROM embedding_queue
                     WHERE document_id = $2 AND status IN ('pending', 'processing')
@@ -144,69 +130,166 @@ impl EmbeddingQueue {
             )
             .bind(&id)
             .bind(&document_id)
-            .execute(&mut *tx)
-            .await?;
+            .bind(&carrier.traceparent)
+            .bind(&carrier.tracestate)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                crate::telemetry::queue::set_active_span_error();
+                e
+            })?;
 
             if result.rows_affected() > 0 {
-                ids.push(id);
+                Ok(Some(id))
+            } else {
+                Ok(None)
             }
         }
+        .instrument(producer_span)
+        .await
+    }
 
-        tx.commit().await?;
-        Ok(ids)
+    pub async fn enqueue_batch(&self, document_ids: Vec<String>) -> Result<Vec<String>> {
+        let queue_name = "embedding_queue";
+
+        // Build PRODUCER span covering provider check + batch INSERT.
+        // inject_active_context is called from inside the instrumented block
+        // so the producer span is active during injection and the DB write.
+        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
+
+        async move {
+            let carrier = crate::telemetry::queue::inject_active_context();
+
+            if !self.provider_repo.has_active_provider().await? {
+                return Ok(vec![]);
+            }
+
+            let mut tx = self.pool.begin().await.map_err(|e| {
+                crate::telemetry::queue::set_active_span_error();
+                e
+            })?;
+            let mut ids = Vec::new();
+
+            for document_id in document_ids {
+                let id = Ulid::new().to_string();
+
+                let result = sqlx::query(
+                    r#"
+                    INSERT INTO embedding_queue (id, document_id, traceparent, tracestate)
+                    SELECT $1, $2, $3, $4
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM embedding_queue
+                        WHERE document_id = $2 AND status IN ('pending', 'processing')
+                    )
+                    "#,
+                )
+                .bind(&id)
+                .bind(&document_id)
+                .bind(&carrier.traceparent)
+                .bind(&carrier.tracestate)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    crate::telemetry::queue::set_active_span_error();
+                    e
+                })?;
+
+                if result.rows_affected() > 0 {
+                    ids.push(id);
+                }
+            }
+
+            tx.commit().await.map_err(|e| {
+                crate::telemetry::queue::set_active_span_error();
+                e
+            })?;
+            Ok(ids)
+        }
+        .instrument(producer_span)
+        .await
     }
 
     pub async fn enqueue_batch_missing_current_embeddings(
         &self,
         document_ids: Vec<String>,
     ) -> Result<Vec<String>> {
-        if document_ids.is_empty() || !self.provider_repo.has_active_provider().await? {
+        if document_ids.is_empty() {
             return Ok(vec![]);
         }
 
-        let ids: Vec<String> = document_ids.iter().map(|_| generate_ulid()).collect();
-        let rows = sqlx::query(
-            r#"
-            WITH active_provider AS (
-                SELECT config->>'model' AS model_name
-                FROM embedding_providers
-                WHERE is_current = TRUE AND is_deleted = FALSE
-                LIMIT 1
-            ),
-            input_rows AS (
-                SELECT id, document_id, ordinality
-                FROM UNNEST($1::text[], $2::text[]) WITH ORDINALITY AS t(id, document_id, ordinality)
-            ),
-            deduped_input AS (
-                SELECT DISTINCT ON (document_id) id, document_id
-                FROM input_rows
-                ORDER BY document_id, ordinality
-            )
-            INSERT INTO embedding_queue (id, document_id)
-            SELECT input.id, input.document_id
-            FROM deduped_input input
-            CROSS JOIN active_provider provider
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM embedding_queue q
-                WHERE q.document_id = input.document_id
-                  AND q.status IN ('pending', 'processing')
-            )
-            AND NOT EXISTS (
-                SELECT 1
-                FROM embeddings e
-                WHERE e.document_id = input.document_id
-                  AND e.model_name = provider.model_name
-            )
-            RETURNING id
-            "#,
-        )
-        .bind(&ids)
-        .bind(&document_ids)
-        .fetch_all(&self.pool)
-        .await?;
+        let queue_name = "embedding_queue";
 
-        Ok(rows.into_iter().map(|row| row.get("id")).collect())
+        // Build PRODUCER span covering provider check + INSERT.
+        // inject_active_context is called from inside the instrumented block
+        // so the producer span is active during injection and the DB write.
+        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
+
+        async move {
+            let carrier = crate::telemetry::queue::inject_active_context();
+
+            if !self.provider_repo.has_active_provider().await? {
+                return Ok(vec![]);
+            }
+
+            let ids: Vec<String> = document_ids.iter().map(|_| generate_ulid()).collect();
+            let traceparents: Vec<Option<String>> = std::iter::repeat(carrier.traceparent.clone())
+                .take(ids.len())
+                .collect();
+            let tracestates: Vec<Option<String>> = std::iter::repeat(carrier.tracestate.clone())
+                .take(ids.len())
+                .collect();
+
+            let rows = sqlx::query(
+                r#"
+                WITH active_provider AS (
+                    SELECT config->>'model' AS model_name
+                    FROM embedding_providers
+                    WHERE is_current = TRUE AND is_deleted = FALSE
+                    LIMIT 1
+                ),
+                input_rows AS (
+                    SELECT id, document_id, traceparent, tracestate, ordinality
+                    FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[]) WITH ORDINALITY AS t(id, document_id, traceparent, tracestate, ordinality)
+                ),
+                deduped_input AS (
+                    SELECT DISTINCT ON (document_id) id, document_id, traceparent, tracestate
+                    FROM input_rows
+                    ORDER BY document_id, ordinality
+                )
+                INSERT INTO embedding_queue (id, document_id, traceparent, tracestate)
+                SELECT input.id, input.document_id, input.traceparent, input.tracestate
+                FROM deduped_input input
+                CROSS JOIN active_provider provider
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM embedding_queue q
+                    WHERE q.document_id = input.document_id
+                      AND q.status IN ('pending', 'processing')
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM embeddings e
+                    WHERE e.document_id = input.document_id
+                      AND e.model_name = provider.model_name
+                )
+                RETURNING id
+                "#,
+            )
+            .bind(&ids)
+            .bind(&document_ids)
+            .bind(&traceparents)
+            .bind(&tracestates)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                crate::telemetry::queue::set_active_span_error();
+                e
+            })?;
+
+            Ok(rows.into_iter().map(|row| row.get("id")).collect())
+        }
+        .instrument(producer_span)
+        .await
     }
 
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<EmbeddingQueueItem>> {

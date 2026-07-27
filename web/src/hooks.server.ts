@@ -1,14 +1,12 @@
 import type { Handle, HandleServerError } from '@sveltejs/kit'
 import { sequence } from '@sveltejs/kit/hooks'
 import { redirect } from '@sveltejs/kit'
+
 import * as auth from '$lib/server/auth.js'
 import { validateApiKey } from '$lib/server/apiKeys.js'
 import { rateLimit } from '$lib/server/rateLimit.js'
 import { Logger } from '$lib/server/logger.js'
-import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/telemetry.js'
-
-// Initialize OpenTelemetry on module load
-initTelemetry()
+import { getRequestId, recordHttpRequest, millisecondsToSeconds } from '$lib/server/telemetry.js'
 
 const handleAuth: Handle = async ({ event, resolve }) => {
     // 1. Try API key auth (Authorization: Bearer omni_* or X-API-Key header)
@@ -89,44 +87,63 @@ const handlePasswordChange: Handle = async ({ event, resolve }) => {
 }
 
 const handleLogging: Handle = async ({ event, resolve }) => {
-    // Extract trace context from incoming request headers
-    const headers: Record<string, string | undefined> = {}
-    event.request.headers.forEach((value, key) => {
-        headers[key] = value
-    })
-    extractTraceContext(headers)
-
-    // Use trace ID as request ID if available, otherwise generate new one
+    // Use trace ID as request ID if available, otherwise generate new one.
+    // The Node auto-instrumentation already creates a server span and extracts
+    // the incoming traceparent; we just need its trace ID for logging.
     const requestId = getRequestId() || Logger.generateRequestId()
-    const logger = new Logger('request').withRequest(requestId, event.locals.user?.id)
+    const logger = new Logger('request').withRequest(requestId)
 
     event.locals.requestId = requestId
     event.locals.logger = logger
 
-    const startTime = Date.now()
+    const startTime = performance.now()
+    const route = event.route.id ?? '/unknown'
 
     logger.info('Request started', {
         method: event.request.method,
-        url: event.url.pathname + event.url.search,
-        userAgent: event.request.headers.get('user-agent'),
-        ip: event.getClientAddress(),
-        userId: event.locals.user?.id,
-        userEmail: event.locals.user?.email,
+        route,
     })
 
-    const response = await resolve(event)
+    let responseStatus: number = 500
+    let error: unknown = null
+    let response: Response | undefined
 
-    const duration = Date.now() - startTime
+    try {
+        response = await resolve(event)
+        responseStatus = response.status
+    } catch (thrown: unknown) {
+        // SvelteKit throws redirect(...) and error(...) which are Response-like.
+        // Capture the status when available; default to 500 for true errors.
+        if (thrown instanceof Response) {
+            responseStatus = thrown.status
+        } else if (thrown && typeof thrown === 'object' && 'status' in (thrown as object)) {
+            responseStatus = (thrown as { status: number }).status
+        } else {
+            responseStatus = 500
+        }
+        error = thrown
+        // Rethrow after recording so the framework's error handler still fires.
+        throw thrown
+    } finally {
+        const durationMs = performance.now() - startTime
+        const durationSecs = millisecondsToSeconds(durationMs)
 
-    logger.info('Request completed', {
-        method: event.request.method,
-        url: event.url.pathname + event.url.search,
-        status: response.status,
-        duration,
-        userId: event.locals.user?.id,
-    })
+        if (error === null && response) {
+            logger.info('Request completed', {
+                method: event.request.method,
+                route,
+                status: responseStatus,
+                duration: durationMs,
+            })
+        }
 
-    return response
+        // Record HTTP RED metric with bounded attributes
+        // Uses route.id (template) not raw path; never records user/query IDs.
+        // Duration is in seconds (OTel standard for histograms).
+        recordHttpRequest(event.request.method, route, responseStatus, durationSecs)
+    }
+
+    return response!
 }
 
 export const handle = sequence(handleLogging, handleAuth, handlePasswordChange)
@@ -135,9 +152,7 @@ export const handleError: HandleServerError = ({ error, event }) => {
     const logger = event.locals.logger || new Logger('error')
 
     logger.error('Unhandled server error', error as Error, {
-        url: event.url.pathname + event.url.search,
         method: event.request.method,
-        userId: event.locals.user?.id,
         requestId: event.locals.requestId,
     })
 

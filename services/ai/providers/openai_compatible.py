@@ -304,7 +304,7 @@ class OpenAICompatibleProvider(LLMProvider):
             if tools:
                 params["tools"] = _convert_tools_to_openai(tools)
                 logger.info(
-                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    "Sending request with %s tools", len(tools)
                 )
 
             stream = await self.client.chat.completions.create(**params)
@@ -465,8 +465,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         except Exception as e:
             logger.error(
-                f"Failed to stream from OpenAI-compatible endpoint: {e}",
-                exc_info=True,
+                "Failed to stream from OpenAI-compatible endpoint",
             )
             raise ProviderError(
                 str(e),
@@ -525,7 +524,7 @@ class OpenAICompatibleProvider(LLMProvider):
             raise
         except Exception as e:
             logger.error(
-                f"Failed to generate response from OpenAI-compatible endpoint: {e}"
+                "Failed to generate response from OpenAI-compatible endpoint",
             )
             raise ProviderError(
                 str(e),

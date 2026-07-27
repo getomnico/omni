@@ -22,6 +22,7 @@ use redis::AsyncCommands;
 use serde_json::{json, Value};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
+use shared::metrics;
 use shared::models::{
     ActionMode, ConnectorManifest, GlobalConfiguration, SearchOperator, ServiceCredential,
     ServiceProvider, Source, SourceType, SyncRun, SyncType,
@@ -37,6 +38,15 @@ use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 use tracing::{debug, error, info, warn};
 
+/// Record terminal sync metric via the shared helper. Never records IDs.
+fn record_sync_terminal(
+    sync_type: SyncType,
+    outcome: &str,
+    created_at: Option<time::OffsetDateTime>,
+) {
+    metrics::record_sync_terminal(&sync_type.to_string(), outcome, created_at);
+}
+
 pub async fn health_check() -> impl IntoResponse {
     Json(json!({ "status": "healthy" }))
 }
@@ -45,7 +55,7 @@ pub async fn trigger_sync(
     State(state): State<AppState>,
     Json(request): Json<TriggerSyncRequest>,
 ) -> Result<Json<TriggerSyncResponse>, ApiError> {
-    info!("Manual sync triggered for source {}", request.source_id);
+    info!("Manual sync triggered");
 
     let sync_run_id = state
         .sync_manager
@@ -66,14 +76,14 @@ pub async fn trigger_sync_by_id(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<TriggerSyncResponse>, ApiError> {
-    info!("Manual sync triggered for source {}", source_id);
+    info!("Manual sync triggered");
 
     let sync_run_id = state
         .sync_manager
         .trigger_sync(&source_id, SyncType::Full, TriggerType::Manual)
         .await
         .map_err(|e| {
-            error!("Failed to trigger sync for source {}: {:?}", source_id, e);
+            error!("Failed to trigger sync");
             ApiError::from(e)
         })?;
 
@@ -87,7 +97,7 @@ pub async fn cancel_sync(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    info!("Cancel requested for sync {}", sync_run_id);
+    info!("Cancel requested");
 
     state.sync_manager.cancel_sync(&sync_run_id).await?;
 
@@ -98,7 +108,7 @@ pub async fn get_sync_progress(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    debug!("SSE connection for sync progress: {}", sync_run_id);
+    debug!("SSE connection for sync progress");
 
     let pool = state.db_pool.pool().clone();
     let sync_run_id_clone = sync_run_id.clone();
@@ -112,7 +122,7 @@ pub async fn get_sync_progress(
             let progress = match get_progress_from_db(&pool, &sync_run_id_clone).await {
                 Ok(p) => p,
                 Err(e) => {
-                    error!("Failed to get progress: {}", e);
+                    error!("Failed to get progress");
                     break;
                 }
             };
@@ -356,17 +366,7 @@ pub async fn execute_action(
     State(state): State<AppState>,
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
-    info!(
-        "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
-        request.action,
-        request.source_id,
-        request.user_id,
-        request
-            .params
-            .as_object()
-            .map(|m| m.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default()
-    );
+    info!("Executing action");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -447,10 +447,7 @@ pub async fn execute_action(
     if let Some(doc_id) = doc_id {
         let doc_repo = DocumentRepository::new(state.db_pool.pool());
         if let Ok(Some(doc)) = doc_repo.find_by_id(&doc_id).await {
-            info!(
-                "Resolved document/file ID {} -> external_id {}",
-                doc_id, doc.external_id
-            );
+            info!("Resolved document/file ID -> external_id");
             if let Some(obj) = params.as_object_mut() {
                 obj.remove("document_id");
                 obj.remove("file_id");
@@ -488,15 +485,7 @@ pub async fn execute_action(
         Some(ActionContext::system())
     };
 
-    info!(
-        "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
-        request.action,
-        connector_url,
-        creds.id,
-        creds.provider,
-        creds.auth_type,
-        creds.principal_email,
-    );
+    info!("Dispatching action '{}'", request.action,);
 
     let client = ConnectorClient::new();
     let action_request = ActionRequest {
@@ -614,14 +603,8 @@ async fn resolve_credentials(
             .await
             .map_err(internal)?;
         match &resolved {
-            Some(c) => info!(
-                "resolve_credentials(source={}, user={:?}): admin_only → org cred {}",
-                source_id, user_id, c.id
-            ),
-            None => warn!(
-                "resolve_credentials(source={}, user={:?}): admin_only → no org cred found",
-                source_id, user_id
-            ),
+            Some(_) => info!("resolve_credentials: admin_only → org cred"),
+            None => warn!("resolve_credentials: admin_only → no org cred found"),
         }
         return Ok(resolved
             .map(CredentialResolution::Resolved)
@@ -642,10 +625,7 @@ async fn resolve_credentials(
                 {
                     user_cred = merge_org_and_user_credentials(org_cred, user_cred);
                 }
-                info!(
-                    "resolve_credentials(source={}, user={}): per-user cred {}",
-                    source_id, uid, user_cred.id
-                );
+                info!("resolve_credentials: per-user cred resolved");
                 return Ok(CredentialResolution::Resolved(user_cred));
             }
             // No per-user row — surface a NeedsUserAuth response so the UI
@@ -657,19 +637,13 @@ async fn resolve_credentials(
                 .map_err(internal)?
             {
                 Some(org) => {
-                    info!(
-                        "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
-                        source_id, uid, org.provider
-                    );
+                    info!("resolve_credentials: no per-user cred, NeedsUserAuth");
                     Ok(CredentialResolution::NeedsUserAuth {
                         provider: org.provider,
                     })
                 }
                 None => {
-                    warn!(
-                        "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
-                        source_id, uid
-                    );
+                    warn!("resolve_credentials: no per-user cred and no org cred");
                     Ok(CredentialResolution::NoCredentials)
                 }
             }
@@ -680,14 +654,8 @@ async fn resolve_credentials(
                 .await
                 .map_err(internal)?;
             match &resolved {
-                Some(c) => info!(
-                    "resolve_credentials(source={}, no user): org cred {}",
-                    source_id, c.id
-                ),
-                None => warn!(
-                    "resolve_credentials(source={}, no user): no org cred found",
-                    source_id
-                ),
+                Some(c) => info!("resolve_credentials: org cred resolved"),
+                None => warn!("resolve_credentials: no org cred found"),
             }
             Ok(resolved
                 .map(CredentialResolution::Resolved)
@@ -833,10 +801,7 @@ pub async fn read_resource(
     State(state): State<AppState>,
     Json(request): Json<ExecuteResourceRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    info!(
-        "Reading resource {} for source {}",
-        request.uri, request.source_id
-    );
+    info!("Reading resource");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -885,10 +850,7 @@ pub async fn get_prompt(
     State(state): State<AppState>,
     Json(request): Json<ExecutePromptRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    info!(
-        "Getting prompt {} for source {}",
-        request.name, request.source_id
-    );
+    info!("Getting prompt");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -942,10 +904,7 @@ pub async fn oauth_credential_ready(
     State(state): State<AppState>,
     Json(request): Json<OAuthCredentialReadyRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    info!(
-        "OAuth credential-ready for source {} (user={:?}, provider={}, flow={})",
-        request.source_id, request.user_id, request.provider, request.flow
-    );
+    info!("OAuth credential-ready");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -975,17 +934,11 @@ pub async fn oauth_credential_ready(
     {
         CredentialResolution::Resolved(creds) => creds,
         CredentialResolution::NeedsUserAuth { provider } => {
-            warn!(
-                "OAuth credential-ready for {}: user OAuth required for provider {:?}",
-                request.source_id, provider
-            );
+            warn!("OAuth credential-ready: user OAuth required");
             return Ok(Json(json!({"status": "missing_credentials"})));
         }
         CredentialResolution::NoCredentials => {
-            warn!(
-                "OAuth credential-ready for {}: no credentials found",
-                request.source_id
-            );
+            warn!("OAuth credential-ready: no credentials found");
             return Ok(Json(json!({"status": "no_credentials"})));
         }
     };
@@ -1009,7 +962,7 @@ pub async fn oauth_credential_ready(
     {
         Ok(Some(manifest)) => {
             if let Err(e) = validate_connector_manifest_action_schemas(&manifest) {
-                warn!("OAuth credential-ready returned invalid manifest: {}", e);
+                warn!("OAuth credential-ready returned invalid manifest");
                 return Ok(Json(json!({"status": "invalid_manifest"})));
             }
             let manifest_json =
@@ -1024,28 +977,19 @@ pub async fn oauth_credential_ready(
                 .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
                 .await
                 .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
-            info!(
-                "OAuth credential-ready updated manifest for {}",
-                manifest.connector_id
-            );
+            info!("OAuth credential-ready updated manifest");
             Ok(Json(
                 json!({"status": "completed", "catalog_updated": true}),
             ))
         }
         Ok(None) => {
-            info!(
-                "OAuth credential-ready delivered for {} (no manifest change)",
-                request.source_id
-            );
+            info!("OAuth credential-ready delivered (no manifest change)");
             Ok(Json(
                 json!({"status": "delivered", "catalog_updated": false}),
             ))
         }
         Err(e) => {
-            warn!(
-                "OAuth credential-ready delivery failed for {}: {}",
-                request.source_id, e
-            );
+            warn!("OAuth credential-ready delivery failed");
             Ok(Json(json!({"status": "delivery_failed"})))
         }
     }
@@ -1108,7 +1052,7 @@ pub async fn get_skill(
     State(state): State<AppState>,
     Json(request): Json<ExecuteSkillRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    info!("Getting skill {}", request.skill_id);
+    info!("Getting skill");
 
     let manifests = get_registered_manifests(&state.redis_client).await;
     for manifest in manifests {
@@ -1395,8 +1339,8 @@ pub async fn sdk_register(
     let connector_id = &manifest.connector_id;
 
     info!(
-        "SDK: Registered connector '{}' (source_types: {:?}, url: {})",
-        connector_id, manifest.source_types, manifest.connector_url
+        "SDK: Registered connector '{}' (source_types: {:?})",
+        connector_id, manifest.source_types
     );
 
     let manifest_json = serde_json::to_string(&manifest)
@@ -1461,10 +1405,7 @@ pub async fn sdk_register(
                 .find_any_user_oauth_for_provider(&source_type_strs, &provider)
                 .await
             {
-                info!(
-                    "Recovery: found OAuth credential for {} / {} to refresh missing MCP catalog",
-                    source_id, provider
-                );
+                info!("Recovery: found OAuth credential; attempting to refresh MCP catalog");
                 match resolve_credentials(&repo, &source_id, Some(&user_id), false).await {
                     Ok(CredentialResolution::Resolved(recovery_creds)) => {
                         match serde_json::to_value(McpCredentials::from_service_credential(
@@ -1486,34 +1427,24 @@ pub async fn sdk_register(
                                     )
                                     .await
                                 {
-                                    warn!("Recovery credential-ready delivery failed: {}", e);
+                                    warn!("Recovery credential-ready delivery failed");
                                 }
                             }
                             Err(e) => {
                                 warn!(
-                                    "Recovery credential-ready skipped for {}: failed to serialize credentials: {}",
-                                    source_id, e
+                                    "Recovery credential-ready skipped: failed to serialize credentials"
                                 );
                             }
                         }
                     }
-                    Ok(CredentialResolution::NeedsUserAuth { provider }) => {
-                        warn!(
-                            "Recovery credential-ready skipped for {}: user auth still required for provider {:?}",
-                            source_id, provider
-                        );
+                    Ok(CredentialResolution::NeedsUserAuth { .. }) => {
+                        warn!("Recovery credential-ready skipped: user auth still required");
                     }
                     Ok(CredentialResolution::NoCredentials) => {
-                        warn!(
-                            "Recovery credential-ready skipped for {}: no credentials found",
-                            source_id
-                        );
+                        warn!("Recovery credential-ready skipped: no credentials found");
                     }
-                    Err(e) => {
-                        warn!(
-                            "Recovery credential-ready skipped for {}: credential resolution failed: {}",
-                            source_id, e
-                        );
+                    Err(_) => {
+                        warn!("Recovery credential-ready skipped: credential resolution failed");
                     }
                 }
             }
@@ -1530,7 +1461,7 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
     let mut conn = match redis_client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
-            error!("Redis connection error: {}", e);
+            error!("Redis connection error");
             return Vec::new();
         }
     };
@@ -1789,10 +1720,7 @@ pub async fn sdk_emit_event(
     State(state): State<AppState>,
     Json(request): Json<SdkEmitEventRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!(
-        "SDK: Emitting event for sync_run={}, source={}",
-        request.sync_run_id, request.source_id
-    );
+    debug!("SDK: Emitting event");
 
     let event_queue = EventQueue::new(state.db_pool.pool().clone());
 
@@ -1818,12 +1746,7 @@ pub async fn sdk_emit_batch(
     State(state): State<AppState>,
     Json(request): Json<SdkEmitBatchRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!(
-        "SDK: Emitting batch of {} events for sync_run={}, source={}",
-        request.events.len(),
-        request.sync_run_id,
-        request.source_id
-    );
+    debug!("SDK: Emitting batch of {} events", request.events.len());
 
     let event_queue = EventQueue::new(state.db_pool.pool().clone());
 
@@ -1904,17 +1827,14 @@ async fn extract_content(
     match extract_content_blocking(data, mime_type.clone(), filename.clone()).await {
         Ok(text) if is_pdf && text.trim().is_empty() => {
             warn!(
-                "PDF text extraction produced no text; sync_run_id={}, source_id={:?}, filename={:?}, mime_type={}",
-                sync_run_id, source_id, filename, mime_type,
+                "PDF text extraction produced no text; mime_type={}",
+                mime_type,
             );
             Ok("[Text extraction failed for this PDF. The document was skipped for extracted-text indexing because no text could be extracted.]".to_string())
         }
         Ok(text) => Ok(text),
         Err(e) if is_pdf => {
-            warn!(
-                "PDF text extraction failed; sync_run_id={}, source_id={:?}, filename={:?}, mime_type={}, reason={}",
-                sync_run_id, source_id, filename, mime_type, e,
-            );
+            warn!("PDF text extraction failed; mime_type={}", mime_type,);
             Ok(format!(
                 "[Text extraction failed for this PDF. The document was skipped for extracted-text indexing. Reason: {}]",
                 e
@@ -2014,8 +1934,8 @@ async fn do_extract_text(
             Some(client) => {
                 let file_name = filename.as_deref().unwrap_or("document");
                 debug!(
-                    "Using docling-based document content extraction for file '{}' (preset={})",
-                    file_name, preset
+                    "Using docling-based document content extraction (preset={})",
+                    preset
                 );
                 match client.convert(&data, file_name, &preset).await {
                     Ok(markdown) => {
@@ -2033,16 +1953,14 @@ async fn do_extract_text(
                             retry_after_secs,
                         });
                     }
-                    Err(e) => {
-                        warn!("Docling extraction failed, falling back to built-in: {}", e);
+                    Err(_) => {
+                        warn!("Docling extraction failed, falling back to built-in");
                         None
                     }
                 }
             }
             _ => {
-                warn!(
-                    "Docling enabled but DOCLING_URL not set, falling back to built-in extraction"
-                );
+                warn!("Docling enabled but DOCLING_URL not set, falling back");
                 None
             }
         };
@@ -2050,10 +1968,7 @@ async fn do_extract_text(
         if let Some(markdown) = docling_result {
             markdown
         } else {
-            debug!(
-                "Using built-in document content extraction for file {:?}",
-                filename
-            );
+            debug!("Using built-in document content extraction");
             extract_content(
                 data,
                 mime_type.clone(),
@@ -2064,10 +1979,7 @@ async fn do_extract_text(
             .await?
         }
     } else {
-        debug!(
-            "Using built-in document content extraction for file {:?} (docling_enabled={}, docling_candidate={})",
-            filename, docling_enabled, docling_candidate
-        );
+        debug!("Using built-in document content extraction");
         extract_content(
             data,
             mime_type.clone(),
@@ -2087,8 +1999,7 @@ async fn do_extract_text(
     let max_bytes = max_extracted_text_bytes();
     if processed_text.len() > max_bytes {
         warn!(
-            "Truncating extracted content for {:?}: {} bytes > {} byte limit",
-            filename,
+            "Truncating extracted content: {} bytes > {} byte limit",
             processed_text.len(),
             max_bytes
         );
@@ -2104,10 +2015,8 @@ pub async fn sdk_extract_content(
     let fields = parse_extract_multipart(multipart).await?;
 
     debug!(
-        "SDK: Extracting content for sync_run={}, mime={}, filename={:?}, size={}",
-        fields.sync_run_id,
+        "SDK: Extracting content; mime={}, size={}",
         fields.mime_type,
-        fields.filename,
         fields.data.len()
     );
 
@@ -2161,10 +2070,8 @@ pub async fn sdk_extract_text(
     let fields = parse_extract_multipart(multipart).await?;
 
     debug!(
-        "SDK: Extracting text for sync_run={}, mime={}, filename={:?}, size={}",
-        fields.sync_run_id,
+        "SDK: Extracting text; mime={}, size={}",
         fields.mime_type,
-        fields.filename,
         fields.data.len()
     );
 
@@ -2200,7 +2107,7 @@ pub async fn sdk_store_content(
     State(state): State<AppState>,
     Json(request): Json<SdkStoreContentRequest>,
 ) -> Result<Json<SdkStoreContentResponse>, ApiError> {
-    debug!("SDK: Storing content for sync_run={}", request.sync_run_id);
+    debug!("SDK: Storing content");
 
     let content_storage = state.content_storage.clone();
 
@@ -2218,8 +2125,7 @@ pub async fn sdk_store_content(
     let max_bytes = max_extracted_text_bytes();
     if normalized_content.len() > max_bytes {
         warn!(
-            "Truncating stored content for sync_run={}: {} bytes > {} byte limit",
-            request.sync_run_id,
+            "Truncating stored content: {} bytes > {} byte limit",
             normalized_content.len(),
             max_bytes
         );
@@ -2244,7 +2150,7 @@ pub async fn sdk_heartbeat(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!("SDK: Heartbeat for sync_run={}", sync_run_id);
+    debug!("SDK: Heartbeat");
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
@@ -2261,9 +2167,17 @@ pub async fn sdk_complete(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    info!("SDK: Completing sync_run={}", sync_run_id);
+    info!("SDK: Completing sync");
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
+    // Look up the sync run for sync_type and duration.
+    let sync_run = sync_run_repo.find_by_id(&sync_run_id).await.ok().flatten();
+    let sync_type = sync_run
+        .as_ref()
+        .map(|r| r.sync_type.clone())
+        .unwrap_or(SyncType::Incremental);
+    let created_at = sync_run.and_then(|r| Some(r.created_at));
 
     // Atomically mark completed and publish this run's checkpoint to the source.
     let updated = sync_run_repo
@@ -2271,10 +2185,11 @@ pub async fn sdk_complete(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark completed: {}", e)))?;
     if !updated {
-        warn!(
-            "SDK: Ignoring stale complete for non-running sync_run={}",
-            sync_run_id
-        );
+        warn!("SDK: Ignoring stale complete for non-running sync");
+    }
+
+    if updated {
+        record_sync_terminal(sync_type, "completed", created_at);
     }
 
     Ok(Json(SdkStatusResponse {
@@ -2287,9 +2202,17 @@ pub async fn sdk_fail(
     Path(sync_run_id): Path<String>,
     Json(request): Json<SdkFailRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    info!("SDK: Failing sync_run={}: {}", sync_run_id, request.error);
+    info!("SDK: Failing sync");
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
+    // Look up the sync run for sync_type and duration.
+    let sync_run = sync_run_repo.find_by_id(&sync_run_id).await.ok().flatten();
+    let sync_type = sync_run
+        .as_ref()
+        .map(|r| r.sync_type.clone())
+        .unwrap_or(SyncType::Incremental);
+    let created_at = sync_run.and_then(|r| Some(r.created_at));
 
     // Mark sync as failed
     let updated = sync_run_repo
@@ -2297,10 +2220,11 @@ pub async fn sdk_fail(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to mark failed: {}", e)))?;
     if !updated {
-        warn!(
-            "SDK: Ignoring stale fail for non-running sync_run={}",
-            sync_run_id
-        );
+        warn!("SDK: Ignoring stale fail for non-running sync");
+    }
+
+    if updated {
+        record_sync_terminal(sync_type, "failed", created_at);
     }
 
     Ok(Json(SdkStatusResponse {
@@ -2313,10 +2237,7 @@ pub async fn sdk_increment_scanned(
     Path(sync_run_id): Path<String>,
     Json(request): Json<SdkIncrementScannedRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!(
-        "SDK: Incrementing scanned for sync_run={} by {}",
-        sync_run_id, request.count
-    );
+    debug!("SDK: Incrementing scanned by {}", request.count);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let updated = sync_run_repo
@@ -2324,10 +2245,7 @@ pub async fn sdk_increment_scanned(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to increment scanned: {}", e)))?;
     if !updated {
-        warn!(
-            "SDK: Ignoring stale scanned increment for non-running sync_run={}",
-            sync_run_id
-        );
+        warn!("SDK: Ignoring stale scanned increment for non-running sync");
     }
 
     Ok(Json(SdkStatusResponse {
@@ -2340,10 +2258,7 @@ pub async fn sdk_increment_updated(
     Path(sync_run_id): Path<String>,
     Json(request): Json<SdkIncrementUpdatedRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!(
-        "SDK: Incrementing updated for sync_run={} by {}",
-        sync_run_id, request.count
-    );
+    debug!("SDK: Incrementing updated by {}", request.count);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let updated = sync_run_repo
@@ -2351,10 +2266,7 @@ pub async fn sdk_increment_updated(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to increment updated: {}", e)))?;
     if !updated {
-        warn!(
-            "SDK: Ignoring stale updated increment for non-running sync_run={}",
-            sync_run_id
-        );
+        warn!("SDK: Ignoring stale updated increment for non-running sync");
     }
 
     Ok(Json(SdkStatusResponse {
@@ -2366,7 +2278,7 @@ pub async fn sdk_get_source(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<shared::models::Source>, ApiError> {
-    debug!("SDK: Getting source config for source_id={}", source_id);
+    debug!("SDK: Getting source config");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2382,7 +2294,7 @@ pub async fn sdk_get_credentials(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<shared::models::ServiceCredential>, ApiError> {
-    debug!("SDK: Getting credentials for source_id={}", source_id);
+    debug!("SDK: Getting credentials");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2413,10 +2325,7 @@ pub async fn sdk_get_source_sync_config(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<SdkSourceSyncConfigResponse>, ApiError> {
-    debug!(
-        "SDK: Getting source sync config for source_id={}",
-        source_id
-    );
+    debug!("SDK: Getting source sync config");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2451,10 +2360,7 @@ pub async fn sdk_create_sync(
     State(state): State<AppState>,
     Json(request): Json<SdkCreateSyncRequest>,
 ) -> Result<Json<SdkCreateSyncResponse>, ApiError> {
-    info!(
-        "SDK: Creating sync run for source={}, type={:?}",
-        request.source_id, request.sync_type
-    );
+    info!("SDK: Creating sync run; type={:?}", request.sync_type);
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2516,18 +2422,32 @@ pub async fn sdk_cancel_sync(
     State(state): State<AppState>,
     Json(request): Json<SdkCancelSyncRequest>,
 ) -> Result<Json<SdkCancelSyncResponse>, ApiError> {
-    info!("SDK: Cancelling sync_run={}", request.sync_run_id);
+    info!("SDK: Cancelling sync");
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+
+    // Look up the sync run for sync_type and duration.
+    let sync_run = sync_run_repo
+        .find_by_id(&request.sync_run_id)
+        .await
+        .ok()
+        .flatten();
+    let sync_type = sync_run
+        .as_ref()
+        .map(|r| r.sync_type.clone())
+        .unwrap_or(SyncType::Incremental);
+    let created_at = sync_run.and_then(|r| Some(r.created_at));
+
     let updated = sync_run_repo
         .mark_cancelled(&request.sync_run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to cancel sync: {}", e)))?;
     if !updated {
-        warn!(
-            "SDK: Ignoring stale cancel for non-running sync_run={}",
-            request.sync_run_id
-        );
+        warn!("SDK: Ignoring stale cancel for non-running sync");
+    }
+
+    if updated {
+        record_sync_terminal(sync_type, "cancelled", created_at);
     }
 
     Ok(Json(SdkCancelSyncResponse { success: true }))
@@ -2537,7 +2457,7 @@ pub async fn sdk_get_user_email(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<SdkUserEmailResponse>, ApiError> {
-    debug!("SDK: Getting user email for source_id={}", source_id);
+    debug!("SDK: Getting user email");
 
     let email = sqlx::query_scalar::<_, String>(
         "SELECT u.email FROM sources s JOIN users u ON s.created_by = u.id WHERE s.id = $1",
@@ -2555,8 +2475,8 @@ pub async fn sdk_notify_webhook(
     Json(request): Json<SdkWebhookNotification>,
 ) -> Result<Json<SdkWebhookResponse>, ApiError> {
     info!(
-        "SDK: Webhook notification for source={}, event_type={}",
-        request.source_id, request.event_type
+        "SDK: Webhook notification; event_type={}",
+        request.event_type
     );
 
     // Trigger a sync for this source (connector-manager handles sync run creation)
@@ -2578,7 +2498,7 @@ pub async fn sdk_update_checkpoint(
     Path(sync_run_id): Path<String>,
     Json(checkpoint): Json<serde_json::Value>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!("SDK: Updating checkpoint for sync_run={}", sync_run_id);
+    debug!("SDK: Updating checkpoint");
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let updated = sync_run_repo
@@ -2586,10 +2506,7 @@ pub async fn sdk_update_checkpoint(
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to update checkpoint: {}", e)))?;
     if !updated {
-        warn!(
-            "SDK: Ignoring stale checkpoint update for non-running sync_run={}",
-            sync_run_id
-        );
+        warn!("SDK: Ignoring stale checkpoint update for non-running sync");
     }
 
     Ok(Json(SdkStatusResponse {
@@ -2606,7 +2523,7 @@ pub async fn sdk_update_connector_state(
     Path(source_id): Path<String>,
     Json(new_state): Json<serde_json::Value>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!("SDK: Updating connector state for source_id={}", source_id);
+    debug!("SDK: Updating connector state");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     source_repo
@@ -2627,7 +2544,7 @@ pub async fn sdk_get_sources_by_type(
     State(state): State<AppState>,
     Path(source_type): Path<String>,
 ) -> Result<Json<Vec<shared::models::Source>>, ApiError> {
-    debug!("SDK: Getting sources by type={}", source_type);
+    debug!("SDK: Getting sources by type");
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let sources = source_repo
@@ -2648,7 +2565,7 @@ pub async fn sdk_get_connector_config(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    debug!("SDK: Getting connector config for provider={}", provider);
+    debug!("SDK: Getting connector config");
 
     let repo = shared::ConnectorConfigRepository::new(state.db_pool.pool().clone());
     let config = repo

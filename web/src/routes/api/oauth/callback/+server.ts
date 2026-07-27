@@ -45,7 +45,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     const oauthError = url.searchParams.get('error')
 
     if (oauthError) {
-        logger.error('OAuth provider error', { error: oauthError })
+        logger.error('OAuth provider error')
         throw redirect(302, '/settings/integrations?error=oauth_denied')
     }
     if (!code || !stateToken) {
@@ -59,7 +59,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             failureReturnTo = returnToFromStateMetadata(pendingState.metadata)
         }
     } catch (err) {
-        logger.warn('Failed to read OAuth state for failure redirect', { err: String(err) })
+        logger.warn('Failed to read OAuth state for failure redirect')
     }
 
     let exchange
@@ -70,7 +70,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             },
         })
     } catch (err) {
-        logger.error('OAuth exchange failed', { err: String(err) })
+        logger.error('OAuth exchange failed')
         throw redirect(
             302,
             withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_failed'),
@@ -132,16 +132,11 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             })
             if (!resp.ok) {
                 logger.warn('OAuth credential-ready notification failed', {
-                    sourceId,
                     status: resp.status,
-                    body: await resp.text(),
                 })
             }
         } catch (err) {
-            logger.warn('OAuth credential-ready notification failed', {
-                sourceId,
-                err: String(err),
-            })
+            logger.warn('OAuth credential-ready notification failed')
         }
     }
 
@@ -178,7 +173,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 body: JSON.stringify({ sync_mode: 'full' }),
             })
         } catch (syncError) {
-            logger.warn('Failed to trigger post-OAuth sync', { sourceId: flow.sourceId, syncError })
+            logger.warn('Failed to trigger post-OAuth sync')
         }
 
         throw redirect(302, flow.returnTo ?? '/admin/settings/integrations?success=connected')
@@ -285,7 +280,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             expiresAt,
         })
 
-        logger.info(`Created personal source ${newSource.id} (${sourceType}) for user ${user.id}`)
+        logger.info('Created personal source')
     }
 
     throw redirect(302, flow.returnTo ?? '/settings/integrations?success=connected')

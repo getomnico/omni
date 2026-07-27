@@ -6,6 +6,7 @@ use dashmap::DashMap;
 use redis::Client as RedisClient;
 use shared::db::error::DatabaseError;
 use shared::db::repositories::SyncRunRepository;
+use shared::metrics;
 use shared::models::{SourceType, SyncSlotClass, SyncStatus, SyncType};
 use shared::{DatabasePool, Repository, SourceRepository};
 use sqlx::PgPool;
@@ -15,7 +16,7 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::time::timeout;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 const MAX_RESUME_ATTEMPTS: usize = 3;
 const MISSING_MANIFEST_GRACE_OBSERVATIONS: usize = 2;
@@ -107,10 +108,7 @@ impl SyncManager {
 
         let effective_sync_type = match sync_type {
             SyncType::Incremental if last_completed.is_none() => {
-                info!(
-                    "No prior completed sync for source {}; upgrading to full sync",
-                    source_id
-                );
+                info!("No prior completed sync; upgrading to full sync");
                 SyncType::Full
             }
             other => other,
@@ -136,14 +134,16 @@ impl SyncManager {
                 other => SyncError::DatabaseError(other.to_string()),
             })?;
 
-        debug!(
-            sync_run_id = %sync_run.id,
-            source_id = %source_id,
-            sync_type = ?effective_sync_type,
-            trigger_type = %trigger_type,
-            connector_url = %connector_url,
-            "Created sync_run; triggering connector"
+        // Record sync started metric
+        metrics::CONNECTOR_SYNC_STARTED.add(
+            1,
+            &[opentelemetry::KeyValue::new(
+                "sync_type",
+                effective_sync_type.to_string(),
+            )],
         );
+
+        info!("Created sync_run; triggering connector");
 
         let sync_request = SyncRequest {
             sync_run_id: sync_run.id.clone(),
@@ -163,10 +163,7 @@ impl SyncManager {
 
         match trigger_result {
             Ok(Ok(response)) => {
-                info!(
-                    "Sync triggered for source {}: {:?}",
-                    source_id, response.status
-                );
+                info!("Sync triggered: {:?}", response.status);
                 Ok(sync_run.id)
             }
             Ok(Err(ClientError::ConnectorError { status: 404, .. }))
@@ -204,6 +201,9 @@ impl SyncManager {
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?
             .ok_or_else(|| SyncError::SyncRunNotFound(sync_run_id.to_string()))?;
 
+        let sync_type = sync_run.sync_type.clone();
+        let created_at = Some(sync_run.created_at);
+
         if sync_run.status != SyncStatus::Running {
             return Err(SyncError::SyncNotRunning(sync_run_id.to_string()));
         }
@@ -225,7 +225,7 @@ impl SyncManager {
             .cancel_sync(&connector_url, sync_run_id)
             .await
         {
-            warn!("Failed to send cancel request to connector: {}", e);
+            warn!("Failed to send cancel request");
         }
 
         let updated = self
@@ -239,7 +239,8 @@ impl SyncManager {
 
         self.resume_attempts.remove(sync_run_id);
         self.missing_manifest_observations.remove(sync_run_id);
-        info!("Sync {} cancelled", sync_run_id);
+        shared::metrics::record_sync_terminal(&sync_type.to_string(), "cancelled", created_at);
+        info!("Sync cancelled");
         Ok(())
     }
 
@@ -347,18 +348,15 @@ impl SyncManager {
 
                     if observations < MISSING_MANIFEST_GRACE_OBSERVATIONS {
                         warn!(
-                            "No registered connector for sync {} (source_type={:?}); deferring lost-sync handling for grace observation {}/{}",
-                            sync_run.id,
-                            source.source_type,
-                            observations,
-                            MISSING_MANIFEST_GRACE_OBSERVATIONS,
+                            "No registered connector for sync; deferring lost-sync handling for grace observation {}/{}",
+                            observations, MISSING_MANIFEST_GRACE_OBSERVATIONS,
                         );
                         continue;
                     }
 
                     warn!(
-                        "No registered connector for sync {} (source_type={:?}) after {} observations; treating as lost",
-                        sync_run.id, source.source_type, observations,
+                        "No registered connector for sync after {} observations; treating as lost",
+                        observations,
                     );
                     self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
                         .await;
@@ -377,10 +375,7 @@ impl SyncManager {
                     self.resume_attempts.remove(&sync_run.id);
                 }
                 Ok(_) => {
-                    warn!(
-                        "Connector reports sync {} no longer running; reconciling",
-                        sync_run.id
-                    );
+                    warn!("Connector reports sync no longer running; reconciling");
                     self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
                         .await;
                 }
@@ -393,10 +388,7 @@ impl SyncManager {
                     // Connector reachable-via-Redis but not responding
                     // (connection refused, timeout, 5xx). Treat same as
                     // "lost" — attempt counter absorbs transient blips.
-                    warn!(
-                        "Sync status probe failed for {} ({}): {}; treating as lost",
-                        sync_run.id, connector_url, e
-                    );
+                    warn!("Sync status probe failed; treating as lost");
                     self.handle_lost_sync(&sync_run.id, &sync_run.source_id)
                         .await;
                 }
@@ -424,8 +416,8 @@ impl SyncManager {
 
         if attempts > MAX_RESUME_ATTEMPTS {
             warn!(
-                "Sync {} exceeded {} resume attempts; marking failed",
-                sync_run_id, MAX_RESUME_ATTEMPTS
+                "Sync exceeded {} resume attempts; marking failed",
+                MAX_RESUME_ATTEMPTS
             );
             if let Err(e) = self
                 .mark_sync_failed(
@@ -434,7 +426,7 @@ impl SyncManager {
                 )
                 .await
             {
-                error!("Failed to mark sync {} as failed: {}", sync_run_id, e);
+                error!("Failed to mark sync as failed");
             }
             self.resume_attempts.remove(sync_run_id);
             self.missing_manifest_observations.remove(sync_run_id);
@@ -447,8 +439,8 @@ impl SyncManager {
         {
             Ok(Some(s)) => s,
             Ok(None) => return,
-            Err(e) => {
-                error!("Failed to load source {}: {}", source_id, e);
+            Err(_) => {
+                error!("Failed to load source");
                 return;
             }
         };
@@ -461,8 +453,8 @@ impl SyncManager {
                     // above; after MAX_RESUME_ATTEMPTS the cap above will
                     // mark the row failed.
                     warn!(
-                        "Cannot resume sync {} — connector for {:?} not registered (attempt {}/{})",
-                        sync_run_id, source.source_type, attempts, MAX_RESUME_ATTEMPTS
+                        "Cannot resume sync — connector for {:?} not registered (attempt {}/{})",
+                        source.source_type, attempts, MAX_RESUME_ATTEMPTS
                     );
                     return;
                 }
@@ -473,8 +465,8 @@ impl SyncManager {
         let sync_run = match self.sync_run_repo.find_by_id(sync_run_id).await {
             Ok(Some(r)) => r,
             Ok(None) => return,
-            Err(e) => {
-                error!("Failed to load sync_run {}: {}", sync_run_id, e);
+            Err(_) => {
+                error!("Failed to load sync_run");
                 return;
             }
         };
@@ -513,28 +505,24 @@ impl SyncManager {
         {
             Ok(Ok(_)) => {
                 info!(
-                    "Auto-resumed sync {} on connector (attempt {}/{})",
-                    sync_run_id, attempts, MAX_RESUME_ATTEMPTS
+                    "Auto-resumed sync on connector (attempt {}/{})",
+                    attempts, MAX_RESUME_ATTEMPTS
                 );
                 // Reset staleness clock so detect_stale_syncs doesn't fire
                 // before the resumed sync starts emitting.
                 if let Err(e) = self.sync_run_repo.update_activity(sync_run_id).await {
-                    warn!(
-                        "Failed to bump activity for resumed sync {}: {}",
-                        sync_run_id, e
-                    );
+                    warn!("Failed to bump activity for resumed sync");
                 }
             }
             Ok(Err(e)) => {
                 warn!(
-                    "Failed to re-trigger sync {} on connector (attempt {}/{}): {}",
-                    sync_run_id, attempts, MAX_RESUME_ATTEMPTS, e
+                    "Failed to re-trigger sync on connector (attempt {}/{})",
+                    attempts, MAX_RESUME_ATTEMPTS
                 );
             }
             Err(_) => {
                 warn!(
-                    "Timed out re-triggering sync {} on connector after {}s (attempt {}/{})",
-                    sync_run_id,
+                    "Timed out re-triggering sync on connector after {}s (attempt {}/{})",
                     CONNECTOR_TRIGGER_TIMEOUT.as_secs(),
                     attempts,
                     MAX_RESUME_ATTEMPTS
@@ -575,10 +563,7 @@ impl SyncManager {
         }
 
         for run in &running {
-            info!(
-                "Cancelling sync {} for inactive/deleted source {}",
-                run.id, run.source_id
-            );
+            info!("Cancelling sync for inactive/deleted source");
             if let Some(&source_type) = source_type_map.get(&run.source_id) {
                 if let Some(connector_url) =
                     get_connector_url_for_source(&self.redis_client, source_type).await
@@ -588,20 +573,31 @@ impl SyncManager {
                         .cancel_sync(&connector_url, &run.id)
                         .await
                     {
-                        warn!(
-                            "Failed to cancel sync {} on connector for inactive source {}: {}",
-                            run.id, run.source_id, e
-                        );
+                        warn!("Failed to cancel sync on connector for inactive source");
                     }
                 }
             }
         }
 
-        let run_ids: Vec<String> = running.into_iter().map(|r| r.id).collect();
-        self.sync_run_repo
+        let run_ids: Vec<String> = running.iter().map(|r| r.id.clone()).collect();
+        let cancelled_ids = self
+            .sync_run_repo
             .mark_cancelled_many(&run_ids, "Source was disabled")
             .await
-            .map_err(|e| SyncError::DatabaseError(e.to_string()))
+            .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        // Only record metrics for runs that were actually transitioned.
+        for run in &running {
+            if cancelled_ids.contains(&run.id) {
+                shared::metrics::record_sync_terminal(
+                    &run.sync_type.to_string(),
+                    "cancelled",
+                    Some(run.created_at),
+                );
+            }
+        }
+
+        Ok(cancelled_ids)
     }
 
     /// Sweep running syncs whose `last_activity_at` hasn't advanced within the
@@ -632,10 +628,7 @@ impl SyncManager {
 
         let mut marked_stale = Vec::new();
         for (sync_run_id, source_id, source_type) in stale_syncs {
-            warn!(
-                "Marking stale sync {} for source {}",
-                sync_run_id, source_id
-            );
+            warn!("Marking stale sync");
 
             if let Some(connector_url) =
                 get_connector_url_for_source(&self.redis_client, source_type).await
@@ -645,18 +638,15 @@ impl SyncManager {
                     .cancel_sync(&connector_url, &sync_run_id)
                     .await
                 {
-                    warn!(
-                        "Failed to cancel stale sync {} on connector: {}",
-                        sync_run_id, e
-                    );
+                    warn!("Failed to cancel stale sync on connector");
                 }
             }
 
-            if let Err(e) = self
+            if let Err(_) = self
                 .mark_sync_failed(&sync_run_id, "Sync timed out (no activity detected)")
                 .await
             {
-                error!("Failed to mark sync as stale: {}", e);
+                error!("Failed to mark sync as stale");
                 continue;
             }
 
@@ -667,16 +657,31 @@ impl SyncManager {
     }
 
     async fn mark_sync_failed(&self, sync_run_id: &str, error: &str) -> Result<(), SyncError> {
+        let sync_type = self
+            .sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.sync_type.clone())
+            .unwrap_or(SyncType::Incremental);
+        let created_at = self
+            .sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.created_at);
+
         let updated = self
             .sync_run_repo
             .mark_failed(sync_run_id, error)
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
         if !updated {
-            warn!(
-                "Ignoring stale failure transition for non-running sync {}",
-                sync_run_id
-            );
+            warn!("Ignoring stale failure transition for non-running sync");
+        } else {
+            shared::metrics::record_sync_terminal(&sync_type.to_string(), "failed", created_at);
         }
 
         self.resume_attempts.remove(sync_run_id);
@@ -685,10 +690,31 @@ impl SyncManager {
     }
 
     async fn mark_sync_unavailable(&self, sync_run_id: &str) -> Result<(), SyncError> {
-        self.sync_run_repo
+        let sync_type = self
+            .sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.sync_type.clone())
+            .unwrap_or(SyncType::Incremental);
+        let created_at = self
+            .sync_run_repo
+            .find_by_id(sync_run_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.created_at);
+
+        let updated = self
+            .sync_run_repo
             .mark_cancelled_with_message(sync_run_id, "Realtime sync not available for this source")
             .await
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
+
+        if updated {
+            shared::metrics::record_sync_terminal(&sync_type.to_string(), "cancelled", created_at);
+        }
 
         self.resume_attempts.remove(sync_run_id);
         self.missing_manifest_observations.remove(sync_run_id);

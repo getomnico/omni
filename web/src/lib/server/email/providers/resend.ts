@@ -24,13 +24,13 @@ export class ResendEmailProvider extends EmailProvider {
             })
 
             if (error) {
-                logger.error('Resend error', error, { to: params.to })
+                logger.error('Resend error', error)
                 return { success: false, error: error.message || 'Failed to send email' }
             }
 
             return { success: true, messageId: data?.id }
         } catch (error) {
-            logger.error('Error sending email via Resend', error, { to: params.to })
+            logger.error('Error sending email via Resend', error)
             return { success: false, error: 'Failed to send email' }
         }
     }
