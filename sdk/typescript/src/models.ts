@@ -214,10 +214,21 @@ export const CancelResponseSchema = z.object({
 });
 export type CancelResponse = z.infer<typeof CancelResponseSchema>;
 
+export const SourceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  source_type: z.string(),
+  config: z.record(z.unknown()),
+  is_active: z.boolean().optional(),
+});
+export type Source = z.infer<typeof SourceSchema>;
+
 export const ActionRequestSchema = z.object({
   action: z.string(),
   params: z.record(z.unknown()),
-  credentials: z.record(z.unknown()),
+  credentials: z.record(z.unknown()).optional(),
+  source: SourceSchema.optional(),
+  actor_email: z.string().optional(),
 });
 export type ActionRequest = z.infer<typeof ActionRequestSchema>;
 

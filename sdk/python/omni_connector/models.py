@@ -335,10 +335,31 @@ class CancelResponse(BaseModel):
     status: str
 
 
+class Source(BaseModel):
+    id: str
+    name: str
+    source_type: str
+    config: dict[str, Any]
+    is_active: bool
+    is_deleted: bool
+    scope: str
+    user_filter_mode: UserFilterMode = UserFilterMode.ALL
+    user_whitelist: list[str] | None = None
+    user_blacklist: list[str] | None = None
+    connector_state: dict[str, Any] | None = None
+    checkpoint: dict[str, Any] | None = None
+    sync_interval_seconds: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    created_by: str
+
+
 class ActionRequest(BaseModel):
     action: str
     params: dict[str, Any]
     credentials: dict[str, Any]
+    source: Source | None = None
+    actor_email: str | None = None
 
 
 class ActionResponse(BaseModel):

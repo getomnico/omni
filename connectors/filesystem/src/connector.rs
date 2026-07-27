@@ -1,11 +1,11 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use omni_connector_sdk::{
     ActionDefinition, ActionResponse, Connector, ServiceCredential, Source, SourceType,
     SyncContext, SyncType,
 };
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 
 use crate::models::FileSystemConfig;
 use crate::{sync, watcher};
@@ -93,6 +93,8 @@ impl Connector for FileSystemConnector {
         action: &str,
         params: JsonValue,
         _credentials: Option<ServiceCredential>,
+        _source: Option<Source>,
+        _actor_email: Option<String>,
     ) -> Result<axum::response::Response> {
         match action {
             "validate_path" => {

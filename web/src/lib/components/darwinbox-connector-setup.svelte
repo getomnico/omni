@@ -4,8 +4,32 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import * as Select from '$lib/components/ui/select'
-    import { AuthType } from '$lib/types'
+    import { AuthType, type ConnectorListEntry } from '$lib/types'
     import { toast } from 'svelte-sonner'
+
+    /** Fetch all Darwinbox action names from the registered connector manifest.
+     * Groups come from extra_schema.action_groups derived from the connector's
+     * internal action policy table. */
+    async function getAllowedActions(readOnly: boolean): Promise<string[]> {
+        const resp = await fetch('/api/connectors')
+        if (!resp.ok) throw new Error('Failed to load connector actions')
+        const connectors: ConnectorListEntry[] = await resp.json()
+        const darwinbox = connectors.find((c) => c.source_type === 'darwinbox')
+        if (!darwinbox?.manifest) throw new Error('Darwinbox connector not registered')
+        const groups = darwinbox.manifest.extra_schema?.action_groups ?? {}
+        const result: string[] = []
+        for (const group of Object.values(groups)) {
+            if (!group) continue
+            for (const action of group.read ?? []) {
+                if (!result.includes(action)) result.push(action)
+            }
+            if (readOnly) continue
+            for (const action of group.write ?? []) {
+                if (!result.includes(action)) result.push(action)
+            }
+        }
+        return result
+    }
 
     interface Props {
         open: boolean
@@ -29,11 +53,10 @@
     let authorizationCode = $state('')
     let refreshToken = $state('')
     let datasetKey = $state('')
-    let defaultTimezone = $state('Asia/Kolkata')
-    let enablePositions = $state(false)
-    let enableAts = $state(false)
-    let enableHrActions = $state(false)
-    let enableReports = $state(false)
+    let readOnly = $state(true)
+    let writeAcknowledged = $state(false)
+    let participantEmails = $state('')
+    let targetEmployeeIds = $state('')
     let isSubmitting = $state(false)
 
     async function handleSubmit() {
@@ -63,6 +86,22 @@
                 }
             }
             if (!datasetKey.trim()) throw new Error('Dataset key is required')
+            const participants = participantEmails
+                .split(',')
+                .map((v) => v.trim().toLowerCase())
+                .filter(Boolean)
+            const targets = targetEmployeeIds
+                .split(',')
+                .map((v) => v.trim())
+                .filter(Boolean)
+            if (participants.length === 0) {
+                throw new Error('At least one approved participant email is required')
+            }
+            if (!readOnly && !writeAcknowledged) {
+                throw new Error('Confirm write-mode acknowledgement before continuing')
+            }
+            // Derive allowed actions from registered connector manifest
+            const allowedActions = await getAllowedActions(readOnly)
 
             const sourceResponse = await fetch('/api/sources', {
                 method: 'POST',
@@ -71,28 +110,50 @@
                     scope: 'org',
                     name: 'Darwinbox',
                     sourceType: 'darwinbox',
+                    isActive: true,
                     config: {
                         base_url: baseUrl.trim().replace(/\/$/, ''),
-                        default_timezone: defaultTimezone.trim() || null,
+                        read_only: readOnly,
+                        employee_scope: {
+                            mode: 'include',
+                            employee_ids: targets,
+                        },
+                        employee_fields: [
+                            'name',
+                            'employee_id',
+                            'company_email',
+                            'department',
+                            'designation',
+                            'office_location',
+                        ],
                         sync_modules: {
                             employee_directory: true,
                             deleted_employees: true,
-                            org_masters: true,
-                            positions: enablePositions,
-                            holidays: true,
-                            ats_jobs: enableAts,
+                            departments: false,
+                            designations: false,
+                            office_locations: false,
+                            business_units: false,
+                            divisions: false,
+                            cost_centers: false,
+                            group_companies: false,
+                            positions: false,
+                            holidays: false,
+                            ats_jobs: false,
                         },
                         action_modules: {
                             employee_self_service: true,
                             manager_workflows: true,
-                            hr_operations: enableHrActions,
-                            ats: enableAts,
-                            reports: enableReports,
+                            hr_operations: false,
+                            ats: false,
+                            reports: true,
                         },
                         authorization: {
-                            use_darwinbox_permissions: true,
-                            hr_admin_emails: [],
-                            recruiter_emails: [],
+                            actions_enabled: true,
+                            write_acknowledged: writeAcknowledged,
+                            participant_emails: participants,
+                            allowed_actions: allowedActions,
+                            allowed_report_ids: [],
+                            max_batch_size: 1,
                         },
                     },
                 }),
@@ -141,15 +202,13 @@
             })
 
             if (!credentialsResponse.ok) {
-                throw new Error('Failed to create Darwinbox service credentials')
+                throw new Error('Failed to save Darwinbox credentials')
             }
 
-            toast.success('Darwinbox connected successfully!')
-            reset()
+            toast.success('Darwinbox source created')
             onSuccess?.()
-        } catch (error: any) {
-            console.error('Error setting up Darwinbox:', error)
-            toast.error(error.message || 'Failed to set up Darwinbox')
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Failed to create Darwinbox source')
         } finally {
             isSubmitting = false
         }
@@ -167,11 +226,9 @@
         authorizationCode = ''
         refreshToken = ''
         datasetKey = ''
-        defaultTimezone = 'Asia/Kolkata'
-        enablePositions = false
-        enableAts = false
-        enableHrActions = false
-        enableReports = false
+        readOnly = true
+        writeAcknowledged = false
+        participantEmails = ''
     }
 
     function handleCancel() {
@@ -319,23 +376,30 @@
                         required />
                 </div>
             </div>
-            <div class="space-y-2">
-                <Label for="darwinbox-timezone">Default timezone</Label>
-                <Input
-                    id="darwinbox-timezone"
-                    bind:value={defaultTimezone}
-                    placeholder="Asia/Kolkata" />
-            </div>
-            <div class="space-y-2 rounded-md border p-3 text-sm">
-                <div class="font-medium">Optional modules</div>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enablePositions} /> Sync position master</label>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enableAts} /> Enable ATS jobs/actions</label>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enableHrActions} /> Enable HR lifecycle actions</label>
-                <label class="flex items-center gap-2"
-                    ><input type="checkbox" bind:checked={enableReports} /> Enable report actions</label>
+
+            <div class="space-y-3 rounded-md border p-3 text-sm">
+                <div class="font-medium">Access controls</div>
+                <label class="flex cursor-pointer items-center gap-2">
+                    <input type="checkbox" bind:checked={readOnly} />
+                    Read-only mode (prevents all mutations)
+                </label>
+                <div class="space-y-1">
+                    <Label for="darwinbox-participants">Approved participant emails</Label>
+                    <Input
+                        id="darwinbox-participants"
+                        bind:value={participantEmails}
+                        placeholder="user1@example.com, user2@example.com" />
+                </div>
+
+                {#if !readOnly}
+                    <label
+                        class="flex cursor-pointer items-start gap-2 rounded border border-amber-300 p-2">
+                        <input type="checkbox" bind:checked={writeAcknowledged} />
+                        <span
+                            >I understand that approved actions can change production Darwinbox data
+                            and require explicit confirmation.</span>
+                    </label>
+                {/if}
             </div>
         </div>
 

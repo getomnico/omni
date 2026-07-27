@@ -2,10 +2,11 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, Connector, SearchOperator, ServiceCredential, Source, SourceType,
-    SyncContext, SyncType,
+    ActionDefinition, ActionMode, Connector, SearchOperator, ServiceCredential, Source, SourceType,
+    SyncContext, SyncRequestValidationError, SyncType,
 };
 use serde_json::Value as JsonValue;
+use std::result::Result as StdResult;
 
 use crate::actions;
 use crate::client::DarwinboxClient;
@@ -62,6 +63,43 @@ impl Connector for DarwinboxConnector {
         actions::action_definitions()
     }
 
+    fn extra_schema(&self) -> Option<JsonValue> {
+        // Expose action groups derived from the internal action policy table,
+        // so the setup UI can filter actions by module without hard-coding
+        // action names or relying on shared ActionDefinition.category.
+        use std::collections::BTreeMap;
+        let mut groups: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for policy in actions::action_policies() {
+            groups.entry(policy.module).or_default().push(policy.name);
+        }
+        let mut map = serde_json::Map::new();
+        for (module, names) in &groups {
+            let mut reads = Vec::new();
+            let mut writes = Vec::new();
+            for name in names {
+                let policy = actions::action_policies().iter().find(|p| p.name == *name);
+                if let Some(p) = policy {
+                    match p.mode {
+                        ActionMode::Read => reads.push(name.to_string()),
+                        ActionMode::Write => writes.push(name.to_string()),
+                    }
+                }
+            }
+            let group = serde_json::json!({
+                "read": reads,
+                "write": writes,
+            });
+            map.insert(module.to_string(), group);
+        }
+        Some(serde_json::json!({ "action_groups": serde_json::Value::Object(map) }))
+    }
+
+    fn read_only(&self) -> bool {
+        // The connector defers read-only enforcement to the source config.
+        // Connector-manager reads `source.config.read_only` at dispatch time.
+        false
+    }
+
     fn search_operators(&self) -> Vec<SearchOperator> {
         vec![
             SearchOperator {
@@ -97,6 +135,48 @@ impl Connector for DarwinboxConnector {
         ]
     }
 
+    /// Validate source configuration before sync. Returns bad-request for
+    /// unsafe or contradictory policies so the sync run is never started.
+    async fn validate_sync_request(
+        &self,
+        source: &Source,
+        _credentials: Option<&ServiceCredential>,
+        _sync_type: SyncType,
+    ) -> StdResult<(), SyncRequestValidationError> {
+        // Decode the config to validate it
+        let config: DarwinboxSourceConfig =
+            serde_json::from_value(source.config.clone()).map_err(|e| {
+                SyncRequestValidationError::BadRequest(format!(
+                    "invalid Darwinbox source config: {e}"
+                ))
+            })?;
+
+        // Validate the config semantically
+        config.validate().map_err(|errors| {
+            SyncRequestValidationError::BadRequest(format!(
+                "Darwinbox config validation failed: {}",
+                errors.join("; ")
+            ))
+        })?;
+
+        // If read_only is false (writes allowed), ensure the config is not
+        // contradictory: action modules must be explicitly enabled and at
+        // least one write action must be authorized.
+        if !config.read_only {
+            if !config.action_modules.employee_self_service
+                && !config.action_modules.manager_workflows
+                && !config.action_modules.hr_operations
+                && !config.action_modules.ats
+            {
+                return Err(SyncRequestValidationError::BadRequest(
+                    "read-only mode disabled but no write action modules are enabled".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     async fn sync(
         &self,
         source: Source,
@@ -122,7 +202,9 @@ impl Connector for DarwinboxConnector {
         action: &str,
         params: JsonValue,
         credentials: Option<ServiceCredential>,
+        source: Option<Source>,
+        actor_email: Option<String>,
     ) -> Result<Response> {
-        actions::execute_action(action, params, credentials).await
+        actions::execute_action(action, params, credentials, source, actor_email).await
     }
 }

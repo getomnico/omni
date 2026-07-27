@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use axum::{Router, http::StatusCode, routing};
+use axum::{http::StatusCode, routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
 use omni_connector_sdk::{
-    Connector, ServiceCredential, Source, SourceType, SyncContext, create_router,
+    create_router, Connector, ServiceCredential, Source, SourceType, SyncContext,
 };
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 use tokio::sync::Notify;
 
 const CONNECTOR_URL: &str = "http://test-connector";
@@ -575,6 +575,8 @@ async fn t14_action_success_returns_200() -> Result<()> {
             action: &str,
             _params: JsonValue,
             _credentials: Option<ServiceCredential>,
+            _source: Option<omni_connector_sdk::Source>,
+            _actor_email: Option<String>,
         ) -> Result<axum::response::Response> {
             use omni_connector_sdk::models::ActionResponse;
             if action == "do_thing" {
@@ -655,6 +657,8 @@ async fn t15_action_exception_returns_500() -> Result<()> {
             action: &str,
             _params: JsonValue,
             _credentials: Option<ServiceCredential>,
+            _source: Option<omni_connector_sdk::Source>,
+            _actor_email: Option<String>,
         ) -> Result<axum::response::Response> {
             if action == "crash_me" {
                 return Err(anyhow::anyhow!("intentional action panic"));
@@ -679,11 +683,9 @@ async fn t15_action_exception_returns_500() -> Result<()> {
     assert_eq!(resp.status_code(), 500);
     let body: serde_json::Value = resp.json();
     assert_eq!(body["status"], "error");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("intentional action panic")
-    );
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("intentional action panic"));
     Ok(())
 }

@@ -1,8 +1,8 @@
-import express, { type Express, type Request, type Response } from 'express';
+import express, { type Express, type Request, type Response } from "express";
 
-import { SdkClient } from './client.js';
-import type { Connector } from './connector.js';
-import { SyncContext } from './context.js';
+import { SdkClient } from "./client.js";
+import type { Connector } from "./connector.js";
+import { SyncContext } from "./context.js";
 import {
   SyncMode,
   SyncRequestSchema,
@@ -13,11 +13,12 @@ import {
   createSyncResponseStarted,
   createSyncResponseError,
   ActionResponse,
+  type ConnectorManifest,
   type SdkSourceSyncData,
-} from './models.js';
-import { getLogger } from './logger.js';
+} from "./models.js";
+import { getLogger } from "./logger.js";
 
-const logger = getLogger('sdk:server');
+const logger = getLogger("sdk:server");
 
 const REGISTRATION_INTERVAL_MS = 30_000;
 
@@ -25,13 +26,13 @@ function buildConnectorUrl(): string {
   const hostname = process.env.CONNECTOR_HOST_NAME;
   if (!hostname) {
     throw new Error(
-      'CONNECTOR_HOST_NAME environment variable is required. ' +
-      'Set it to this connector\'s hostname (e.g. the Docker service name).'
+      "CONNECTOR_HOST_NAME environment variable is required. " +
+        "Set it to this connector's hostname (e.g. the Docker service name).",
     );
   }
   const port = process.env.PORT;
   if (!port) {
-    throw new Error('PORT environment variable is required.');
+    throw new Error("PORT environment variable is required.");
   }
   return `http://${hostname}:${port}`;
 }
@@ -55,26 +56,26 @@ export function createServer(connector: Connector): Express {
   const registerOnce = async () => {
     try {
       const manifest = await connector.getManifest(connectorUrl);
-      await getSdkClient().register(manifest as unknown as Record<string, unknown>);
-      logger.info('Registered with connector manager');
+      await getSdkClient().register(manifest);
+      logger.info("Registered with connector manager");
     } catch (err) {
-      logger.warn({ err }, 'Registration failed');
+      logger.warn({ err }, "Registration failed");
     }
   };
 
   registerOnce();
   setInterval(registerOnce, REGISTRATION_INTERVAL_MS);
 
-  app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'healthy', service: connector.name });
+  app.get("/health", (_req: Request, res: Response) => {
+    res.json({ status: "healthy", service: connector.name });
   });
 
-  app.get('/manifest', async (_req: Request, res: Response) => {
+  app.get("/manifest", async (_req: Request, res: Response) => {
     const manifest = await connector.getManifest(connectorUrl);
     res.json(manifest);
   });
 
-  app.get('/sync/:syncRunId', (req: Request, res: Response) => {
+  app.get("/sync/:syncRunId", (req: Request, res: Response) => {
     const { syncRunId } = req.params;
     let running = false;
     for (const ctx of activeSyncs.values()) {
@@ -86,10 +87,10 @@ export function createServer(connector: Connector): Express {
     res.json({ running });
   });
 
-  app.post('/sync', async (req: Request, res: Response) => {
+  app.post("/sync", async (req: Request, res: Response) => {
     const parseResult = SyncRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json(createSyncResponseError('Invalid request body'));
+      res.status(400).json(createSyncResponseError("Invalid request body"));
       return;
     }
 
@@ -103,22 +104,28 @@ export function createServer(connector: Connector): Express {
       is_resume: isResume,
     } = parseResult.data;
 
-    const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(syncModeStr);
+    const isValidSyncMode = (Object.values(SyncMode) as string[]).includes(
+      syncModeStr,
+    );
     if (!isValidSyncMode) {
       logger.warn(
-        `Unknown sync_mode '${syncModeStr}'; defaulting to Incremental batching`
+        `Unknown sync_mode '${syncModeStr}'; defaulting to Incremental batching`,
       );
     }
     const syncMode: SyncMode = isValidSyncMode
       ? (syncModeStr as SyncMode)
       : SyncMode.INCREMENTAL;
 
-    logger.info(`Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`);
+    logger.info(
+      `Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`,
+    );
 
     if (activeSyncs.has(sourceId)) {
-      res.status(409).json(
-        createSyncResponseError('Sync already in progress for this source')
-      );
+      res
+        .status(409)
+        .json(
+          createSyncResponseError("Sync already in progress for this source"),
+        );
       return;
     }
 
@@ -127,13 +134,17 @@ export function createServer(connector: Connector): Express {
       sourceData = await getSdkClient().fetchSourceConfig(sourceId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes('404')) {
-        res.status(404).json(createSyncResponseError(`Source not found: ${sourceId}`));
+      if (message.includes("404")) {
+        res
+          .status(404)
+          .json(createSyncResponseError(`Source not found: ${sourceId}`));
       } else {
-        logger.error({ err: error }, 'Failed to fetch source data');
-        res.status(500).json(
-          createSyncResponseError(`Failed to fetch source data: ${message}`)
-        );
+        logger.error({ err: error }, "Failed to fetch source data");
+        res
+          .status(500)
+          .json(
+            createSyncResponseError(`Failed to fetch source data: ${message}`),
+          );
       }
       return;
     }
@@ -142,7 +153,7 @@ export function createServer(connector: Connector): Express {
       getSdkClient(),
       syncRunId,
       sourceId,
-      (requestCheckpoint ?? sourceData.checkpoint) ?? undefined,
+      requestCheckpoint ?? sourceData.checkpoint ?? undefined,
       syncMode,
       documentsScanned,
       documentsUpdated,
@@ -152,7 +163,7 @@ export function createServer(connector: Connector): Express {
         userFilterMode: sourceData.user_filter_mode,
         userWhitelist: sourceData.user_whitelist,
         userBlacklist: sourceData.user_blacklist,
-      }
+      },
     );
     activeSyncs.set(sourceId, ctx);
 
@@ -161,8 +172,8 @@ export function createServer(connector: Connector): Express {
         await connector.sync(
           sourceData.config,
           sourceData.credentials,
-          (requestCheckpoint ?? sourceData.checkpoint),
-          ctx
+          requestCheckpoint ?? sourceData.checkpoint,
+          ctx,
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -171,7 +182,7 @@ export function createServer(connector: Connector): Express {
           try {
             await ctx.fail(message);
           } catch (failError) {
-            logger.error({ err: failError }, 'Failed to report sync failure');
+            logger.error({ err: failError }, "Failed to report sync failure");
           }
         }
       } finally {
@@ -186,10 +197,12 @@ export function createServer(connector: Connector): Express {
     res.status(200).json(createSyncResponseStarted());
   });
 
-  app.post('/cancel', (req: Request, res: Response) => {
+  app.post("/cancel", (req: Request, res: Response) => {
     const parseResult = CancelRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json({ status: 'error', message: 'Invalid request body' });
+      res
+        .status(400)
+        .json({ status: "error", message: "Invalid request body" });
       return;
     }
 
@@ -207,31 +220,34 @@ export function createServer(connector: Connector): Express {
     }
 
     if (matchingSourceId === null || matchingCtx === null) {
-      res.status(404).json({ status: 'not_found' });
+      res.status(404).json({ status: "not_found" });
       return;
     }
 
     matchingCtx._setCancelled();
     activeSyncs.delete(matchingSourceId);
     connector.cancel(syncRunId);
-    res.json({ status: 'cancelled' });
+    res.json({ status: "cancelled" });
   });
 
-  app.post('/action', async (req: Request, res: Response) => {
+  app.post("/action", async (req: Request, res: Response) => {
     const parseResult = ActionRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      const errorResp = ActionResponse.failure('Invalid request body');
+      const errorResp = ActionResponse.failure("Invalid request body");
       res.status(400).json(errorResp);
       return;
     }
 
-    const { action, params, credentials } = parseResult.data;
+    const { action, credentials, source, actor_email } = parseResult.data;
+    const params = { ...parseResult.data.params };
     logger.info(`Action requested: ${action}`);
 
     const result = await connector.executeAction(
       action,
       params,
-      credentials
+      credentials ?? {},
+      source,
+      actor_email,
     );
 
     if (result instanceof Response) {
@@ -243,19 +259,21 @@ export function createServer(connector: Connector): Express {
     }
 
     // Fallback for unexpected return types (should not happen)
-    res.status(500).json(ActionResponse.failure('Unexpected action result type'));
+    res
+      .status(500)
+      .json(ActionResponse.failure("Unexpected action result type"));
   });
 
-  app.post('/resource', async (req: Request, res: Response) => {
+  app.post("/resource", async (req: Request, res: Response) => {
     const adapter = await connector.getMcpAdapter();
     if (!adapter) {
-      res.status(404).json({ error: 'MCP not enabled for this connector' });
+      res.status(404).json({ error: "MCP not enabled for this connector" });
       return;
     }
 
     const parseResult = ResourceRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json({ error: 'Invalid request body' });
+      res.status(400).json({ error: "Invalid request body" });
       return;
     }
 
@@ -273,16 +291,16 @@ export function createServer(connector: Connector): Express {
     }
   });
 
-  app.post('/prompt', async (req: Request, res: Response) => {
+  app.post("/prompt", async (req: Request, res: Response) => {
     const adapter = await connector.getMcpAdapter();
     if (!adapter) {
-      res.status(404).json({ error: 'MCP not enabled for this connector' });
+      res.status(404).json({ error: "MCP not enabled for this connector" });
       return;
     }
 
     const parseResult = PromptRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json({ error: 'Invalid request body' });
+      res.status(400).json({ error: "Invalid request body" });
       return;
     }
 
@@ -295,7 +313,7 @@ export function createServer(connector: Connector): Express {
         name,
         args as Record<string, string> | undefined,
         env,
-        headers
+        headers,
       );
       res.json(result);
     } catch (err) {

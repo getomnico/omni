@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value as JsonValue};
+use url::Url;
 
 use crate::auth::{add_api_key_and_dataset, apply_basic_auth, fetch_token};
 use crate::config::DarwinboxSourceConfig;
@@ -74,13 +75,31 @@ pub struct DarwinboxClient {
 
 impl DarwinboxClient {
     pub fn new(config: &DarwinboxSourceConfig, credentials: DarwinboxCredentials) -> Result<Self> {
-        let base_url = config.base_url.trim_end_matches('/').to_string();
-        if base_url.is_empty() {
-            return Err(anyhow!("Darwinbox base_url is required"));
+        let mut url = Url::parse(config.base_url.trim()).context("invalid Darwinbox base_url")?;
+        let is_loopback = url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+        if url.scheme() != "https" && !(url.scheme() == "http" && is_loopback) {
+            return Err(anyhow!("Darwinbox base_url must use HTTPS for security"));
         }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(anyhow!("Darwinbox base_url must not include credentials"));
+        }
+        url.set_fragment(None);
+        if !url.path().ends_with('/') {
+            let path = format!("{}/", url.path());
+            url.set_path(&path);
+        }
+        let http = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("failed to build Darwinbox HTTP client")?;
         Ok(Self {
-            http: Client::new(),
-            base_url,
+            http,
+            base_url: url.to_string(),
             credentials,
         })
     }
@@ -291,7 +310,12 @@ impl DarwinboxClient {
         body: JsonValue,
         include_dataset_key: bool,
     ) -> Result<T> {
-        let url = format!("{}{}", self.base_url, path);
+        // Use Url::join for safe URL construction
+        let base = Url::parse(&self.base_url).context("invalid base_url")?;
+        let url = base
+            .join(path.trim_start_matches('/'))
+            .context("failed to join URL")?
+            .to_string();
         let body = add_api_key_and_dataset(body, &self.credentials, include_dataset_key);
         let mut request = self
             .http
@@ -317,22 +341,18 @@ impl DarwinboxClient {
                 .with_context(|| format!("failed to call Darwinbox API {path}"))?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                let body = response.text().await.unwrap_or_default();
+                // Do not include response body in error to avoid leaking sensitive data
                 return Err(anyhow!(
-                    "Darwinbox authentication/authorization failed ({status}): {body}"
+                    "Darwinbox authentication/authorization failed (HTTP {status})"
                 ));
             }
             if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                let body = response.text().await.unwrap_or_default();
-                last_error = Some(anyhow!(
-                    "Darwinbox API returned retryable HTTP {status}: {body}"
-                ));
+                last_error = Some(anyhow!("Darwinbox API returned retryable HTTP {status}"));
                 tokio::time::sleep(std::time::Duration::from_millis(250 * (attempt + 1))).await;
                 continue;
             }
             if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                return Err(anyhow!("Darwinbox API returned HTTP {status}: {body}"));
+                return Err(anyhow!("Darwinbox API returned HTTP {status}"));
             }
 
             return response

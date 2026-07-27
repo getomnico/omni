@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
@@ -6,7 +6,7 @@ use omni_connector_sdk::{
     SyncContext, SyncType,
 };
 use serde::Deserialize;
-use serde_json::{Value as JsonValue, json};
+use serde_json::{json, Value as JsonValue};
 
 fn guess_mime_type(filename: &str) -> &'static str {
     match filename
@@ -176,6 +176,8 @@ impl Connector for NextcloudConnector {
         action: &str,
         params: JsonValue,
         credentials: Option<ServiceCredential>,
+        _source: Option<Source>,
+        _actor_email: Option<String>,
     ) -> Result<Response> {
         match action {
             "validate_credentials" => {

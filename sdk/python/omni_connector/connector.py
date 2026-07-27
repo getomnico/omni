@@ -17,6 +17,7 @@ from .models import (
     OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     SearchOperator,
+    Source,
 )
 
 if TYPE_CHECKING:
@@ -345,19 +346,11 @@ class Connector(ABC):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
+        source: Source | None = None,
+        actor_email: str | None = None,
     ) -> JSONResponse:
-
-        adapter = self.mcp_adapter
-        if adapter is not None:
-            if adapter._catalog_cache_expired(self._mcp_catalog_cache_ttl_seconds()):
-                await self.bootstrap_mcp(credentials)
-            auth = self._prepare_mcp_auth(credentials)
-            mcp_tool_names = {
-                a.name for a in await adapter.get_action_definitions(**auth)
-            }
-            if action in mcp_tool_names:
-                response = await adapter.execute_tool(action, params, **auth)
-                return JSONResponse(content=response.model_dump())
+        """Execute a non-MCP action. Override in connector subclasses that
+        define manifest actions outside of MCP tools."""
         return ActionResponse.not_supported(action).to_response(status_code=404)
 
     def serve(self, port: int = 8000, host: str = "0.0.0.0") -> None:

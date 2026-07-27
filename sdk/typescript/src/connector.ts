@@ -5,6 +5,7 @@ import type {
   ActionDefinition,
   SearchOperator,
   OAuthManifestConfig,
+  Source,
 } from './models.js';
 import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
@@ -186,7 +187,9 @@ export abstract class Connector<
   async executeAction(
     action: string,
     params: Record<string, unknown>,
-    credentials: TCredentials
+    credentials: TCredentials,
+    source?: Source,
+    actor_email?: string
   ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
     if (adapter) {
