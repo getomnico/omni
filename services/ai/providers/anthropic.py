@@ -155,7 +155,7 @@ class AnthropicProvider(LLMProvider):
                 yield event
 
         except Exception as e:
-            logger.error("Failed to stream from Anthropic")
+            logger.error(f"Failed to stream from Anthropic: {e}", exc_info=True)
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -204,7 +204,7 @@ class AnthropicProvider(LLMProvider):
             return content, usage
 
         except Exception as e:
-            logger.error("Failed to generate response from Anthropic")
+            logger.error(f"Failed to generate response from Anthropic: {e}")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

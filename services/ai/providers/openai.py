@@ -305,7 +305,7 @@ class OpenAIProvider(LLMProvider):
         except ProviderError:
             raise
         except Exception as e:
-            logger.error("Failed to stream from OpenAI")
+            logger.error(f"Failed to stream from OpenAI: {e}", exc_info=True)
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -472,7 +472,7 @@ class OpenAIProvider(LLMProvider):
             return content, usage
 
         except Exception as e:
-            logger.error("Failed to generate response")
+            logger.error(f"Failed to generate response: {e}")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

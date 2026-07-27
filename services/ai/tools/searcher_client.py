@@ -191,7 +191,7 @@ class SearcherClient:
                     response=response,
                 )
         except Exception as e:
-            logger.error("Call to searcher service failed")
+            logger.error(f"Call to searcher service failed: {e}")
             raise
 
     async def search_people(self, request: PeopleSearchRequest) -> PeopleSearchResponse:
@@ -219,7 +219,7 @@ class SearcherClient:
         except SearcherError:
             raise
         except Exception as e:
-            logger.error("People search failed")
+            logger.error(f"People search failed: {e}")
             raise
 
     async def upsert_capabilities(
@@ -297,7 +297,7 @@ class SearcherClient:
                 )
                 return {}
         except Exception as e:
-            logger.error("Failed to fetch attribute values")
+            logger.error(f"Failed to fetch attribute values: {e}")
             return {}
 
     async def close(self):

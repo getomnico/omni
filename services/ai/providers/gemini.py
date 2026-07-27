@@ -404,7 +404,7 @@ class GeminiProvider(LLMProvider):
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
-            logger.error("Failed to stream from Gemini")
+            logger.error(f"Failed to stream from Gemini: {e}", exc_info=True)
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -449,7 +449,7 @@ class GeminiProvider(LLMProvider):
             return response.text, usage
 
         except Exception as e:
-            logger.error("Failed to generate response")
+            logger.error(f"Failed to generate response: {e}")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

@@ -1119,7 +1119,7 @@ async def stream_generator(
                 yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
         raise
     except Exception as e:
-        logger.error("Failed to generate AI response with tools")
+        logger.error(f"Failed to generate AI response with tools: {e}", exc_info=True)
         if not content_blocks_finalized:
             partial = partial_assistant_message(content_blocks)
             if partial is not None:

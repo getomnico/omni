@@ -177,7 +177,7 @@ class ConnectorToolHandler:
                     sources = sources_from_sync_overview_response(sources_resp.json())
 
         except Exception as e:
-            logger.error("Failed to fetch connector info")
+            logger.error(f"Failed to fetch connector info: {e}")
             return []
 
         # Build a mapping from source_type to list of active sources
@@ -553,7 +553,7 @@ class ConnectorToolHandler:
         except Exception as e:
             # Transport-level errors (ReadError, ConnectError, TimeoutException, etc.)
             # don't carry a response. Don't try to access e.response.
-            logger.error("Connector action failed")
+            logger.error(f"Connector action failed: {e}", exc_info=True)
             return ToolResult(
                 content=[{"type": "text", "text": f"Action failed: {e}"}],
                 is_error=True,

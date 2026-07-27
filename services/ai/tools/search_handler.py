@@ -260,7 +260,7 @@ class SearchToolHandler:
         try:
             params = SearchToolParams.model_validate(tool_input)
         except ValidationError as e:
-            logger.error("Invalid search_documents input")
+            logger.error(f"Invalid search_documents input: {e}")
             return ToolResult(
                 content=[{"type": "text", "text": f"Invalid parameters: {e}"}],
                 is_error=True,
@@ -426,6 +426,6 @@ async def _execute_search_tool(
     try:
         response: SearchResponse = await searcher_tool.handle(search_request)
     except Exception as e:
-        logger.error("Search failed")
+        logger.error(f"Search failed: {e}")
         return []
     return response.results
