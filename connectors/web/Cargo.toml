@@ -24,7 +24,7 @@ tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
-spider = { version = "2", default-features = false, features = ["basic", "sitemap", "headers"] }
+spider = { version = "2", default-features = false, features = ["basic", "sitemap", "headers", "spider_cloud"] }
 scraper = "0.21"
 sha2 = "0.10"
 url = "2.5"
