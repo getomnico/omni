@@ -8,14 +8,10 @@ configured embedding provider.
 import asyncio
 import logging
 import time
-from typing import Optional, Sequence
+from typing import Optional
 
 import ulid
 from opentelemetry import trace, metrics
-from opentelemetry.propagate import get_global_textmap
-from opentelemetry.propagators.textmap import TextMapPropagator
-from opentelemetry.trace import SpanContext, NonRecordingSpan, Link, SpanKind
-from opentelemetry.trace.propagation import get_current_span as otel_get_current_span
 
 from config import EMBEDDING_MAX_MODEL_LEN
 from db import (
@@ -32,79 +28,6 @@ from state import AppState
 from . import Chunk
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Trace context helpers for the embedding consumer
-# ---------------------------------------------------------------------------
-
-
-def _build_carrier(
-    traceparent: Optional[str],
-    tracestate: Optional[str],
-) -> dict[str, str]:
-    """Build a W3C TraceContext carrier dict from stored optional headers."""
-    carrier: dict[str, str] = {}
-    if traceparent:
-        # Validate rough W3C format before using
-        if len(traceparent) == 55 and traceparent.startswith("00-"):
-            carrier["traceparent"] = traceparent
-            if tracestate:
-                carrier["tracestate"] = tracestate
-    return carrier
-
-
-def _extract_span_context(
-    traceparent: Optional[str],
-    tracestate: Optional[str],
-) -> Optional[SpanContext]:
-    """Extract a valid remote SpanContext from optional stored headers.
-
-    Returns None for invalid or missing context. Processing continues
-    regardless.
-    """
-    carrier = _build_carrier(traceparent, tracestate)
-    if not carrier:
-        return None
-
-    from opentelemetry.context import Context
-    # Get the global propagator (typically TraceContextTextMapPropagator)
-    propagator = get_global_textmap()
-    # Extract into a fresh context (not the current one)
-    ctx = propagator.extract(carrier=carrier, context=Context())
-    # Get the span from the extracted context
-    span = trace.get_current_span(ctx)
-    sc = span.get_span_context()
-    if sc and sc.is_valid:
-        return sc
-    return None
-
-
-def _build_consumer_links(
-    items: Sequence[EmbeddingQueueItem],
-) -> list[Link]:
-    """Build OTel Links from stored producer contexts in queue items.
-
-    Returns one Link per unique valid producer (trace_id, span_id) pair.
-    Invalid or missing contexts are skipped. An empty list is returned
-    when no valid contexts exist.
-    """
-    links: list[Link] = []
-    seen: set[tuple[int, int]] = set()
-
-    for item in items:
-        sc = _extract_span_context(item.traceparent, item.tracestate)
-        if sc is None:
-            continue
-        trace_id_int = int(sc.trace_id, 16) if isinstance(sc.trace_id, str) else sc.trace_id
-        span_id_int = int(sc.span_id, 16) if isinstance(sc.span_id, str) else sc.span_id
-        key = (trace_id_int, span_id_int)
-        if key in seen:
-            continue
-        seen.add(key)
-        links.append(Link(context=sc))
-
-    return links
 
 
 # ---------------------------------------------------------------------------
@@ -266,27 +189,10 @@ class EmbeddingBatchProcessor:
         logger.info(f"Processing {len(items)} documents via online embedding API")
         batch_start = time.monotonic()
 
-        # Build consumer links from stored producer contexts.
-        links = _build_consumer_links(items)
-
-        # Import explicit empty Context for new-root consumer span.
-        from opentelemetry.context import Context
-
-        # Create CONSUMER span as a new root trace with links to producers.
-        # The span ends when the `with` block exits.
         tracer = trace.get_tracer("omni-ai")
         had_failure = False
         with tracer.start_as_current_span(
             "embedding_queue process",
-            context=Context(),  # explicit empty parent = new root trace
-            kind=SpanKind.CONSUMER,
-            attributes={
-                "messaging.system": "postgresql",
-                "messaging.destination": "embedding_queue",
-                "messaging.operation.type": "process",
-                "messaging.batch.message_count": len(items),
-            },
-            links=links,
         ) as span:
             try:
                 documents_by_id = await self.documents_repo.get_by_ids(

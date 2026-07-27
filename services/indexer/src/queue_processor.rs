@@ -16,8 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{interval, Duration, MissedTickBehavior};
-use tracing::{debug, error, info, warn, Instrument};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing::{debug, error, info, warn};
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.
 // SDK-side buffering already shapes events into the right batch size per sync type,
@@ -627,46 +626,13 @@ impl QueueProcessor {
         Ok(())
     }
 
-    /// Instrument `process_dequeued_events` with a CONSUMER tracing span.
-    ///
-    /// The span is created as a new root trace (no parent) with bounded messaging
-    /// attributes and native OTel links pointing at the producer spans.
+    /// Process dequeued events without consumer trace instrumentation
+    /// (queue trace context persistence has been removed).
     async fn process_dequeued_events_instrumented(
         &self,
         events: Vec<ConnectorEventQueueItem>,
     ) -> Result<usize> {
-        let event_count = events.len() as i64;
-
-        // Extract producer SpanContext values deduplicated by (trace_id, span_id).
-        let producer_contexts: Vec<Option<(Option<String>, Option<String>)>> = events
-            .iter()
-            .map(|ev| Some((ev.traceparent.clone(), ev.tracestate.clone())))
-            .collect();
-        let span_contexts = shared::telemetry::queue::collect_span_contexts(&producer_contexts);
-
-        let span = tracing::info_span!(
-            parent: None,
-            "connector_events_queue process",
-            otel.kind = "CONSUMER",
-            messaging.system = "postgresql",
-            messaging.destination = "connector_events_queue",
-            messaging.operation.type = "process",
-            messaging.batch.message_count = event_count,
-        );
-
-        // Initialize the OTel span and add native links before entering
-        // the async work. Clone the span so the original handle is available
-        // for `.instrument()` after adding links.
-        {
-            let _guard = span.clone().entered();
-            for sc in &span_contexts {
-                span.add_link(sc.clone());
-            }
-        }
-
-        async move { self.process_dequeued_events(events).await }
-            .instrument(span)
-            .await
+        self.process_dequeued_events(events).await
     }
 
     async fn process_dequeued_events(&self, events: Vec<ConnectorEventQueueItem>) -> Result<usize> {

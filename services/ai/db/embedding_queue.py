@@ -30,8 +30,6 @@ class EmbeddingQueueItem:
     error_message: Optional[str]
     retry_count: int
     created_at: datetime
-    traceparent: Optional[str] = field(default=None)
-    tracestate: Optional[str] = field(default=None)
 
 
 class EmbeddingQueueRepository:
@@ -52,8 +50,7 @@ class EmbeddingQueueRepository:
 
         row = await pool.fetchrow(
             """
-            SELECT id, document_id, status, error_message, retry_count, created_at,
-                   traceparent, tracestate
+            SELECT id, document_id, status, error_message, retry_count, created_at
             FROM embedding_queue
             WHERE id = $1
             """,
@@ -110,8 +107,7 @@ class EmbeddingQueueRepository:
                 LIMIT $2
                 FOR UPDATE SKIP LOCKED
             )
-            RETURNING id, document_id, status, error_message, retry_count, created_at,
-                      traceparent, tracestate
+            RETURNING id, document_id, status, error_message, retry_count, created_at
             """,
             max_retries,
             limit,

@@ -1,7 +1,6 @@
 use crate::utils::generate_ulid;
 use anyhow::Result;
 use sqlx::{PgPool, Row};
-use tracing::Instrument;
 
 use crate::models::{ConnectorEvent, ConnectorEventQueueItem, EventStatus, SyncType};
 
@@ -27,42 +26,24 @@ impl EventQueue {
     }
 
     pub async fn enqueue(&self, source_id: &str, event: &ConnectorEvent) -> Result<String> {
-        let queue_name = "connector_events_queue";
         let id = generate_ulid();
         let event_type = event_type_str(event);
 
-        // Build PRODUCER span and instrument the full INSERT with the span.
-        // inject_active_context is called from inside the instrumented block
-        // so the producer span is active during injection and the DB write.
-        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
+        sqlx::query(
+            r#"
+            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
+            VALUES ($1, $2, $3, $4, $5)
+            "#,
+        )
+        .bind(&id)
+        .bind(event.sync_run_id())
+        .bind(source_id)
+        .bind(event_type)
+        .bind(serde_json::to_value(event)?)
+        .execute(&self.pool)
+        .await?;
 
-        async move {
-            let carrier = crate::telemetry::queue::inject_active_context();
-
-            if let Err(e) = sqlx::query(
-                r#"
-                INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload, traceparent, tracestate)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                "#,
-            )
-            .bind(&id)
-            .bind(event.sync_run_id())
-            .bind(source_id)
-            .bind(event_type)
-            .bind(serde_json::to_value(event)?)
-            .bind(&carrier.traceparent)
-            .bind(&carrier.tracestate)
-            .execute(&self.pool)
-            .await
-            {
-                crate::telemetry::queue::set_active_span_error();
-                return Err(e.into());
-            }
-
-            Ok(id)
-        }
-        .instrument(producer_span)
-        .await
+        Ok(id)
     }
 
     pub async fn enqueue_batch(
@@ -73,13 +54,6 @@ impl EventQueue {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-
-        let queue_name = "connector_events_queue";
-
-        // Build PRODUCER span and instrument the full batch INSERT with the span.
-        // inject_active_context is called from inside the instrumented block
-        // so the producer span is active during injection and the DB write.
-        let producer_span = crate::telemetry::queue::build_producer_span(queue_name);
 
         let mut ids: Vec<String> = Vec::with_capacity(events.len());
         let mut sync_run_ids: Vec<String> = Vec::with_capacity(events.len());
@@ -95,40 +69,21 @@ impl EventQueue {
             payloads.push(serde_json::to_value(event)?);
         }
 
-        async move {
-            let carrier = crate::telemetry::queue::inject_active_context();
+        sqlx::query(
+            r#"
+            INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload)
+            SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::jsonb[])
+            "#,
+        )
+        .bind(&ids)
+        .bind(&sync_run_ids)
+        .bind(&source_ids)
+        .bind(&event_types)
+        .bind(&payloads)
+        .execute(&self.pool)
+        .await?;
 
-            let traceparents: Vec<Option<String>> = std::iter::repeat(carrier.traceparent.clone())
-                .take(ids.len())
-                .collect();
-            let tracestates: Vec<Option<String>> = std::iter::repeat(carrier.tracestate.clone())
-                .take(ids.len())
-                .collect();
-
-            if let Err(e) = sqlx::query(
-                r#"
-                INSERT INTO connector_events_queue (id, sync_run_id, source_id, event_type, payload, traceparent, tracestate)
-                SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::jsonb[], $6::text[], $7::text[])
-                "#,
-            )
-            .bind(&ids)
-            .bind(&sync_run_ids)
-            .bind(&source_ids)
-            .bind(&event_types)
-            .bind(&payloads)
-            .bind(&traceparents)
-            .bind(&tracestates)
-            .execute(&self.pool)
-            .await
-            {
-                crate::telemetry::queue::set_active_span_error();
-                return Err(e.into());
-            }
-
-            Ok(ids)
-        }
-        .instrument(producer_span)
-        .await
+        Ok(ids)
     }
 
     pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<ConnectorEventQueueItem>> {
@@ -186,9 +141,7 @@ impl EventQueue {
                 q.max_retries,
                 q.created_at,
                 q.processed_at,
-                q.error_message,
-                q.traceparent,
-                q.tracestate
+                q.error_message
             "#,
         )
         .bind(batch_size)
@@ -259,9 +212,7 @@ impl EventQueue {
                 q.max_retries,
                 q.created_at,
                 q.processed_at,
-                q.error_message,
-                q.traceparent,
-                q.tracestate
+                q.error_message
             "#,
         )
         .bind(batch_size)
@@ -331,9 +282,7 @@ impl EventQueue {
                 q.max_retries,
                 q.created_at,
                 q.processed_at,
-                q.error_message,
-                q.traceparent,
-                q.tracestate
+                q.error_message
             "#,
         )
         .bind(batch_size)
@@ -358,9 +307,6 @@ impl EventQueue {
                 _ => crate::models::EventStatus::Pending,
             };
 
-            let traceparent: Option<String> = row.try_get("traceparent").ok().flatten();
-            let tracestate: Option<String> = row.try_get("tracestate").ok().flatten();
-
             events.push(ConnectorEventQueueItem {
                 id: row.get("id"),
                 sync_run_id: row.get("sync_run_id"),
@@ -373,8 +319,6 @@ impl EventQueue {
                 created_at: row.get("created_at"),
                 processed_at: row.get("processed_at"),
                 error_message: row.get("error_message"),
-                traceparent,
-                tracestate,
             });
         }
         events
