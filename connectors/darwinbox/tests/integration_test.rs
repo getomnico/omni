@@ -241,16 +241,16 @@ fn high_risk_raw_action_families_are_rejected() {
         "authorization": {
             "actions_enabled": true,
             "participant_emails": ["admin@example.com"],
-            "allowed_actions": ["run_report"]
+            "allowed_actions": ["add_pending_employee"]
         },
-        "action_modules": { "reports": true }
+        "action_modules": { "hr_operations": true }
     }))
     .unwrap();
     assert!(config
         .validate()
         .unwrap_err()
         .iter()
-        .any(|e| e.contains("not available")));
+        .any(|e| e.contains("not implemented")));
 }
 
 #[test]

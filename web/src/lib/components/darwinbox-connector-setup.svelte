@@ -7,14 +7,10 @@
     import { AuthType, type ConnectorListEntry } from '$lib/types'
     import { toast } from 'svelte-sonner'
 
-    /** Derive allowed Darwinbox action names from the registered connector manifest.
-     * Action groups (module→{read,write}) come from Darwinbox's extra_schema.action_groups
-     * derived from its internal action policy table, not from ActionDefinition metadata. */
-    async function deriveDarwinboxActions(
-        selfService: boolean,
-        managerWorkflows: boolean,
-        readOnly: boolean,
-    ): Promise<string[]> {
+    /** Fetch all Darwinbox action names from the registered connector manifest.
+     * Groups come from extra_schema.action_groups derived from the connector's
+     * internal action policy table. */
+    async function getAllowedActions(readOnly: boolean): Promise<string[]> {
         const resp = await fetch('/api/connectors')
         if (!resp.ok) throw new Error('Failed to load connector actions')
         const connectors: ConnectorListEntry[] = await resp.json()
@@ -22,19 +18,16 @@
         if (!darwinbox?.manifest) throw new Error('Darwinbox connector not registered')
         const groups = darwinbox.manifest.extra_schema?.action_groups ?? {}
         const result: string[] = []
-        function addGroup(name: string) {
-            const group = groups[name]
-            if (!group) return
-            for (const action of group.read) {
+        for (const group of Object.values(groups)) {
+            if (!group) continue
+            for (const action of group.read ?? []) {
                 if (!result.includes(action)) result.push(action)
             }
-            if (readOnly) return
-            for (const action of group.write) {
+            if (readOnly) continue
+            for (const action of group.write ?? []) {
                 if (!result.includes(action)) result.push(action)
             }
         }
-        if (selfService) addGroup('employee_self_service')
-        if (managerWorkflows) addGroup('manager_workflows')
         return result
     }
 
@@ -60,11 +53,7 @@
     let authorizationCode = $state('')
     let refreshToken = $state('')
     let datasetKey = $state('')
-    let defaultTimezone = $state('Asia/Kolkata')
     let readOnly = $state(true)
-    let enableEmployeeDirectory = $state(false)
-    let enableSelfService = $state(false)
-    let enableManagerWorkflows = $state(false)
     let writeAcknowledged = $state(false)
     let participantEmails = $state('')
     let targetEmployeeIds = $state('')
@@ -105,21 +94,14 @@
                 .split(',')
                 .map((v) => v.trim())
                 .filter(Boolean)
-            if ((enableSelfService || enableManagerWorkflows) && participants.length === 0) {
+            if (participants.length === 0) {
                 throw new Error('At least one approved participant email is required')
-            }
-            if (enableManagerWorkflows && targets.length === 0) {
-                throw new Error('Manager workflows require target employee IDs')
             }
             if (!readOnly && !writeAcknowledged) {
                 throw new Error('Confirm write-mode acknowledgement before continuing')
             }
             // Derive allowed actions from registered connector manifest
-            const allowedActions = await deriveDarwinboxActions(
-                enableSelfService,
-                enableManagerWorkflows,
-                readOnly,
-            )
+            const allowedActions = await getAllowedActions(readOnly)
 
             const sourceResponse = await fetch('/api/sources', {
                 method: 'POST',
@@ -132,23 +114,21 @@
                     config: {
                         base_url: baseUrl.trim().replace(/\/$/, ''),
                         read_only: readOnly,
-                        default_timezone: defaultTimezone.trim() || null,
-                        employee_scope: enableEmployeeDirectory
-                            ? { mode: 'include', employee_ids: targets }
-                            : null,
-                        employee_fields: enableEmployeeDirectory
-                            ? [
-                                  'name',
-                                  'employee_id',
-                                  'company_email',
-                                  'department',
-                                  'designation',
-                                  'office_location',
-                              ]
-                            : [],
+                        employee_scope: {
+                            mode: 'include',
+                            employee_ids: targets,
+                        },
+                        employee_fields: [
+                            'name',
+                            'employee_id',
+                            'company_email',
+                            'department',
+                            'designation',
+                            'office_location',
+                        ],
                         sync_modules: {
-                            employee_directory: enableEmployeeDirectory,
-                            deleted_employees: enableEmployeeDirectory,
+                            employee_directory: true,
+                            deleted_employees: true,
                             departments: false,
                             designations: false,
                             office_locations: false,
@@ -161,14 +141,14 @@
                             ats_jobs: false,
                         },
                         action_modules: {
-                            employee_self_service: enableSelfService,
-                            manager_workflows: enableManagerWorkflows,
+                            employee_self_service: true,
+                            manager_workflows: true,
                             hr_operations: false,
                             ats: false,
-                            reports: false,
+                            reports: true,
                         },
                         authorization: {
-                            actions_enabled: enableSelfService || enableManagerWorkflows,
+                            actions_enabled: true,
                             write_acknowledged: writeAcknowledged,
                             participant_emails: participants,
                             allowed_actions: allowedActions,
@@ -179,7 +159,6 @@
                             recruiter_emails: [],
                             allowed_report_ids: [],
                             max_batch_size: 1,
-                            max_requests_per_minute: 10,
                         },
                     },
                 }),
@@ -228,15 +207,13 @@
             })
 
             if (!credentialsResponse.ok) {
-                throw new Error('Failed to create Darwinbox service credentials')
+                throw new Error('Failed to save Darwinbox credentials')
             }
 
-            toast.success('Darwinbox connected successfully!')
-            reset()
+            toast.success('Darwinbox source created')
             onSuccess?.()
-        } catch (error: any) {
-            console.error('Error setting up Darwinbox:', error)
-            toast.error(error.message || 'Failed to set up Darwinbox')
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : 'Failed to create Darwinbox source')
         } finally {
             isSubmitting = false
         }
@@ -254,11 +231,7 @@
         authorizationCode = ''
         refreshToken = ''
         datasetKey = ''
-        defaultTimezone = 'Asia/Kolkata'
         readOnly = true
-        enableEmployeeDirectory = false
-        enableSelfService = false
-        enableManagerWorkflows = false
         writeAcknowledged = false
         participantEmails = ''
         targetEmployeeIds = ''
@@ -409,30 +382,12 @@
                         required />
                 </div>
             </div>
-            <div class="space-y-2">
-                <Label for="darwinbox-timezone">Default timezone</Label>
-                <Input
-                    id="darwinbox-timezone"
-                    bind:value={defaultTimezone}
-                    placeholder="Asia/Kolkata" />
-            </div>
+
             <div class="space-y-3 rounded-md border p-3 text-sm">
-                <div class="font-medium">Safety controls</div>
+                <div class="font-medium">Access controls</div>
                 <label class="flex cursor-pointer items-center gap-2">
                     <input type="checkbox" bind:checked={readOnly} />
-                    Read-only mode (recommended and enabled by default)
-                </label>
-                <label class="flex cursor-pointer items-center gap-2">
-                    <input type="checkbox" bind:checked={enableEmployeeDirectory} />
-                    Index the approved employee cohort using safe directory fields
-                </label>
-                <label class="flex cursor-pointer items-center gap-2">
-                    <input type="checkbox" bind:checked={enableSelfService} />
-                    Enable employee self-service workflows
-                </label>
-                <label class="flex cursor-pointer items-center gap-2">
-                    <input type="checkbox" bind:checked={enableManagerWorkflows} />
-                    Enable manager workflows for approved target employees
+                    Read-only mode (prevents all mutations)
                 </label>
                 <div class="space-y-1">
                     <Label for="darwinbox-participants">Approved participant emails</Label>
@@ -457,10 +412,6 @@
                             and require explicit confirmation.</span>
                     </label>
                 {/if}
-                <p class="text-muted-foreground text-xs">
-                    HR administration, ATS candidate, bulk, and unattended actions are not yet
-                    implemented.
-                </p>
             </div>
         </div>
 

@@ -4,12 +4,37 @@ import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { SourceType, type DarwinboxSourceConfig } from '$lib/types'
 
-export const load: PageServerLoad = async ({ params, locals, fetch: serverFetch }) => {
+/** All known Darwinbox read action names. */
+const READ_ACTIONS: string[] = [
+    'find_employee',
+    'get_my_profile',
+    'get_my_leave_balance',
+    'get_my_leave_requests',
+    'get_my_attendance',
+    'get_my_timesheet',
+    'get_holiday_calendar',
+    'list_pending_leave_approvals',
+    'get_team_leave_calendar',
+    'get_team_attendance_exceptions',
+    'get_direct_report_profile',
+    'fetch_report_ids',
+    'run_report',
+]
+
+/** All known Darwinbox write action names. */
+const WRITE_ACTIONS: string[] = [
+    'apply_my_leave',
+    'revoke_my_leave',
+    'regularize_my_attendance',
+    'approve_leave_request',
+    'reject_leave_request',
+]
+
+export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
     const source = await getSourceById(params.sourceId)
     if (!source) throw error(404, 'Source not found')
     if (source.sourceType !== SourceType.DARWINBOX) throw error(400, 'Invalid source type')
-    const config = source.config as DarwinboxSourceConfig
     return { source }
 }
 
@@ -20,11 +45,6 @@ function csv(value: FormDataEntryValue | null): string[] {
         .filter(Boolean)
 }
 
-function positiveInteger(value: FormDataEntryValue | null, fallback: number): number {
-    const parsed = Number(value ?? fallback)
-    return Number.isInteger(parsed) ? parsed : Number.NaN
-}
-
 export const actions: Actions = {
     default: async ({ request, params, locals, fetch }) => {
         requireAdmin(locals)
@@ -33,38 +53,32 @@ export const actions: Actions = {
         if (source.sourceType !== SourceType.DARWINBOX) throw error(400, 'Invalid source type')
 
         const form = await request.formData()
-        const previous = source.config as DarwinboxSourceConfig
         const readOnly = form.has('read_only')
         const participants = csv(form.get('participant_emails'))
-        const allowedActions = csv(form.get('allowed_actions'))
-        const employeeIds = csv(form.get('employee_ids'))
-        const employeeEmails = csv(form.get('employee_emails'))
-        const departments = csv(form.get('departments'))
         const targetIds = csv(form.get('target_employee_ids'))
         const targetEmails = csv(form.get('target_employee_emails'))
         const targetDepartments = csv(form.get('target_departments'))
-        const employeeFields = csv(
-            form.get('employee_fields'),
-        ) as DarwinboxSourceConfig['employee_fields']
-        const employeeDirectory = form.has('employee_directory')
-        const selfService = form.has('employee_self_service')
-        const managerWorkflows = form.has('manager_workflows')
+        const allowedActions = readOnly ? READ_ACTIONS : [...READ_ACTIONS, ...WRITE_ACTIONS]
 
+        const previous = source.config as DarwinboxSourceConfig
         const candidate: DarwinboxSourceConfig = {
             ...previous,
             read_only: readOnly,
-            employee_scope: employeeDirectory
-                ? {
-                      mode: 'include',
-                      employee_ids: employeeIds,
-                      employee_emails: employeeEmails,
-                      departments,
-                  }
-                : null,
-            employee_fields: employeeDirectory ? employeeFields : [],
+            employee_scope: {
+                mode: 'include',
+                employee_ids: targetIds,
+            },
+            employee_fields: [
+                'name',
+                'employee_id',
+                'company_email',
+                'department',
+                'designation',
+                'office_location',
+            ],
             sync_modules: {
-                employee_directory: employeeDirectory,
-                deleted_employees: employeeDirectory,
+                employee_directory: true,
+                deleted_employees: true,
                 departments: false,
                 designations: false,
                 office_locations: false,
@@ -77,15 +91,14 @@ export const actions: Actions = {
                 ats_jobs: false,
             },
             action_modules: {
-                employee_self_service: selfService,
-                manager_workflows: managerWorkflows,
+                employee_self_service: true,
+                manager_workflows: true,
                 hr_operations: false,
                 ats: false,
-                reports: false,
+                reports: true,
             },
             authorization: {
-                ...previous.authorization,
-                actions_enabled: selfService || managerWorkflows,
+                actions_enabled: true,
                 write_acknowledged: form.has('write_acknowledged'),
                 participant_emails: participants,
                 target_employee_ids: targetIds,
@@ -95,12 +108,11 @@ export const actions: Actions = {
                 hr_admin_emails: [],
                 recruiter_emails: [],
                 allowed_report_ids: [],
-                max_batch_size: positiveInteger(form.get('max_batch_size'), 1),
-                max_requests_per_minute: positiveInteger(form.get('max_requests_per_minute'), 10),
+                max_batch_size: 1,
             },
         }
 
-        const previousPolicy = { ...previous, read_only: undefined }
+        const previousPolicy = { ...(source.config as DarwinboxSourceConfig), read_only: undefined }
         const nextPolicy = { ...candidate, read_only: undefined }
         const policyChanged = JSON.stringify(previousPolicy) !== JSON.stringify(nextPolicy)
         await updateSourceById(source.id, { config: candidate })
