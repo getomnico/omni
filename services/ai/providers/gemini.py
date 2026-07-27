@@ -237,7 +237,7 @@ class GeminiProvider(LLMProvider):
                 )
                 return self._context_window_info
         except Exception as e:
-            logger.debug("Failed to fetch Gemini model metadata for %s", self.model)
+            logger.debug("Failed to fetch Gemini model metadata for %s: %s", self.model, e)
         self._context_window_info = await super().get_context_window_tokens()
         return self._context_window_info
 

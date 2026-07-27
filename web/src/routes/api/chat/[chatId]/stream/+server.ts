@@ -331,7 +331,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                     logger.warn('Title generation failed')
                                 }
                             })
-                            .catch(() => logger.error('Failed to generate title for chat'))
+                            .catch((err) => logger.error('Failed to generate title for chat', err))
                     }
 
                     while (true) {

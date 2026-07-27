@@ -91,8 +91,8 @@ async def startup_event():
         else:
             app.state.memory_provider = None
             logger.info("MEMORY_ENABLED=false — memory feature disabled")
-    except Exception:
-        logger.error("Failed to initialize services")
+    except Exception as e:
+        logger.error(f"Failed to initialize services: {e}")
         raise
 
 

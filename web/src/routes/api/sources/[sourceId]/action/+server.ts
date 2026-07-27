@@ -57,6 +57,7 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
             }
             logger.error('Action failed', {
                 status: response.status,
+                error: errorMessage,
             })
             throw error(response.status, errorMessage)
         }
