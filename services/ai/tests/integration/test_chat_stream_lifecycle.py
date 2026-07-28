@@ -85,9 +85,16 @@ def _build_chat_app(
     """Build a minimal test FastAPI app wired to the real Redis client."""
     app = FastAPI()
     app.state = AppState()
-    app.state.models = {model_id: llm_provider}
-    app.state.default_model_id = model_id
-    app.state.secondary_model_id = model_id
+    from provider_cache import ResolvedModel
+    async def _resolve_for_model(mid: str):
+        return ResolvedModel(provider=llm_provider, model_record_id=mid, model_name=mid)
+    async def _resolve_default():
+        return ResolvedModel(provider=llm_provider, model_record_id=model_id, model_name=model_id)
+    async def _resolve_secondary_or_default():
+        return ResolvedModel(provider=llm_provider, model_record_id=model_id, model_name=model_id)
+    app.state.provider_cache.resolve_for_model = _resolve_for_model
+    app.state.provider_cache.resolve_default = _resolve_default
+    app.state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
     app.state.searcher_tool = SearcherTool()
     app.state.content_storage = None
     app.state.redis_client = redis_client

@@ -449,6 +449,7 @@ class GatedRecordingLLM:
     PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
     model_name = "gated-test"
     provider_type = "test"
+    supports_citations = False
 
     def __init__(
         self,

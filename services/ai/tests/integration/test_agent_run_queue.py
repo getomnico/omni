@@ -57,8 +57,16 @@ def _policy(max_attempts: int = 3) -> AgentRunRetryPolicy:
 
 def _app_state_with_llm(mock_llm) -> AppState:
     app_state = AppState()
-    app_state.models = {"mock-model": mock_llm}
-    app_state.default_model_id = "mock-model"
+    from provider_cache import ResolvedModel
+    async def _resolve_for_model(model_id: str):
+        return ResolvedModel(provider=mock_llm, model_record_id=model_id, model_name="mock-model")
+    async def _resolve_default():
+        return ResolvedModel(provider=mock_llm, model_record_id="mock-model", model_name="mock-model")
+    async def _resolve_secondary_or_default():
+        return ResolvedModel(provider=mock_llm, model_record_id="mock-model", model_name="mock-model")
+    app_state.provider_cache.resolve_for_model = _resolve_for_model
+    app_state.provider_cache.resolve_default = _resolve_default
+    app_state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
     app_state.searcher_tool = AsyncMock()
     app_state.content_storage = AsyncMock()
     app_state.redis_client = None

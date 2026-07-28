@@ -202,7 +202,19 @@ class GeminiProvider(LLMProvider):
 
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
-        self.client = genai.Client(api_key=api_key)
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(
+                    attempts=3,
+                    initial_delay=1.0,
+                    max_delay=30.0,
+                    exp_base=2.0,
+                    jitter=0.5,
+                    http_status_codes=[429, 500, 502, 503],
+                )
+            ),
+        )
         self.model = model
         self.model_name = model
         self._context_window_info: ContextWindowInfo | None = None
@@ -227,25 +239,22 @@ class GeminiProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Gemini, yielding Anthropic-compatible MessageStreamEvents."""
         try:
+            active_model = model or self.model
             contents = _convert_messages_to_gemini(
                 messages or [{"role": "user", "content": prompt}]
             )
 
             config = types.GenerateContentConfig(
                 max_output_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
             )
-
-            if top_p is not None:
-                config.top_p = top_p
 
             if system_prompt:
                 config.system_instruction = system_prompt
@@ -257,7 +266,7 @@ class GeminiProvider(LLMProvider):
                 )
 
             logger.info(
-                f"Model: {self.model}, Messages: {len(contents)}, Max tokens: {config.max_output_tokens}"
+                f"Model: {active_model}, Messages: {len(contents)}, Max tokens: {config.max_output_tokens}"
             )
 
             # Emit message_start
@@ -268,7 +277,7 @@ class GeminiProvider(LLMProvider):
                     type="message",
                     role="assistant",
                     content=[],
-                    model=self.model,
+                    model=active_model,
                     usage=Usage(input_tokens=0, output_tokens=0),
                 ),
             )
@@ -279,7 +288,7 @@ class GeminiProvider(LLMProvider):
             last_usage_metadata = None
 
             async for chunk in await self.client.aio.models.generate_content_stream(
-                model=self.model,
+                model=active_model,
                 contents=contents,
                 config=config,
             ):
@@ -390,7 +399,7 @@ class GeminiProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
                 is_context_overflow=_gemini_context_overflow(e),
@@ -400,20 +409,18 @@ class GeminiProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from Gemini."""
         try:
+            active_model = model or self.model
             config = types.GenerateContentConfig(
                 max_output_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
             )
-            if top_p is not None:
-                config.top_p = top_p
 
             response = await self.client.aio.models.generate_content(
-                model=self.model,
+                model=active_model,
                 contents=prompt,
                 config=config,
             )
@@ -437,18 +444,23 @@ class GeminiProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
                 is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
-    async def health_check(self) -> bool:
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
         """Check if Gemini API is accessible."""
         try:
+            active_model = model or self.model
             config = types.GenerateContentConfig(max_output_tokens=1)
             await self.client.aio.models.generate_content(
-                model=self.model,
+                model=active_model,
                 contents="Hello",
                 config=config,
             )

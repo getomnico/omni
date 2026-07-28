@@ -384,6 +384,7 @@ class ModelRecord:
     config: dict
     created_at: datetime
     updated_at: datetime
+    provider_updated_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ModelRecord":
@@ -403,6 +404,7 @@ class ModelRecord:
             config=config,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            provider_updated_at=row.get("provider_updated_at"),
         )
 
 

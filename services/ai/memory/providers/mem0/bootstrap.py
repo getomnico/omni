@@ -156,16 +156,20 @@ async def build_mem0_config(
     history_db_path: str,
 ) -> MemoryConfig:
     """Assemble mem0's `MemoryConfig` from in-process AI-service state."""
-    if not app_state.models:
-        raise MemoryConfigError("No LLM models configured")
+    cache = app_state.provider_cache
 
     config_repo = ConfigurationRepository()
     memory_cfg = await config_repo.get_global("memory_llm_id")
     memory_llm_id = memory_cfg.get("value") if memory_cfg else None
 
-    llm_provider = _pick_memory_llm(
-        app_state.models, memory_llm_id, app_state.default_model_id
-    )
+    resolved = None
+    if memory_llm_id is not None:
+        resolved = await cache.resolve_for_model(memory_llm_id)
+    if resolved is None:
+        resolved = await cache.resolve_default()
+    if resolved is None:
+        raise MemoryConfigError("No LLM models configured")
+    llm_provider = resolved.provider
 
     embed_cfg = await get_embedding_config()
     if embed_cfg is None:

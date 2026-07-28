@@ -58,6 +58,7 @@ class CannedSummaryProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         if self.fail_on_generate:
             raise AssertionError("summary provider should not have been called")
@@ -76,6 +77,7 @@ class CannedSummaryProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         raise NotImplementedError
         yield  # pragma: no cover
@@ -110,6 +112,7 @@ class RecordingTargetProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         return "target response", TokenUsage(input_tokens=1, output_tokens=1)
 
@@ -122,6 +125,7 @@ class RecordingTargetProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         recorded = list(messages or [])
         self.recorded_messages.append(recorded)
@@ -220,12 +224,20 @@ def _app_state_with_providers(
     summary_provider: CannedSummaryProvider,
 ) -> AppState:
     state = AppState()
-    state.models = {
-        target_model_id: target_provider,
-        summary_model_id: summary_provider,
-    }
-    state.default_model_id = target_model_id
-    state.secondary_model_id = summary_model_id
+    from provider_cache import ResolvedModel
+    async def _resolve_for_model(model_id: str):
+        if model_id == target_model_id:
+            return ResolvedModel(provider=target_provider, model_record_id=model_id, model_name=model_id)
+        if model_id == summary_model_id:
+            return ResolvedModel(provider=summary_provider, model_record_id=model_id, model_name=model_id)
+        return None
+    async def _resolve_default():
+        return ResolvedModel(provider=target_provider, model_record_id=target_model_id, model_name=target_model_id)
+    async def _resolve_secondary_or_default():
+        return ResolvedModel(provider=summary_provider, model_record_id=summary_model_id, model_name=summary_model_id)
+    state.provider_cache.resolve_for_model = _resolve_for_model
+    state.provider_cache.resolve_default = _resolve_default
+    state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
     searcher_tool = AsyncMock()
     searcher_tool.client = _DummySearcherClient()
     state.searcher_tool = searcher_tool

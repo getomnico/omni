@@ -27,8 +27,6 @@ from anthropic.types import (
 from config import (
     AGENT_MAX_ITERATIONS,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
 )
 from db.compactions import CompactionsRepository
 from db.models import ChatMessage, UserConfiguration
@@ -92,6 +90,8 @@ async def event_stream_with_context_retry(
     compactor: ConversationCompactor,
     latest_compaction_summary: str | None,
     summarizer_context_window_tokens: int,
+    model_record_id: str | None = None,
+    model_name: str | None = None,
 ) -> AsyncIterator[MessageStreamEvent | CompactionStart | CompactionEnd]:
     """Stream events from the LLM provider with one automatic compaction retry
     on context-overflow errors.
@@ -104,8 +104,8 @@ async def event_stream_with_context_retry(
             UsageRepository(),
             UsageContext(
                 user_id=chat_user_id,
-                model_id=llm_provider.model_record_id,
-                model_name=llm_provider.model_name,
+                model_id=model_record_id or llm_provider.model_record_id,
+                model_name=model_name or llm_provider.model_name,
                 provider_type=llm_provider.provider_type,
                 purpose=UsagePurpose.CHAT,
                 chat_id=chat_id,
@@ -127,9 +127,8 @@ async def event_stream_with_context_retry(
             messages=provider_messages,
             tools=turn_tools,
             max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=DEFAULT_TEMPERATURE,
-            top_p=DEFAULT_TOP_P,
             system_prompt=provider_system_prompt,
+            model=model_name or llm_provider.model_name,
         )
         processed_stream = tracker.wrap_stream(raw_stream)
         if citable_index:
@@ -383,6 +382,8 @@ async def prepare_and_stream_chat(
     target_provider: LLMProvider,
     initial_tools: list[ToolParam],
     llm_provider: LLMProvider,
+    model_record_id: str | None = None,
+    model_name: str | None = None,
     chat_user_id: str,
     tool_user_id: str | None = None,
     user_email: str | None = None,
@@ -500,6 +501,8 @@ async def prepare_and_stream_chat(
             approvals_repo=approvals_repo,
             pending_interventions=pending_interventions,
             original_user_query=original_user_query,
+            model_record_id=model_record_id,
+            model_name=model_name,
         ):
             yield event
     except asyncio.CancelledError:
@@ -555,6 +558,8 @@ async def stream_generator(
     approvals_repo=None,
     pending_interventions: list[ToolApproval] | None = None,
     original_user_query: str | None = None,
+    model_record_id: str | None = None,
+    model_name: str | None = None,
 ) -> AsyncIterator[str]:
     """Core agent loop: yields SSE event strings.
 
@@ -714,6 +719,8 @@ async def stream_generator(
                     compactor,
                     latest_compaction_summary,
                     summarizer_context_window_tokens,
+                    model_record_id=model_record_id,
+                    model_name=model_name,
                 )
 
                 event_index = 0

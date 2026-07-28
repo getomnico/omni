@@ -55,6 +55,7 @@ markers = [
     "unit: Unit tests (no external dependencies)",
     "integration: Integration tests (require DB/Redis)",
     "slow: Slow tests (skip with -m 'not slow')",
+    "real_llm: Tests against real LLM APIs (require API keys in .env)",
 ]
 
 [tool.coverage.run]

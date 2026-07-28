@@ -89,7 +89,7 @@ class ModelsRepository:
         query = """
             SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
                    m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
-                   mp.provider_type, mp.config
+                   mp.provider_type, mp.config, mp.updated_at AS provider_updated_at
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id
             WHERE m.is_deleted = FALSE AND mp.is_deleted = FALSE
@@ -104,7 +104,7 @@ class ModelsRepository:
         query = """
             SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
                    m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
-                   mp.provider_type, mp.config
+                   mp.provider_type, mp.config, mp.updated_at AS provider_updated_at
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id
             WHERE m.id = $1
@@ -120,10 +120,27 @@ class ModelsRepository:
         query = """
             SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
                    m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
-                   mp.provider_type, mp.config
+                   mp.provider_type, mp.config, mp.updated_at AS provider_updated_at
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id
             WHERE m.is_default = TRUE AND m.is_deleted = FALSE AND mp.is_deleted = FALSE
+            LIMIT 1
+        """
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(query)
+        if row:
+            return ModelRecord.from_row(dict(row))
+        return None
+
+    async def get_secondary(self) -> Optional[ModelRecord]:
+        pool = await self._get_pool()
+        query = """
+            SELECT m.id, m.model_provider_id, m.model_id, m.display_name,
+                   m.is_default, m.is_secondary, m.is_deleted, m.created_at, m.updated_at,
+                   mp.provider_type, mp.config, mp.updated_at AS provider_updated_at
+            FROM models m
+            JOIN model_providers mp ON m.model_provider_id = mp.id
+            WHERE m.is_secondary = TRUE AND m.is_deleted = FALSE AND mp.is_deleted = FALSE
             LIMIT 1
         """
         async with pool.acquire() as conn:
