@@ -139,6 +139,16 @@ async fn apply_first_upgrade_local_edit_detection(
         return Ok(());
     }
 
+    // If the current version is not a valid semver tag (e.g. "master"),
+    // skip the GitHub API lookup and conservatively treat changes as local edits.
+    if !releases::is_semver_tag(&current_version) {
+        println!(
+            "Current OMNI_VERSION {current_version} is not a semver tag; treating changed existing managed files as local edits."
+        );
+        managed_files::mark_changed_existing_files_as_local_edits(file_changes);
+        return Ok(());
+    }
+
     let current_release = match releases::resolve_release(Some(current_version)).await {
         Ok(release) => release,
         Err(error) => {

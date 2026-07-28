@@ -56,6 +56,19 @@ pub fn print_file_changes(changes: &[FileChange]) {
         ]);
     }
     println!("{table}");
+
+    // Show diffs for files that have changes
+    for change in changes {
+        if let Some(diff) = &change.diff {
+            if change.changed {
+                println!("\n--- {} (release)", change.path);
+                println!("+++ {} (local)", change.path);
+                for line in diff.lines() {
+                    println!("{line}");
+                }
+            }
+        }
+    }
 }
 
 fn status_cell(status: &CheckStatus) -> Cell {

@@ -159,6 +159,9 @@ struct VersionArgs {
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
+    /// Check for newer Omni release and CLI version on GitHub.
+    #[arg(long)]
+    check: bool,
 }
 
 #[derive(Debug, Args, Clone)]
