@@ -145,6 +145,11 @@ class ActionDefinition(BaseModel):
     # Hidden from every chat/agent tool surface, admins included (unlike
     # admin_only, not bypassed for admin users). Still dispatchable by name.
     hidden: bool = False
+    # OAuth scopes required to invoke this action, when declared by the
+    # connector or its upstream MCP tool metadata.
+    # None means the connector has not declared action-level scopes and
+    # Omni should fall back to the coarse credential-existence check.
+    required_scopes: list[str] | None = None
 
 
 class SearchOperator(BaseModel):

@@ -3,6 +3,7 @@ import {
   DocumentMetadataSchema,
   DocumentPermissionsSchema,
   DocumentSchema,
+  ActionDefinitionSchema,
   ConnectorManifestSchema,
   SyncRequestSchema,
   EventType,
@@ -94,6 +95,30 @@ describe('DocumentSchema', () => {
     const doc = { title: 'Missing ID' };
     const result = DocumentSchema.safeParse(doc);
     expect(result.success).toBe(false);
+  });
+});
+
+describe('ActionDefinitionSchema', () => {
+  const action = {
+    name: 'example',
+    description: 'Example action',
+    input_schema: {},
+    mode: 'read' as const,
+  };
+
+  it('keeps omitted required scopes undeclared', () => {
+    const result = ActionDefinitionSchema.parse(action);
+
+    expect(result.required_scopes).toBeUndefined();
+  });
+
+  it('preserves an explicit empty required scope list', () => {
+    const result = ActionDefinitionSchema.parse({
+      ...action,
+      required_scopes: [],
+    });
+
+    expect(result.required_scopes).toEqual([]);
   });
 });
 

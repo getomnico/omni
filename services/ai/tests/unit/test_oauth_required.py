@@ -11,6 +11,7 @@ import respx
 from httpx import Response
 
 import tools.connector_handler as connector_handler_module
+from db.models import Source
 from tools.connector_handler import ConnectorAction, ConnectorToolHandler
 from tools.omni_tool_result import (
     OAuthRequiredPayload,
@@ -20,6 +21,49 @@ from tools.omni_tool_result import (
 from tools.registry import ToolContext
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_manifest_preserves_undeclared_and_explicit_empty_action_scopes():
+    source = Source(
+        id="src-1",
+        source_type="example",
+        name="Example",
+        is_active=True,
+        is_deleted=False,
+    )
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://cm.test",
+        user_id="user-1",
+        prefetched_sources=[source],
+    )
+    manifest = {
+        "source_type": "example",
+        "healthy": True,
+        "manifest": {
+            "actions": [
+                {
+                    "name": "undeclared",
+                    "description": "No action-level scope metadata",
+                },
+                {
+                    "name": "explicit_empty",
+                    "description": "Explicitly requires no OAuth scopes",
+                    "required_scopes": [],
+                },
+            ]
+        },
+    }
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get("http://cm.test/connectors").mock(
+            return_value=Response(200, json=[manifest])
+        )
+        actions = await handler._fetch_actions()
+
+    by_name = {action.action_name: action for action in actions}
+    assert by_name["undeclared"].required_scopes is None
+    assert by_name["explicit_empty"].required_scopes == []
 
 
 def _register_action(handler: ConnectorToolHandler, source_id: str) -> None:

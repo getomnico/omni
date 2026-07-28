@@ -272,7 +272,7 @@ class ConnectorToolHandler:
                                 "input_schema", {"type": "object", "properties": {}}
                             ),
                             mode=action_def.get("mode", "write"),
-                            required_scopes=action_def.get("required_scopes", []),
+                            required_scopes=action_def.get("required_scopes"),
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
                             integration_type=integration_type,
@@ -421,7 +421,13 @@ class ConnectorToolHandler:
                 context.user_id,
             )
             if user_credential is not None:
-                required_scopes = set(action.required_scopes or [])
+                # None = connector has not declared action-level scopes.
+                # Fall back to original behavior: credential existence is
+                # sufficient and Omni does not attempt incremental consent.
+                if action.required_scopes is None:
+                    return None
+
+                required_scopes = set(action.required_scopes)
                 config = user_credential["config"] or {}
                 if isinstance(config, str):
                     try:

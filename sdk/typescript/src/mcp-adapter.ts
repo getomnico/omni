@@ -305,7 +305,7 @@ export class McpAdapter {
         ? meta.required_scopes.filter(
             (scope): scope is string => typeof scope === 'string'
           )
-        : [];
+        : undefined;
       actions.push({
         name: tool.name,
         description: tool.description ?? '',

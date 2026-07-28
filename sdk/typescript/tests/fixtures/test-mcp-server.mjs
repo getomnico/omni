@@ -33,6 +33,19 @@ function buildServer() {
     })
   );
 
+  server.registerTool(
+    'ping',
+    {
+      description: 'Return pong without requiring OAuth scopes',
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+      _meta: { required_scopes: [] },
+    },
+    async () => ({
+      content: [{ type: 'text', text: 'pong' }],
+    })
+  );
+
   server.resource(
     'item',
     new ResourceTemplate('test://item/{item_id}', { list: undefined }),
