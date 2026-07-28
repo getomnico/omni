@@ -21,13 +21,13 @@
         "db:studio": "drizzle-kit studio"
     },
     "devDependencies": {
-        "@eslint/compat": "^1.2.5",
+        "@eslint/compat": "^2.1.0",
         "@eslint/js": "^9.18.0",
         "@internationalized/date": "^3.11.0",
         "@lucide/svelte": "^0.561.0",
         "@playwright/test": "^1.55.1",
         "@sveltejs/adapter-node": "^5.5.4",
-        "@sveltejs/kit": "^2.60.1",
+        "@sveltejs/kit": "^2.70.1",
         "@sveltejs/vite-plugin-svelte": "^5.0.0",
         "@tailwindcss/forms": "^0.5.9",
         "@tailwindcss/typography": "^0.5.15",
@@ -38,7 +38,7 @@
         "bits-ui": "^2.15.5",
         "clsx": "^2.1.1",
         "drizzle-kit": "^0.31.10",
-        "eslint": "^9.18.0",
+        "eslint": "^10.8.0",
         "eslint-config-prettier": "^10.0.1",
         "eslint-plugin-svelte": "^3.0.0",
         "globals": "^16.0.0",
@@ -87,6 +87,7 @@
         "protobufjs": "^7.6.3",
         "js-yaml": "^4.3.0",
         "esbuild": "0.25.12",
-        "cookie": "0.7.2"
+        "cookie": "0.7.2",
+        "brace-expansion": "^5.0.8"
     }
 }

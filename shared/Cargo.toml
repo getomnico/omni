@@ -43,9 +43,9 @@ bytes = "1.5"
 
 # Content extraction
 docx-rs = "0.4"
-calamine = "0.34"
+calamine = "0.36"
 zip = "8.4"
-quick-xml = "0.39"
+quick-xml = "0.41"
 pdf_oxide = "0.3"
 htmd = "0.5"
 mail-parser = "0.11"
