@@ -50,6 +50,7 @@ from db.users import UsersRepository
 from memory import MemoryMode, agent_key, resolve_memory_mode
 from prompts import build_agent_system_prompt
 from providers import LLMProvider, ProviderError
+from provider_cache import ResolvedModel
 from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
@@ -110,17 +111,16 @@ AgentContentBlock = (
 )
 
 
-def _resolve_llm_provider(state: AppState, agent: Agent) -> LLMProvider:
-    """Resolve which LLM provider to use for an agent."""
-    models = state.models
-    if not models:
-        raise RuntimeError("No models configured")
-
-    if agent.model_id and agent.model_id in models:
-        return models[agent.model_id]
-    if state.default_model_id and state.default_model_id in models:
-        return models[state.default_model_id]
-    return next(iter(models.values()))
+async def _resolve_llm_provider(state: AppState, agent: Agent) -> ResolvedModel:
+    """Resolve which LLM provider to use for an agent from the database."""
+    if not agent.model_id:
+        raise RuntimeError("Agent has no model configured")
+    resolved = await state.provider_cache.resolve_for_model(agent.model_id)
+    if resolved is None:
+        raise RuntimeError(
+            f"Agent model {agent.model_id} is no longer available"
+        )
+    return resolved
 
 
 async def _fetch_sources() -> list[Source] | None:
@@ -459,7 +459,10 @@ async def _run_agent_loop(
 
     logger.info("Agent %s run %s: initializing", agent.id, run.id)
 
-    llm_provider = _resolve_llm_provider(app_state, agent)
+    resolved_model = await _resolve_llm_provider(app_state, agent)
+    llm_provider = resolved_model.provider
+    llm_model_record_id = resolved_model.model_record_id
+    llm_model_name = resolved_model.model_name
     sources = await _fetch_sources()
 
     # Each agent run starts with no connector tools loaded — discovery is per-run.
@@ -538,21 +541,26 @@ async def _run_agent_loop(
     )
 
     # Compaction support — use secondary model for summarization when available
-    secondary_provider = llm_provider
-    if (
-        app_state.secondary_model_id
-        and app_state.secondary_model_id in app_state.models
-    ):
-        secondary_provider = app_state.models[app_state.secondary_model_id]
+    secondary_resolved = await app_state.provider_cache.resolve_secondary_or_default()
+    if secondary_resolved is not None:
+        secondary_provider = secondary_resolved.provider
+        secondary_model_record_id = secondary_resolved.model_record_id
+        secondary_model_name = secondary_resolved.model_name
+    else:
+        secondary_provider = llm_provider
+        secondary_model_record_id = llm_model_record_id
+        secondary_model_name = llm_model_name
+
+    secondary_model_provider_type = secondary_provider.provider_type
 
     def _on_compaction_usage(usage):
         track_usage(
             UsageRepository(),
             UsageContext(
                 user_id=agent.user_id if not is_org_agent else None,
-                model_id=secondary_provider.model_record_id,
-                model_name=secondary_provider.model_name,
-                provider_type=secondary_provider.provider_type,
+                model_id=secondary_model_record_id,
+                model_name=secondary_model_name,
+                provider_type=secondary_model_provider_type,
                 purpose=UsagePurpose.COMPACTION,
                 agent_run_id=run.id,
             ),
@@ -564,6 +572,7 @@ async def _run_agent_loop(
 
     compactor = ConversationCompactor(
         llm_provider=secondary_provider,
+        model_name=secondary_model_name,
         on_usage=_on_compaction_usage,
     )
     compactions_repo = CompactionsRepository()
@@ -615,8 +624,8 @@ async def _run_agent_loop(
                 usage_repo,
                 UsageContext(
                     user_id=agent.user_id if not is_org_agent else None,
-                    model_id=llm_provider.model_record_id,
-                    model_name=llm_provider.model_name,
+                    model_id=llm_model_record_id,
+                    model_name=llm_model_name,
                     provider_type=llm_provider.provider_type,
                     purpose=UsagePurpose.AGENT_RUN,
                     agent_run_id=run.id,
@@ -629,6 +638,7 @@ async def _run_agent_loop(
                 tools=turn_tools,
                 max_tokens=DEFAULT_MAX_TOKENS,
                 system_prompt=system_prompt,
+                model=llm_model_name,
             )
 
             try:
@@ -774,8 +784,8 @@ async def _run_agent_loop(
         UsageRepository(),
         UsageContext(
             user_id=agent.user_id if not is_org_agent else None,
-            model_id=llm_provider.model_record_id,
-            model_name=llm_provider.model_name,
+            model_id=llm_model_record_id,
+            model_name=llm_model_name,
             provider_type=llm_provider.provider_type,
             purpose=UsagePurpose.AGENT_SUMMARY,
             agent_run_id=run.id,
@@ -787,6 +797,7 @@ async def _run_agent_loop(
         tools=[],
         max_tokens=500,
         system_prompt=system_prompt,
+        model=llm_model_name,
     )
     async for event in summary_tracker.wrap_stream(raw_summary_stream):
         if event.type == "content_block_start" and event.content_block.type == "text":

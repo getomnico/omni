@@ -15,13 +15,10 @@ from db_config import (
 )
 from db import (
     EmbeddingProvidersRepository,
-    ModelRecord,
-    ModelsRepository,
     WebFetchProvidersRepository,
     WebSearchProvidersRepository,
 )
 from db.listener import start_db_listener
-from providers import create_llm_provider, LLMProvider
 from embeddings import create_embedding_provider
 from tools import SearcherTool
 from storage import create_content_storage
@@ -33,111 +30,14 @@ from state import AppState
 logger = logging.getLogger(__name__)
 
 
-def _create_provider_from_model_record(record: ModelRecord) -> LLMProvider:
-    """Instantiate an LLMProvider from a model+provider database record."""
-    config = record.config
-    provider_type = record.provider_type
-    model_id = record.model_id
-
-    if provider_type == "openai_compatible":
-        base_url = config.get("apiUrl")
-        if not base_url:
-            raise ValueError("apiUrl is required in openai_compatible provider config")
-        return create_llm_provider(
-            "openai_compatible",
-            base_url=base_url,
-            api_key=config.get("apiKey"),
-            model=model_id,
-        )
-
-    elif provider_type == "anthropic":
-        return create_llm_provider(
-            "anthropic",
-            api_key=config.get("apiKey"),
-            model=model_id,
-        )
-
-    elif provider_type == "bedrock":
-        region_name = config.get("regionName") or AWS_REGION or None
-        return create_llm_provider(
-            "bedrock",
-            model_id=model_id,
-            region_name=region_name,
-        )
-
-    elif provider_type == "openai":
-        return create_llm_provider(
-            "openai",
-            api_key=config.get("apiKey"),
-            model=model_id,
-        )
-
-    elif provider_type == "gemini":
-        return create_llm_provider(
-            "gemini",
-            api_key=config.get("apiKey"),
-            model=model_id,
-        )
-
-    elif provider_type == "azure_foundry":
-        return create_llm_provider(
-            "azure_foundry",
-            endpoint_url=config.get("apiUrl", ""),
-            model=model_id,
-        )
-
-    elif provider_type == "vertex_ai":
-        return create_llm_provider(
-            "vertex_ai",
-            region=config.get("regionName", ""),
-            project_id=config.get("projectId", ""),
-            model=model_id,
-        )
-
-    else:
-        raise ValueError(f"Unknown provider type: {provider_type}")
-
-
 async def load_models(app_state: AppState) -> None:
-    """Load all active models from the database and populate app_state."""
-    repo = ModelsRepository()
-    records = await repo.list_active()
+    """Reload model cache from the database.
 
-    models: dict[str, LLMProvider] = {}
-    default_id: str | None = None
-    secondary_id: str | None = None
-
-    for record in records:
-        try:
-            provider = _create_provider_from_model_record(record)
-            # provider_type is a class attribute on each leaf provider; model_name
-            # is set in the factory. Only model_record_id needs the loader.
-            provider.model_record_id = record.id
-            models[record.id] = provider
-            logger.info(
-                f"Initialized model '{record.display_name}' (type={record.provider_type}, model={record.model_id}, id={record.id})"
-            )
-            if record.is_default:
-                default_id = record.id
-            if record.is_secondary:
-                secondary_id = record.id
-        except Exception as e:
-            logger.error(
-                f"Failed to initialize model '{record.display_name}' (id={record.id}): {e}"
-            )
-
-    app_state.models = models
-    app_state.default_model_id = default_id
-    app_state.secondary_model_id = secondary_id
-
-    if not models:
-        logger.warning(
-            "No models configured — chat will be unavailable until models are added"
-        )
-    else:
-        logger.info(
-            f"Loaded {len(models)} model(s), default={default_id}, secondary={secondary_id}"
-        )
+    With DB-backed resolution the cache is populated on demand, so this
+    just clears the cache to force a fresh fetch next time.
+    """
+    app_state.provider_cache.clear()
+    logger.info("Provider cache cleared (will reload on next request)")
 
 
 async def _init_embedding_provider(app_state: AppState) -> None:
@@ -300,25 +200,7 @@ async def reload_web_fetch_provider(app_state: AppState) -> None:
     await _init_web_fetch_provider(app_state)
 
 
-def _handle_model_provider_notification(app_state: AppState, payload: dict) -> None:
-    """Handle model_provider_changed notification — update default/secondary pointers."""
-    model_id = payload.get("id", "").strip()
-    if not model_id or model_id not in app_state.models:
-        return
 
-    if payload.get("is_default"):
-        app_state.default_model_id = model_id
-        logger.info(f"Default model updated to {model_id} via NOTIFY")
-    elif app_state.default_model_id == model_id:
-        app_state.default_model_id = None
-        logger.info(f"Default model cleared (was {model_id}) via NOTIFY")
-
-    if payload.get("is_secondary"):
-        app_state.secondary_model_id = model_id
-        logger.info(f"Secondary model updated to {model_id} via NOTIFY")
-    elif app_state.secondary_model_id == model_id:
-        app_state.secondary_model_id = None
-        logger.info(f"Secondary model cleared (was {model_id}) via NOTIFY")
 
 
 def _handle_embedding_provider_notification(app_state: AppState, payload: dict) -> None:
@@ -345,43 +227,21 @@ def _handle_web_fetch_provider_notification(app_state: AppState, payload: dict) 
     asyncio.create_task(reload_web_fetch_provider(app_state))
 
 
-async def _refresh_model_flags(app_state: AppState) -> None:
-    """Re-read default/secondary model flags from DB (catch-up after reconnect)."""
-    repo = ModelsRepository()
-    records = await repo.list_active()
-    default_id: str | None = None
-    secondary_id: str | None = None
-    for record in records:
-        if record.is_default:
-            default_id = record.id
-        if record.is_secondary:
-            secondary_id = record.id
-    app_state.default_model_id = default_id
-    app_state.secondary_model_id = secondary_id
-    logger.info(
-        f"Refreshed model flags: default={default_id}, secondary={secondary_id}"
-    )
+
 
 
 async def initialize_providers(app_state: AppState) -> None:
     """Initialize all providers (embedding, LLM, tools, storage)."""
     await _init_embedding_provider(app_state)
 
-    # Initialize models from database
-    await load_models(app_state)
-
     # Start DB listener for real-time config change notifications
     async def _on_reconnect():
-        await _refresh_model_flags(app_state)
         await reload_embedding_provider(app_state)
         await reload_web_search_provider(app_state)
         await reload_web_fetch_provider(app_state)
 
     app_state.listener_task = await start_db_listener(
         channels={
-            "model_provider_changed": lambda payload: _handle_model_provider_notification(
-                app_state, payload
-            ),
             "embedding_provider_changed": lambda payload: _handle_embedding_provider_notification(
                 app_state, payload
             ),

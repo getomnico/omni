@@ -102,18 +102,21 @@ class OpenAIProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from OpenAI Responses API, yielding Anthropic-compatible MessageStreamEvents."""
         try:
+            active_model = model or self.model
             input_items = self._convert_messages(
                 messages or [{"role": "user", "content": prompt}]
             )
 
             request_params: dict[str, Any] = {
-                "model": self.model,
+                "model": active_model,
                 "input": input_items,
                 "max_output_tokens": _effective_max_output_tokens(
-                    self.model, max_tokens
+                    active_model, max_tokens
                 ),
                 "stream": True,
             }
@@ -128,7 +131,7 @@ class OpenAIProvider(LLMProvider):
                 )
 
             logger.info(
-                f"Model: {self.model}, Input items: {len(input_items)}, Max tokens: {request_params['max_output_tokens']}"
+                f"Model: {active_model}, Input items: {len(input_items)}, Max tokens: {request_params['max_output_tokens']}"
             )
 
             stream = await self.client.responses.create(**request_params)
@@ -286,7 +289,7 @@ class OpenAIProvider(LLMProvider):
                     raise ProviderError(
                         msg,
                         provider_type=self.provider_type,
-                        model=self.model_name,
+                        model=model or self.model_name,
                         is_context_overflow=code == "context_length_exceeded",
                     )
 
@@ -302,7 +305,7 @@ class OpenAIProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_openai_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_context_overflow(e),
@@ -407,18 +410,21 @@ class OpenAIProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from OpenAI Responses API."""
         try:
+            active_model = model or self.model
             # Reasoning models consume their internal reasoning chain against
             # max_output_tokens before producing any visible text. Enforce a
             # minimum so short utility calls, like title generation, still have
             # room to write an answer.
             effective_max_tokens = _effective_max_output_tokens(
-                self.model, max_tokens
+                active_model, max_tokens
             )
             params: dict[str, Any] = {
-                "model": self.model,
+                "model": active_model,
                 "input": prompt,
                 "max_output_tokens": effective_max_tokens,
                 "stream": False,
@@ -462,19 +468,24 @@ class OpenAIProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_openai_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_context_overflow(e),
             ) from e
 
-    async def health_check(self) -> bool:
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
         """Check if OpenAI API is accessible."""
         try:
+            active_model = model or self.model
             await self.client.responses.create(
-                model=self.model,
+                model=active_model,
                 input="Hello",
-                max_output_tokens=_effective_max_output_tokens(self.model, 16),
+                max_output_tokens=_effective_max_output_tokens(active_model, 16),
                 stream=False,
             )
             return True

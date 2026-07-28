@@ -110,7 +110,7 @@ class BedrockProvider(LLMProvider):
         else:
             self.client = boto3.client("bedrock-runtime", region_name=region_name)
 
-    def _to_provider_error(self, e: Exception) -> ProviderError:
+    def _to_provider_error(self, e: Exception, model: str | None = None) -> ProviderError:
         is_context_overflow = False
         if isinstance(e, ClientError):
             error = e.response.get("Error", {})
@@ -131,7 +131,7 @@ class BedrockProvider(LLMProvider):
         return ProviderError(
             body,
             provider_type=self.provider_type,
-            model=self.model_name,
+            model=model or self.model_name,
             status_code=status,
             cause=e,
             is_context_overflow=is_context_overflow,
@@ -602,7 +602,7 @@ class BedrockProvider(LLMProvider):
                     messages = [{"role": "user", "content": [{"text": prompt}]}]
 
                 request_params = {
-                    "modelId": self.model_id,
+                    "modelId": active_model,
                     "messages": messages,
                     "inferenceConfig": {
                         "maxTokens": max_tokens or 4096,
@@ -643,22 +643,25 @@ class BedrockProvider(LLMProvider):
                 f"[BEDROCK] AWS Bedrock client error ({error_code}): {str(e)}",
                 exc_info=True,
             )
-            raise self._to_provider_error(e) from e
+            raise self._to_provider_error(e, model=model) from e
         except Exception as e:
             logger.error(
                 f"[BEDROCK] Failed to stream from AWS Bedrock: {str(e)}", exc_info=True
             )
-            raise self._to_provider_error(e) from e
+            raise self._to_provider_error(e, model=model) from e
 
     async def generate_response(
         self,
         prompt: str,
         max_tokens: int | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from AWS Bedrock Claude models."""
         try:
+            active_model = model or self.model_id
             logger.info(
-                f"[BEDROCK] Generating non-streaming response using model {self.model_id}"
+                f"[BEDROCK] Generating non-streaming response using model {active_model}"
             )
             if self.model_family == "anthropic":
                 # Prepare the request body for Claude models
@@ -667,7 +670,7 @@ class BedrockProvider(LLMProvider):
                 ]
 
                 request_params: dict[str, Any] = {
-                    "model": self.model_id,
+                    "model": active_model,
                     "messages": conversation,
                     "max_tokens": max_tokens or 4096,
                 }
@@ -699,7 +702,7 @@ class BedrockProvider(LLMProvider):
                 conversation = [{"role": "user", "content": [{"text": prompt}]}]
 
                 response = self.client.converse(
-                    modelId=self.model_id,
+                    modelId=active_model,
                     messages=conversation,
                     inferenceConfig={
                         "maxTokens": max_tokens or 512,
@@ -721,14 +724,19 @@ class BedrockProvider(LLMProvider):
 
         except ClientError as e:
             logger.error(f"AWS Bedrock client error: {str(e)}")
-            raise self._to_provider_error(e) from e
+            raise self._to_provider_error(e, model=model) from e
         except Exception as e:
             logger.error(f"Failed to generate response from AWS Bedrock: {str(e)}")
-            raise self._to_provider_error(e) from e
+            raise self._to_provider_error(e, model=model) from e
 
-    async def health_check(self) -> bool:
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
         """Check if AWS Bedrock service is accessible."""
         try:
+            active_model = model or self.model_id
             # Try a minimal request to check service accessibility
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
@@ -737,7 +745,7 @@ class BedrockProvider(LLMProvider):
             }
 
             response = self.client.invoke_model(
-                modelId=self.model_id,
+                modelId=active_model,
                 body=json.dumps(body),
                 contentType="application/json",
                 accept="application/json",

@@ -96,6 +96,8 @@ class AzureFoundryProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         try:
             async for event in self._delegate.stream_response(
@@ -104,13 +106,14 @@ class AzureFoundryProvider(LLMProvider):
                 tools=tools,
                 messages=messages,
                 system_prompt=system_prompt,
+                model=model,
             ):
                 yield event
         except ProviderError as e:
             raise ProviderError(
                 e.message,
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=e.status_code,
                 cause=e,
                 is_context_overflow=e.is_context_overflow,
@@ -120,21 +123,28 @@ class AzureFoundryProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         try:
             return await self._delegate.generate_response(
                 prompt=prompt,
                 max_tokens=max_tokens,
+                model=model,
             )
         except ProviderError as e:
             raise ProviderError(
                 e.message,
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=e.status_code,
                 cause=e,
                 is_context_overflow=e.is_context_overflow,
             ) from e
 
-    async def health_check(self) -> bool:
-        return await self._delegate.health_check()
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
+        return await self._delegate.health_check(model=model)

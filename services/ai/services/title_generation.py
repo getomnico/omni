@@ -51,6 +51,7 @@ def _fallback_chat_title(conversation_text: str) -> str:
 
 async def generate_title_for_conversation(
     llm_provider: LLMProvider,
+    model_name: str | None,
     conversation_text: str,
     chat_id: str,
 ) -> GeneratedChatTitle:
@@ -64,6 +65,7 @@ async def generate_title_for_conversation(
             generated_title, usage = await llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=512,
+                model=model_name,
             )
             title = _clean_generated_title(generated_title)
             if title:

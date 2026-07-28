@@ -104,10 +104,14 @@ class ConversationCompactor:
     def __init__(
         self,
         llm_provider: LLMProvider,
+        model_name: str | None = None,
         redis_client: Any | None = None,
         on_usage: Callable[[TokenUsage], None] | None = None,
     ):
         self.llm_provider = llm_provider
+        # Wire model name passed per-call so a cached client shared across model
+        # records still targets the correct model.
+        self.model_name = model_name
         # Kept temporarily for constructor compatibility; Redis is no longer used
         # as compaction source of truth.
         self.redis = redis_client
@@ -413,6 +417,7 @@ Summary:"""
             summary, usage = await self.llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
+                model=self.model_name,
             )
             if self._on_usage:
                 self._on_usage(usage)
@@ -473,6 +478,7 @@ Summary:"""
             summary, usage = await self.llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
+                model=self.model_name,
             )
             if self._on_usage:
                 self._on_usage(usage)

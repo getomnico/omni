@@ -273,9 +273,12 @@ class OpenAICompatibleProvider(LLMProvider):
         tools: list[ToolParam] | None = None,
         messages: list[MessageParam] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response, yielding Anthropic-compatible MessageStreamEvents."""
         try:
+            active_model = model or self.model
             openai_messages = _convert_messages_to_openai(
                 messages or [{"role": "user", "content": prompt}]
             )
@@ -287,7 +290,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 openai_messages = [system_msg] + openai_messages
 
             params: dict[str, Any] = {
-                "model": self.model,
+                "model": active_model,
                 "messages": openai_messages,
                 "max_tokens": max_tokens or 4096,
                 "stream": True,
@@ -310,7 +313,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     type="message",
                     role="assistant",
                     content=[],
-                    model=self.model,
+                    model=active_model,
                     usage=Usage(input_tokens=0, output_tokens=0),
                 ),
             )
@@ -464,7 +467,7 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_openai_compat_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
@@ -474,11 +477,14 @@ class OpenAICompatibleProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response."""
         try:
+            active_model = model or self.model
             params: dict[str, Any] = {
-                "model": self.model,
+                "model": active_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens or 4096,
                 "stream": False,
@@ -517,13 +523,17 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_openai_compat_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
             ) from e
 
-    async def health_check(self) -> bool:
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
         """Liveness is determined by inference calls themselves; no separate probe
         since not every OpenAI-compatible server exposes a common health endpoint."""
         return True

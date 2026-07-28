@@ -7,7 +7,7 @@ from datetime import datetime
 import redis.asyncio as aioredis
 
 from embeddings import EmbeddingProvider
-from providers import LLMProvider
+from provider_cache import ProviderCache
 from tools import SearcherTool
 from storage import ContentStorage
 from memory.provider import MemoryProvider
@@ -26,9 +26,7 @@ class AppState:
     embedding_provider_type: str | None = None
     embedding_provider_id: str | None = None
     embedding_provider_updated_at: datetime | None = None
-    models: dict[str, LLMProvider] = field(default_factory=dict)
-    default_model_id: str | None = None
-    secondary_model_id: str | None = None
+    provider_cache: ProviderCache = field(default_factory=ProviderCache)
     searcher_tool: SearcherTool | None = None
     web_search_provider: WebSearchProvider | None = None
     web_search_provider_type: str | None = None

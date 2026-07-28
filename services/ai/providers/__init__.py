@@ -96,8 +96,14 @@ class LLMProvider(ABC):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
-        """Stream a response from the LLM provider. Returns Anthropic MessageStreamEvent objects."""
+        """Stream a response from the LLM provider. Returns Anthropic MessageStreamEvent objects.
+
+        Args:
+            model: Override the instance's baked-in model for this call.
+        """
         pass
 
     @abstractmethod
@@ -105,16 +111,29 @@ class LLMProvider(ABC):
         self,
         prompt: str,
         max_tokens: int | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate a non-streaming response from the LLM provider.
 
         Returns (response_text, token_usage).
+
+        Args:
+            model: Override the instance's baked-in model for this call.
         """
         pass
 
     @abstractmethod
-    async def health_check(self) -> bool:
-        """Check if the provider is healthy."""
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
+        """Check if the provider is healthy.
+
+        Args:
+            model: Override the instance's baked-in model for this call.
+        """
         pass
 
 

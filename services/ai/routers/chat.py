@@ -56,6 +56,7 @@ from memory import (
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
 from providers import LLMProvider
+from provider_cache import ResolvedModel
 from services.compaction import ConversationCompactor
 from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
@@ -119,24 +120,32 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _resolve_provider(state: AppState, model_id: str | None) -> LLMProvider:
-    models = state.models
-    if not models:
-        raise HTTPException(status_code=503, detail="No models configured")
+async def _resolve_llm_provider(state: AppState, chat: Chat) -> ResolvedModel:
+    """Resolve the LLM provider for a chat from the database.
 
-    if model_id and model_id in models:
-        return models[model_id]
-    if state.default_model_id and state.default_model_id in models:
-        return models[state.default_model_id]
-    return next(iter(models.values()))
+    FAILS LOUD when the chat's model is no longer available — no silent
+    fallback to a different model.
+    """
+    if not chat.model_id:
+        raise HTTPException(status_code=503, detail="Chat has no model configured")
+
+    resolved = await state.provider_cache.resolve_for_model(chat.model_id)
+    if resolved is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This chat's model is no longer available. Please select a new model.",
+        )
+    return resolved
 
 
-def _resolve_llm_provider(state: AppState, chat: Chat) -> LLMProvider:
-    return _resolve_provider(state, chat.model_id)
-
-
-def _resolve_secondary_provider(state: AppState) -> LLMProvider:
-    return _resolve_provider(state, state.secondary_model_id or state.default_model_id)
+async def _resolve_secondary_provider(state: AppState) -> ResolvedModel:
+    """Resolve the secondary (lightweight) LLM provider from the database."""
+    resolved = await state.provider_cache.resolve_secondary_or_default()
+    if resolved is None:
+        raise HTTPException(
+            status_code=503, detail="No models configured — cannot proceed"
+        )
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +583,7 @@ class StreamChatHandler:
         if not chat:
             raise HTTPException(status_code=404, detail="Chat thread not found")
 
-        llm_provider = _resolve_llm_provider(request.app.state, chat)
+        llm_provider = await _resolve_llm_provider(request.app.state, chat)
         redis_client = request.app.state.redis_client
 
         # Reconnect/resume fast path
@@ -910,7 +919,7 @@ class StreamChatHandler:
             )
 
         # Compaction
-        secondary_provider = _resolve_secondary_provider(request.app.state)
+        secondary_provider = await _resolve_secondary_provider(request.app.state)
 
         def _on_compaction_usage(usage):
             track_usage(
@@ -919,7 +928,7 @@ class StreamChatHandler:
                     user_id=chat.user_id,
                     model_id=secondary_provider.model_record_id,
                     model_name=secondary_provider.model_name,
-                    provider_type=secondary_provider.provider_type,
+                    provider_type=secondary_provider.provider.provider_type,
                     purpose=UsagePurpose.COMPACTION,
                     chat_id=chat_id,
                 ),
@@ -930,7 +939,8 @@ class StreamChatHandler:
             )
 
         compactor = ConversationCompactor(
-            llm_provider=secondary_provider,
+            llm_provider=secondary_provider.provider,
+            model_name=secondary_provider.model_name,
             on_usage=_on_compaction_usage,
         )
         initial_tools = build_turn_tools(
@@ -947,9 +957,11 @@ class StreamChatHandler:
             messages=messages,
             compactor=compactor,
             compactions_repo=CompactionsRepository(),
-            target_provider=llm_provider,
+            target_provider=llm_provider.provider,
             initial_tools=initial_tools,
-            llm_provider=llm_provider,
+            llm_provider=llm_provider.provider,
+            model_record_id=llm_provider.model_record_id,
+            model_name=llm_provider.model_name,
             chat_user_id=chat.user_id,
             tool_user_id=tool_user_id,
             user_email=user_email,
@@ -1064,7 +1076,7 @@ async def generate_chat_title(
         if not chat:
             raise HTTPException(status_code=404, detail="Chat thread not found")
 
-        llm_provider = _resolve_secondary_provider(request.app.state)
+        llm_provider = await _resolve_secondary_provider(request.app.state)
 
         if chat.title:
             logger.info(f"Chat already has a title: {chat.title}")
@@ -1098,7 +1110,8 @@ async def generate_chat_title(
         logger.info(f"Extracted conversation text ({len(conversation_text)} chars)")
 
         title_result = await generate_title_for_conversation(
-            llm_provider,
+            llm_provider.provider,
+            llm_provider.model_name,
             conversation_text,
             chat_id,
         )
@@ -1111,7 +1124,7 @@ async def generate_chat_title(
                     user_id=chat.user_id,
                     model_id=llm_provider.model_record_id,
                     model_name=llm_provider.model_name,
-                    provider_type=llm_provider.provider_type,
+                    provider_type=llm_provider.provider.provider_type,
                     purpose=UsagePurpose.TITLE_GENERATION,
                     chat_id=chat_id,
                 ),

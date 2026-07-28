@@ -170,8 +170,19 @@ def _patch_env(monkeypatch):
 
 def _build_app_state(mock_llm, searcher_tool) -> AppState:
     app_state = AppState()
-    app_state.models = {"mock-model": mock_llm}
-    app_state.default_model_id = "mock-model"
+    # Stub provider_cache to return the mock LLM
+    async def _resolve_for_model(model_id: str):
+        from provider_cache import ResolvedModel
+        return ResolvedModel(provider=mock_llm, model_record_id=model_id, model_name="mock-model")
+    async def _resolve_default():
+        from provider_cache import ResolvedModel
+        return ResolvedModel(provider=mock_llm, model_record_id="mock-model", model_name="mock-model")
+    async def _resolve_secondary_or_default():
+        from provider_cache import ResolvedModel
+        return ResolvedModel(provider=mock_llm, model_record_id="mock-model", model_name="mock-model")
+    app_state.provider_cache.resolve_for_model = _resolve_for_model
+    app_state.provider_cache.resolve_default = _resolve_default
+    app_state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
     app_state.searcher_tool = searcher_tool
     app_state.content_storage = AsyncMock()
     app_state.redis_client = None
