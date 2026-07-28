@@ -202,7 +202,19 @@ class GeminiProvider(LLMProvider):
 
     def __init__(self, api_key: str, model: str):
         self.api_key = api_key
-        self.client = genai.Client(api_key=api_key)
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                retry_options=types.HttpRetryOptions(
+                    attempts=3,
+                    initial_delay=1.0,
+                    max_delay=30.0,
+                    exp_base=2.0,
+                    jitter=0.5,
+                    http_status_codes=[429, 500, 502, 503],
+                )
+            ),
+        )
         self.model = model
         self.model_name = model
         self._context_window_info: ContextWindowInfo | None = None
