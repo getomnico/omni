@@ -21,6 +21,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from anthropic.types import MessageParam
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
@@ -28,6 +29,7 @@ from ulid import ULID
 import db.connection
 import routers.chat as chat_module
 from db import ChatsRepository, MessagesRepository, UsersRepository
+from db.documents import DocumentsRepository
 from db.tool_approvals import (
     ToolApprovalsRepository,
     ToolApprovalStatus,
@@ -42,6 +44,7 @@ from tests.helpers import (
     stream_sse,
 )
 from tools import SearchResponse, SearchResult, ToolRegistry, ToolResult
+from tools.document_handler import DocumentToolHandler
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.searcher_client import Document
 from tools.searcher_tool import SearcherTool
@@ -184,6 +187,18 @@ async def redis_keys(redis_client) -> None:
 
 def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+def _mention_block(document_id: str, title: str = "Test Doc") -> dict:
+    """Build an omni_mention content block referencing a document."""
+    return {
+        "type": "document",
+        "source": {
+            "type": "omni_mention",
+            "document_id": document_id,
+            "title": title,
+        },
+    }
 
 
 class ScriptedActionHandler:
@@ -2508,3 +2523,302 @@ class TestStandaloneEndpoints:
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
         assert assistant_msgs, "No assistant message persisted after retry"
+
+
+# =============================================================================
+# Mention expansion via streaming path
+# =============================================================================
+
+
+class TestMentionExpansion:
+    """End-to-end mention expansion through the real streaming path.
+
+    Verifies ``expand_mentions`` is wired into ``StreamChatHandler`` and that
+    expanded content (mention label + document text) reaches the provider
+    request.  Permission denials are handled gracefully.
+    """
+
+    async def _cleanup_extra_rows(self, db_pool, source_id: str, content_id: str | None = None):
+        """Delete source (cascades to documents) and content_blobs before
+        ``seeded_chat`` teardown deletes the user."""
+        async with db_pool.acquire() as conn:
+            if content_id:
+                await conn.execute("DELETE FROM content_blobs WHERE id = $1", content_id)
+            await conn.execute("DELETE FROM sources WHERE id = $1", source_id)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_expands_mention_into_provider_request(
+        self, seeded_chat, db_pool, redis_client, redis_keys
+    ):
+        """Seed a public doc + content_blobs; leaf user message has an
+        omni_mention block.  Stream terminates cleanly and the provider sees
+        the mention label + document text."""
+        chat_id, user_id, model_id = seeded_chat
+
+        source_id = str(ULID())
+        doc_id = str(ULID())
+        content_id = str(ULID())
+        document_text = "Detailed analysis of Q3 revenue growth across all segments."
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sources (id, name, source_type, created_by) "
+                "VALUES ($1, $2, $3, $4)",
+                source_id, "test-source", "google_drive", user_id,
+            )
+            content_bytes = document_text.encode("utf-8")
+            await conn.execute(
+                "INSERT INTO content_blobs (id, content, size_bytes, storage_backend) "
+                "VALUES ($1, $2, $3, 'postgres')",
+                content_id, content_bytes, len(content_bytes),
+            )
+            await conn.execute(
+                "INSERT INTO documents (id, source_id, external_id, title, content, "
+                "permissions, content_type, content_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+                doc_id, source_id, f"ext-{doc_id}", "Q3 Report", document_text,
+                json.dumps({"public": True, "users": [], "groups": []}),
+                "text/plain", content_id,
+            )
+
+        msgs = await MessagesRepository().get_active_path(chat_id)
+        user_msg = next(m for m in msgs if m.message["role"] == "user")
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
+                json.dumps({
+                    "role": "user",
+                    "content": [
+                        _mention_block(doc_id, "Q3 Report"),
+                        {"type": "text", "text": "What were the key results?"},
+                    ],
+                }),
+                user_msg.id,
+            )
+
+        mock_storage = AsyncMock()
+        mock_storage.get_text = AsyncMock(return_value=document_text)
+
+        llm = GatedRecordingLLM([("text", "Here are the key results.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        app.state.content_storage = mock_storage
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        try:
+            terminal = [
+                (e[0], e[1]) for e in events if e[0] in ("end_of_stream", "stream_error")
+            ]
+            assert terminal, "Expected a terminal event"
+            assert terminal[-1][0] == "end_of_stream", f"Unexpected terminal: {terminal[-1]}"
+
+            assert len(llm.calls) >= 1, "Expected at least 1 LLM call"
+            provider_messages = llm.calls[0]["messages"]
+            user_msgs = [m for m in provider_messages if m["role"] == "user"]
+            assert user_msgs, "Expected at least one user message in provider request"
+            last_user = user_msgs[-1]
+            content = last_user["content"]
+            assert isinstance(content, list), f"Expected list content, got {type(content)}"
+
+            text_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            label_text = " ".join(b.get("text", "") for b in text_blocks)
+            assert 'Mentioned document: "Q3 Report"' in label_text, (
+                f"Mention label missing. Text blocks: {text_blocks}"
+            )
+            assert f"[_ref:{doc_id}]" in label_text, (
+                f"Document ref missing. Text blocks: {text_blocks}"
+            )
+
+            doc_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "document"
+            ]
+            if doc_blocks:
+                src = doc_blocks[0].get("source", {})
+                if isinstance(src, dict) and src.get("type") == "text":
+                    assert document_text in src.get("data", ""), (
+                        "Document text not found in expanded document block"
+                    )
+        finally:
+            await self._cleanup_extra_rows(db_pool, source_id, content_id)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_mention_permission_denial_does_not_break_stream(
+        self, seeded_chat, db_pool, redis_client, redis_keys
+    ):
+        """Private doc the chat user cannot access → mention resolves to error
+        note.  Stream still terminates cleanly (no 500)."""
+        chat_id, user_id, model_id = seeded_chat
+
+        source_id = str(ULID())
+        doc_id = str(ULID())
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sources (id, name, source_type, created_by) "
+                "VALUES ($1, $2, $3, $4)",
+                source_id, "test-source", "google_drive", user_id,
+            )
+            await conn.execute(
+                "INSERT INTO documents (id, source_id, external_id, title, content, "
+                "permissions, content_type) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
+                doc_id, source_id, f"ext-{doc_id}", "Confidential", "secret content",
+                json.dumps({
+                    "public": False,
+                    "users": ["someone-else@x.com"],
+                    "groups": [],
+                }),
+                "text/plain",
+            )
+
+        msgs = await MessagesRepository().get_active_path(chat_id)
+        user_msg = next(m for m in msgs if m.message["role"] == "user")
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
+                json.dumps({
+                    "role": "user",
+                    "content": [
+                        _mention_block(doc_id, "Confidential"),
+                        {"type": "text", "text": "Read this?"},
+                    ],
+                }),
+                user_msg.id,
+            )
+
+        llm = GatedRecordingLLM([("text", "I cannot access that document.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        # content_storage stays None — permission failure happens at the
+        # DocumentsRepository layer before storage is touched.
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        try:
+            terminal = [
+                (e[0], e[1]) for e in events if e[0] in ("end_of_stream", "stream_error")
+            ]
+            assert terminal, "Expected a terminal event"
+            assert terminal[-1][0] == "end_of_stream", f"Unexpected terminal: {terminal[-1]}"
+
+            assert len(llm.calls) >= 1, "Expected at least 1 LLM call"
+            provider_messages = llm.calls[0]["messages"]
+            user_msgs = [m for m in provider_messages if m["role"] == "user"]
+            assert user_msgs, "Expected at least one user message"
+            last_user = user_msgs[-1]
+            content = last_user["content"]
+            assert isinstance(content, list)
+
+            text_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            label_text = " ".join(b.get("text", "") for b in text_blocks)
+            assert "could not be loaded" in label_text, (
+                f"Expected 'could not be loaded' in provider messages. "
+                f"Text: {label_text}"
+            )
+        finally:
+            await self._cleanup_extra_rows(db_pool, source_id)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_mention_expansion_across_providers(
+        self, seeded_chat, db_pool, redis_client, redis_keys
+    ):
+        """Same setup as #1, verifying the expanded content reaches the
+        provider request.  OpenAI/Bedrock/Gemini all share
+        ``extract_text_document`` (unit-tested separately in
+        ``test_anthropic_message_adapter``); this test proves the streaming
+        path wires mention expansion before the provider adapter."""
+        chat_id, user_id, model_id = seeded_chat
+
+        source_id = str(ULID())
+        doc_id = str(ULID())
+        content_id = str(ULID())
+        document_text = "Cross-provider document content for verification."
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sources (id, name, source_type, created_by) "
+                "VALUES ($1, $2, $3, $4)",
+                source_id, "test-source", "google_drive", user_id,
+            )
+            content_bytes = document_text.encode("utf-8")
+            await conn.execute(
+                "INSERT INTO content_blobs (id, content, size_bytes, storage_backend) "
+                "VALUES ($1, $2, $3, 'postgres')",
+                content_id, content_bytes, len(content_bytes),
+            )
+            await conn.execute(
+                "INSERT INTO documents (id, source_id, external_id, title, content, "
+                "permissions, content_type, content_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+                doc_id, source_id, f"ext-{doc_id}", "Provider Doc", document_text,
+                json.dumps({"public": True, "users": [], "groups": []}),
+                "text/plain", content_id,
+            )
+
+        msgs = await MessagesRepository().get_active_path(chat_id)
+        user_msg = next(m for m in msgs if m.message["role"] == "user")
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
+                json.dumps({
+                    "role": "user",
+                    "content": [
+                        _mention_block(doc_id, "Provider Doc"),
+                        {"type": "text", "text": "Summarize."},
+                    ],
+                }),
+                user_msg.id,
+            )
+
+        mock_storage = AsyncMock()
+        mock_storage.get_text = AsyncMock(return_value=document_text)
+
+        llm = GatedRecordingLLM([("text", "Summary.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        app.state.content_storage = mock_storage
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        try:
+            assert any(
+                et in ("end_of_stream", "stream_error") for et, _, _ in events
+            ), "No terminal event"
+
+            assert len(llm.calls) >= 1
+            provider_messages = llm.calls[0]["messages"]
+            user_msgs = [m for m in provider_messages if m["role"] == "user"]
+            last_user = user_msgs[-1]
+            content = last_user["content"]
+            assert isinstance(content, list)
+
+            # Verify mention label is present as a text block
+            text_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            label_text = " ".join(b.get("text", "") for b in text_blocks)
+            assert "Mentioned document" in label_text, "Mention label not found"
+
+            # Check the document text is present somewhere in the provider-visible
+            # content — either as plain text from a document block (which
+            # ``extract_text_document`` converts) or directly in a text block.
+            doc_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "document"
+            ]
+            all_text = label_text
+            for db in doc_blocks:
+                src = db.get("source", {})
+                if isinstance(src, dict) and src.get("type") == "text":
+                    all_text += " " + src.get("data", "")
+
+            assert document_text in all_text, (
+                f"Document text not found in provider messages. "
+                f"All text: {all_text[:300]}"
+            )
+        finally:
+            await self._cleanup_extra_rows(db_pool, source_id, content_id)
