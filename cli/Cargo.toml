@@ -1,6 +1,6 @@
 [package]
 name = "omni-cli"
-version.workspace = true
+version = "0.1.11"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -28,6 +28,7 @@ tar = "0.4"
 inquire = "0.7"
 indicatif = "0.17"
 comfy-table = "7.1"
+similar = "2.7"
 anstyle = "1.0"
 tempfile = "3.10"
 

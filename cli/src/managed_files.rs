@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use similar::{ChangeTag, TextDiff};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ pub struct FileChange {
     pub exists_locally: bool,
     pub changed: bool,
     pub local_edit_detected: bool,
+    pub diff: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -85,12 +87,46 @@ fn analyze_one(
         false
     };
 
+    let diff = if exists_locally && incoming.exists() {
+        compute_file_diff(&local, &incoming)
+    } else {
+        None
+    };
+
     Ok(FileChange {
         path: relative.to_string(),
         exists_locally,
         changed,
         local_edit_detected,
+        diff,
     })
+}
+
+fn compute_file_diff(local: &Path, incoming: &Path) -> Option<String> {
+    let local_text = fs::read_to_string(local).ok()?;
+    let incoming_text = fs::read_to_string(incoming).ok()?;
+
+    if local_text == incoming_text {
+        return None;
+    }
+
+    let diff = TextDiff::from_lines(&incoming_text, &local_text);
+    let mut result = String::new();
+
+    for change in diff.iter_all_changes() {
+        let marker = match change.tag() {
+            ChangeTag::Equal => ' ',
+            ChangeTag::Insert => '+',
+            ChangeTag::Delete => '-',
+        };
+        result.push(marker);
+        result.push_str(change.value());
+        if !change.value().ends_with("\n") {
+            result.push('\n');
+        }
+    }
+
+    Some(result)
 }
 
 pub fn create_backup(root: &Path, extra_paths: &[&str]) -> Result<PathBuf> {

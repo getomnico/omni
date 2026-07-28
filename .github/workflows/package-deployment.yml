@@ -24,6 +24,7 @@ jobs:
           cp Caddyfile staging/docker-compose/
           tar -czf omni-docker-compose.tar.gz -C staging/docker-compose .
           sha256sum omni-docker-compose.tar.gz > omni-docker-compose.tar.gz.sha256
+          cp scripts/install-cli.sh staging/install-cli.sh
 
       - name: Package AWS Terraform deployment
         run: |
@@ -56,3 +57,4 @@ jobs:
             omni-docker-compose.tar.gz.sha256
             omni-terraform-aws.tar.gz
             omni-terraform-gcp.tar.gz
+            staging/install-cli.sh
