@@ -227,8 +227,6 @@ class GeminiProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
@@ -241,11 +239,7 @@ class GeminiProvider(LLMProvider):
 
             config = types.GenerateContentConfig(
                 max_output_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
             )
-
-            if top_p is not None:
-                config.top_p = top_p
 
             if system_prompt:
                 config.system_instruction = system_prompt
@@ -400,17 +394,12 @@ class GeminiProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from Gemini."""
         try:
             config = types.GenerateContentConfig(
                 max_output_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
             )
-            if top_p is not None:
-                config.top_p = top_p
 
             response = await self.client.aio.models.generate_content(
                 model=self.model,

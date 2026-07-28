@@ -52,8 +52,6 @@ class PromptRequest(BaseModel):
 
     prompt: str
     max_tokens: int | None = 512
-    temperature: float | None = 0.7
-    top_p: float | None = 0.9
     stream: bool | None = True
 
 

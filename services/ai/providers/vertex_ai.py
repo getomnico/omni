@@ -68,8 +68,6 @@ class VertexAIProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
@@ -78,8 +76,6 @@ class VertexAIProvider(LLMProvider):
             async for event in self._delegate.stream_response(
                 prompt=prompt,
                 max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
                 tools=tools,
                 messages=messages,
                 system_prompt=system_prompt,
@@ -99,15 +95,11 @@ class VertexAIProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         try:
             return await self._delegate.generate_response(
                 prompt=prompt,
                 max_tokens=max_tokens,
-                temperature=temperature,
-                top_p=top_p,
             )
         except ProviderError as e:
             raise ProviderError(

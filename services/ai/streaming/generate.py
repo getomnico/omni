@@ -27,8 +27,6 @@ from anthropic.types import (
 from config import (
     AGENT_MAX_ITERATIONS,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
 )
 from db.compactions import CompactionsRepository
 from db.models import ChatMessage, UserConfiguration
@@ -127,8 +125,6 @@ async def event_stream_with_context_retry(
             messages=provider_messages,
             tools=turn_tools,
             max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=DEFAULT_TEMPERATURE,
-            top_p=DEFAULT_TOP_P,
             system_prompt=provider_system_prompt,
         )
         processed_stream = tracker.wrap_stream(raw_stream)

@@ -492,8 +492,6 @@ class BedrockProvider(LLMProvider):
         messages: list[dict[str, Any]] | None = None,
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         system_prompt: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from AWS Bedrock models."""
@@ -506,11 +504,10 @@ class BedrockProvider(LLMProvider):
                 )
 
                 # Prepare the request body for Claude models
-                request_params = {
+                request_params: dict[str, Any] = {
                     "model": self.model_id,
                     "messages": msg_list,
                     "max_tokens": max_tokens or 4096,
-                    "temperature": temperature or 0.7,
                     "stream": True,
                 }
 
@@ -609,8 +606,6 @@ class BedrockProvider(LLMProvider):
                     "messages": messages,
                     "inferenceConfig": {
                         "maxTokens": max_tokens or 4096,
-                        "temperature": temperature or 0.7,
-                        "topP": top_p or 0.9,
                     },
                 }
 
@@ -659,8 +654,6 @@ class BedrockProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from AWS Bedrock Claude models."""
         try:
@@ -673,11 +666,10 @@ class BedrockProvider(LLMProvider):
                     {"role": "user", "content": [{"type": "text", "text": prompt}]}
                 ]
 
-                request_params = {
+                request_params: dict[str, Any] = {
                     "model": self.model_id,
                     "messages": conversation,
                     "max_tokens": max_tokens or 4096,
-                    "temperature": temperature or 0.7,
                 }
 
                 # Invoke the model
@@ -711,8 +703,6 @@ class BedrockProvider(LLMProvider):
                     messages=conversation,
                     inferenceConfig={
                         "maxTokens": max_tokens or 512,
-                        "temperature": temperature or 0.7,
-                        "topP": top_p or 0.9,
                     },
                 )
                 logger.debug(f"generate_response: response from LLM -> {response}")

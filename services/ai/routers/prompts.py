@@ -55,8 +55,6 @@ async def generate_response(request: Request, body: PromptRequest):
             async for event in llm_provider.stream_response(
                 body.prompt,
                 max_tokens=body.max_tokens,
-                temperature=body.temperature,
-                top_p=body.top_p,
             ):
                 # Extract text content from MessageStreamEvent
                 if event.type == "content_block_delta":
@@ -85,8 +83,6 @@ async def _generate_non_streaming_response(
         generated_text, _ = await llm_provider.generate_response(
             body.prompt,
             max_tokens=body.max_tokens,
-            temperature=body.temperature,
-            top_p=body.top_p,
         )
 
         logger.info(f"Successfully generated response of length: {len(generated_text)}")

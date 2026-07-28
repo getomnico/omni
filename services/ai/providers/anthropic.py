@@ -92,8 +92,6 @@ class AnthropicProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
@@ -111,11 +109,10 @@ class AnthropicProvider(LLMProvider):
             self.add_cache_control(msg_list, cast(list[ToolParam] | None, tools))
 
             # Prepare request parameters
-            request_params = {
+            request_params: dict[str, Any] = {
                 "model": self.model,
                 "messages": msg_list,
                 "max_tokens": max_tokens or 8192,
-                "temperature": temperature or 0.7,
                 "stream": True,
             }
 
@@ -187,18 +184,17 @@ class AnthropicProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from Anthropic Claude API."""
         try:
-            response = await self.client.messages.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
-                stream=False,
-            )
+            request_params: dict[str, Any] = {
+                "model": self.model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens or 4096,
+                "stream": False,
+            }
+
+            response = await self.client.messages.create(**request_params)
 
             usage = TokenUsage(
                 input_tokens=response.usage.input_tokens,

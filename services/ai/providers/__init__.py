@@ -93,8 +93,6 @@ class LLMProvider(ABC):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
@@ -107,8 +105,6 @@ class LLMProvider(ABC):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate a non-streaming response from the LLM provider.
 

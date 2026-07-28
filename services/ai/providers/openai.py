@@ -64,30 +64,11 @@ def _is_reasoning_model(model: str) -> bool:
     return normalized.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
-def _supports_sampling_params(model: str) -> bool:
-    """Whether the model accepts temperature/top_p on the Responses API."""
-    return not _is_reasoning_model(model)
-
-
 def _effective_max_output_tokens(model: str, max_tokens: int | None) -> int:
     tokens = max_tokens or 4096
     if _is_reasoning_model(model):
         return max(tokens, MIN_REASONING_OUTPUT_TOKENS)
     return tokens
-
-
-def _add_sampling_params(
-    params: dict[str, Any],
-    model: str,
-    temperature: float | None,
-    top_p: float | None,
-) -> None:
-    if not _supports_sampling_params(model):
-        return
-    if temperature is not None:
-        params["temperature"] = temperature
-    if top_p is not None:
-        params["top_p"] = top_p
 
 
 def _convert_tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -118,8 +99,6 @@ class OpenAIProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
@@ -141,8 +120,6 @@ class OpenAIProvider(LLMProvider):
 
             if system_prompt:
                 request_params["instructions"] = system_prompt
-
-            _add_sampling_params(request_params, self.model, temperature, top_p)
 
             if tools:
                 request_params["tools"] = _convert_tools_to_openai(tools)
@@ -430,8 +407,6 @@ class OpenAIProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from OpenAI Responses API."""
         try:
@@ -448,7 +423,6 @@ class OpenAIProvider(LLMProvider):
                 "max_output_tokens": effective_max_tokens,
                 "stream": False,
             }
-            _add_sampling_params(params, self.model, temperature, top_p)
 
             response = await self.client.responses.create(**params)
 

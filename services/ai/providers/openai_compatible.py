@@ -255,7 +255,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def __init__(
         self, base_url: str, api_key: str | None = None, model: str = "default"
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/").removesuffix("/v1")
         self.api_key = api_key
         self.model = model
         self.model_name = model
@@ -270,8 +270,6 @@ class OpenAICompatibleProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[ToolParam] | None = None,
         messages: list[MessageParam] | None = None,
         system_prompt: str | None = None,
@@ -295,11 +293,6 @@ class OpenAICompatibleProvider(LLMProvider):
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
-
-            if temperature is not None:
-                params["temperature"] = temperature
-            if top_p is not None:
-                params["top_p"] = top_p
 
             if tools:
                 params["tools"] = _convert_tools_to_openai(tools)
@@ -481,8 +474,6 @@ class OpenAICompatibleProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response."""
         try:
@@ -492,10 +483,6 @@ class OpenAICompatibleProvider(LLMProvider):
                 "max_tokens": max_tokens or 4096,
                 "stream": False,
             }
-            if temperature is not None:
-                params["temperature"] = temperature
-            if top_p is not None:
-                params["top_p"] = top_p
 
             response = await self.client.chat.completions.create(**params)
 

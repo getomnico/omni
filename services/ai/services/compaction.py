@@ -413,7 +413,6 @@ Summary:"""
             summary, usage = await self.llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
-                temperature=0.3,
             )
             if self._on_usage:
                 self._on_usage(usage)
@@ -474,7 +473,6 @@ Summary:"""
             summary, usage = await self.llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
-                temperature=0.3,
             )
             if self._on_usage:
                 self._on_usage(usage)

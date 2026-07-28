@@ -39,8 +39,6 @@ from config import (
     AGENT_RUN_MAX_ATTEMPTS,
     CONNECTOR_MANAGER_URL,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
     SANDBOX_URL,
 )
 from db import CompactionsRepository, SkillsRepository
@@ -630,8 +628,6 @@ async def _run_agent_loop(
                 messages=conversation_messages,
                 tools=turn_tools,
                 max_tokens=DEFAULT_MAX_TOKENS,
-                temperature=DEFAULT_TEMPERATURE,
-                top_p=DEFAULT_TOP_P,
                 system_prompt=system_prompt,
             )
 
@@ -790,7 +786,6 @@ async def _run_agent_loop(
         messages=conversation_messages,
         tools=[],
         max_tokens=500,
-        temperature=0.3,
         system_prompt=system_prompt,
     )
     async for event in summary_tracker.wrap_stream(raw_summary_stream):

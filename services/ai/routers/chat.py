@@ -33,8 +33,6 @@ from config import (
     AGENT_MAX_ITERATIONS,
     CONNECTOR_MANAGER_URL,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
     SANDBOX_URL,
 )
 from db import ChatsRepository, CompactionsRepository, MessagesRepository, SkillsRepository
