@@ -979,13 +979,6 @@ pub struct ConnectorEventQueueItem {
     #[serde(with = "time::serde::iso8601::option")]
     pub processed_at: Option<OffsetDateTime>,
     pub error_message: Option<String>,
-    /// W3C traceparent header stored by the producer for trace propagation.
-    /// Present when the enqueuing service created a PRODUCER span.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub traceparent: Option<String>,
-    /// W3C tracestate header stored alongside traceparent.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tracestate: Option<String>,
 }
 
 /// Type/mode of a sync run. Serializes as a lowercase string on the wire

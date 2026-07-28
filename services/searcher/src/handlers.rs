@@ -71,7 +71,7 @@ where
                 Poll::Ready(Some(Ok(chunk.into_bytes())))
             }
             Poll::Ready(Some(Err(e))) => {
-                error!("AI stream error");
+                error!("AI stream error: {}", e);
                 Poll::Ready(Some(Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     e.to_string(),
@@ -285,20 +285,20 @@ pub async fn ai_answer(
     let context = match search_engine.get_rag_context(&request).await {
         Ok(context) => context,
         Err(e) => {
-            error!("Failed to get RAG context");
+            error!("Failed to get RAG context: {}", e);
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
 
     // Build RAG prompt with context and citation instructions
     let prompt = search_engine.build_rag_prompt(&request.query, &context);
-    info!("Built RAG prompt");
+    info!("Built RAG prompt of length: {}", prompt.len());
 
     // Stream AI response
     let ai_stream = match state.ai_client.stream_prompt(&prompt).await {
         Ok(stream) => stream,
         Err(e) => {
-            error!("Failed to start AI stream");
+            error!("Failed to start AI stream: {}", e);
             return Err(StatusCode::BAD_GATEWAY);
         }
     };
@@ -445,11 +445,14 @@ pub async fn suggested_questions(
     let user = match user_repo.find_by_id(request.user_id.clone()).await {
         Ok(Some(user)) => user,
         Ok(None) => {
-            error!("User not found");
+            error!("User not found for user_id {}", request.user_id);
             return Err(SearcherError::NotFound("User not found".to_string()));
         }
         Err(e) => {
-            error!("Failed to fetch user");
+            error!(
+                "Failed to fetch user for user_id {}: {:?}",
+                request.user_id, e
+            );
             return Err(anyhow!("Failed to fetch user: {:?}", e).into());
         }
     };

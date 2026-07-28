@@ -519,8 +519,8 @@ impl QueueProcessor {
                                             );
                                         }
                                     }
-                                    Err(_) => {
-                                        error!("Content blob GC failed");
+                                    Err(e) => {
+                                        error!("Content blob GC failed: {}", e);
                                     }
                                 }
                             });
@@ -733,7 +733,7 @@ impl QueueProcessor {
                     }
 
                     if batch_result.successful_documents_count > 0 {
-                        if let Err(_) = self
+                        if let Err(e) = self
                             .sync_run_repo
                             .increment_progress_by(
                                 &batch_sync_run_id,
@@ -741,7 +741,10 @@ impl QueueProcessor {
                             )
                             .await
                         {
-                            warn!("Failed to update sync run progress");
+                            warn!(
+                                "Failed to update sync run progress for {}: {}",
+                                batch_sync_run_id, e
+                            );
                         }
                     }
 
@@ -1096,8 +1099,8 @@ impl QueueProcessor {
             Ok(_) => {
                 debug!("Upserted {} people from batch", count);
             }
-            Err(_) => {
-                error!("Failed to upsert people");
+            Err(e) => {
+                error!("Failed to upsert people: {}", e);
             }
         }
     }

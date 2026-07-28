@@ -225,7 +225,7 @@ impl SyncManager {
             .cancel_sync(&connector_url, sync_run_id)
             .await
         {
-            warn!("Failed to send cancel request");
+            warn!("Failed to send cancel request to connector: {}", e);
         }
 
         let updated = self
@@ -240,7 +240,7 @@ impl SyncManager {
         self.resume_attempts.remove(sync_run_id);
         self.missing_manifest_observations.remove(sync_run_id);
         shared::metrics::record_sync_terminal(&sync_type.to_string(), "cancelled", created_at);
-        info!("Sync cancelled");
+        info!("Sync {} cancelled", sync_run_id);
         Ok(())
     }
 
@@ -426,7 +426,7 @@ impl SyncManager {
                 )
                 .await
             {
-                error!("Failed to mark sync as failed");
+                error!("Failed to mark sync {} as failed: {}", sync_run_id, e);
             }
             self.resume_attempts.remove(sync_run_id);
             self.missing_manifest_observations.remove(sync_run_id);
@@ -439,8 +439,8 @@ impl SyncManager {
         {
             Ok(Some(s)) => s,
             Ok(None) => return,
-            Err(_) => {
-                error!("Failed to load source");
+            Err(e) => {
+                error!("Failed to load source {}: {}", source_id, e);
                 return;
             }
         };
@@ -465,8 +465,8 @@ impl SyncManager {
         let sync_run = match self.sync_run_repo.find_by_id(sync_run_id).await {
             Ok(Some(r)) => r,
             Ok(None) => return,
-            Err(_) => {
-                error!("Failed to load sync_run");
+            Err(e) => {
+                error!("Failed to load sync_run {}: {}", sync_run_id, e);
                 return;
             }
         };
@@ -511,7 +511,10 @@ impl SyncManager {
                 // Reset staleness clock so detect_stale_syncs doesn't fire
                 // before the resumed sync starts emitting.
                 if let Err(e) = self.sync_run_repo.update_activity(sync_run_id).await {
-                    warn!("Failed to bump activity for resumed sync");
+                    warn!(
+                        "Failed to bump activity for resumed sync {}: {}",
+                        sync_run_id, e
+                    );
                 }
             }
             Ok(Err(e)) => {
@@ -573,7 +576,10 @@ impl SyncManager {
                         .cancel_sync(&connector_url, &run.id)
                         .await
                     {
-                        warn!("Failed to cancel sync on connector for inactive source");
+                        warn!(
+                            "Failed to cancel sync {} on connector for inactive source {}: {}",
+                            run.id, run.source_id, e
+                        );
                     }
                 }
             }
@@ -638,15 +644,18 @@ impl SyncManager {
                     .cancel_sync(&connector_url, &sync_run_id)
                     .await
                 {
-                    warn!("Failed to cancel stale sync on connector");
+                    warn!(
+                        "Failed to cancel stale sync {} on connector: {}",
+                        sync_run_id, e
+                    );
                 }
             }
 
-            if let Err(_) = self
+            if let Err(e) = self
                 .mark_sync_failed(&sync_run_id, "Sync timed out (no activity detected)")
                 .await
             {
-                error!("Failed to mark sync as stale");
+                error!("Failed to mark sync as stale: {}", e);
                 continue;
             }
 

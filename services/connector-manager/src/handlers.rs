@@ -56,7 +56,7 @@ pub async fn trigger_sync(
     State(state): State<AppState>,
     Json(request): Json<TriggerSyncRequest>,
 ) -> Result<Json<TriggerSyncResponse>, ApiError> {
-    info!("Manual sync triggered");
+    info!("Manual sync triggered for source {}", request.source_id);
 
     let sync_run_id = state
         .sync_manager
@@ -77,14 +77,14 @@ pub async fn trigger_sync_by_id(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<TriggerSyncResponse>, ApiError> {
-    info!("Manual sync triggered");
+    info!("Manual sync triggered for source {}", source_id);
 
     let sync_run_id = state
         .sync_manager
         .trigger_sync(&source_id, SyncType::Full, TriggerType::Manual)
         .await
         .map_err(|e| {
-            error!("Failed to trigger sync");
+            error!("Failed to trigger sync for source {}: {:?}", source_id, e);
             ApiError::from(e)
         })?;
 
@@ -98,7 +98,7 @@ pub async fn cancel_sync(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    info!("Cancel requested");
+    info!("Cancel requested for sync {}", sync_run_id);
 
     state.sync_manager.cancel_sync(&sync_run_id).await?;
 
@@ -109,7 +109,7 @@ pub async fn get_sync_progress(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    debug!("SSE connection for sync progress");
+    debug!("SSE connection for sync progress: {}", sync_run_id);
 
     let pool = state.db_pool.pool().clone();
     let sync_run_id_clone = sync_run_id.clone();
@@ -123,7 +123,7 @@ pub async fn get_sync_progress(
             let progress = match get_progress_from_db(&pool, &sync_run_id_clone).await {
                 Ok(p) => p,
                 Err(e) => {
-                    error!("Failed to get progress");
+                    error!("Failed to get progress: {}", e);
                     break;
                 }
             };
@@ -978,7 +978,7 @@ pub async fn oauth_credential_ready(
     {
         Ok(Some(manifest)) => {
             if let Err(e) = validate_connector_manifest_action_schemas(&manifest) {
-                warn!("OAuth credential-ready returned invalid manifest");
+                warn!("OAuth credential-ready returned invalid manifest: {}", e);
                 return Ok(Json(json!({"status": "invalid_manifest"})));
             }
             let manifest_json =
@@ -1447,7 +1447,7 @@ pub async fn sdk_register(
                                     )
                                     .await
                                 {
-                                    warn!("Recovery credential-ready delivery failed");
+                                    warn!("Recovery credential-ready delivery failed: {}", e);
                                 }
                             }
                             Err(e) => {
@@ -1481,7 +1481,7 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
     let mut conn = match redis_client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
-            error!("Redis connection error");
+            error!("Redis connection error: {}", e);
             return Vec::new();
         }
     };
@@ -1973,8 +1973,8 @@ async fn do_extract_text(
                             retry_after_secs,
                         });
                     }
-                    Err(_) => {
-                        warn!("Docling extraction failed, falling back to built-in");
+                    Err(e) => {
+                        warn!("Docling extraction failed, falling back to built-in: {}", e);
                         None
                     }
                 }
@@ -2127,7 +2127,7 @@ pub async fn sdk_store_content(
     State(state): State<AppState>,
     Json(request): Json<SdkStoreContentRequest>,
 ) -> Result<Json<SdkStoreContentResponse>, ApiError> {
-    debug!("SDK: Storing content");
+    debug!("SDK: Storing content for sync_run={}", request.sync_run_id);
 
     let content_storage = state.content_storage.clone();
 
@@ -2170,7 +2170,7 @@ pub async fn sdk_heartbeat(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!("SDK: Heartbeat");
+    debug!("SDK: Heartbeat for sync_run={}", sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     sync_run_repo
@@ -2187,7 +2187,7 @@ pub async fn sdk_complete(
     State(state): State<AppState>,
     Path(sync_run_id): Path<String>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    info!("SDK: Completing sync");
+    info!("SDK: Completing sync_run={}", sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
@@ -2222,7 +2222,7 @@ pub async fn sdk_fail(
     Path(sync_run_id): Path<String>,
     Json(request): Json<SdkFailRequest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    info!("SDK: Failing sync");
+    info!("SDK: Failing sync_run={}: {}", sync_run_id, request.error);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
@@ -2298,7 +2298,7 @@ pub async fn sdk_get_source(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<shared::models::Source>, ApiError> {
-    debug!("SDK: Getting source config");
+    debug!("SDK: Getting source config for source_id={}", source_id);
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2314,7 +2314,7 @@ pub async fn sdk_get_credentials(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<shared::models::ServiceCredential>, ApiError> {
-    debug!("SDK: Getting credentials");
+    debug!("SDK: Getting credentials for source_id={}", source_id);
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2345,7 +2345,10 @@ pub async fn sdk_get_source_sync_config(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<SdkSourceSyncConfigResponse>, ApiError> {
-    debug!("SDK: Getting source sync config");
+    debug!(
+        "SDK: Getting source sync config for source_id={}",
+        source_id
+    );
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
@@ -2442,7 +2445,7 @@ pub async fn sdk_cancel_sync(
     State(state): State<AppState>,
     Json(request): Json<SdkCancelSyncRequest>,
 ) -> Result<Json<SdkCancelSyncResponse>, ApiError> {
-    info!("SDK: Cancelling sync");
+    info!("SDK: Cancelling sync_run={}", request.sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
 
@@ -2477,7 +2480,7 @@ pub async fn sdk_get_user_email(
     State(state): State<AppState>,
     Path(source_id): Path<String>,
 ) -> Result<Json<SdkUserEmailResponse>, ApiError> {
-    debug!("SDK: Getting user email");
+    debug!("SDK: Getting user email for source_id={}", source_id);
 
     let email = sqlx::query_scalar::<_, String>(
         "SELECT u.email FROM sources s JOIN users u ON s.created_by = u.id WHERE s.id = $1",
@@ -2518,7 +2521,7 @@ pub async fn sdk_update_checkpoint(
     Path(sync_run_id): Path<String>,
     Json(checkpoint): Json<serde_json::Value>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!("SDK: Updating checkpoint");
+    debug!("SDK: Updating checkpoint for sync_run={}", sync_run_id);
 
     let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
     let updated = sync_run_repo
@@ -2543,7 +2546,7 @@ pub async fn sdk_update_connector_state(
     Path(source_id): Path<String>,
     Json(new_state): Json<serde_json::Value>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
-    debug!("SDK: Updating connector state");
+    debug!("SDK: Updating connector state for source_id={}", source_id);
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     source_repo
@@ -2564,7 +2567,7 @@ pub async fn sdk_get_sources_by_type(
     State(state): State<AppState>,
     Path(source_type): Path<String>,
 ) -> Result<Json<Vec<shared::models::Source>>, ApiError> {
-    debug!("SDK: Getting sources by type");
+    debug!("SDK: Getting sources by type={}", source_type);
 
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let sources = source_repo
@@ -2585,7 +2588,7 @@ pub async fn sdk_get_connector_config(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    debug!("SDK: Getting connector config");
+    debug!("SDK: Getting connector config for provider={}", provider);
 
     let repo = shared::ConnectorConfigRepository::new(state.db_pool.pool().clone());
     let config = repo

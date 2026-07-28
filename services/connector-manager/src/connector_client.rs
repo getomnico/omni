@@ -37,7 +37,7 @@ impl ConnectorClient {
         connector_url: &str,
     ) -> Result<ConnectorManifest, ClientError> {
         let url = format!("{}/manifest", connector_url);
-        debug!("Fetching manifest");
+        debug!("Fetching manifest from {}", url);
 
         let response = http_client::send_traced("GET", &url, self.client.get(&url))
             .await
@@ -139,7 +139,7 @@ impl ConnectorClient {
         sync_run_id: &str,
     ) -> Result<SyncStatusResponse, ClientError> {
         let url = format!("{}/sync/{}", connector_url, sync_run_id);
-        debug!("Probing sync status");
+        debug!("Probing sync status at {}", url);
 
         let response = http_client::send_traced(
             "GET",
@@ -169,7 +169,7 @@ impl ConnectorClient {
         sync_run_id: &str,
     ) -> Result<(), ClientError> {
         let url = format!("{}/cancel", connector_url);
-        debug!("Cancelling sync");
+        debug!("Cancelling sync {} at {}", sync_run_id, url);
 
         let response = http_client::send_traced(
             "POST",
@@ -199,7 +199,7 @@ impl ConnectorClient {
         request: &ActionRequest,
     ) -> Result<ActionResponse, ClientError> {
         let url = format!("{}/action", connector_url);
-        debug!("Executing action");
+        debug!("Executing action {} at {}", request.action, url);
 
         let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
@@ -233,7 +233,7 @@ impl ConnectorClient {
         request: &ActionRequest,
     ) -> Result<reqwest::Response, ClientError> {
         let url = format!("{}/action", connector_url);
-        debug!("Executing action (raw)");
+        debug!("Executing action (raw) {} at {}", request.action, url);
 
         let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
@@ -253,7 +253,7 @@ impl ConnectorClient {
         request: &OAuthCredentialReadyRequest,
     ) -> Result<Option<ConnectorManifest>, ClientError> {
         let url = format!("{}/oauth/credential-ready", connector_url);
-        debug!("Notifying connector of OAuth credential-ready");
+        debug!("Notifying connector of OAuth credential-ready at {}", url);
 
         let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
@@ -289,7 +289,7 @@ impl ConnectorClient {
         request: &ResourceRequest,
     ) -> Result<serde_json::Value, ClientError> {
         let url = format!("{}/resource", connector_url);
-        debug!("Reading resource");
+        debug!("Reading resource {} at {}", request.uri, url);
 
         let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
@@ -316,7 +316,7 @@ impl ConnectorClient {
         request: &PromptRequest,
     ) -> Result<serde_json::Value, ClientError> {
         let url = format!("{}/prompt", connector_url);
-        debug!("Getting prompt");
+        debug!("Getting prompt {} at {}", request.name, url);
 
         let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
@@ -343,7 +343,7 @@ impl ConnectorClient {
         request: &SkillRequest,
     ) -> Result<serde_json::Value, ClientError> {
         let url = format!("{}/skill", connector_url);
-        debug!("Getting skill");
+        debug!("Getting skill {} at {}", request.skill_id, url);
 
         let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await

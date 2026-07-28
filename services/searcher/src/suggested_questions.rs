@@ -288,8 +288,11 @@ impl SuggestedQuestionsGenerator {
                                     CACHE_TTL_SECONDS / 3600
                                 );
                             }
-                            Err(_) => {
-                                warn!("Failed to generate suggestion");
+                            Err(e) => {
+                                warn!(
+                                    "Failed to generate suggestion for document {}: {}",
+                                    doc.id, e
+                                );
                             }
                         }
 

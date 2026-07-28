@@ -476,13 +476,13 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     let queue_processor = queue_processor::QueueProcessor::new(app_state.clone());
     let mut processor_handle = tokio::spawn(async move {
-        if let Err(_) = queue_processor.start().await {
-            error!("Queue processor failed");
+        if let Err(e) = queue_processor.start().await {
+            error!("Queue processor failed: {}", e);
         }
     });
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    info!("Indexer service listening");
+    info!("Indexer service listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
@@ -492,8 +492,8 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     tokio::select! {
         result = serve => {
-            if let Err(_) = result {
-                error!("HTTP server failed");
+            if let Err(e) = result {
+                error!("HTTP server failed: {}", e);
             }
         }
         _ = &mut processor_handle => {
@@ -526,7 +526,7 @@ async fn debug_create_document(
             Ok(Json(json!({"status": "parsed successfully"})))
         }
         Err(e) => {
-            error!("Failed to parse request");
+            error!("Failed to parse request: {}", e);
             Ok(Json(json!({"error": format!("Parse error: {}", e)})))
         }
     }
