@@ -808,6 +808,79 @@ impl GoogleConnector {
 
         Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
     }
+
+    async fn execute_discover_folders(
+        &self,
+        _params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<axum::response::Response> {
+        // Only JWT secrets are supported for shared-drive discovery.
+        if creds.auth_type != AuthType::Jwt {
+            return Ok(ActionResponse::failure(
+                "discover_folders requires JWT credentials".to_string(),
+            )
+            .into_response());
+        }
+
+        let principal_email = creds
+            .principal_email
+            .as_deref()
+            .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
+
+        let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
+
+        let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
+
+        // 1. List all shared drives
+        let drives_response = self
+            .sync_manager
+            .drive_client()
+            .list_drives(&google_auth, principal_email)
+            .await?;
+
+        let mut items: Vec<crate::models::DriveFolderDiscoveryEntry> = Vec::new();
+
+        // 2. Add each shared drive as a selectable root
+        for drive in &drives_response.drives {
+            items.push(crate::models::DriveFolderDiscoveryEntry {
+                id: drive.id.clone(),
+                name: drive.name.clone(),
+                path: format!("/{} (Shared Drive)", drive.name),
+                drive_id: drive.id.clone(),
+                kind: "shared_drive_root".to_string(),
+            });
+        }
+
+        // 3. For each shared drive, list top-level folder children.
+        // Any failure propagates so the admin gets an actionable error.
+        for drive in &drives_response.drives {
+            let folders = self
+                .sync_manager
+                .drive_client()
+                .list_folder_children(&google_auth, principal_email, &drive.id, &drive.id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to list folder children for shared drive '{}' ({})",
+                        drive.name, drive.id
+                    )
+                })?;
+
+            for folder in &folders.files {
+                items.push(crate::models::DriveFolderDiscoveryEntry {
+                    id: folder.id.clone(),
+                    name: folder.name.clone(),
+                    path: format!("/{}/{}", drive.name, folder.name),
+                    drive_id: drive.id.clone(),
+                    kind: "folder".to_string(),
+                });
+            }
+        }
+
+        let result = crate::models::DriveFolderDiscoveryResponse { items };
+
+        Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
+    }
 }
 
 #[async_trait]
@@ -906,6 +979,21 @@ impl Connector for GoogleConnector {
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
+            },
+            ActionDefinition {
+                name: "discover_folders".to_string(),
+                description:
+                    "List accessible shared drives and their top-level folders for folder-path filter selection."
+                        .to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+                source_types: vec![SourceType::GoogleDrive],
+                admin_only: true,
+                hidden: true,
             },
             ActionDefinition {
                 name: "google_workspace_call".to_string(),
@@ -1156,6 +1244,7 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
+            "discover_folders" => self.execute_discover_folders(params, &creds).await,
             "google_workspace_schema" => self.execute_gws_schema(params).await,
             "google_workspace_call" => self.execute_gws_call(params, &creds).await,
             _ => {
@@ -1177,7 +1266,9 @@ impl Connector for GoogleConnector {
 mod tests {
     use std::sync::Arc;
 
-    use omni_connector_sdk::{AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider};
+    use omni_connector_sdk::{
+        AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider, SourceType,
+    };
     use serde_json::json;
 
     use crate::admin::AdminClient;
@@ -1572,5 +1663,94 @@ mod tests {
         assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att::1234").is_err());
         // Empty size
         assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att:report.pdf:").is_err());
+    }
+
+    // ========================================================================
+    // discover_folders action tests
+    // ========================================================================
+
+    #[test]
+    fn discover_folders_action_registered_in_manifest() {
+        let connector = test_connector();
+        let actions = connector.actions();
+        let action = actions.iter().find(|a| a.name == "discover_folders");
+        assert!(
+            action.is_some(),
+            "discover_folders action must be registered"
+        );
+        let action = action.unwrap();
+        assert!(action.admin_only, "discover_folders must be admin_only");
+        assert!(action.hidden, "discover_folders must be hidden");
+        assert_eq!(
+            action.source_types,
+            vec![SourceType::GoogleDrive],
+            "discover_folders must only accept google_drive source type"
+        );
+    }
+
+    #[test]
+    fn discover_folders_rejects_oauth_credentials() {
+        let connector = test_connector();
+        let cred = test_service_credential(AuthType::OAuth, json!({}));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            connector
+                .execute_action("discover_folders", json!({}), Some(cred), None, None)
+                .await
+        });
+
+        assert!(result.is_ok(), "execute_action should return OK response");
+        let response = result.unwrap();
+        let status = response.status();
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "OAuth credentials should be rejected with 400"
+        );
+    }
+
+    #[test]
+    fn discover_folders_invalid_action_returns_not_supported() {
+        let connector = test_connector();
+        let cred = test_service_credential(AuthType::Jwt, json!({}));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            connector
+                .execute_action("nonexistent_action", json!({}), Some(cred), None, None)
+                .await
+        });
+
+        assert!(result.is_ok());
+        let response = result.unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn discover_folders_missing_principal_email_returns_500() {
+        let connector = test_connector();
+        let mut cred = test_service_credential(AuthType::Jwt, json!({}));
+        cred.principal_email = None;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            connector
+                .execute_action("discover_folders", json!({}), Some(cred), None, None)
+                .await
+        });
+
+        // Missing principal_email propagates as Err (anyhow) to the SDK layer
+        assert!(
+            result.is_err(),
+            "missing principal_email should produce an Err"
+        );
+        let err = result.unwrap_err();
+        let err_msg = format!("{:?}", err);
+        assert!(
+            err_msg.contains("principal_email") || err_msg.contains("principal"),
+            "error should mention missing principal_email: {}",
+            err_msg
+        );
     }
 }

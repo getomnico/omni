@@ -1,11 +1,12 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
-use std::sync::Arc;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
@@ -98,6 +99,105 @@ struct DriveContentCache {
     content_ids: DashMap<String, String>,
     permissions: DashMap<String, DocumentPermissions>,
     locks: DashMap<String, Arc<Mutex<()>>>,
+}
+
+/// Invocation-local cache for folder-metadata lookups during folder-path filter
+/// ancestry resolution. Shared via `Arc` across parallel user tasks within a
+/// single sync run so repeated lookups for the same folder ID are served from
+/// memory rather than re-fetched from the Drive API.
+pub(crate) struct FolderAncestryCache {
+    cache: RwLock<HashMap<String, (String, Option<String>)>>,
+    pub hits: AtomicU64,
+}
+
+impl FolderAncestryCache {
+    pub fn new() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+            hits: AtomicU64::new(0),
+        }
+    }
+
+    /// Look up a folder's metadata, using the cache if available.
+    /// Returns `(name, Option<parent_id>)`.
+    pub async fn get_or_fetch(
+        &self,
+        drive_client: &DriveClient,
+        auth: &GoogleAuth,
+        user_email: &str,
+        folder_id: &str,
+    ) -> Result<(String, Option<String>)> {
+        // Fast path: check cache under read lock.
+        {
+            let cache = self
+                .cache
+                .read()
+                .map_err(|e| anyhow!("FolderAncestryCache read lock error: {:?}", e))?;
+            if let Some(entry) = cache.get(folder_id) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return Ok(entry.clone());
+            }
+        }
+        // Miss: fetch from API.
+        let meta = drive_client
+            .get_folder_metadata(auth, user_email, folder_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to fetch folder metadata for {} while evaluating folder-path filter",
+                    folder_id
+                )
+            })?;
+        let result = (
+            meta.name.clone(),
+            meta.parents.as_ref().and_then(|p| p.first()).cloned(),
+        );
+        // Store under write lock (first-wins silently if another task arrived first).
+        {
+            let mut cache = self
+                .cache
+                .write()
+                .map_err(|e| anyhow!("FolderAncestryCache write lock error: {:?}", e))?;
+            cache
+                .entry(folder_id.to_string())
+                .or_insert_with(|| result.clone());
+        }
+        Ok(result)
+    }
+
+    /// Test-only: lookup with a custom async fetcher instead of DriveClient.
+    #[cfg(test)]
+    pub(crate) async fn get_or_fetch_test<F, Fut>(
+        &self,
+        folder_id: &str,
+        fetcher: F,
+    ) -> Result<(String, Option<String>)>
+    where
+        F: Fn() -> Fut,
+        Fut: Future<Output = Result<(String, Option<String>)>> + Send,
+    {
+        {
+            let cache = self
+                .cache
+                .read()
+                .map_err(|e| anyhow!("FolderAncestryCache read lock error: {:?}", e))?;
+            if let Some(entry) = cache.get(folder_id) {
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                return Ok(entry.clone());
+            }
+        }
+        let result = fetcher().await?;
+        {
+            let mut cache = self
+                .cache
+                .write()
+                .map_err(|e| anyhow!("FolderAncestryCache write lock error: {:?}", e))?;
+            cache
+                .entry(folder_id.to_string())
+                .or_insert_with(|| result.clone());
+        }
+        Ok(result)
+    }
 }
 
 impl DriveContentCache {
@@ -266,7 +366,7 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, GoogleOAuthCredentials, OAuthAuth, google_max_retries};
+use crate::auth::{google_max_retries, GoogleAuth, GoogleOAuthCredentials, OAuthAuth};
 use crate::cache::LruFolderCache;
 use crate::chat::{
     ChatClient, GoogleChatAttachmentSource, GoogleChatMessage, GoogleChatSpace,
@@ -276,9 +376,9 @@ use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
-    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
-    WebhookNotification, mime_type_to_content_type,
+    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint,
+    GoogleChatSpaceCheckpoint, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
+    WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -444,12 +544,11 @@ impl GoogleChatSegment {
         extra.insert("message_count".to_string(), json!(self.messages.len()));
         extra.insert(
             "message_names".to_string(),
-            json!(
-                self.messages
-                    .iter()
-                    .map(|m| m.name.clone())
-                    .collect::<Vec<_>>()
-            ),
+            json!(self
+                .messages
+                .iter()
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>()),
         );
         extra.insert("thread_names".to_string(), json!(self.thread_names()));
         extra.insert(
@@ -499,11 +598,10 @@ impl GoogleChatSegment {
         let mut attrs = HashMap::new();
         attrs.insert(
             "space".to_string(),
-            json!(
-                self.space_display_name
-                    .as_deref()
-                    .unwrap_or(&self.space_name)
-            ),
+            json!(self
+                .space_display_name
+                .as_deref()
+                .unwrap_or(&self.space_name)),
         );
         attrs.insert("space_id".to_string(), json!(self.space_name));
         attrs.insert("threads".to_string(), json!(self.thread_names()));
@@ -1059,6 +1157,79 @@ impl SyncManager {
         Ok((drive_format, gmail_format))
     }
 
+    // TODO: When folder-path filters are narrowed or changed, documents that were
+    // previously indexed but are no longer in scope are NOT automatically pruned from
+    // the search index. A future reconciliation step should delete documents whose
+    // parent ancestry no longer intersects the configured filter set.
+
+    /// Check whether a file should be included based on configured folder-path filters.
+    /// Delegates to the module-level `check_ancestry_static` production walker with
+    /// a closure that calls the Drive API via the client (no caching during the walk;
+    /// the folder cache is still used by other production code).
+    ///
+    /// Returns `Ok(true)` if no filters are configured (include-everything mode).
+    /// Returns `Ok(false)` if the file's ancestry is outside the configured scope.
+    /// Returns `Err(...)` if ancestry metadata could not be determined due to a
+    /// transient API error — the caller should fail/retry the sync rather than
+    /// silently including or excluding the file.
+    async fn is_file_in_allowed_folder(
+        &self,
+        ancestry_cache: &Option<Arc<FolderAncestryCache>>,
+        auth: &GoogleAuth,
+        user_email: &str,
+        file: &crate::models::GoogleDriveFile,
+        allowed_folder_ids: &HashSet<String>,
+    ) -> Result<bool> {
+        if allowed_folder_ids.is_empty() {
+            return Ok(true);
+        }
+
+        let drive_client = self.drive_client.clone();
+        let google_auth = auth.clone();
+        let user_email_owned = user_email.to_string();
+        let ancestry_cache_ref = ancestry_cache.clone();
+
+        let lookup = move |folder_id: String| -> Pin<
+            Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>,
+        > {
+            let drive_client = drive_client.clone();
+            let google_auth = google_auth.clone();
+            let user_email_owned = user_email_owned.clone();
+            let ancestry_cache_ref = ancestry_cache_ref.clone();
+            Box::pin(async move {
+                match ancestry_cache_ref {
+                    Some(cache) => {
+                        cache
+                            .get_or_fetch(
+                                &drive_client,
+                                &google_auth,
+                                &user_email_owned,
+                                &folder_id,
+                            )
+                            .await
+                    }
+                    None => {
+                        // Fallback: fetch directly (no cache available — should not
+                        // happen when filters are configured).
+                        let meta = drive_client
+                            .get_folder_metadata(&google_auth, &user_email_owned, &folder_id)
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to fetch folder metadata for {} while evaluating folder-path filter",
+                                    folder_id
+                                )
+                            })?;
+                        let parent = meta.parents.as_ref().and_then(|p| p.first()).cloned();
+                        Ok((meta.name, parent))
+                    }
+                }
+            })
+        };
+
+        check_ancestry_static(&file.parents, allowed_folder_ids, &lookup).await
+    }
+
     async fn sync_drive_for_user(
         &self,
         user_email: &str,
@@ -1068,6 +1239,8 @@ impl SyncManager {
         ctx: &SyncContext,
         created_after: Option<&str>,
         content_cache: Arc<DriveContentCache>,
+        folder_filter_ids: Option<Arc<HashSet<String>>>,
+        folder_ancestry_cache: Option<Arc<FolderAncestryCache>>,
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
 
@@ -1109,6 +1282,26 @@ impl SyncManager {
             // we always emit and let the indexer skip unchanged docs.
             for file in response.files {
                 if self.should_index_file(&file) {
+                    // Apply folder-path filter if configured.
+                    // Errors propagate upward so the sync fails and can be retried.
+                    if let Some(ref allowed_ids) = folder_filter_ids {
+                        if !self
+                            .is_file_in_allowed_folder(
+                                &folder_ancestry_cache,
+                                &service_auth,
+                                user_email,
+                                &file,
+                                allowed_ids,
+                            )
+                            .await?
+                        {
+                            debug!(
+                                "Skipping file {} ({}) — outside configured folder scope",
+                                file.name, file.id
+                            );
+                            continue;
+                        }
+                    }
                     file_batch.push(UserFile {
                         user_email: Arc::new(user_email.to_string()),
                         file,
@@ -1182,6 +1375,8 @@ impl SyncManager {
         ctx: &SyncContext,
         start_page_token: &str,
         content_cache: Arc<DriveContentCache>,
+        folder_filter_ids: Option<Arc<HashSet<String>>>,
+        folder_ancestry_cache: Option<Arc<FolderAncestryCache>>,
     ) -> Result<(usize, usize)> {
         info!(
             "Processing incremental Drive sync for user {} from pageToken {}",
@@ -1243,6 +1438,27 @@ impl SyncManager {
             if let Some(file) = change.file {
                 if !self.should_index_file(&file) {
                     continue;
+                }
+
+                // Apply folder-path filter if configured.
+                // Errors propagate upward so the sync fails and can be retried.
+                if let Some(ref allowed_ids) = folder_filter_ids {
+                    if !self
+                        .is_file_in_allowed_folder(
+                            &folder_ancestry_cache,
+                            &service_auth,
+                            user_email,
+                            &file,
+                            allowed_ids,
+                        )
+                        .await?
+                    {
+                        debug!(
+                            "Skipping change for file {} ({}) — outside configured folder scope",
+                            file.name, file.id
+                        );
+                        continue;
+                    }
                 }
 
                 file_batch.push(UserFile {
@@ -1739,9 +1955,32 @@ impl SyncManager {
         let mut successful_users = 0;
         let mut errors = 0;
         let mut last_error: Option<String> = None;
+        // Parse folder-path filters from source config.
+        // Malformed config is treated as a sync error (fail closed).
+        let folder_filter_ids: Option<Arc<HashSet<String>>> =
+            match crate::models::parse_folder_path_filters(&source.config) {
+                Ok(Some(filters)) => {
+                    let ids: HashSet<String> = filters.into_iter().map(|f| f.id).collect();
+                    Some(Arc::new(ids))
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    // Fail the sync — malformed config must not silently index everything.
+                    return Err(anyhow::anyhow!(
+                        "Invalid folder path filter configuration: {}",
+                        e
+                    ));
+                }
+            };
         let content_cache = Arc::new(DriveContentCache::default());
+        let ancestry_cache: Option<Arc<FolderAncestryCache>> = folder_filter_ids
+            .as_ref()
+            .map(|_| Arc::new(FolderAncestryCache::new()));
         let parallel_users = google_drive_parallel_users();
         info!("Processing Drive users with concurrency {}", parallel_users);
+
+        let folder_filter_ids_clone = folder_filter_ids.clone();
+        let ancestry_cache_clone = ancestry_cache.clone();
 
         let user_tasks = stream::iter(user_emails.iter().cloned()).map(|cur_user_email| {
             let service_auth = service_auth.clone();
@@ -1751,6 +1990,8 @@ impl SyncManager {
             let ctx = ctx.clone();
             let content_cache = content_cache.clone();
             let stored_page_token = old_page_tokens.get(cur_user_email.as_str()).cloned();
+            let folder_filter_ids = folder_filter_ids_clone.clone();
+            let folder_ancestry_cache = ancestry_cache_clone.clone();
 
             async move {
                 if can_resume_full && stored_page_token.is_some() {
@@ -1801,6 +2042,8 @@ impl SyncManager {
                             &ctx,
                             start_token,
                             content_cache.clone(),
+                            folder_filter_ids.clone(),
+                            folder_ancestry_cache.clone(),
                         )
                         .await
                     {
@@ -1828,6 +2071,8 @@ impl SyncManager {
                         &ctx,
                         Some(&drive_cutoff_date),
                         content_cache.clone(),
+                        folder_filter_ids.clone(),
+                        folder_ancestry_cache.clone(),
                     )
                     .await
                 };
@@ -3481,6 +3726,11 @@ impl SyncManager {
         Ok(webhook_response)
     }
 
+    /// Public accessor for the Drive client (used by connector actions).
+    pub fn drive_client(&self) -> &DriveClient {
+        &self.drive_client
+    }
+
     pub async fn stop_webhook_for_source(
         &self,
         source_id: &str,
@@ -3542,20 +3792,26 @@ impl SyncManager {
         let mut path_components = vec![file_name.to_string()];
         let mut current_folder_id = folder_id.to_string();
 
-        // Build path by traversing up the folder hierarchy
-        let mut depth = 0;
+        // Build path by traversing up the folder hierarchy.
+        // Uses cycle detection via visited set; the iteration cap is only a safety net.
+        let mut visited = HashSet::new();
+        let mut _iteration: usize = 0;
+        const MAX_ITERATIONS: usize = 10_000;
         loop {
-            depth += 1;
-            debug!(
-                "Path building depth: {}, current folder: {}",
-                depth, current_folder_id
-            );
-
-            // TODO: Remove this
-            if depth > 50 {
+            _iteration += 1;
+            if _iteration >= MAX_ITERATIONS {
                 warn!(
-                    "Path building depth exceeded 50 levels for file: {}, folder: {}",
+                    "Path building exceeded maximum iterations for file: {}, folder: {}",
                     file_name, folder_id
+                );
+                break;
+            }
+
+            // Check for cycles before processing.
+            if !visited.insert(current_folder_id.clone()) {
+                warn!(
+                    "Cycle detected in folder ancestry for file: {}, folder: {}",
+                    file_name, current_folder_id
                 );
                 break;
             }
@@ -3580,7 +3836,7 @@ impl SyncManager {
                     );
                     let folder_metadata = self
                         .drive_client
-                        .get_folder_metadata(&auth, &user_email, &folder_id)
+                        .get_folder_metadata(&auth, &user_email, &current_folder_id)
                         .await;
 
                     match folder_metadata {
@@ -4347,6 +4603,60 @@ impl SyncManager {
     }
 }
 
+/// Core ancestry-check logic — the production walker used by `is_file_in_allowed_folder`
+/// and tested directly with mock lookups.
+///
+/// Given a file's parent IDs, an allowed set, and a function to fetch folder
+/// metadata by ID, walks up the parent chain and returns true if any ancestor
+/// is in the allowed set.
+///
+/// `lookup` returns `(name, Option<parent_id>)` for a folder ID.
+/// Returns Err on error, Ok(true) if found in allowed set, Ok(false) if outside.
+/// Has a safety cap of 10_000 iterations to prevent infinite loops.
+pub(crate) async fn check_ancestry_static(
+    file_parents: &Option<Vec<String>>,
+    allowed_ids: &HashSet<String>,
+    lookup: &(dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>>
+          + Send
+          + Sync),
+) -> Result<bool> {
+    if allowed_ids.is_empty() {
+        return Ok(true);
+    }
+
+    let mut stack: Vec<String> = Vec::new();
+    if let Some(parents) = file_parents {
+        for p in parents {
+            stack.push(p.clone());
+        }
+    }
+
+    let mut visited = HashSet::new();
+    let mut iterations: usize = 0;
+    const MAX_ITERATIONS: usize = 10_000;
+
+    while let Some(cur) = stack.pop() {
+        iterations += 1;
+        if iterations > MAX_ITERATIONS {
+            // Safety cap — treat as outside rather than infinite loop.
+            return Ok(false);
+        }
+        if !visited.insert(cur.clone()) {
+            // Cycle detected — skip, don't include.
+            continue;
+        }
+        if allowed_ids.contains(&cur) {
+            return Ok(true);
+        }
+        let (_name, parent) = lookup(cur).await?;
+        if let Some(p) = parent {
+            stack.push(p);
+        }
+    }
+
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4522,5 +4832,380 @@ mod tests {
         drop(permit);
 
         assert!(semaphore.try_acquire_many_owned(2).is_ok());
+    }
+
+    // ========================================================================
+    // Folder path filter logic tests (production helper check_ancestry_static is at module level above)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_ancestry_empty_allowed_set_returns_true() {
+        let allowed: HashSet<String> = HashSet::new();
+        let parents = Some(vec!["p1".to_string()]);
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move { Ok(("name".to_string(), Some(format!("parent-of-{}", id)))) })
+            };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(result, "empty allowed set → include all");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_direct_parent_match() {
+        let allowed: HashSet<String> = ["p1".to_string()].into_iter().collect();
+        let lookup = |_id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+            Box::pin(async move { Ok(("name".to_string(), None)) })
+        };
+        let result = check_ancestry_static(&Some(vec!["p1".to_string()]), &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(result, "direct parent match → true");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_no_match_no_parents() {
+        let allowed: HashSet<String> = ["p999".to_string()].into_iter().collect();
+        let lookup = |_id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+            Box::pin(async move { Ok(("name".to_string(), None)) })
+        };
+        let result = check_ancestry_static(&Some(Vec::new()), &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(!result, "empty parents + no match → false");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_nested_match_via_grandparent() {
+        let allowed: HashSet<String> = ["root-allowed".to_string()].into_iter().collect();
+        let parents = Some(vec!["child".to_string()]);
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move {
+                    match id.as_str() {
+                        "child" => {
+                            Ok(("Child Folder".to_string(), Some("root-allowed".to_string())))
+                        }
+                        _ => Ok(("unknown".to_string(), None)),
+                    }
+                })
+            };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(result, "nested grandparent match → true");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_outside_scope() {
+        let allowed: HashSet<String> = ["allowed-dir".to_string()].into_iter().collect();
+        let parents = Some(vec!["other-dir".to_string()]);
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move {
+                    match id.as_str() {
+                        "other-dir" => Ok(("Other".to_string(), Some("grandparent".to_string()))),
+                        "grandparent" => Ok(("GP".to_string(), None)),
+                        _ => Ok(("unknown".to_string(), None)),
+                    }
+                })
+            };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(!result, "ancestry outside scope → false");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_propagates_lookup_error() {
+        let allowed: HashSet<String> = ["allowed".to_string()].into_iter().collect();
+        let parents = Some(vec!["broken".to_string()]);
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move { Err(anyhow::anyhow!("API error for {}", id)) })
+            };
+        let result = check_ancestry_static(&parents, &allowed, &lookup).await;
+        assert!(result.is_err(), "lookup error should propagate");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_cycle_does_not_loop() {
+        let allowed: HashSet<String> = ["real-allowed".to_string()].into_iter().collect();
+        let parents = Some(vec!["p1".to_string()]);
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move {
+                    match id.as_str() {
+                        "p1" => Ok(("Folder 1".to_string(), Some("p2".to_string()))),
+                        "p2" => Ok(("Folder 2".to_string(), Some("p1".to_string()))),
+                        _ => Ok(("unknown".to_string(), None)),
+                    }
+                })
+            };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(!result, "cycle without allowed ID → false");
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_max_iterations_safety_net() {
+        let allowed: HashSet<String> = ["target-never-found".to_string()].into_iter().collect();
+        let parents = Some(vec!["level0".to_string()]);
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let lookup = move |_id: String| -> Pin<
+            Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>,
+        > {
+            let counter = counter_clone.clone();
+            Box::pin(async move {
+                let next = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(("x".to_string(), Some(format!("level{}", next + 1))))
+            })
+        };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(!result, "safety cap reached → false");
+        let count = counter.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            count >= 10_000,
+            "should have iterated at least 10k times, got {}",
+            count
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ancestry_multiple_parents_any_match() {
+        let allowed: HashSet<String> = ["allowed-p1".to_string()].into_iter().collect();
+        let parents = Some(vec!["other-p".to_string(), "allowed-p1".to_string()]);
+        let lookup = |_id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+            Box::pin(async move { Ok(("name".to_string(), None)) })
+        };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(result, "any parent match → true");
+    }
+
+    #[test]
+    fn test_folder_filter_ids_generated_from_parse() {
+        // Parse a config with two filters and verify the ID set.
+        let config = serde_json::json!({
+            "folder_path_filters": [
+                {
+                    "id": "0ADRI000001",
+                    "name": "Engineering",
+                    "path": "/Engineering (Shared Drive)",
+                    "driveId": "0ADRI000001",
+                    "kind": "shared_drive_root"
+                },
+                {
+                    "id": "1FOLDER0001",
+                    "name": "Docs",
+                    "path": "/Engineering/Docs",
+                    "driveId": "0ADRI000001",
+                    "kind": "folder"
+                }
+            ]
+        });
+
+        let result = crate::models::parse_folder_path_filters(&config);
+        assert!(result.is_ok());
+        let filters = result.unwrap().unwrap();
+        assert_eq!(filters.len(), 2);
+
+        let ids: HashSet<String> = filters.into_iter().map(|f| f.id).collect();
+        assert!(ids.contains("0ADRI000001"));
+        assert!(ids.contains("1FOLDER0001"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn test_config_parse_to_folder_filter_ids_chain() {
+        // End-to-end production-like path: parse config → extract IDs → HashSet.
+        let config = serde_json::json!({
+            "folder_path_filters": [{
+                "id": "0AMYDRIVE",
+                "name": "Company",
+                "path": "/Company (Shared Drive)",
+                "driveId": "0AMYDRIVE",
+                "kind": "shared_drive_root"
+            }]
+        });
+        let result = crate::models::parse_folder_path_filters(&config);
+        assert!(result.is_ok());
+        let ids_opt = result
+            .unwrap()
+            .map(|f| f.into_iter().map(|e| e.id).collect::<HashSet<_>>());
+        assert!(ids_opt.is_some());
+        let ids = ids_opt.unwrap();
+        assert!(ids.contains("0AMYDRIVE"));
+        assert_eq!(ids.len(), 1);
+
+        // If we got None (no filters), that's also index-all.
+        let nonexistent = crate::models::parse_folder_path_filters(&serde_json::json!({}));
+        assert!(nonexistent.is_ok_and(|v| v.is_none()));
+    }
+
+    // ========================================================================
+    // FolderAncestryCache tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_folder_ancestry_cache_miss_then_hit() {
+        // Verify that the cache populates on first call and serves a second
+        // call without re-invoking the fetcher (cache hit).
+        let cache = Arc::new(FolderAncestryCache::new());
+        let fetch_count = Arc::new(AtomicU64::new(0));
+
+        // First call — should invoke fetcher once.
+        {
+            let fetch_count = fetch_count.clone();
+            let result = cache
+                .get_or_fetch_test("folder-1", move || {
+                    let fetch_count = fetch_count.clone();
+                    async move {
+                        fetch_count.fetch_add(1, Ordering::Relaxed);
+                        Ok(("Folder 1".to_string(), Some("parent-1".to_string())))
+                    }
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.0, "Folder 1");
+            assert_eq!(result.1, Some("parent-1".to_string()));
+        }
+        assert_eq!(
+            fetch_count.load(Ordering::Relaxed),
+            1,
+            "first call fetched once"
+        );
+
+        // Second call — same folder_id, should hit cache without fetching.
+        {
+            let result = cache
+                .get_or_fetch_test("folder-1", || async move {
+                    panic!("fetcher should not be called on cache hit");
+                })
+                .await
+                .unwrap();
+            assert_eq!(result.0, "Folder 1");
+        }
+
+        // fetch_count still 1 (fetcher not called again).
+        assert_eq!(fetch_count.load(Ordering::Relaxed), 1);
+        assert!(
+            cache.hits.load(Ordering::Relaxed) > 0,
+            "cache should have recorded at least one hit"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_folder_ancestry_cache_no_cache_when_no_filters() {
+        // When no filters are configured, the is_file_in_allowed_folder path
+        // short-circuits at the top-level empty-check without creating a cache.
+        // Verify that short-circuit with empty allowed set.
+        let allowed: HashSet<String> = HashSet::new();
+        let parents = Some(vec!["child".to_string()]);
+        let lookup = |_id: String| -> Pin<
+            Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>,
+        > {
+            Box::pin(async move { Ok(("ignored".to_string(), None)) })
+        };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(result, "empty allowed set → include all");
+    }
+
+    #[tokio::test]
+    async fn test_check_ancestry_static_cycle_detection() {
+        // A cycle in the parent chain should not cause infinite loop.
+        let allowed: HashSet<String> = ["root-folder".to_string()].into_iter().collect();
+        let parents = Some(vec!["a".to_string()]);
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move {
+                    match id.as_str() {
+                        "a" => Ok(("A".to_string(), Some("b".to_string()))),
+                        "b" => Ok(("B".to_string(), Some("a".to_string()))), // cycle back to a
+                        _ => Ok(("unknown".to_string(), None)),
+                    }
+                })
+            };
+        let result = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(!result, "cycle should not match allowed folder");
+    }
+
+    #[tokio::test]
+    async fn test_check_ancestry_static_ancestry_cache_together() {
+        // FolderAncestryCache used with check_ancestry_static to verify both
+        // the ancestry walking and caching integration.
+        let cache = Arc::new(FolderAncestryCache::new());
+        let fetch_count = Arc::new(AtomicU64::new(0));
+
+        let lookup = {
+            let cache = cache.clone();
+            let fetch_count = fetch_count.clone();
+            move |folder_id: String| -> Pin<
+                Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>,
+            > {
+                let cache = cache.clone();
+                let fetch_count = fetch_count.clone();
+                Box::pin(async move {
+                    let fid = folder_id.clone();
+                    cache
+                        .get_or_fetch_test(&folder_id, {
+                            let fid = fid.clone();
+                            move || {
+                                let fid = fid.clone();
+                                let fetch_count = fetch_count.clone();
+                                async move {
+                                    fetch_count.fetch_add(1, Ordering::Relaxed);
+                                    match fid.as_str() {
+                                        "child" => Ok(("Child Folder".to_string(), Some("root-allowed".to_string()))),
+                                        "root-allowed" => Ok(("Allowed Root".to_string(), None)),
+                                        _ => Ok(("unknown".to_string(), None)),
+                                    }
+                                }
+                            }
+                        })
+                        .await
+                })
+            }
+        };
+
+        let allowed: HashSet<String> = ["root-allowed".to_string()].into_iter().collect();
+        let parents = Some(vec!["child".to_string()]);
+
+        // First call — should fetch child only. The root-allowed is in allowed_ids,
+        // so check_ancestry_static returns true without fetching its metadata.
+        let r1 = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(r1, "child should resolve to root-allowed");
+        assert_eq!(
+            fetch_count.load(Ordering::Relaxed),
+            1,
+            "one fetch (child only; root-allowed is in allowed set directly)"
+        );
+
+        // Second call — should NOT re-fetch because cache already populated.
+        let r2 = check_ancestry_static(&parents, &allowed, &lookup)
+            .await
+            .unwrap();
+        assert!(r2, "second call same result");
+        assert_eq!(
+            fetch_count.load(Ordering::Relaxed),
+            1,
+            "no additional fetches on second call (cache hit)"
+        );
+        assert!(
+            cache.hits.load(Ordering::Relaxed) >= 1,
+            "cache recorded at least one hit for reused entry"
+        );
     }
 }

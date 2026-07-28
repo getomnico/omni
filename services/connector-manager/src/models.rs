@@ -275,3 +275,25 @@ pub struct ExecuteSkillRequest {
     #[serde(default)]
     pub arguments: Option<JsonValue>,
 }
+
+// ============================================================================
+// Preview Action (transient credentials, no DB dependency)
+// ============================================================================
+
+/// Like `ExecuteActionRequest` but accepts inline credentials and a source_type
+/// hint so the action can be dispatched without a persisted source or credential row.
+///
+/// SECURITY: `deny_unknown_fields` ensures no extra fields are smuggled through.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewActionRequest {
+    /// Source type to select the connector (used when source_id is not available).
+    pub source_type: Option<SourceType>,
+    /// Existing source id (optional, used for source config merging).
+    pub source_id: Option<String>,
+    pub action: String,
+    #[serde(default)]
+    pub params: JsonValue,
+    /// Inline credentials (not persisted). Must have provider/google fields populated.
+    pub credentials: shared::models::ServiceCredential,
+}

@@ -10,6 +10,7 @@
     import { Badge } from '$lib/components/ui/badge'
     import { Search, X, AlertCircle, Info, Loader2 } from '@lucide/svelte'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
+    import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
@@ -19,6 +20,7 @@
         ConnectorActionResponse,
     } from '$lib/types/search'
     import { AuthType } from '$lib/types'
+    import type { FolderPathFilter } from '$lib/types'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
 
     let { data }: PageProps = $props()
@@ -32,6 +34,10 @@
     let serviceAccountJson = $state('')
     let principalEmail = $state(data.principalEmail)
     let domain = $state(data.domain)
+
+    let folderFilters = $state<FolderPathFilter[]>(
+        (Array.isArray(data.folderPathFilters) ? data.folderPathFilters : []) as FolderPathFilter[],
+    )
 
     let searchQuery = $state('')
     let searchResults = $state<GoogleDirectoryUser[]>([])
@@ -50,6 +56,7 @@
     let originalSelectedUsers: string[] = []
     let originalPrincipalEmail = data.principalEmail
     let originalDomain = data.domain
+    let originalFolderFilters = $state<FolderPathFilter[]>([...folderFilters])
 
     async function searchUsers() {
         if (searchQuery.trim().length < 2) {
@@ -196,10 +203,15 @@
         const usersChanged =
             JSON.stringify(selectedUsers.sort()) !== JSON.stringify(originalSelectedUsers.sort())
 
+        const foldersChanged =
+            JSON.stringify(folderFilters.map((f) => f.id).sort()) !==
+            JSON.stringify(originalFolderFilters.map((f) => f.id).sort())
+
         hasUnsavedChanges =
             enabled !== originalEnabled ||
             userFilterMode !== originalUserFilterMode ||
             usersChanged ||
+            foldersChanged ||
             principalEmail !== originalPrincipalEmail ||
             domain !== originalDomain ||
             serviceAccountJson.trim().length > 0
@@ -286,6 +298,15 @@
                             Integrations settings.
                         </Alert.Description>
                     </Alert.Root>
+                    <Alert.Root variant="default" class="mt-2">
+                        <Info class="h-4 w-4" />
+                        <Alert.Title>Folder-level filtering unavailable</Alert.Title>
+                        <Alert.Description>
+                            To select specific folders or shared drives for indexing, switch to a
+                            domain-wide delegation (service account) connection. OAuth-connected
+                            sources always index all accessible files.
+                        </Alert.Description>
+                    </Alert.Root>
                 </div>
             {:else if isJwt}
                 <div class="space-y-4">
@@ -312,6 +333,29 @@
                             </Alert.Description>
                         </Alert.Root>
                     {/if}
+                </div>
+
+                <!-- Folder Path Filter (JWT only) -->
+                <div class="space-y-4 border-t pt-6">
+                    <div>
+                        <h3 class="text-sm font-medium">Drive Folder Filters</h3>
+                        <p class="text-muted-foreground text-xs">
+                            Optionally restrict indexing to specific shared drives and top-level
+                            folders. All sub-folders within a selected item are included.
+                        </p>
+                    </div>
+                    <GoogleDriveFolderSelector
+                        bind:selected={folderFilters}
+                        sourceId={data.source.id}
+                        {serviceAccountJson}
+                        {principalEmail}
+                        {domain}
+                        disabled={!enabled} />
+                    <!-- Hidden form value to submit folder filters (always present for JWT, even when empty) -->
+                    <input
+                        type="hidden"
+                        name="folder_path_filters"
+                        value={JSON.stringify(folderFilters)} />
                 </div>
 
                 <div class="space-y-4 border-t pt-6">

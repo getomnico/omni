@@ -158,6 +158,18 @@ export interface SearchUsersResponse {
     hasMore: boolean
 }
 
+export interface DriveFolderDiscoveryEntry {
+    id: string
+    name: string
+    path: string
+    driveId: string
+    kind: 'shared_drive_root' | 'folder'
+}
+
+export interface DriveFolderDiscoveryResponse {
+    items: DriveFolderDiscoveryEntry[]
+}
+
 export interface ConnectorActionResponse<T = unknown> {
     status: string
     result?: T

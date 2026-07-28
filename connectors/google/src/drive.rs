@@ -1080,6 +1080,203 @@ impl DriveClient {
             )
         })
     }
+
+    /// List shared drives visible to the delegated principal's credentials.
+    ///
+    /// Paginates through all pages and returns the full list, sorted by drive name.
+    /// Only shared drives that the authenticated principal can see are returned;
+    /// does NOT use `useDomainAdminAccess` so drives the principal explicitly has
+    /// access to (e.g. shared drives they are members of) are surfaced.
+    pub async fn list_drives(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+    ) -> Result<DrivesListResponse> {
+        let user_email_owned = user_email.to_string();
+        let rate_limiter = self.rate_limiter.clone();
+        let client = self.client.clone();
+
+        let mut all_drives: Vec<DriveMetadata> = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let page: DrivesListResponse =
+                execute_with_auth_retry(auth, &user_email_owned, rate_limiter.clone(), |token| {
+                    let page_token = page_token.clone();
+                    let client = client.clone();
+                    async move {
+                        let url = format!("{}/drives", drive_api_base().as_str());
+                        let mut params: Vec<(&str, &str)> = vec![
+                            ("pageSize", "100"),
+                            ("fields", "nextPageToken,drives(id,name)"),
+                        ];
+                        if let Some(ref pt) = page_token {
+                            params.push(("pageToken", pt));
+                        }
+
+                        let response = client
+                            .get(&url)
+                            .bearer_auth(&token)
+                            .query(&params)
+                            .send()
+                            .await?;
+
+                        let status = response.status();
+                        if !status.is_success() {
+                            return classify_google_api_error(
+                                response,
+                                "Failed to list shared drives".to_string(),
+                            )
+                            .await;
+                        }
+
+                        let response_text = response.text().await?;
+                        let parsed: DrivesListResponse = serde_json::from_str(&response_text)
+                            .map_err(|e| {
+                                anyhow!(
+                                    "Failed to parse drives list response: {}. Raw: {}",
+                                    e,
+                                    response_text
+                                )
+                            })?;
+
+                        Ok(ApiResult::Success(parsed))
+                    }
+                })
+                .await?;
+
+            all_drives.extend(page.drives);
+
+            if let Some(next) = page.next_page_token {
+                page_token = Some(next);
+            } else {
+                break;
+            }
+        }
+
+        // Deterministic sort by name for stable UI ordering.
+        all_drives.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(DrivesListResponse {
+            drives: all_drives,
+            next_page_token: None,
+        })
+    }
+
+    /// List immediate children (sub-folders only) of a given folder in any drive.
+    ///
+    /// Paginates through all pages and returns the full list, sorted by name.
+    /// Uses `corpora=drive` and `driveId` scoping for shared-drive children.
+    pub async fn list_folder_children(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        folder_id: &str,
+        drive_id: &str,
+    ) -> Result<FilesListResponse> {
+        let folder_id_owned = folder_id.to_string();
+        let drive_id_owned = drive_id.to_string();
+        let user_email_owned = user_email.to_string();
+        let rate_limiter = self.rate_limiter.clone();
+        let client = self.client.clone();
+
+        let mut all_files: Vec<GoogleDriveFile> = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let page: FilesListResponse = execute_with_auth_retry(
+                auth,
+                &user_email_owned,
+                rate_limiter.clone(),
+                |token| {
+                    let folder_id = folder_id_owned.clone();
+                    let drive_id = drive_id_owned.clone();
+                    let page_token = page_token.clone();
+                    let client = client.clone();
+                    async move {
+                        let url = format!("{}/files", drive_api_base().as_str());
+
+                        let query = format!(
+                            "trashed=false and mimeType='application/vnd.google-apps.folder' and '{}' in parents",
+                            folder_id
+                        );
+
+                        let mut params: Vec<(&str, &str)> = vec![
+                            ("pageSize", "100"),
+                            ("fields", "nextPageToken,files(id,name,mimeType,parents,createdTime)"),
+                            ("q", query.as_str()),
+                            ("supportsAllDrives", "true"),
+                            ("includeItemsFromAllDrives", "true"),
+                            ("corpora", "drive"),
+                            ("driveId", &drive_id),
+                        ];
+                        if let Some(ref pt) = page_token {
+                            params.push(("pageToken", pt));
+                        }
+
+                        let response = client
+                            .get(&url)
+                            .bearer_auth(&token)
+                            .query(&params)
+                            .send()
+                            .await?;
+
+                        let status = response.status();
+                        if !status.is_success() {
+                            return classify_google_api_error(
+                                response,
+                                format!("Failed to list folder children for {folder_id}"),
+                            )
+                            .await;
+                        }
+
+                        let response_text = response.text().await?;
+                        let parsed: FilesListResponse =
+                            serde_json::from_str(&response_text).map_err(|e| {
+                                anyhow!(
+                                    "Failed to parse folder children response: {}. Raw: {}",
+                                    e,
+                                    response_text
+                                )
+                            })?;
+
+                        Ok(ApiResult::Success(parsed))
+                    }
+                },
+            )
+            .await?;
+
+            all_files.extend(page.files);
+
+            if let Some(next) = page.next_page_token {
+                page_token = Some(next);
+            } else {
+                break;
+            }
+        }
+
+        // Deterministic sort by name for stable UI ordering.
+        all_files.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(FilesListResponse {
+            files: all_files,
+            next_page_token: None,
+        })
+    }
+}
+
+/// Response from the Drive API v3 `/drives` endpoint.
+#[derive(Debug, Deserialize)]
+pub struct DrivesListResponse {
+    pub drives: Vec<DriveMetadata>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DriveMetadata {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1339,6 +1536,12 @@ fn extract_text_from_presentation(presentation: &GooglePresentation) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_query_no_cutoff_returns_trashed_false_only() {
+        let query = build_files_query(None);
+        assert_eq!(query, "trashed=false");
+    }
 
     #[test]
     fn files_query_uses_modified_or_created_time_cutoff() {

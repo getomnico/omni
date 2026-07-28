@@ -51,6 +51,14 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sources/:source_id", get(handlers::get_source))
         .route("/connectors", get(handlers::list_connectors))
         .route("/action", post(handlers::execute_action))
+        // /action-preview has a per-route 128KB body limit, applied BEFORE extraction.
+        // Merge a nested sub-router so the limit layer binds to this route alone,
+        // independent of the global DefaultBodyLimit::disable() below.
+        .merge(
+            Router::new()
+                .route("/action-preview", post(handlers::execute_action_preview))
+                .layer(DefaultBodyLimit::max(128 * 1024)),
+        )
         .route("/actions", get(handlers::list_actions))
         .route("/resource", post(handlers::read_resource))
         .route("/resources", get(handlers::list_resources))

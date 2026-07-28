@@ -555,6 +555,174 @@ pub async fn execute_action(
     Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
 }
 
+/// Preview-action endpoint similar to `execute_action` but accepts inline credentials
+/// instead of resolving from the database. This is used for admin preview/discovery
+/// actions (like listing shared drives) before the admin has saved their credentials.
+///
+/// SECURITY: Strictly allowlisted — only action="discover_folders" for
+/// google_drive source type with Google JWT credentials is accepted.
+/// Request body size limit: 128KB enforced before any parsing.
+pub async fn execute_action_preview(
+    State(state): State<AppState>,
+    body_bytes: axum::body::Bytes,
+) -> Result<axum::response::Response, ApiError> {
+    // Enforce 128KB body limit BEFORE any parsing.
+    if body_bytes.len() > 128 * 1024 {
+        return Err(ApiError::BadRequest(
+            "Preview request body too large (max 128KB)".to_string(),
+        ));
+    }
+
+    let request: crate::models::PreviewActionRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid preview request JSON: {}", e)))?;
+
+    info!(
+        "Preview action '{}' (source_type={:?}, source_id={:?}, params keys: {:?})",
+        request.action,
+        request.source_type,
+        request.source_id,
+        request
+            .params
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
+
+    // ======== STRICT ALLOWLIST ========
+    // Only allow discover_folders action for google_drive with Google JWT credentials.
+    if request.action != "discover_folders" {
+        return Err(ApiError::BadRequest(format!(
+            "Preview action '{}' is not allowed",
+            request.action
+        )));
+    }
+
+    // source_type must be google_drive; if not present, reject.
+    let source_type = request.source_type.as_ref().ok_or_else(|| {
+        ApiError::BadRequest("source_type is required for preview actions".to_string())
+    })?;
+
+    if *source_type != SourceType::GoogleDrive {
+        return Err(ApiError::BadRequest(format!(
+            "Preview action only supports google_drive, got {:?}",
+            source_type
+        )));
+    }
+
+    // Validate credential is Google JWT.
+    let creds = &request.credentials;
+    if creds.provider != shared::models::ServiceProvider::Google {
+        return Err(ApiError::BadRequest(format!(
+            "Preview action requires Google credentials, got provider: {:?}",
+            creds.provider
+        )));
+    }
+    if creds.auth_type != shared::models::AuthType::Jwt {
+        return Err(ApiError::BadRequest(format!(
+            "Preview action requires JWT credentials, got auth_type: {:?}",
+            creds.auth_type
+        )));
+    }
+    if creds.principal_email.as_deref().unwrap_or("").is_empty() {
+        return Err(ApiError::BadRequest(
+            "Preview action requires a non-empty principal_email".to_string(),
+        ));
+    }
+
+    // Validate credential shape: credentials must be a JSON object with service_account_key.
+    let creds_obj = creds.credentials.as_object().ok_or_else(|| {
+        ApiError::BadRequest(
+            "Preview credential 'credentials' field must be a JSON object".to_string(),
+        )
+    })?;
+    let sa_key = creds_obj
+        .get("service_account_key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "Preview JWT credentials must contain 'service_account_key' as a string"
+                    .to_string(),
+            )
+        })?;
+    if sa_key.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Preview service_account_key must not be empty".to_string(),
+        ));
+    }
+    // Validate that service_account_key is valid JSON (it's a full SA key blob).
+    serde_json::from_str::<serde_json::Value>(sa_key).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Preview service_account_key is not valid JSON: {}",
+            e
+        ))
+    })?;
+
+    // Validate config contains domain.
+    let config_obj = creds.config.as_object().ok_or_else(|| {
+        ApiError::BadRequest("Preview credential 'config' field must be a JSON object".to_string())
+    })?;
+    let domain = config_obj.get("domain").and_then(|v| v.as_str());
+    if domain.is_none_or(|d| d.is_empty()) {
+        return Err(ApiError::BadRequest(
+            "Preview credential config must contain a non-empty 'domain'".to_string(),
+        ));
+    }
+
+    let manifests = get_registered_manifests(&state.redis_client).await;
+
+    // Source type is the only lookup key — must match exactly.
+    let connector_url = manifests
+        .iter()
+        .find(|m| m.source_types.contains(source_type))
+        .map(|m| m.connector_url.clone())
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source_type
+            ))
+        })?;
+
+    // Use the inline credential directly — no DB resolution.
+    let client = ConnectorClient::new();
+    let action_request = ActionRequest {
+        action: request.action,
+        params: request.params,
+        credentials: Some(creds.clone()),
+        source: None,
+        actor_email: None,
+    };
+
+    let response = client
+        .execute_action_raw(&connector_url, &action_request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    let status = response.status();
+    let mut builder = axum::response::Response::builder().status(status);
+
+    let hop_by_hop = [
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "te",
+        "trailer",
+        "upgrade",
+    ];
+    for (key, value) in response.headers() {
+        let key_str = key.as_str();
+        if !hop_by_hop.contains(&key_str) {
+            builder = builder.header(key, value);
+        }
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
+}
+
 /// Outcome of resolving credentials for a tool/action invocation.
 enum CredentialResolution {
     Resolved(shared::models::ServiceCredential),
