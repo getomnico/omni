@@ -30,7 +30,7 @@ export abstract class EmailProvider {
         logger.info('Sending email')
         const result = await this.send(params)
         if (result.success) {
-            logger.info('Email sent')
+            logger.info(`Email sent: messageId=${result.messageId}`)
         } else {
             logger.error('Email failed', { error: result.error })
         }

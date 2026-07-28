@@ -135,7 +135,7 @@ class ConnectorToolHandler:
             if cached:
                 return [ConnectorAction(**d) for d in json.loads(cached)]
         except Exception as e:
-            logger.warning("Failed to load cached actions")
+            logger.warning("Failed to load cached actions: %s", e)
         return None
 
     async def _cache_actions(self, actions: list[ConnectorAction]) -> None:
@@ -148,7 +148,7 @@ class ConnectorToolHandler:
                 ex=ACTIONS_CACHE_TTL,
             )
         except Exception as e:
-            logger.warning("Failed to cache actions")
+            logger.warning("Failed to cache actions: %s", e)
 
     async def _fetch_actions(self) -> list[ConnectorAction]:
         """Fetch available actions from connector-manager.

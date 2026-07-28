@@ -20,7 +20,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         // No body or invalid JSON is fine — modelId stays undefined
     }
 
-    logger.debug('Creating new chat', { userId })
+    logger.debug('Creating new chat', { userId, modelId })
 
     try {
         const chat = await chatRepository.create(userId, undefined, modelId)

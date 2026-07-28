@@ -684,7 +684,7 @@ async def stream_generator(
         loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
         for _ in range(loop_passes):
             if await is_run_cancelled(redis_client, chat_id):
-                logger.info("Run cancelled, stopping stream")
+                logger.info("Run cancelled, stopping stream for chat %s", chat_id)
                 break
 
             content_blocks = []
@@ -876,7 +876,7 @@ async def stream_generator(
                 logger.info("Processing %s tool calls", len(tool_calls))
 
             if await is_run_cancelled(redis_client, chat_id):
-                logger.info("Run cancelled before tool execution")
+                logger.info("Run cancelled before tool execution for chat %s", chat_id)
                 break
 
             # Preflight credentials before asking for user approval. This keeps
@@ -1106,12 +1106,12 @@ async def stream_generator(
                             memory_provider.add(messages=turn, key=memory_write_key)
                         )
             except Exception as e:
-                logger.warning("Memory write setup failed")
+                logger.warning("Memory write setup failed for chat %s: %s", chat_id, e)
 
         yield end_of_stream(EndOfStreamReason.COMPLETED, message="Stream ended")
 
     except asyncio.CancelledError:
-        logger.info("Stream cancelled")
+        logger.info("Stream cancelled for chat %s", chat_id)
         if not content_blocks_finalized:
             partial = partial_assistant_message(content_blocks)
             if partial is not None:

@@ -222,6 +222,7 @@ async function triggerTitleGeneration(
             logger.warn('Title generation failed', {
                 chatId,
                 status: response.status,
+                message,
             })
             return { status: 'failed', message }
         }
@@ -317,7 +318,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
             async start(controller) {
                 try {
                     if (!chat.title) {
-                        logger.info('Generating title for chat')
+                        logger.info('Generating title for chat', { chatId })
                         triggerTitleGeneration(chatId, logger)
                             .then((result) => {
                                 if (result.status === 'generated') {
@@ -331,7 +332,10 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                         // The browser may have disconnected while title generation ran.
                                     }
                                 } else if (result.status === 'failed') {
-                                    logger.warn('Title generation failed')
+                                    logger.warn('Title generation failed', {
+                                        chatId,
+                                        message: result.message,
+                                    })
                                 }
                             })
                             .catch((err) =>
@@ -411,7 +415,9 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                     const enrichedEvent = `${idPrefix}event: oauth_required\ndata: ${JSON.stringify(enriched)}\n\n`
                                     controller.enqueue(encoder.encode(enrichedEvent))
                                 } catch (err) {
-                                    logger.error('Failed to enrich oauth_required event', err)
+                                    logger.error('Failed to enrich oauth_required event', err, {
+                                        chatId,
+                                    })
                                     // Fall back to forwarding the raw event so the
                                     // client at least sees something actionable.
                                     const fallback = `${idPrefix}event: oauth_required\ndata: ${data}\n\n`
@@ -500,7 +506,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                         }
                     }
                 } catch (error) {
-                    logger.error('Error in stream processing', error)
+                    logger.error('Error in stream processing', error, { chatId })
                     const message =
                         error instanceof Error ? error.message : 'Failed to process chat stream'
                     try {
@@ -520,7 +526,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                 // by aborting our upstream read, but do NOT touch the run — it
                 // continues server-side so the client can reconnect and resume.
                 // Generation is ended only via the explicit Stop endpoint.
-                logger.info('Client disconnected from stream proxy')
+                logger.info('Client disconnected from stream proxy', { chatId })
                 try {
                     await reader.cancel()
                 } catch {
@@ -540,7 +546,7 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
             },
         })
     } catch (error) {
-        logger.error('Error calling AI service', error)
+        logger.error('Error calling AI service', error, { chatId })
         const message = error instanceof Error ? error.message : 'Failed to process request'
         return sseErrorResponse(message)
     }

@@ -134,6 +134,7 @@ const handleLogging: Handle = async ({ event, resolve }) => {
                 route,
                 status: responseStatus,
                 duration: durationMs,
+                userId: event.locals.user?.id,
             })
         }
 

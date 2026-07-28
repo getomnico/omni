@@ -28,7 +28,7 @@ export class AccountLinkingService {
         tokens: OAuthTokens,
     ): Promise<OAuthAuthResult> {
         // First, check if this OAuth account is already linked to a user
-        logger.info(`Checking for existing OAuth credential for provider`)
+        logger.info(`Checking for existing OAuth credential for provider: ${provider}`)
         const existingCredential = await UserOAuthCredentialsService.findByProviderProfile(
             provider,
             profile.id,
@@ -36,7 +36,7 @@ export class AccountLinkingService {
 
         if (existingCredential) {
             // Update tokens and get the user
-            logger.info(`Updating tokens for user`)
+            logger.info(`Updating tokens for user: ${existingCredential.user_id}`)
             await UserOAuthCredentialsService.updateTokens(
                 existingCredential.user_id,
                 provider,
@@ -44,7 +44,7 @@ export class AccountLinkingService {
                 tokens,
             )
 
-            logger.info(`Fetching user by ID`)
+            logger.info(`Fetching user by ID: ${existingCredential.user_id}`)
             const user = await this.getUserById(existingCredential.user_id)
             return {
                 user,
@@ -59,7 +59,7 @@ export class AccountLinkingService {
 
         if (existingUser) {
             // Link the OAuth account to the existing user
-            logger.info(`Linking OAuth account to existing user`)
+            logger.info(`Linking OAuth account to existing user: ${existingUser.id}`)
             await UserOAuthCredentialsService.saveCredentials(
                 existingUser.id,
                 provider,
@@ -68,7 +68,7 @@ export class AccountLinkingService {
             )
 
             // Update user profile with OAuth data if needed
-            logger.info(`Updating user profile for user`)
+            logger.info(`Updating user profile for user: ${existingUser.id}`)
             await this.updateUserProfile(existingUser, profile)
 
             return {
@@ -94,7 +94,7 @@ export class AccountLinkingService {
         const newUser = await this.createUserFromOAuth(profile)
 
         // Save OAuth credentials for the new user
-        logger.info(`Saving OAuth credentials for new user`)
+        logger.info(`Saving OAuth credentials for new user: ${newUser.id}`)
         await UserOAuthCredentialsService.saveCredentials(newUser.id, provider, profile, tokens)
 
         return {

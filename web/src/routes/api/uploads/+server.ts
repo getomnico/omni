@@ -26,7 +26,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             body: forwarded,
         })
     } catch (err) {
-        logger.error('Upload proxy fetch failed', err as Error)
+        logger.error('Upload proxy fetch failed', err as Error, {
+            aiServiceUrl: env.AI_SERVICE_URL,
+        })
         return json({ error: 'Upload service unavailable' }, { status: 503 })
     }
 

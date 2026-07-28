@@ -150,7 +150,7 @@ class AnthropicProvider(LLMProvider):
                 elif event.type == "message_delta":
                     logger.info("Message delta received")
                 elif event.type == "message_stop":
-                    logger.info("Message completed")
+                    logger.info("Message completed after %s events", event_count)
 
                 yield event
 

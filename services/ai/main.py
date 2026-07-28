@@ -87,7 +87,7 @@ async def startup_event():
                 raise
             except Exception as e:
                 app.state.memory_provider = None
-                logger.warning(f"Memory initialization failed: {type(e).__name__}")
+                logger.warning(f"Memory initialization failed: {e}")
         else:
             app.state.memory_provider = None
             logger.info("MEMORY_ENABLED=false — memory feature disabled")

@@ -83,7 +83,7 @@ async def fetch_operator_values(
                 _operator_values_mem_ts = now
                 return _operator_values_mem
         except Exception as e:
-            logger.warning("Failed to read operator values cache")
+            logger.warning("Failed to read operator values cache: %s", e)
 
     attribute_keys = [
         op.attribute_key
@@ -96,7 +96,7 @@ async def fetch_operator_values(
     try:
         values = await searcher_client.get_attribute_values(attribute_keys)
     except Exception as e:
-        logger.warning("Failed to fetch operator values from searcher")
+        logger.warning("Failed to fetch operator values from searcher: %s", e)
         return {}
 
     _operator_values_mem = values
@@ -110,7 +110,7 @@ async def fetch_operator_values(
                 ex=_OPERATOR_VALUES_CACHE_TTL,
             )
         except Exception as e:
-            logger.warning("Failed to cache operator values")
+            logger.warning("Failed to cache operator values: %s", e)
 
     return values
 

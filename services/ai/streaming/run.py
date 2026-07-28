@@ -140,7 +140,7 @@ async def run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
             pass
         raise
     except Exception as e:
-        logger.error(f"Producer failed: {e}", exc_info=True)
+        logger.error(f"Producer failed for chat {chat_id}: {e}", exc_info=True)
         try:
             await redis_client.xadd(
                 sk,
