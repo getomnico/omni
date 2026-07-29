@@ -656,3 +656,24 @@ jobs:
       (needs.detect-changes.outputs.is-tag == 'true' || needs.detect-changes.outputs.deployment == 'true')
     uses: ./.github/workflows/package-deployment.yml
     secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Release publishing (only after all builds succeed)
+  # ---------------------------------------------------------------------------
+  publish-release:
+    needs: [release-services, release-connectors, build-cli, package-deployment]
+    if: needs.detect-changes.outputs.is-tag == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create GitHub Release
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --verify-tag \
+            --generate-notes
