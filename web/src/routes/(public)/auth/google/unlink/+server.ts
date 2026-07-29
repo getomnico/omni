@@ -39,7 +39,7 @@ export const POST: RequestHandler = async ({ url, cookies }) => {
         // Redirect back to settings with success message
         throw redirect(302, '/settings/integrations?success=google_unlinked')
     } catch (error) {
-        console.error('OAuth unlink error')
+        console.error('OAuth unlink error:', error)
 
         // Re-throw redirects
         if (error instanceof Response) {

@@ -47,8 +47,8 @@ const shutdown = async () => {
     try {
         await sdk.shutdown()
         console.log('Telemetry shut down successfully')
-    } catch {
-        console.error('Error shutting down telemetry')
+    } catch (error) {
+        console.error('Error shutting down telemetry', error)
     }
 }
 

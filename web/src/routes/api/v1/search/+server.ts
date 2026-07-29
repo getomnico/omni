@@ -96,8 +96,10 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     }
 
     logger.debug('Agent search request', {
+        query: queryData.query,
         queryLength: queryData.query?.length ?? 0,
         mode: queryData.mode,
+        otel_skip: true,
     })
 
     try {

@@ -34,6 +34,8 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     logger.debug('Sending search request to searcher service', {
         queryLength: queryData.query.length,
         mode: queryData.mode,
+        query: queryData.query,
+        otel_skip: true,
     })
 
     try {
@@ -65,7 +67,10 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
 
         return json(searchResults)
     } catch (error) {
-        logger.error('Error calling search service', error)
+        logger.error('Error calling search service', error, {
+            query: queryData.query,
+            otel_skip: true,
+        })
         return json(
             {
                 error: 'Failed to perform search',

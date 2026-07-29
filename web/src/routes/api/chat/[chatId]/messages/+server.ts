@@ -129,7 +129,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         return json({ error: 'Content or attachments are required' }, { status: 400 })
     }
 
-    logger.debug('Adding message to chat', { chatId })
+    logger.debug('Adding message to chat', { chatId, userId: locals.user.id })
 
     try {
         // First check if chat exists
