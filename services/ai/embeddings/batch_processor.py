@@ -11,6 +11,7 @@ import time
 from typing import Optional
 
 import ulid
+from opentelemetry import trace, metrics
 
 from config import EMBEDDING_MAX_MODEL_LEN
 from db import (
@@ -27,6 +28,70 @@ from state import AppState
 from . import Chunk
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Embedding processor metrics (lazily created once)
+# ---------------------------------------------------------------------------
+_EMBEDDING_METER = None
+_EMBEDDING_PENDING = None
+_EMBEDDING_PROCESSED = None
+_EMBEDDING_FAILED = None
+_EMBEDDING_BATCH_DURATION = None
+
+
+def _ensure_embedding_instruments():
+    global _EMBEDDING_METER, _EMBEDDING_PENDING, _EMBEDDING_PROCESSED
+    global _EMBEDDING_FAILED, _EMBEDDING_BATCH_DURATION
+    if _EMBEDDING_METER is not None:
+        return
+    meter = metrics.get_meter("omni-ai-embedding")
+    _EMBEDDING_METER = meter
+    _EMBEDDING_PENDING = meter.create_gauge(
+        name="omni.ai.embedding.pending",
+        unit="{documents}",
+        description="Number of documents pending embedding",
+    )
+    _EMBEDDING_PROCESSED = meter.create_counter(
+        name="omni.ai.embedding.processed",
+        unit="{documents}",
+        description="Total documents successfully embedded",
+    )
+    _EMBEDDING_FAILED = meter.create_counter(
+        name="omni.ai.embedding.failed",
+        unit="{documents}",
+        description="Total documents that failed embedding",
+    )
+    _EMBEDDING_BATCH_DURATION = meter.create_histogram(
+        name="omni.ai.embedding.batch.duration",
+        unit="s",
+        description="Duration of embedding batch processing",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Thin recording helpers (testable via monkeypatching the globals above)
+# ---------------------------------------------------------------------------
+
+
+def _record_embedding_processed(count: int = 1) -> None:
+    if _EMBEDDING_PROCESSED is not None:
+        _EMBEDDING_PROCESSED.add(count)
+
+
+def _record_embedding_failed(count: int = 1) -> None:
+    if _EMBEDDING_FAILED is not None:
+        _EMBEDDING_FAILED.add(count)
+
+
+def _record_embedding_batch_duration(seconds: float) -> None:
+    if _EMBEDDING_BATCH_DURATION is not None:
+        _EMBEDDING_BATCH_DURATION.record(seconds)
+
+
+def _record_embedding_pending(count: int) -> None:
+    if _EMBEDDING_PENDING is not None:
+        _EMBEDDING_PENDING.set(count)
 
 
 # Configuration for online processing
@@ -80,12 +145,14 @@ class EmbeddingBatchProcessor:
         """Process queue items using online API calls"""
         logger.info(f"Starting embedding processor for provider: {self.provider_type}")
 
+        _ensure_embedding_instruments()
+
         status_counts = await self.queue_repo.get_status_counts()
         self._baseline_completed = status_counts.get(QueueStatus.COMPLETED, 0)
         self._baseline_failed = status_counts.get(QueueStatus.FAILED, 0)
-        pending = status_counts.get(QueueStatus.PENDING, 0) + status_counts.get(
-            QueueStatus.PROCESSING, 0
-        )
+        pending = status_counts.get(QueueStatus.PENDING, 0)
+        _record_embedding_pending(pending)
+
         logger.info(
             f"Embedding queue: {pending} pending, "
             f"{self._baseline_completed} completed, "
@@ -102,7 +169,7 @@ class EmbeddingBatchProcessor:
                 if processed_any:
                     await asyncio.sleep(ONLINE_BATCH_DELAY)
             except Exception as e:
-                logger.error(f"Online processing loop error: {e}", exc_info=True)
+                logger.error("Online processing loop error: %s", e, exc_info=True)
                 await asyncio.sleep(10)
 
     async def _process_online_batch(self) -> bool:
@@ -120,29 +187,53 @@ class EmbeddingBatchProcessor:
             return False
 
         logger.info(f"Processing {len(items)} documents via online embedding API")
+        batch_start = time.monotonic()
 
-        documents_by_id = await self.documents_repo.get_by_ids(
-            [item.document_id for item in items]
-        )
-        items_to_process = await self._clone_same_content_embeddings(
-            items, documents_by_id
-        )
-
-        for item in items_to_process:
+        tracer = trace.get_tracer("omni-ai")
+        had_failure = False
+        with tracer.start_as_current_span(
+            "embedding_queue process",
+        ) as span:
             try:
-                await self._process_single_document(
-                    item, documents_by_id.get(item.document_id)
+                documents_by_id = await self.documents_repo.get_by_ids(
+                    [item.document_id for item in items]
                 )
-            except Exception as e:
-                logger.error(
-                    f"Failed to process document {item.document_id}: {e}", exc_info=True
+                items_to_process = await self._clone_same_content_embeddings(
+                    items, documents_by_id
                 )
-                await self.queue_repo.mark_failed([item.id], str(e))
-                self._docs_failed += 1
+
+                for item in items_to_process:
+                    try:
+                        ok = await self._process_single_document(
+                            item, documents_by_id.get(item.document_id)
+                        )
+                        if not ok:
+                            had_failure = True
+                    except Exception as exc:
+                        had_failure = True
+                        logger.error(
+                            "Failed to process document %s: %s", item.document_id, exc,
+                            exc_info=True,
+                        )
+                        await self.queue_repo.mark_failed([item.id], str(exc))
+                        self._docs_failed += 1
+                        _record_embedding_failed()
+                    finally:
+                        # Yield to allow higher-priority tasks (stream requests) to run
+                        await asyncio.sleep(0)
+                        await self._maybe_log_progress()
+
+                # Record batch duration
+                batch_duration = time.monotonic() - batch_start
+                _record_embedding_batch_duration(batch_duration)
+
+            except Exception:
+                had_failure = True
+                span.set_status(trace.Status(trace.StatusCode.ERROR))
+                raise
             finally:
-                # Yield to allow higher-priority tasks (stream requests) to run
-                await asyncio.sleep(0)
-                await self._maybe_log_progress()
+                if had_failure:
+                    span.set_status(trace.Status(trace.StatusCode.ERROR))
 
         return True
 
@@ -191,6 +282,7 @@ class EmbeddingBatchProcessor:
 
         self._docs_completed += len(clone_counts)
         self._embeddings_written += sum(clone_counts.values())
+        _record_embedding_processed(len(clone_counts))
         logger.info(
             "Cloned embeddings for %d documents with duplicate content (%d chunks)",
             len(clone_counts),
@@ -202,11 +294,18 @@ class EmbeddingBatchProcessor:
 
     async def _process_single_document(
         self, item: EmbeddingQueueItem, doc: Document | None = None
-    ):
-        """Process a single document using the embedding provider"""
+    ) -> bool:
+        """Process a single document using the embedding provider.
+
+        Returns:
+            True if the document was durably completed (embeddings written
+            or cloned successfully). False if any internally-handled failure
+            path was taken (missing content_id, empty content, no chunks
+            generated, or caught embedding exception).
+        """
         if item.retry_count > 0:
             logger.debug(
-                f"Retrying document {item.document_id} (attempt {item.retry_count + 1})"
+                f"Retrying document (attempt {item.retry_count + 1})"
             )
 
         # Use semaphore to limit concurrent embedding operations and yield more frequently
@@ -216,13 +315,14 @@ class EmbeddingBatchProcessor:
 
             if not doc or not doc.content_id:
                 logger.warning(
-                    f"Document {item.document_id} has no content_id, skipping"
+                    "Document has no content_id, skipping"
                 )
                 await self.queue_repo.mark_failed(
                     [item.id], "Document has no content_id"
                 )
                 self._docs_failed += 1
-                return
+                _record_embedding_failed()
+                return False
 
             # Cross-source embedding cloning: if another document with the same
             # external_id already has embeddings, clone them instead of
@@ -241,22 +341,24 @@ class EmbeddingBatchProcessor:
                         await self.queue_repo.mark_completed([item.id])
                         self._docs_completed += 1
                         self._embeddings_written += cloned
+                        _record_embedding_processed()
                         logger.info(
-                            f"Cloned {cloned} embeddings from {donor_id} to {item.document_id} (cross-source dedup)"
+                            f"Cloned {cloned} embeddings (cross-source dedup)"
                         )
-                        return
+                        return True
 
             content_text = await self.content_storage.get_text(doc.content_id)
 
             if not content_text or not content_text.strip():
                 logger.warning(
-                    f"Document {item.document_id} has empty content, skipping"
+                    "Document has empty content, skipping"
                 )
                 await self.queue_repo.mark_failed(
                     [item.id], "Document has empty content"
                 )
                 self._docs_failed += 1
-                return
+                _record_embedding_failed()
+                return False
 
             # Generate embeddings using sliding window over the document
             try:
@@ -299,13 +401,14 @@ class EmbeddingBatchProcessor:
 
                 if not chunks:
                     logger.warning(
-                        f"No embeddings generated for document {item.document_id}"
+                        "No embeddings generated for document"
                     )
                     await self.queue_repo.mark_failed(
                         [item.id], "No embeddings generated"
                     )
                     self._docs_failed += 1
-                    return
+                    _record_embedding_failed()
+                    return False
 
                 await self.embeddings_repo.delete_for_documents([item.document_id])
 
@@ -330,17 +433,20 @@ class EmbeddingBatchProcessor:
 
                 self._docs_completed += 1
                 self._embeddings_written += len(chunks)
+                _record_embedding_processed()
                 logger.info(
-                    f"Processed document {item.document_id}: {len(chunks)} chunks embedded"
+                    f"Processed document: {len(chunks)} chunks embedded"
                 )
+                return True
 
-            except Exception as e:
+            except Exception as exc:
                 logger.error(
-                    f"Embedding generation failed for {item.document_id}: {e}",
-                    exc_info=True,
+                    "Embedding generation failed"
                 )
-                await self.queue_repo.mark_failed([item.id], str(e))
+                await self.queue_repo.mark_failed([item.id], str(exc))
                 self._docs_failed += 1
+                _record_embedding_failed()
+                return False
 
     async def _maybe_log_progress(self):
         """Log embedding progress periodically."""
@@ -357,6 +463,8 @@ class EmbeddingBatchProcessor:
         )
         total_completed = self._baseline_completed + self._docs_completed
         total_failed = self._baseline_failed + self._docs_failed
+
+        _record_embedding_pending(pending)
 
         elapsed_min = (now - self._progress_start_time) / 60
         docs_per_min = self._docs_completed / elapsed_min if elapsed_min > 0 else 0

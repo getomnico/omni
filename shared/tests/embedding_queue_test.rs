@@ -3,6 +3,7 @@ mod tests {
     use shared::embedding_queue::EmbeddingQueue;
     use shared::test_environment::TestEnvironment;
     use sqlx::PgPool;
+    use tracing::Instrument;
     use ulid::Ulid;
 
     const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -332,4 +333,6 @@ mod tests {
         let stats = queue.get_queue_stats().await.unwrap();
         assert_eq!(stats.pending, 0);
     }
+
+    // -----------------------------------------------------------------------
 }

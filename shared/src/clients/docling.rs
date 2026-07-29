@@ -3,11 +3,13 @@
 //! The Docling service converts documents to Markdown using AI-based extraction.
 //! It provides superior PDF extraction, OCR support, and structure-aware output.
 
-use anyhow::{Context, anyhow};
-use reqwest::{Client, multipart};
+use anyhow::{anyhow, Context};
+use reqwest::{multipart, Client};
 use serde::Deserialize;
 use std::time::Duration;
 use tracing::{debug, error};
+
+use crate::telemetry::http_client;
 
 /// Errors from the Docling document conversion service.
 #[derive(Debug, thiserror::Error)]
@@ -94,10 +96,8 @@ impl DoclingClient {
 
     /// Check if the Docling service is healthy and ready.
     pub async fn health_check(&self) -> anyhow::Result<bool> {
-        let response = self
-            .client
-            .get(format!("{}/health", self.base_url))
-            .send()
+        let url = format!("{}/health", self.base_url);
+        let response = http_client::send_traced("GET", &url, self.client.get(&url))
             .await
             .context("Failed to connect to Docling service")?;
 
@@ -190,14 +190,17 @@ impl DoclingClient {
 
         let form = multipart::Form::new().part("file", part);
 
-        let response = self
-            .client
-            .post(format!("{}/convert", self.base_url))
-            .query(&[("preset", preset)])
-            .multipart(form)
-            .send()
-            .await
-            .context("Failed to submit document to Docling")?;
+        let url = format!("{}/convert", self.base_url);
+        let response = http_client::send_traced(
+            "POST",
+            &url,
+            self.client
+                .post(&url)
+                .query(&[("preset", preset)])
+                .multipart(form),
+        )
+        .await
+        .context("Failed to submit document to Docling")?;
 
         if response.status().as_u16() == 429 {
             let retry_after = response
@@ -235,10 +238,8 @@ impl DoclingClient {
 
     /// Get the status of a conversion job.
     async fn get_job(&self, job_id: &str) -> Result<JobResponse, DoclingError> {
-        let response = self
-            .client
-            .get(format!("{}/jobs/{}", self.base_url, job_id))
-            .send()
+        let url = format!("{}/jobs/{}", self.base_url, job_id);
+        let response = http_client::send_traced("GET", &url, self.client.get(&url))
             .await
             .context("Failed to poll Docling job")?;
 

@@ -1,7 +1,9 @@
 import pino, { type Logger as PinoLogger } from 'pino'
+import { trace } from '@opentelemetry/api'
 import { env } from '$env/dynamic/private'
 import { dev } from '$app/environment'
 import { ulid } from 'ulid'
+import { createPinoOtelHook } from './otel-log-hook.mjs'
 
 const logLevel = env.LOG_LEVEL || (dev ? 'debug' : 'info')
 const logPretty = env.LOG_PRETTY === 'true' || dev
@@ -21,6 +23,8 @@ const transport = logPretty
       }
     : undefined
 
+const productionHook = createPinoOtelHook()
+
 const pinoConfig: pino.LoggerOptions = {
     level: logLevel,
     timestamp: pino.stdTimeFunctions.isoTime,
@@ -30,22 +34,37 @@ const pinoConfig: pino.LoggerOptions = {
         },
     },
     serializers: {
+        // Error serializer: emit only bounded error type/name.
+        // Dynamic message (err.message) and stack first line are NOT
+        // emitted — they are user-controlled and may contain sensitive
+        // data.
         error: (err: Error) => ({
             type: err.name,
-            message: err.message,
-            stack: err.stack,
         }),
-        request: (req: any) => ({
-            method: req.method,
-            url: req.url,
-            headers: req.headers,
-            query: req.query,
-            params: req.params,
-        }),
-        response: (res: any) => ({
-            statusCode: res.statusCode,
-            headers: res.headers,
-        }),
+        // No request/response serializers — these dump headers, query,
+        // params, and response bodies. Individual log calls pass explicit
+        // bounded fields (method, route, status, duration).
+    },
+    /**
+     * Inject real trace_id / span_id into every stdout Pino JSON line
+     * when inside a valid OTel span.  This ensures stdout log correlation
+     * works even if the auto-instrumentation mixin patch hasn't fired yet.
+     */
+    mixin(_context: object, _level: number): Record<string, string> {
+        const span = trace.getActiveSpan()
+        if (!span) return {}
+        const spanContext = span.spanContext()
+        return {
+            trace_id: spanContext.traceId,
+            span_id: spanContext.spanId,
+        }
+    },
+    /**
+     * Export each log record to OTel via the production hook exactly once,
+     * independent of auto-instrumentation module-load quirks.
+     */
+    hooks: {
+        logMethod: productionHook,
     },
     ...(transport && { transport }),
 }
@@ -55,7 +74,7 @@ const baseLogger = pino(pinoConfig)
 export class Logger {
     private logger: PinoLogger
 
-    constructor(name?: string, metadata?: Record<string, any>) {
+    constructor(name?: string, metadata?: Record<string, unknown>) {
         this.logger = name
             ? baseLogger.child({ module: name, ...metadata })
             : baseLogger.child(metadata || {})
@@ -65,7 +84,7 @@ export class Logger {
         return ulid()
     }
 
-    child(name: string, metadata?: Record<string, any>): Logger {
+    child(name: string, metadata?: Record<string, unknown>): Logger {
         const childLogger = new Logger()
         childLogger.logger = this.logger.child({ module: name, ...metadata })
         return childLogger
@@ -77,47 +96,49 @@ export class Logger {
         return childLogger
     }
 
-    debug(message: string, data?: any): void {
+    debug(message: string, data?: unknown): void {
         if (data) {
-            this.logger.debug(data, message)
+            // Safe normalization: Pino expects object | string as first arg
+            this.logger.debug(data as object, message)
         } else {
             this.logger.debug(message)
         }
     }
 
-    info(message: string, data?: any): void {
+    info(message: string, data?: unknown): void {
         if (data) {
-            this.logger.info(data, message)
+            this.logger.info(data as object, message)
         } else {
             this.logger.info(message)
         }
     }
 
-    warn(message: string, data?: any): void {
+    warn(message: string, data?: unknown): void {
         if (data) {
-            this.logger.warn(data, message)
+            this.logger.warn(data as object, message)
         } else {
             this.logger.warn(message)
         }
     }
 
-    error(message: string, error?: Error | any, data?: any): void {
+    error(message: string, error?: unknown, data?: Record<string, unknown>): void {
         if (error instanceof Error) {
-            this.logger.error({ error, ...data }, message)
+            this.logger.error({ error, ...(data ?? {}) }, message)
         } else if (error) {
-            this.logger.error({ ...error, ...data }, message)
+            // Non-Error second arg: existing behaviour passes it as data
+            this.logger.error({ ...(data ?? {}) }, message)
         } else {
-            this.logger.error(data || {}, message)
+            this.logger.error(data ?? {}, message)
         }
     }
 
-    fatal(message: string, error?: Error | any, data?: any): void {
+    fatal(message: string, error?: unknown, data?: Record<string, unknown>): void {
         if (error instanceof Error) {
-            this.logger.fatal({ error, ...data }, message)
+            this.logger.fatal({ error, ...(data ?? {}) }, message)
         } else if (error) {
-            this.logger.fatal({ ...error, ...data }, message)
+            this.logger.fatal({ ...(data ?? {}) }, message)
         } else {
-            this.logger.fatal(data || {}, message)
+            this.logger.fatal(data ?? {}, message)
         }
     }
 
@@ -132,6 +153,6 @@ export class Logger {
 
 export const logger = new Logger('omni-web')
 
-export function createLogger(name: string, metadata?: Record<string, any>): Logger {
+export function createLogger(name: string, metadata?: Record<string, unknown>): Logger {
     return new Logger(name, metadata)
 }

@@ -576,7 +576,7 @@ impl EventQueue {
             r#"
             UPDATE connector_events_queue
             SET status = 'completed', processed_at = NOW()
-            WHERE id = ANY($1)
+            WHERE id = ANY($1) AND status = 'processing'
             "#,
         )
         .bind(&event_ids)
@@ -624,12 +624,18 @@ impl EventQueue {
         Ok(result.rows_affected() as i64)
     }
 
+    /// Mark a batch of connector events as failed or dead-letter, returning
+    /// the count of rows that became `failed` (retryable) and those that
+    /// became `dead_letter` (exhausted retries).
+    ///
+    /// Only rows currently in `processing` state are updated, preventing
+    /// stale/duplicate IDs from inflating counters.
     pub async fn mark_events_dead_letter_batch(
         &self,
         event_ids_with_errors: Vec<(String, String)>,
-    ) -> Result<i64> {
+    ) -> Result<(i64, i64)> {
         if event_ids_with_errors.is_empty() {
-            return Ok(0);
+            return Ok((0, 0));
         }
 
         let event_ids: Vec<String> = event_ids_with_errors
@@ -641,7 +647,7 @@ impl EventQueue {
             .map(|(_, err)| err.clone())
             .collect();
 
-        let result = sqlx::query(
+        let rows: Vec<(String,)> = sqlx::query_as(
             r#"
             UPDATE connector_events_queue
             SET status = CASE 
@@ -655,14 +661,18 @@ impl EventQueue {
                 SELECT * FROM UNNEST($1::text[], $2::text[]) AS t(id, error_message)
             ) AS data_table
             WHERE connector_events_queue.id = data_table.id
+                AND connector_events_queue.status = 'processing'
+            RETURNING connector_events_queue.status
             "#,
         )
         .bind(&event_ids)
         .bind(&error_messages)
-        .execute(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
 
-        Ok(result.rows_affected() as i64)
+        let dead_letter_count = rows.iter().filter(|(s,)| s == "dead_letter").count() as i64;
+        let failed_count = rows.iter().filter(|(s,)| s == "failed").count() as i64;
+        Ok((failed_count, dead_letter_count))
     }
 }
 

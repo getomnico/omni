@@ -171,7 +171,10 @@ class SearcherClient:
         try:
             search_payload = request.model_dump(mode="json")
 
-            logger.info(f"Calling searcher service with query: {request.query}...")
+            logger.info(
+                "Calling searcher service with query: %s", request.query,
+                extra={"otel_skip": True},
+            )
 
             response = await self.client.post(
                 f"{self.searcher_url}/search", json=search_payload
@@ -179,11 +182,11 @@ class SearcherClient:
 
             if response.status_code == 200:
                 search_results = SearchResponse.model_validate(response.json())
-                logger.info(f"Search completed: {search_results.total_count} results")
+                logger.info("Search completed: %s results", search_results.total_count)
                 return search_results
             else:
                 logger.error(
-                    f"Search service error: {response.status_code} - {response.text}"
+                    "Search service error: status=%s", response.status_code
                 )
                 raise SearcherError(
                     message=f"Searcher API call failed: {response.status_code} {response.text}",
@@ -197,7 +200,10 @@ class SearcherClient:
     async def search_people(self, request: PeopleSearchRequest) -> PeopleSearchResponse:
         """Search the people directory using omni-searcher service."""
         try:
-            logger.info(f"People search with query: {request.query}...")
+            logger.info(
+                "People search with query: %s", request.query,
+                extra={"otel_skip": True},
+            )
             response = await self.client.get(
                 f"{self.searcher_url}/people/search",
                 params={"q": request.query, "limit": request.limit},
@@ -205,11 +211,11 @@ class SearcherClient:
 
             if response.status_code == 200:
                 result = PeopleSearchResponse.model_validate(response.json())
-                logger.info(f"People search completed: {len(result.people)} results")
+                logger.info("People search completed: %s results", len(result.people))
                 return result
             else:
                 logger.error(
-                    f"People search error: {response.status_code} - {response.text}"
+                    "People search error: status=%s", response.status_code
                 )
                 raise SearcherError(
                     message=f"People search failed: {response.status_code} {response.text}",
@@ -233,7 +239,7 @@ class SearcherClient:
         if response.status_code == 200:
             return CapabilitiesUpsertResponse.model_validate(response.json())
         logger.error(
-            f"Capability upsert error: {response.status_code} - {response.text}"
+            "Capability upsert error: status=%s", response.status_code
         )
         raise SearcherError(
             message=f"Capability upsert failed: {response.status_code} {response.text}",
@@ -252,7 +258,7 @@ class SearcherClient:
         if response.status_code == 200:
             return CapabilitiesSyncResponse.model_validate(response.json())
         logger.error(
-            f"Capability sync error: {response.status_code} - {response.text}"
+            "Capability sync error: status=%s", response.status_code
         )
         raise SearcherError(
             message=f"Capability sync failed: {response.status_code} {response.text}",
@@ -271,7 +277,7 @@ class SearcherClient:
         if response.status_code == 200:
             return CapabilitySearchResponse.model_validate(response.json())
         logger.error(
-            f"Capability search error: {response.status_code} - {response.text}"
+            "Capability search error: status=%s", response.status_code
         )
         raise SearcherError(
             message=f"Capability search failed: {response.status_code} {response.text}",
@@ -293,7 +299,7 @@ class SearcherClient:
                 return data.get("attributes", {})
             else:
                 logger.error(
-                    f"Attribute values fetch error: {response.status_code} - {response.text}"
+                    "Attribute values fetch error: status=%s", response.status_code
                 )
                 return {}
         except Exception as e:

@@ -34,7 +34,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     const body = await resp.text()
     if (!resp.ok) {
-        logger.warn('Upload proxy failed', undefined, { status: resp.status, body })
+        logger.warn('Upload proxy failed', undefined, { status: resp.status })
         return new Response(body, {
             status: resp.status,
             headers: { 'Content-Type': resp.headers.get('Content-Type') ?? 'application/json' },

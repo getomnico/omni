@@ -35,6 +35,7 @@ ulid = { workspace = true }
 bytes = "1.0"
 futures = "0.3"
 num_cpus = "1.0"
+tracing-opentelemetry = { workspace = true }
 shared = { path = "../../shared" }
 
 [dev-dependencies]

@@ -45,7 +45,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
         chatId,
         messageId,
         feedbackType: feedbackRequest.feedbackType,
-        userId: locals.user.id,
     })
 
     try {
@@ -61,7 +60,6 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
             messageId,
             feedbackId: feedback.id,
             feedbackType: feedback.feedbackType,
-            userId: locals.user.id,
         })
 
         return json(
@@ -101,7 +99,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
     logger.debug('Deleting feedback', {
         chatId,
         messageId,
-        userId: locals.user.id,
     })
 
     try {
@@ -111,7 +108,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
             logger.warn('No feedback found to delete', {
                 chatId,
                 messageId,
-                userId: locals.user.id,
             })
             return json({ error: 'No feedback found' }, { status: 404 })
         }
@@ -119,7 +115,6 @@ export const DELETE: RequestHandler = async ({ params, locals }) => {
         logger.info('Feedback deleted successfully', {
             chatId,
             messageId,
-            userId: locals.user.id,
         })
 
         return json(

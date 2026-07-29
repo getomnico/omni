@@ -3,7 +3,7 @@
 import logging
 from enum import StrEnum
 from typing import Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from asyncpg import Pool
 

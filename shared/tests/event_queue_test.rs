@@ -5,6 +5,7 @@ mod tests {
     };
     use shared::queue::EventQueue;
     use shared::test_environment::TestEnvironment;
+    use tracing::Instrument;
 
     const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
 
@@ -312,14 +313,16 @@ mod tests {
             .await
             .unwrap();
 
-        let updated = queue
+        let (failed_count, dead_letter_count) = queue
             .mark_events_dead_letter_batch(vec![
                 (near_limit_id.clone(), "near limit".to_string()),
                 (below_limit_id.clone(), "below limit".to_string()),
             ])
             .await
             .unwrap();
-        assert_eq!(updated, 2);
+        assert_eq!(failed_count, 1);
+        assert_eq!(dead_letter_count, 1);
+        assert_eq!((failed_count, dead_letter_count), (1, 1));
 
         let near_limit_row: (String, i32) =
             sqlx::query_as("SELECT status, retry_count FROM connector_events_queue WHERE id = $1")
@@ -610,4 +613,7 @@ mod tests {
         assert_eq!(inc_batch.len(), 1);
         assert_eq!(inc_batch[0].sync_run_id, inc_run);
     }
+
+    // -----------------------------------------------------------------------
+    // Trace context persistence
 }

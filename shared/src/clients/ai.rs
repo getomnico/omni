@@ -1,11 +1,11 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use tracing::error;
 
-use crate::telemetry::http_client::RequestBuilderExt;
+use crate::telemetry::http_client;
 
 #[derive(Serialize)]
 pub struct EmbeddingRequest {
@@ -81,13 +81,9 @@ impl AIClient {
             priority,
         };
 
-        let response = self
-            .client
-            .post(format!("{}/embeddings", self.base_url))
-            .json(&request)
-            .with_trace_context()
-            .send()
-            .await;
+        let url = format!("{}/embeddings", self.base_url);
+        let response =
+            http_client::send_traced("POST", &url, self.client.post(&url).json(&request)).await;
 
         match response {
             Ok(res) => {
@@ -155,13 +151,9 @@ impl AIClient {
             stream: Some(true),
         };
 
-        let response = self
-            .client
-            .post(format!("{}/prompt", self.base_url))
-            .json(&request)
-            .with_trace_context()
-            .send()
-            .await?;
+        let url = format!("{}/prompt", self.base_url);
+        let response =
+            http_client::send_traced("POST", &url, self.client.post(&url).json(&request)).await?;
 
         if !response.status().is_success() {
             return Err(anyhow::anyhow!(

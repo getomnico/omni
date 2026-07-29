@@ -296,7 +296,8 @@ class BedrockProvider(LLMProvider):
                                     deduped_tool_result_content.append(content_block)
                                 else:
                                     logger.debug(
-                                        f"[BEDROCK-AMAZON] Deduplicating document '{doc_name}' in tool result"
+                                        f"[BEDROCK-AMAZON] Deduplicating document '{doc_name}' in tool result",
+                                        extra={"otel_skip": True},
                                     )
                             else:
                                 deduped_tool_result_content.append(content_block)
@@ -317,6 +318,7 @@ class BedrockProvider(LLMProvider):
         """
 
         document_count = 0
+        removed_count = 0
         for msg in reversed(messages):
             if "content" in msg:
                 limited_content = []
@@ -330,9 +332,7 @@ class BedrockProvider(LLMProvider):
                                     document_count += 1
                                     limited_tool_result_content.append(content_block)
                                 else:
-                                    logger.debug(
-                                        f"[BEDROCK-AMAZON] Limiting documents to {max_documents}, removing document '{content_block['document']['name']}'"
-                                    )
+                                    removed_count += 1
                             else:
                                 limited_tool_result_content.append(content_block)
                         if limited_tool_result_content:
@@ -348,6 +348,11 @@ class BedrockProvider(LLMProvider):
                     ]
 
                 msg["content"] = limited_content
+
+        if removed_count > 0:
+            logger.debug(
+                f"[BEDROCK-AMAZON] Document limit ({max_documents}) enforced, kept {document_count}, removed {removed_count}"
+            )
 
     def _adapt_tools_for_amazon_models(
         self, tools: list[dict[str, Any]]
@@ -490,7 +495,9 @@ class BedrockProvider(LLMProvider):
         elif "messageStop" in event:
             return RawMessageStopEvent(type="message_stop")
 
-        logger.debug(f"[BEDROCK] Skipping unknown event type: {list(event.keys())}")
+        logger.debug(
+            "[BEDROCK] Skipping unknown event type: %s", list(event.keys())
+        )
         return None
 
     async def stream_response(
@@ -525,19 +532,19 @@ class BedrockProvider(LLMProvider):
                         f"[BEDROCK] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                     )
                 else:
-                    logger.info(f"[BEDROCK] Sending request without tools")
+                    logger.info("[BEDROCK] Sending request without tools")
 
                 logger.info(
-                    f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
+                    f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}",
+                    extra={"otel_skip": True},
                 )
                 logger.debug(
-                    f"[BEDROCK] Full request body: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}"
+                    f"[BEDROCK] Full request body: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}",
+                    extra={"otel_skip": True},
                 )
-                logger.debug(f"[BEDROCK] Messages: {json.dumps(msg_list, indent=2)}")
-
-                # Invoke with streaming response
-                logger.info(
-                    f"[BEDROCK] Invoking model {self.model_id} with streaming response"
+                logger.debug(
+                    f"[BEDROCK] Messages: {json.dumps(msg_list, indent=2)}",
+                    extra={"otel_skip": True},
                 )
 
                 if system_prompt:
@@ -546,7 +553,8 @@ class BedrockProvider(LLMProvider):
                 stream = self.client.messages.create(**request_params)
 
                 logger.info(
-                    f"[BEDROCK] Stream created successfully, starting to process events"
+                    "[BEDROCK] Stream created successfully, starting to process events",
+                    extra={"otel_skip": True},
                 )
                 event_count = 0
                 for event in stream:
@@ -558,19 +566,25 @@ class BedrockProvider(LLMProvider):
                         )
                         if event.content_block.type == "tool_use":
                             logger.info(
-                                f"[ANTHROPIC] Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})"
+                                f"[ANTHROPIC] Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})",
+                                extra={"otel_skip": True},
                             )
                     elif event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             logger.debug(
-                                f"[ANTHROPIC] Text delta: '{event.delta.text}'"
+                                f"[ANTHROPIC] Text delta: '{event.delta.text}'",
+                                extra={"otel_skip": True},
                             )
                         elif event.delta.type == "input_json_delta":
                             logger.debug(
-                                f"[ANTHROPIC] JSON delta: {event.delta.partial_json}"
+                                f"[ANTHROPIC] JSON delta: {event.delta.partial_json}",
+                                extra={"otel_skip": True},
                             )
                     elif event.type == "citation":
-                        logger.info(f"[ANTHROPIC] Citation: {event.citation}")
+                        logger.info(
+                            f"[ANTHROPIC] Citation: {event.citation}",
+                            extra={"otel_skip": True},
+                        )
                     elif event.type == "content_block_stop":
                         logger.info(
                             f"[ANTHROPIC] Content block stop at index {getattr(event, 'index', '<unknown>')}"
@@ -588,7 +602,8 @@ class BedrockProvider(LLMProvider):
 
             elif self.model_family == "amazon":
                 logger.info(
-                    f"[BEDROCK-AMAZON] Using Amazon model family with model: {self.model_id}"
+                    f"[BEDROCK-AMAZON] Using Amazon model family with model: {self.model_id}",
+                    extra={"otel_skip": True},
                 )
 
                 # Prepare messages for sending to Bedrock
@@ -600,7 +615,8 @@ class BedrockProvider(LLMProvider):
                     self._limit_documents(messages, max_documents=5)
 
                     logger.debug(
-                        f"[BEDROCK-AMAZON] Adapted messages: {json.dumps(messages, indent=2)}"
+                        f"[BEDROCK-AMAZON] Adapted messages: {json.dumps(messages, indent=2)}",
+                        extra={"otel_skip": True},
                     )
                     tools = (
                         self._adapt_tools_for_amazon_models(tools) if tools else None
@@ -624,7 +640,10 @@ class BedrockProvider(LLMProvider):
 
                 response = self.client.converse_stream(**request_params)
 
-                logger.info(f"[BEDROCK-AMAZON] Stream created, processing chunks")
+                logger.info(
+                    "[BEDROCK-AMAZON] Stream created, processing chunks",
+                    extra={"otel_skip": True},
+                )
                 chunk_count = 0
                 for chunk in response["stream"]:
                     chunk_count += 1
@@ -639,7 +658,8 @@ class BedrockProvider(LLMProvider):
                             f"[BEDROCK-AMAZON] Skipping unknown chunk type: {list(chunk.keys())}"
                         )
                 logger.info(
-                    f"[BEDROCK-AMAZON] Stream completed after {chunk_count} chunks"
+                    f"[BEDROCK-AMAZON] Stream completed after {chunk_count} chunks",
+                    extra={"otel_skip": True},
                 )
             else:
                 raise ValueError(f"Unsupported model family: {self.model_family}")
@@ -647,13 +667,14 @@ class BedrockProvider(LLMProvider):
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             logger.error(
-                f"[BEDROCK] AWS Bedrock client error ({error_code}): {str(e)}",
+                "[BEDROCK] AWS Bedrock client error (%s): %s", error_code, str(e),
                 exc_info=True,
             )
             raise self._to_provider_error(e, model=model) from e
         except Exception as e:
             logger.error(
-                f"[BEDROCK] Failed to stream from AWS Bedrock: {str(e)}", exc_info=True
+                "[BEDROCK] Failed to stream from AWS Bedrock: %s", str(e),
+                exc_info=True,
             )
             raise self._to_provider_error(e, model=model) from e
 
@@ -715,7 +736,10 @@ class BedrockProvider(LLMProvider):
                         "maxTokens": max_tokens or 512,
                     },
                 )
-                logger.debug(f"generate_response: response from LLM -> {response}")
+                logger.debug(
+                    f"generate_response: response from LLM -> {response}",
+                    extra={"otel_skip": True},
+                )
 
                 usage_data = response.get("usage", {})
                 usage = TokenUsage(

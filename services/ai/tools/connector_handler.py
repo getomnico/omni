@@ -135,7 +135,7 @@ class ConnectorToolHandler:
             if cached:
                 return [ConnectorAction(**d) for d in json.loads(cached)]
         except Exception as e:
-            logger.warning(f"Failed to load cached actions: {e}")
+            logger.warning("Failed to load cached actions: %s", e)
         return None
 
     async def _cache_actions(self, actions: list[ConnectorAction]) -> None:
@@ -148,7 +148,7 @@ class ConnectorToolHandler:
                 ex=ACTIONS_CACHE_TTL,
             )
         except Exception as e:
-            logger.warning(f"Failed to cache actions: {e}")
+            logger.warning("Failed to cache actions: %s", e)
 
     async def _fetch_actions(self) -> list[ConnectorAction]:
         """Fetch available actions from connector-manager.
@@ -243,7 +243,7 @@ class ConnectorToolHandler:
                     )
 
         logger.info(
-            f"Discovered {len(actions)} connector actions for user {self._user_id}"
+            "Discovered %s connector actions", len(actions)
         )
         return actions
 
@@ -421,7 +421,7 @@ class ConnectorToolHandler:
             )
 
         logger.info(
-            f"Executing connector action: {action.action_name} on source {action.source_id}"
+            "Executing connector action: %s", action.action_name
         )
 
         # If this action references a document, check user permissions
@@ -476,7 +476,7 @@ class ConnectorToolHandler:
                     oauth_start_url = body.get("oauth_start_url")
                     if not provider or not oauth_start_url:
                         logger.error(
-                            f"connector-manager 412 missing provider/oauth_start_url; body={body}"
+                            "connector-manager 412 missing provider/oauth_start_url"
                         )
                         return ToolResult(
                             content=[
@@ -544,7 +544,7 @@ class ConnectorToolHandler:
                 result = response.json()
         except httpx.HTTPStatusError as e:
             logger.error(
-                f"Connector action HTTP {e.response.status_code}: {e.response.text}"
+                "Connector action HTTP error"
             )
             return ToolResult(
                 content=[{"type": "text", "text": f"Action failed: {e.response.text}"}],

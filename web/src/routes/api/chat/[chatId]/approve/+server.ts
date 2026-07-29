@@ -135,10 +135,8 @@ export const POST: RequestHandler = async ({ params, locals, request }) => {
 
         logger.info('Tool approval resolved', {
             chatId,
-            approvalIds: ids,
             decision,
-            toolNames: approvals.map((approval) => approval.toolName),
-            denialMessageId,
+            count: ids.length,
         })
 
         return json({

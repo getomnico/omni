@@ -1,68 +1,43 @@
-import { NodeSDK } from '@opentelemetry/sdk-node'
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http'
-import { resourceFromAttributes } from '@opentelemetry/resources'
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions'
-import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node'
-import { ulid } from 'ulid'
-import { propagation, trace, context, type Span } from '@opentelemetry/api'
+/**
+ * Telemetry API helpers.
+ *
+ * The OTel SDK is initialised by the preload bootstrap (`instrumentation.mjs`).
+ * This module only exposes helper functions for manual instrumentation.
+ *
+ * Do NOT add SDK startup code here — that belongs in instrumentation.mjs.
+ */
 
-let sdk: NodeSDK | null = null
+import { propagation, trace, context, type Span, metrics } from '@opentelemetry/api'
 
-export function initTelemetry() {
-    const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-    const deploymentId = process.env.OTEL_DEPLOYMENT_ID || ulid()
-    const environment = process.env.OTEL_DEPLOYMENT_ENVIRONMENT || 'development'
-    const serviceVersion = process.env.SERVICE_VERSION || '0.1.0'
+// ---------------------------------------------------------------------------
+// Pure helpers (exported for testing)
+// ---------------------------------------------------------------------------
 
-    const resource = resourceFromAttributes({
-        [ATTR_SERVICE_NAME]: 'omni-web',
-        [ATTR_SERVICE_VERSION]: serviceVersion,
-        'deployment.environment': environment,
-        'deployment.id': deploymentId,
-    })
-
-    const traceExporter = otlpEndpoint
-        ? new OTLPTraceExporter({
-              url: `${otlpEndpoint}/v1/traces`,
-          })
-        : undefined
-
-    sdk = new NodeSDK({
-        resource,
-        traceExporter,
-        instrumentations: [
-            getNodeAutoInstrumentations({
-                '@opentelemetry/instrumentation-fs': {
-                    enabled: false,
-                },
-            }),
-        ],
-    })
-
-    sdk.start()
-
-    if (otlpEndpoint) {
-        console.log(`OpenTelemetry initialized with OTLP endpoint: ${otlpEndpoint}`)
-    } else {
-        console.log('No OTLP endpoint configured, telemetry will be collected locally only')
-    }
-
-    console.log(
-        `Telemetry initialized for omni-web (deployment_id=${deploymentId}, environment=${environment})`,
-    )
-
-    // Graceful shutdown
-    process.on('SIGTERM', async () => {
-        try {
-            await sdk?.shutdown()
-            console.log('Telemetry shut down successfully')
-        } catch (error) {
-            console.error('Error shutting down telemetry', error)
-        } finally {
-            process.exit(0)
-        }
-    })
+/** Convert a duration from milliseconds to seconds. */
+export function millisecondsToSeconds(ms: number): number {
+    return ms / 1000
 }
+
+/** Build RED metric attributes with bounded values (method, route, statusCode). */
+export function buildRedAttributes(
+    method: string,
+    route: string,
+    statusCode: number,
+): Record<string, string | number> {
+    return {
+        'http.request.method': method,
+        'http.route': route,
+        'http.response.status_code': statusCode,
+    }
+}
+
+// Re-export the validated interval parser from the shared MJS utility so
+// instrumentation.mjs and TypeScript code share the same implementation.
+export { parseMetricExportInterval } from './otel-utils.mjs'
+
+// ---------------------------------------------------------------------------
+// Tracer / context helpers
+// ---------------------------------------------------------------------------
 
 export function getTracer(name: string = 'omni-web') {
     return trace.getTracer(name)
@@ -75,18 +50,6 @@ export function injectTraceContext(headers: Record<string, string>): Record<stri
     propagation.inject(activeContext, carrier)
 
     return carrier
-}
-
-export function extractTraceContext(headers: Record<string, string | undefined>) {
-    const carrier: Record<string, string> = {}
-
-    for (const [key, value] of Object.entries(headers)) {
-        if (value !== undefined) {
-            carrier[key] = value
-        }
-    }
-
-    return propagation.extract(context.active(), carrier)
 }
 
 export function getRequestId(): string | undefined {
@@ -110,4 +73,31 @@ export function startSpan(name: string, fn: (span: Span) => Promise<any>) {
             throw error
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// HTTP RED metrics instruments
+// ---------------------------------------------------------------------------
+
+const meter = metrics.getMeter('omni-web-http')
+
+const httpRequestCounter = meter.createCounter('omni.http.server.request_count', {
+    description: 'Total number of HTTP server requests by method, route, status',
+})
+
+const httpRequestDuration = meter.createHistogram('omni.http.server.request_duration_seconds', {
+    description: 'HTTP server request duration in seconds',
+    unit: 's',
+})
+
+export function recordHttpRequest(
+    method: string,
+    route: string,
+    statusCode: number,
+    durationSeconds: number,
+) {
+    const attributes = buildRedAttributes(method, route, statusCode)
+
+    httpRequestCounter.add(1, attributes)
+    httpRequestDuration.record(durationSeconds, attributes)
 }

@@ -47,7 +47,7 @@ function validateUrl(url: string, name: string): string {
         new URL(url)
         return url
     } catch {
-        logger.fatal(`Invalid URL for ${name}`, undefined, { name, url })
+        logger.fatal(`Invalid URL for ${name}`, undefined, { url })
         process.exit(1)
     }
 }

@@ -128,11 +128,18 @@ class OpenAIProvider(LLMProvider):
             if tools:
                 request_params["tools"] = _convert_tools_to_openai(tools)
                 logger.info(
-                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    "Sending request with %s tools: %s",
+                    len(tools),
+                    [t.get("name", t.get("function", {})
+                     .get("name", "?")) for t in tools],
                 )
 
             logger.info(
-                f"Model: {active_model}, Input items: {len(input_items)}, Max tokens: {request_params['max_output_tokens']}"
+                "Model: %s, Input items: %s, Max tokens: %s",
+                active_model,
+                len(input_items),
+                request_params['max_output_tokens'],
+                extra={"otel_skip": True},
             )
 
             stream = await self.client.responses.create(**request_params)
@@ -188,7 +195,8 @@ class OpenAIProvider(LLMProvider):
                     if item.type == "function_call":
                         if item.id is None:
                             logger.warning(
-                                f"Received function_call item with no id (call_id={item.call_id}); skipping tool block"
+                                "Received function_call item with no id (call_id=%s); skipping tool block",
+                                item.call_id,
                             )
                         else:
                             block_index = next_block_index
@@ -302,7 +310,7 @@ class OpenAIProvider(LLMProvider):
         except ProviderError:
             raise
         except Exception as e:
-            logger.error(f"Failed to stream from OpenAI: {str(e)}", exc_info=True)
+            logger.error(f"Failed to stream from OpenAI: {e}", exc_info=True)
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -469,7 +477,7 @@ class OpenAIProvider(LLMProvider):
             return content, usage
 
         except Exception as e:
-            logger.error(f"Failed to generate response: {str(e)}")
+            logger.error(f"Failed to generate response: {e}")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

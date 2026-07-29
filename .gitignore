@@ -9,3 +9,5 @@ venv/
 .venv/
 __pycache__/
 omni-sa-key.json
+.pi/
+.pi-subagents/

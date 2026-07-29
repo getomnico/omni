@@ -10,8 +10,8 @@ pub use axum::Router;
 pub use redis::Client as RedisClient;
 pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
-pub use shared::AIClient;
 pub use shared::db::pool::DatabasePool;
+pub use shared::AIClient;
 use std::sync::Arc;
 
 use axum::{
@@ -23,11 +23,11 @@ use axum::{
 use error::Result as IndexerResult;
 use serde_json::json;
 use shared::{
-    IndexerConfig,
     db::repositories::{DocumentRepository, OrphanStats},
     models::Document,
     storage::gc::{ContentBlobGC, GCConfig, GCResult},
     telemetry::{self, TelemetryConfig},
+    IndexerConfig,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::net::SocketAddr;
@@ -159,7 +159,7 @@ async fn create_document(
     let repo = DocumentRepository::new(state.db_pool.pool());
     let document = repo.create(doc).await?;
 
-    info!("Created document: {}", document_id);
+    info!("Created document: {}", document.id);
     Ok(Json(document))
 }
 
@@ -208,7 +208,7 @@ async fn update_document(
 
     match updated_doc {
         Some(doc) => {
-            info!("Updated document: {}", id);
+            info!("Updated document: {}", doc.id);
             Ok(Json(doc))
         }
         None => Err(error::IndexerError::NotFound(format!(
@@ -475,7 +475,7 @@ pub async fn run_server() -> anyhow::Result<()> {
     let app = create_app(app_state.clone());
 
     let queue_processor = queue_processor::QueueProcessor::new(app_state.clone());
-    let processor_handle = tokio::spawn(async move {
+    let mut processor_handle = tokio::spawn(async move {
         if let Err(e) = queue_processor.start().await {
             error!("Queue processor failed: {}", e);
         }
@@ -486,17 +486,27 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
+    // Use graceful shutdown so the HTTP server drains in-flight requests
+    // on SIGTERM/Ctrl-C before we abort the processor and flush telemetry.
+    let serve = axum::serve(listener, app).with_graceful_shutdown(telemetry::shutdown_signal());
+
     tokio::select! {
-        result = axum::serve(listener, app) => {
+        result = serve => {
             if let Err(e) = result {
                 error!("HTTP server failed: {}", e);
             }
         }
-        _ = processor_handle => {
+        _ = &mut processor_handle => {
             error!("Event processor task completed unexpectedly");
         }
     }
 
+    // If the processor is still running (HTTP server finished first), abort it
+    // and await the JoinHandle so cancellation completes before telemetry shutdown.
+    processor_handle.abort();
+    let _ = processor_handle.await;
+
+    telemetry::shutdown_telemetry().await;
     Ok(())
 }
 
@@ -504,16 +514,13 @@ async fn debug_create_document(
     State(_state): State<AppState>,
     body: String,
 ) -> IndexerResult<Json<Value>> {
-    info!("Raw request body: {}", body);
     info!("Body length: {}", body.len());
 
     match serde_json::from_str::<CreateDocumentRequest>(&body) {
         Ok(req) => {
             info!(
-                "Successfully parsed request: source_id='{}' ({}), external_id='{}' ({})",
-                req.source_id,
+                "Successfully parsed request: source_id_len={}, external_id_len={}",
                 req.source_id.len(),
-                req.external_id,
                 req.external_id.len()
             );
             Ok(Json(json!({"status": "parsed successfully"})))

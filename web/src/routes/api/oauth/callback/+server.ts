@@ -59,7 +59,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             failureReturnTo = returnToFromStateMetadata(pendingState.metadata)
         }
     } catch (err) {
-        logger.warn('Failed to read OAuth state for failure redirect', { err: String(err) })
+        logger.warn('Failed to read OAuth state for failure redirect', { error: String(err) })
     }
 
     let exchange
@@ -70,7 +70,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             },
         })
     } catch (err) {
-        logger.error('OAuth exchange failed', { err: String(err) })
+        logger.error('OAuth exchange failed', { error: String(err) })
         throw redirect(
             302,
             withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_failed'),
@@ -134,7 +134,6 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 logger.warn('OAuth credential-ready notification failed', {
                     sourceId,
                     status: resp.status,
-                    body: await resp.text(),
                 })
             }
         } catch (err) {

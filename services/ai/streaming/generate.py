@@ -146,8 +146,7 @@ async def event_stream_with_context_retry(
         except ProviderError as e:
             if e.is_context_overflow and llm_attempt == 0 and not emitted_event:
                 logger.warning(
-                    "Chat %s hit provider context limit; retrying once after forced compaction",
-                    chat_id,
+                    "Chat hit provider context limit; retrying once after forced compaction"
                 )
                 should_emit_progress = (
                     compactor.select_legacy_compaction_split(conversation_messages)
@@ -685,7 +684,7 @@ async def stream_generator(
         loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
         for _ in range(loop_passes):
             if await is_run_cancelled(redis_client, chat_id):
-                logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
+                logger.info("Run cancelled, stopping stream for chat %s", chat_id)
                 break
 
             content_blocks = []
@@ -739,7 +738,11 @@ async def stream_generator(
                         yield sse_event("compaction_end", {})
                         continue
 
-                    logger.debug(f"Received event: {event} (index: {event_index})")
+                    logger.debug("Received event (index: %s)", event_index)
+                    logger.debug(
+                        "Event content: %s", event,
+                        extra={"otel_skip": True},
+                    )
                     event_index += 1
 
                     now = asyncio.get_running_loop().time()
@@ -754,7 +757,7 @@ async def stream_generator(
 
                     if event.type == "content_block_delta":
                         logger.debug(
-                            f"Content block delta received at index {event.index}: {event.delta}"
+                            "Content block delta (index: %s)", event.index
                         )
                         if event.delta.type == "text_delta":
                             if event.index >= len(content_blocks):
@@ -810,7 +813,11 @@ async def stream_generator(
 
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
-                            logger.info(f"Text block start: {event.content_block.text}")
+                            logger.info("Text block start")
+                            logger.debug(
+                                "Text block content: %s", event.content_block.text,
+                                extra={"otel_skip": True},
+                            )
                             text_block: TextBlockParam = TextBlockParam(
                                 type="text", text=event.content_block.text
                             )
@@ -820,7 +827,7 @@ async def stream_generator(
                             content_blocks.append(text_block)
                         elif event.content_block.type == "tool_use":
                             logger.info(
-                                f"Tool use block start: {event.content_block.name} (id: {event.content_block.id})"
+                                "Tool use block start: %s", event.content_block.name
                             )
                             tool_block: ToolUseBlockParam = ToolUseBlockParam(
                                 type="tool_use",
@@ -834,14 +841,16 @@ async def stream_generator(
                             content_blocks.append(tool_block)
 
                     elif event.type == "citation":
-                        logger.info(f"Citation received: {event.citation}")
+                        logger.info("Citation received")
+                        logger.debug(
+                            "Citation content: %s", event.citation,
+                            extra={"otel_skip": True},
+                        )
                     elif event.type == "message_stop":
                         logger.info("Message stop received.")
                         message_stop_received = True
 
-                    logger.debug(
-                        f"Yielding event to client: {event.to_json(indent=None)}"
-                    )
+                    logger.debug("Yielding event to client")
                     yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
 
                     if message_stop_received:
@@ -872,14 +881,14 @@ async def stream_generator(
 
                 if not tool_calls:
                     logger.info(
-                        f"No tool calls in iteration {model_iteration}, completing response"
+                        "No tool calls in iteration %s, completing response", model_iteration
                     )
                     break
 
-                logger.info(f"Processing {len(tool_calls)} tool calls")
+                logger.info("Processing %s tool calls", len(tool_calls))
 
             if await is_run_cancelled(redis_client, chat_id):
-                logger.info(f"Run cancelled before tool execution for chat {chat_id}")
+                logger.info("Run cancelled before tool execution for chat %s", chat_id)
                 break
 
             # Preflight credentials before asking for user approval. This keeps
@@ -1109,12 +1118,12 @@ async def stream_generator(
                             memory_provider.add(messages=turn, key=memory_write_key)
                         )
             except Exception as e:
-                logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
+                logger.warning("Memory write setup failed for chat %s: %s", chat_id, e)
 
         yield end_of_stream(EndOfStreamReason.COMPLETED, message="Stream ended")
 
     except asyncio.CancelledError:
-        logger.info(f"Stream cancelled for chat {chat_id}")
+        logger.info("Stream cancelled for chat %s", chat_id)
         if not content_blocks_finalized:
             partial = partial_assistant_message(content_blocks)
             if partial is not None:

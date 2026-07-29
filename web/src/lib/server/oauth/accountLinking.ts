@@ -54,7 +54,7 @@ export class AccountLinkingService {
         }
 
         // Check if a user exists with this email
-        logger.info(`Checking for existing user with email: ${profile.email}`)
+        logger.info(`Checking for existing user with email`)
         const existingUser = await this.findUserByEmail(profile.email)
 
         if (existingUser) {
@@ -79,7 +79,7 @@ export class AccountLinkingService {
         }
 
         // Check if the email domain is approved for auto-registration
-        logger.info(`Checking if domain is approved for email: ${profile.email}`)
+        logger.info(`Checking if domain is approved`)
         const isDomainApproved = await isEmailFromApprovedDomain(profile.email)
 
         if (!isDomainApproved) {
@@ -90,7 +90,7 @@ export class AccountLinkingService {
         }
 
         // Create new user with OAuth account
-        logger.info(`Creating new user from OAuth profile: ${JSON.stringify(profile)}`)
+        logger.info(`Creating new user from OAuth profile`)
         const newUser = await this.createUserFromOAuth(profile)
 
         // Save OAuth credentials for the new user

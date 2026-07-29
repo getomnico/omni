@@ -268,11 +268,17 @@ class GeminiProvider(LLMProvider):
             if tools:
                 config.tools = _convert_tools_to_gemini(tools)
                 logger.info(
-                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
+                    "Sending request with %s tools: %s",
+                    len(tools),
+                    [t.get("name", "?") for t in tools],
                 )
 
             logger.info(
-                f"Model: {active_model}, Messages: {len(contents)}, Max tokens: {config.max_output_tokens}"
+                "Model: %s, Messages: %s, Max tokens: %s",
+                active_model,
+                len(contents),
+                config.max_output_tokens,
+                extra={"otel_skip": True},
             )
 
             # Emit message_start
@@ -401,7 +407,7 @@ class GeminiProvider(LLMProvider):
             yield RawMessageStopEvent(type="message_stop")
 
         except Exception as e:
-            logger.error(f"Failed to stream from Gemini: {str(e)}", exc_info=True)
+            logger.error(f"Failed to stream from Gemini: {e}", exc_info=True)
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
@@ -446,7 +452,7 @@ class GeminiProvider(LLMProvider):
             return response.text, usage
 
         except Exception as e:
-            logger.error(f"Failed to generate response: {str(e)}")
+            logger.error(f"Failed to generate response: {e}")
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,

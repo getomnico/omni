@@ -172,7 +172,16 @@ pub async fn run_server() -> AnyhowResult<()> {
     info!("Searcher service listening on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
 
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(telemetry::shutdown_signal())
+        .await
+    {
+        error!("Server error");
+        telemetry::shutdown_telemetry().await;
+        return Err(e.into());
+    }
+
+    telemetry::shutdown_telemetry().await;
     Ok(())
 }

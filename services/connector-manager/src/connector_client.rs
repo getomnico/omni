@@ -4,6 +4,7 @@ use crate::models::{
 };
 use reqwest::Client;
 use shared::models::SyncType;
+use shared::telemetry::http_client;
 use shared::{RateLimiter, RetryableError};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -38,20 +39,20 @@ impl ConnectorClient {
         let url = format!("{}/manifest", connector_url);
         debug!("Fetching manifest from {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
+        let response = http_client::send_traced("GET", &url, self.client.get(&url))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Failed to get manifest: {} - {}", status, body);
+            error!(
+                otel_skip = true,
+                "Failed to get manifest: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -68,9 +69,6 @@ impl ConnectorClient {
     ) -> Result<SyncResponse, ClientError> {
         let url = format!("{}/sync", connector_url);
         debug!(
-            url,
-            source_id = %request.source_id,
-            sync_run_id = %request.sync_run_id,
             sync_mode = ?request.sync_mode,
             "Triggering sync"
         );
@@ -81,13 +79,19 @@ impl ConnectorClient {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             if status.as_u16() == 404 && request.sync_mode == SyncType::Realtime {
-                debug!("Realtime sync unavailable: {} - {}", status, body);
+                debug!(
+                    otel_skip = true,
+                    "Realtime sync unavailable: {} - {}", status, body
+                );
             } else {
-                error!("Failed to trigger sync: {} - {}", status, body);
+                error!(
+                    otel_skip = true,
+                    "Failed to trigger sync: {} - {}", status, body
+                );
             }
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -107,22 +111,18 @@ impl ConnectorClient {
             .execute_with_retry(|| async {
                 let attempt = attempts.fetch_add(1, Ordering::Relaxed) + 1;
                 debug!(
-                    url,
-                    source_id = %request.source_id,
-                    sync_run_id = %request.sync_run_id,
                     sync_mode = ?request.sync_mode,
                     attempt,
                     "Sending connector sync trigger"
                 );
 
-                let result = self.client.post(url).json(request).send().await;
+                let result =
+                    http_client::send_traced("POST", url, self.client.post(url).json(request))
+                        .await;
 
                 match result {
                     Ok(response) => {
                         debug!(
-                            url,
-                            source_id = %request.source_id,
-                            sync_run_id = %request.sync_run_id,
                             sync_mode = ?request.sync_mode,
                             attempt,
                             status = response.status().as_u16(),
@@ -132,12 +132,8 @@ impl ConnectorClient {
                     }
                     Err(e) => {
                         warn!(
-                            url,
-                            source_id = %request.source_id,
-                            sync_run_id = %request.sync_run_id,
                             sync_mode = ?request.sync_mode,
                             attempt,
-                            error = %e,
                             "Connector sync trigger request failed"
                         );
                         Err(RetryableError::Transient(e.into()))
@@ -156,20 +152,19 @@ impl ConnectorClient {
         let url = format!("{}/sync/{}", connector_url, sync_run_id);
         debug!("Probing sync status at {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+        let response = http_client::send_traced(
+            "GET",
+            &url,
+            self.client.get(&url).timeout(Duration::from_secs(5)),
+        )
+        .await
+        .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -187,23 +182,26 @@ impl ConnectorClient {
         let url = format!("{}/cancel", connector_url);
         debug!("Cancelling sync {} at {}", sync_run_id, url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&CancelRequest {
+        let response = http_client::send_traced(
+            "POST",
+            &url,
+            self.client.post(&url).json(&CancelRequest {
                 sync_run_id: sync_run_id.to_string(),
-            })
-            .send()
-            .await
-            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+            }),
+        )
+        .await
+        .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            warn!("Failed to cancel sync: {} - {}", status, body);
+            warn!(
+                otel_skip = true,
+                "Failed to cancel sync: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -218,21 +216,20 @@ impl ConnectorClient {
         let url = format!("{}/action", connector_url);
         debug!("Executing action {} at {}", request.action, url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
+        let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Failed to execute action: {} - {}", status, body);
+            error!(
+                otel_skip = true,
+                "Failed to execute action: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -257,11 +254,7 @@ impl ConnectorClient {
         let url = format!("{}/action", connector_url);
         debug!("Executing action (raw) {} at {}", request.action, url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
+        let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
@@ -281,11 +274,7 @@ impl ConnectorClient {
         let url = format!("{}/oauth/credential-ready", connector_url);
         debug!("Notifying connector of OAuth credential-ready at {}", url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
+        let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
@@ -298,7 +287,7 @@ impl ConnectorClient {
             );
             return Err(ClientError::ConnectorError {
                 status: response.status().as_u16(),
-                message: response.text().await.unwrap_or_default(),
+                message: String::new(),
             });
         }
 
@@ -321,21 +310,20 @@ impl ConnectorClient {
         let url = format!("{}/resource", connector_url);
         debug!("Reading resource {} at {}", request.uri, url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
+        let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Failed to read resource: {} - {}", status, body);
+            error!(
+                otel_skip = true,
+                "Failed to read resource: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -353,21 +341,20 @@ impl ConnectorClient {
         let url = format!("{}/prompt", connector_url);
         debug!("Getting prompt {} at {}", request.name, url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
+        let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Failed to get prompt: {} - {}", status, body);
+            error!(
+                otel_skip = true,
+                "Failed to get prompt: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -385,21 +372,20 @@ impl ConnectorClient {
         let url = format!("{}/skill", connector_url);
         debug!("Getting skill {} at {}", request.skill_id, url);
 
-        let response = self
-            .client
-            .post(&url)
-            .json(request)
-            .send()
+        let response = http_client::send_traced("POST", &url, self.client.post(&url).json(request))
             .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("Failed to get skill: {} - {}", status, body);
+            error!(
+                otel_skip = true,
+                "Failed to get skill: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
-                message: body,
+                message: String::new(),
             });
         }
 
@@ -411,7 +397,7 @@ impl ConnectorClient {
 
     pub async fn health_check(&self, connector_url: &str) -> bool {
         let url = format!("{}/health", connector_url);
-        match self.client.get(&url).send().await {
+        match http_client::send_traced("GET", &url, self.client.get(&url)).await {
             Ok(response) => response.status().is_success(),
             Err(_) => false,
         }

@@ -160,11 +160,16 @@ impl EmbeddingQueue {
         &self,
         document_ids: Vec<String>,
     ) -> Result<Vec<String>> {
-        if document_ids.is_empty() || !self.provider_repo.has_active_provider().await? {
+        if document_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        if !self.provider_repo.has_active_provider().await? {
             return Ok(vec![]);
         }
 
         let ids: Vec<String> = document_ids.iter().map(|_| generate_ulid()).collect();
+
         let rows = sqlx::query(
             r#"
             WITH active_provider AS (
