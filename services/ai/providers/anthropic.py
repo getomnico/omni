@@ -132,6 +132,14 @@ class AnthropicProvider(LLMProvider):
                 f"Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}",
                 extra={"otel_skip": True},
             )
+            logger.debug(
+                f"Full request params: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}",
+                extra={"otel_skip": True},
+            )
+            logger.debug(
+                f"Messages: {json.dumps(msg_list, indent=2)}",
+                extra={"otel_skip": True},
+            )
 
             if system_prompt:
                 request_params["system"] = system_prompt
@@ -139,11 +147,50 @@ class AnthropicProvider(LLMProvider):
             stream: AsyncStream[MessageStreamEvent] = await self.client.messages.create(
                 **request_params,
             )
+            logger.info(
+                "Stream created successfully, starting to process events",
+                extra={"otel_skip": True},
+            )
+
             event_count = 0
             async for event in stream:
                 event_count += 1
-                if event.type == "message_stop":
-                    logger.info("Message completed after %s events", event_count)
+                logger.debug(f"Event {event_count}: {event.type}")
+                if event.type == "content_block_start":
+                    logger.info(
+                        f"Content block start: type={event.content_block.type}"
+                    )
+                    if event.content_block.type == "tool_use":
+                        logger.info(
+                            f"Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})",
+                            extra={"otel_skip": True},
+                        )
+                elif event.type == "content_block_delta":
+                    if event.delta.type == "text_delta":
+                        logger.debug(
+                            f"Text delta: '{event.delta.text}'",
+                            extra={"otel_skip": True},
+                        )
+                    elif event.delta.type == "input_json_delta":
+                        logger.debug(
+                            f"JSON delta: {event.delta.partial_json}",
+                            extra={"otel_skip": True},
+                        )
+                elif event.type == "citation":
+                    logger.info(
+                        f"Citation: {event.citation}",
+                        extra={"otel_skip": True},
+                    )
+                elif event.type == "content_block_stop":
+                    logger.info(
+                        f"Content block stop at index {getattr(event, 'index', '<unknown>')}"
+                    )
+                elif event.type == "message_delta":
+                    logger.info(
+                        f"Message delta stop reason: {event.delta.stop_reason}"
+                    )
+                elif event.type == "message_stop":
+                    logger.info(f"Message completed after {event_count} events")
 
                 yield event
 

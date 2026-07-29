@@ -474,7 +474,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
         except Exception as e:
             logger.error(
-                "Failed to stream from OpenAI-compatible endpoint",
+                "Failed to stream from OpenAI-compatible endpoint: %s", e,
+                exc_info=True,
             )
             raise ProviderError(
                 str(e),
@@ -530,7 +531,7 @@ class OpenAICompatibleProvider(LLMProvider):
             raise
         except Exception as e:
             logger.error(
-                "Failed to generate response from OpenAI-compatible endpoint",
+                "Failed to generate response from OpenAI-compatible endpoint: %s", e,
             )
             raise ProviderError(
                 str(e),

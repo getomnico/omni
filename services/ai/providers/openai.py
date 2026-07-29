@@ -195,7 +195,8 @@ class OpenAIProvider(LLMProvider):
                     if item.type == "function_call":
                         if item.id is None:
                             logger.warning(
-                                "Received function_call item with no id; skipping tool block"
+                                "Received function_call item with no id (call_id=%s); skipping tool block",
+                                item.call_id,
                             )
                         else:
                             block_index = next_block_index

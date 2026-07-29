@@ -296,7 +296,8 @@ class BedrockProvider(LLMProvider):
                                     deduped_tool_result_content.append(content_block)
                                 else:
                                     logger.debug(
-                                        "[BEDROCK-AMAZON] Deduplicating document in tool result"
+                                        f"[BEDROCK-AMAZON] Deduplicating document '{doc_name}' in tool result",
+                                        extra={"otel_skip": True},
                                     )
                             else:
                                 deduped_tool_result_content.append(content_block)
@@ -537,18 +538,62 @@ class BedrockProvider(LLMProvider):
                     f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}",
                     extra={"otel_skip": True},
                 )
-
-
+                logger.debug(
+                    f"[BEDROCK] Full request body: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}",
+                    extra={"otel_skip": True},
+                )
+                logger.debug(
+                    f"[BEDROCK] Messages: {json.dumps(msg_list, indent=2)}",
+                    extra={"otel_skip": True},
+                )
 
                 if system_prompt:
                     request_params["system"] = system_prompt
 
                 stream = self.client.messages.create(**request_params)
 
+                logger.info(
+                    "[BEDROCK] Stream created successfully, starting to process events",
+                    extra={"otel_skip": True},
+                )
                 event_count = 0
                 for event in stream:
                     event_count += 1
-                    if event.type == "message_stop":
+                    logger.debug(f"[ANTHROPIC] Event {event_count}: {event.type}")
+                    if event.type == "content_block_start":
+                        logger.info(
+                            f"[ANTHROPIC] Content block start: type={event.content_block.type}"
+                        )
+                        if event.content_block.type == "tool_use":
+                            logger.info(
+                                f"[ANTHROPIC] Tool use started: {event.content_block.name} (id: {event.content_block.id}) (input: {json.dumps(event.content_block.input)})",
+                                extra={"otel_skip": True},
+                            )
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            logger.debug(
+                                f"[ANTHROPIC] Text delta: '{event.delta.text}'",
+                                extra={"otel_skip": True},
+                            )
+                        elif event.delta.type == "input_json_delta":
+                            logger.debug(
+                                f"[ANTHROPIC] JSON delta: {event.delta.partial_json}",
+                                extra={"otel_skip": True},
+                            )
+                    elif event.type == "citation":
+                        logger.info(
+                            f"[ANTHROPIC] Citation: {event.citation}",
+                            extra={"otel_skip": True},
+                        )
+                    elif event.type == "content_block_stop":
+                        logger.info(
+                            f"[ANTHROPIC] Content block stop at index {getattr(event, 'index', '<unknown>')}"
+                        )
+                    elif event.type == "message_delta":
+                        logger.info(
+                            f"[ANTHROPIC] Message delta stop reason: {event.delta.stop_reason}"
+                        )
+                    elif event.type == "message_stop":
                         logger.info(
                             f"[ANTHROPIC] Message completed after {event_count} events"
                         )
@@ -570,7 +615,8 @@ class BedrockProvider(LLMProvider):
                     self._limit_documents(messages, max_documents=5)
 
                     logger.debug(
-                        f"[BEDROCK-AMAZON] Adapted messages: {len(messages)} messages"
+                        f"[BEDROCK-AMAZON] Adapted messages: {json.dumps(messages, indent=2)}",
+                        extra={"otel_skip": True},
                     )
                     tools = (
                         self._adapt_tools_for_amazon_models(tools) if tools else None
@@ -594,7 +640,10 @@ class BedrockProvider(LLMProvider):
 
                 response = self.client.converse_stream(**request_params)
 
-
+                logger.info(
+                    "[BEDROCK-AMAZON] Stream created, processing chunks",
+                    extra={"otel_skip": True},
+                )
                 chunk_count = 0
                 for chunk in response["stream"]:
                     chunk_count += 1
@@ -618,12 +667,14 @@ class BedrockProvider(LLMProvider):
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             logger.error(
-                "[BEDROCK] AWS Bedrock client error (%s)", error_code,
+                "[BEDROCK] AWS Bedrock client error (%s): %s", error_code, str(e),
+                exc_info=True,
             )
             raise self._to_provider_error(e, model=model) from e
         except Exception as e:
             logger.error(
-                "[BEDROCK] Failed to stream from AWS Bedrock"
+                "[BEDROCK] Failed to stream from AWS Bedrock: %s", str(e),
+                exc_info=True,
             )
             raise self._to_provider_error(e, model=model) from e
 
@@ -685,7 +736,10 @@ class BedrockProvider(LLMProvider):
                         "maxTokens": max_tokens or 512,
                     },
                 )
-                logger.debug("generate_response: response received")
+                logger.debug(
+                    f"generate_response: response from LLM -> {response}",
+                    extra={"otel_skip": True},
+                )
 
                 usage_data = response.get("usage", {})
                 usage = TokenUsage(
