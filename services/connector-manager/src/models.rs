@@ -91,9 +91,26 @@ pub struct TriggerSyncResponse {
     pub status: String,
 }
 
+/// Transient credentials accepted during setup/discovery before a source or
+/// credential row exists in the database. Used by the setup UI to preview
+/// connector capabilities (e.g. list shared drives) with an inline credential
+/// that has not yet been persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransientCredentials {
+    pub provider: shared::models::ServiceProvider,
+    pub auth_type: shared::models::AuthType,
+    pub principal_email: Option<String>,
+    pub credentials: JsonValue,
+    #[serde(default)]
+    pub config: JsonValue,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecuteActionRequest {
-    pub source_id: String,
+    /// Source ID, required when persisted credentials should be resolved.
+    #[serde(default)]
+    pub source_id: Option<String>,
     /// Acting user. `None` for org-level / system-initiated calls (sync,
     /// future org-level agents); `Some` for chat tool dispatch and other
     /// user-context invocations.
@@ -102,6 +119,14 @@ pub struct ExecuteActionRequest {
     pub action: String,
     #[serde(default)]
     pub params: JsonValue,
+    /// Source type hint, required when `transient_credentials` are provided.
+    #[serde(default)]
+    pub source_type: Option<SourceType>,
+    /// Inline credentials for setup/preview actions. When present, the request
+    /// is handled in **transient mode**: `source_id` and DB credentials are
+    /// not used, and `source_type` must identify the connector.
+    #[serde(default)]
+    pub transient_credentials: Option<TransientCredentials>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,26 +299,4 @@ pub struct ExecuteSkillRequest {
     pub source_id: Option<String>,
     #[serde(default)]
     pub arguments: Option<JsonValue>,
-}
-
-// ============================================================================
-// Preview Action (transient credentials, no DB dependency)
-// ============================================================================
-
-/// Like `ExecuteActionRequest` but accepts inline credentials and a source_type
-/// hint so the action can be dispatched without a persisted source or credential row.
-///
-/// SECURITY: `deny_unknown_fields` ensures no extra fields are smuggled through.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PreviewActionRequest {
-    /// Source type to select the connector (used when source_id is not available).
-    pub source_type: Option<SourceType>,
-    /// Existing source id (optional, used for source config merging).
-    pub source_id: Option<String>,
-    pub action: String,
-    #[serde(default)]
-    pub params: JsonValue,
-    /// Inline credentials (not persisted). Must have provider/google fields populated.
-    pub credentials: shared::models::ServiceCredential,
 }

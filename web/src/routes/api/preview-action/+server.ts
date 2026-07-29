@@ -8,24 +8,13 @@ import { SourceType } from '$lib/types'
  * POST /api/preview-action
  *
  * Admin-only endpoint that forwards a transient credential (not yet persisted) to
- * the connector for preview/discovery actions such as listing shared drives and
- * top-level folders. The credential is never stored or returned; it flows straight
- * to the connector-manager's /action-preview endpoint and then to the connector.
- *
- * Request body size is limited to 64KB at the web boundary.
+ * the connector-manager's normal /action endpoint in **transient mode**.
+ * The credential is never stored or returned.
  *
  * SECURITY: Strictly allowlisted — only action='discover_folders',
  * sourceType='google_drive', and JWT credentials are accepted.
  *
- * Request body:
- * {
- *   sourceType: 'google_drive',
- *   action: 'discover_folders',
- *   params: {},
- *   serviceAccountJson: string,   // full service-account JSON key
- *   principalEmail: string,       // delegated admin email
- *   domain: string                // Google Workspace domain
- * }
+ * Request body size is limited to 64KB at the web boundary.
  */
 export const POST: RequestHandler = async ({ request, locals }) => {
     // Admin-only
@@ -155,37 +144,27 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         const config = getConfig()
         const connectorManagerUrl = config.services.connectorManagerUrl
 
-        // Build a transient ServiceCredential payload for the connector-manager
-        const transientCredential = {
-            id: 'preview',
-            source_id: 'preview',
-            user_id: null as string | null,
-            provider: 'google',
-            auth_type: 'jwt',
-            principal_email: principalEmail,
-            credentials: {
-                service_account_key: serviceAccountJson,
-            },
-            config: {
-                domain: domain,
-            },
-            expires_at: null,
-            last_validated_at: null,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-        }
-
-        const response = await fetch(`${connectorManagerUrl}/action-preview`, {
+        // Forward the setup credential through connector-manager's generic transient action mode.
+        const response = await fetch(`${connectorManagerUrl}/action`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 source_type: 'google_drive',
-                source_id: null,
+                user_id: locals.user.id,
                 action: 'discover_folders',
                 params: params || {},
-                credentials: transientCredential,
+                transient_credentials: {
+                    provider: 'google',
+                    auth_type: 'jwt',
+                    principal_email: principalEmail,
+                    credentials: {
+                        service_account_key: serviceAccountJson,
+                    },
+                    config: {
+                        domain: domain,
+                    },
+                },
             }),
-            // Limit connector-manager communication too
             signal: AbortSignal.timeout(30_000),
         })
 

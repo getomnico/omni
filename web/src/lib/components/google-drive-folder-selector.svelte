@@ -68,7 +68,7 @@
     )
 
     // Track the previous context token to detect changes.
-    let prevContextToken = $state(contextToken)
+    let prevContextToken = $state('')
 
     // Reactive effect: detect credential-context change and re-discover.
     $effect(() => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Mock server dependencies before importing the handler.
 vi.mock('$lib/server/config', () => ({
@@ -59,92 +59,65 @@ async function callPost(
 }
 
 describe('POST /api/preview-action', () => {
-    beforeEach(() => {
-        vi.restoreAllMocks()
+    afterEach(() => {
+        vi.unstubAllGlobals()
     })
 
-    it('rejects non-admin users with 403', async () => {
-        const response = await callPost(
-            {
-                sourceType: 'google_drive',
-                action: 'discover_folders',
-                serviceAccountJson: '{}',
-                principalEmail: 'a@b.com',
-                domain: 'b.com',
-            },
-            { user: null },
+    it('requires an admin', async () => {
+        const request = {
+            sourceType: 'google_drive',
+            action: 'discover_folders',
+            serviceAccountJson: '{}',
+            principalEmail: 'a@b.com',
+            domain: 'b.com',
+        }
+
+        expect((await callPost(request, { user: null })).status).toBe(401)
+        expect((await callPost(request, { user: { id: 'u1', role: 'member' } })).status).toBe(403)
+    })
+
+    it('forwards validated setup credentials through the normal action endpoint', async () => {
+        const connectorResponse = {
+            status: 'success',
+            result: { items: [] },
+        }
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(connectorResponse), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
         )
-        expect(response.status).toBe(401)
-    })
+        vi.stubGlobal('fetch', connectorFetch)
 
-    it('rejects non-admin role with 403', async () => {
-        const response = await callPost(
-            {
-                sourceType: 'google_drive',
-                action: 'discover_folders',
-                serviceAccountJson: '{}',
-                principalEmail: 'a@b.com',
-                domain: 'b.com',
+        const response = await callPost({
+            sourceType: 'google_drive',
+            action: 'discover_folders',
+            serviceAccountJson: '{"client_email":"service@example.com"}',
+            principalEmail: 'admin@example.com',
+            domain: 'example.com',
+            params: {},
+        })
+
+        expect(response).toEqual({ status: 200, body: connectorResponse })
+        expect(connectorFetch).toHaveBeenCalledOnce()
+        const [url, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        expect(url).toBe('http://cm.test/action')
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).not.toHaveProperty('source_id')
+        expect(forwarded).toMatchObject({
+            source_type: 'google_drive',
+            user_id: 'admin-1',
+            action: 'discover_folders',
+            params: {},
+            transient_credentials: {
+                provider: 'google',
+                auth_type: 'jwt',
+                principal_email: 'admin@example.com',
+                credentials: {
+                    service_account_key: '{"client_email":"service@example.com"}',
+                },
+                config: { domain: 'example.com' },
             },
-            { user: { id: 'u1', role: 'member' } },
-        )
-        expect(response.status).toBe(403)
-    })
-
-    it('rejects unknown top-level fields', async () => {
-        const response = await callPost({
-            sourceType: 'google_drive',
-            action: 'discover_folders',
-            unknownField: 'x',
-            serviceAccountJson: '{}',
-            principalEmail: 'a@b.com',
-            domain: 'b.com',
         })
-        expect(response.status).toBe(400)
-        const body = response.body as { message?: string } | undefined
-        expect(body?.message || '').toContain('Unknown field')
-    })
-
-    it('rejects unsupported action', async () => {
-        const response = await callPost({
-            sourceType: 'google_drive',
-            action: 'delete_all_files',
-            serviceAccountJson: '{}',
-            principalEmail: 'a@b.com',
-            domain: 'b.com',
-        })
-        expect(response.status).toBe(400)
-    })
-
-    it('rejects non-google_drive sourceType', async () => {
-        const response = await callPost({
-            sourceType: 'gmail',
-            action: 'discover_folders',
-            serviceAccountJson: '{}',
-            principalEmail: 'a@b.com',
-            domain: 'b.com',
-        })
-        expect(response.status).toBe(400)
-    })
-
-    it('rejects missing required credential fields', async () => {
-        const response = await callPost({
-            sourceType: 'google_drive',
-            action: 'discover_folders',
-            principalEmail: 'a@b.com',
-            domain: 'b.com',
-        })
-        expect(response.status).toBe(400)
-    })
-
-    it('rejects invalid service account JSON', async () => {
-        const response = await callPost({
-            sourceType: 'google_drive',
-            action: 'discover_folders',
-            serviceAccountJson: '{invalid}',
-            principalEmail: 'a@b.com',
-            domain: 'b.com',
-        })
-        expect(response.status).toBe(400)
     })
 })

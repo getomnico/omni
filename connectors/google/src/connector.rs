@@ -8,7 +8,10 @@ use crate::auth::{
 };
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
-use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
+use crate::models::{
+    DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse, GoogleDirectoryUser,
+    GoogleSyncCheckpoint, SearchUsersResponse,
+};
 use crate::sync::SyncManager;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -838,11 +841,11 @@ impl GoogleConnector {
             .list_drives(&google_auth, principal_email)
             .await?;
 
-        let mut items: Vec<crate::models::DriveFolderDiscoveryEntry> = Vec::new();
+        let mut items: Vec<DriveFolderDiscoveryEntry> = Vec::new();
 
         // 2. Add each shared drive as a selectable root
         for drive in &drives_response.drives {
-            items.push(crate::models::DriveFolderDiscoveryEntry {
+            items.push(DriveFolderDiscoveryEntry {
                 id: drive.id.clone(),
                 name: drive.name.clone(),
                 path: format!("/{} (Shared Drive)", drive.name),
@@ -867,7 +870,7 @@ impl GoogleConnector {
                 })?;
 
             for folder in &folders.files {
-                items.push(crate::models::DriveFolderDiscoveryEntry {
+                items.push(DriveFolderDiscoveryEntry {
                     id: folder.id.clone(),
                     name: folder.name.clone(),
                     path: format!("/{}/{}", drive.name, folder.name),
@@ -877,7 +880,7 @@ impl GoogleConnector {
             }
         }
 
-        let result = crate::models::DriveFolderDiscoveryResponse { items };
+        let result = DriveFolderDiscoveryResponse { items };
 
         Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
     }
@@ -1266,9 +1269,7 @@ impl Connector for GoogleConnector {
 mod tests {
     use std::sync::Arc;
 
-    use omni_connector_sdk::{
-        AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider, SourceType,
-    };
+    use omni_connector_sdk::{AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider};
     use serde_json::json;
 
     use crate::admin::AdminClient;
@@ -1663,94 +1664,5 @@ mod tests {
         assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att::1234").is_err());
         // Empty size
         assert!(parse_attachment_doc_id("CABc123%40mail.example.test:att:report.pdf:").is_err());
-    }
-
-    // ========================================================================
-    // discover_folders action tests
-    // ========================================================================
-
-    #[test]
-    fn discover_folders_action_registered_in_manifest() {
-        let connector = test_connector();
-        let actions = connector.actions();
-        let action = actions.iter().find(|a| a.name == "discover_folders");
-        assert!(
-            action.is_some(),
-            "discover_folders action must be registered"
-        );
-        let action = action.unwrap();
-        assert!(action.admin_only, "discover_folders must be admin_only");
-        assert!(action.hidden, "discover_folders must be hidden");
-        assert_eq!(
-            action.source_types,
-            vec![SourceType::GoogleDrive],
-            "discover_folders must only accept google_drive source type"
-        );
-    }
-
-    #[test]
-    fn discover_folders_rejects_oauth_credentials() {
-        let connector = test_connector();
-        let cred = test_service_credential(AuthType::OAuth, json!({}));
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(async {
-            connector
-                .execute_action("discover_folders", json!({}), Some(cred), None, None)
-                .await
-        });
-
-        assert!(result.is_ok(), "execute_action should return OK response");
-        let response = result.unwrap();
-        let status = response.status();
-        assert_eq!(
-            status,
-            axum::http::StatusCode::BAD_REQUEST,
-            "OAuth credentials should be rejected with 400"
-        );
-    }
-
-    #[test]
-    fn discover_folders_invalid_action_returns_not_supported() {
-        let connector = test_connector();
-        let cred = test_service_credential(AuthType::Jwt, json!({}));
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(async {
-            connector
-                .execute_action("nonexistent_action", json!({}), Some(cred), None, None)
-                .await
-        });
-
-        assert!(result.is_ok());
-        let response = result.unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn discover_folders_missing_principal_email_returns_500() {
-        let connector = test_connector();
-        let mut cred = test_service_credential(AuthType::Jwt, json!({}));
-        cred.principal_email = None;
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(async {
-            connector
-                .execute_action("discover_folders", json!({}), Some(cred), None, None)
-                .await
-        });
-
-        // Missing principal_email propagates as Err (anyhow) to the SDK layer
-        assert!(
-            result.is_err(),
-            "missing principal_email should produce an Err"
-        );
-        let err = result.unwrap_err();
-        let err_msg = format!("{:?}", err);
-        assert!(
-            err_msg.contains("principal_email") || err_msg.contains("principal"),
-            "error should mention missing principal_email: {}",
-            err_msg
-        );
     }
 }

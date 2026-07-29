@@ -154,10 +154,54 @@ pub struct GoogleConnectorState {
     pub webhook_expires_at: Option<i64>,
 }
 
+/// Normalised scope fingerprint for shared-drive/folder filtered mode.
+/// `"all"` means no folder filters (index everything).
+/// Otherwise it is a deterministic representation of the effective drive/folder scope.
+pub fn compute_scope_fingerprint(filters: Option<&[FolderPathFilterEntry]>) -> String {
+    match filters {
+        None | Some([]) => "all".to_string(),
+        Some(list) => {
+            let entire_drives: HashSet<&str> = list
+                .iter()
+                .filter(|filter| matches!(filter.kind, FolderPathFilterKind::SharedDriveRoot))
+                .map(|filter| filter.drive_id.as_str())
+                .collect();
+            let mut parts: Vec<String> = list
+                .iter()
+                .filter(|filter| {
+                    matches!(filter.kind, FolderPathFilterKind::SharedDriveRoot)
+                        || !entire_drives.contains(filter.drive_id.as_str())
+                })
+                .map(|filter| format!("{}:{}:{}", filter.drive_id, filter.kind.as_str(), filter.id))
+                .collect();
+            parts.sort();
+            parts.dedup();
+            parts.join(";")
+        }
+    }
+}
+
+impl FolderPathFilterKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FolderPathFilterKind::SharedDriveRoot => "shared_drive_root",
+            FolderPathFilterKind::Folder => "folder",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleSyncCheckpoint {
     pub gmail_history_ids: Option<HashMap<String, String>>,
     pub drive_page_tokens: Option<HashMap<String, String>>,
+    /// Per-drive change tokens used in scoped (filtered) incremental sync.
+    /// Keyed by shared-drive ID; absent for unfiltered mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_change_tokens: Option<HashMap<String, String>>,
+    /// Scope fingerprint for detecting filter transitions.
+    /// `"all"` or a sorted `;`-joined list of selected drive/kind/ID tuples.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_scope_fingerprint: Option<String>,
     pub chat: Option<GoogleChatCheckpoint>,
 }
 
@@ -535,6 +579,10 @@ impl WebhookNotification {
 pub struct DriveChangesResponse {
     #[serde(rename = "nextPageToken")]
     pub next_page_token: Option<String>,
+    /// The starting page token for future incremental changes.
+    /// Returned on the last page of a changes.list response.
+    #[serde(rename = "newStartPageToken", default)]
+    pub new_start_page_token: Option<String>,
     pub changes: Vec<DriveChange>,
 }
 
@@ -1787,253 +1835,155 @@ mod tests {
 
     // ========================================================================
     // Folder path filter parse tests
+    //
+    // Focus on behaviour rather than Serde mechanics:
+    //   1. absent / null / empty — the three filter knob states
+    //   2. successful parse + first-wins deduplication
+    //   3. a single table of malformed inputs that must all fail closed
     // ========================================================================
 
     #[test]
-    fn test_parse_folder_path_filters_absent_key() {
-        // Key absent → Ok(None) → index everything.
-        let config = serde_json::json!({"domain": "example.com"});
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_ok(), "absent key should be Ok");
-        assert!(result.unwrap().is_none(), "absent key → None");
+    fn test_folder_filter_absent_or_empty_is_none() {
+        // Absent key.
+        let r = parse_folder_path_filters(&json!({"domain": "x"}));
+        assert!(r.is_ok() && r.unwrap().is_none());
+
+        // Empty array (explicit “no filter”).
+        let r = parse_folder_path_filters(&json!({"folder_path_filters": []}));
+        assert!(r.is_ok() && r.unwrap().is_none());
     }
 
     #[test]
-    fn test_parse_folder_path_filters_null_value() {
-        // Explicit null → Err (fail closed).
-        let config = serde_json::json!({"folder_path_filters": null});
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "null should be rejected");
-        assert!(
-            result.unwrap_err().contains("must not be null"),
-            "error should explain null is not allowed"
-        );
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_empty_array() {
-        // Empty array [] → Ok(None) → index everything (valid, intentional).
-        let config = serde_json::json!({"folder_path_filters": []});
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_ok(), "empty array should be Ok");
-        assert!(result.unwrap().is_none(), "empty array → None");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_valid_shared_drive_root() {
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "0AK123456789",
-                "name": "Marketing",
-                "path": "/Marketing (Shared Drive)",
-                "driveId": "0AK123456789",
-                "kind": "shared_drive_root"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_ok());
-        let filters = result.unwrap();
-        assert!(filters.is_some());
-        let filters = filters.unwrap();
-        assert_eq!(filters.len(), 1);
-        assert_eq!(filters[0].id, "0AK123456789");
-        assert!(matches!(
-            filters[0].kind,
-            FolderPathFilterKind::SharedDriveRoot
-        ));
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_valid_folder() {
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "1ABC123DEF",
-                "name": "Reports",
-                "path": "/Marketing/Reports",
-                "driveId": "0AK123456789",
-                "kind": "folder"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_ok());
-        let filters = result.unwrap().unwrap();
-        assert_eq!(filters[0].name, "Reports");
-        assert!(matches!(filters[0].kind, FolderPathFilterKind::Folder));
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_malformed_string() {
-        // String value instead of array → Err (fail closed).
-        let config = serde_json::json!({"folder_path_filters": "not-an-array"});
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "malformed string should be Err");
-        let err = result.unwrap_err();
-        assert!(!err.is_empty(), "error message should be non-empty");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_malformed_array_with_primitives() {
-        // Array of primitives fails serde → Err (fail closed).
-        let config = serde_json::json!({"folder_path_filters": ["invalid"]});
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "array of non-objects should be Err");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_missing_required_fields() {
-        // Entry with missing name/path/driveId/kind fails serde → Err.
-        let config = serde_json::json!({
-            "folder_path_filters": [{"id": "only-id"}]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "entry with missing fields should be Err");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_unknown_kind() {
-        // Unknown kind variant fails serde → Err (fail closed).
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "1",
-                "name": "Test",
-                "path": "/Test",
-                "driveId": "1",
-                "kind": "unknown_kind"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "unknown kind should be Err");
-    }
-
-    #[test]
-    fn test_folder_path_filter_serialization_roundtrip() {
-        let entry = FolderPathFilterEntry {
-            id: "0ATEST123".to_string(),
-            name: "Test Drive".to_string(),
-            path: "/Test Drive (Shared Drive)".to_string(),
-            drive_id: "0ATEST123".to_string(),
-            kind: FolderPathFilterKind::SharedDriveRoot,
-        };
-        let json = serde_json::to_value(&entry).unwrap();
-        assert_eq!(json["id"], "0ATEST123");
-        assert_eq!(json["kind"], "shared_drive_root");
-        let deserialized: FolderPathFilterEntry = serde_json::from_value(json).unwrap();
-        assert_eq!(deserialized.id, entry.id);
-    }
-
-    #[test]
-    fn test_drive_folder_discovery_response_serialization() {
-        let response = DriveFolderDiscoveryResponse {
-            items: vec![DriveFolderDiscoveryEntry {
-                id: "drive1".to_string(),
-                name: "Company Drive".to_string(),
-                path: "/Company Drive (Shared Drive)".to_string(),
-                drive_id: "drive1".to_string(),
-                kind: "shared_drive_root".to_string(),
-            }],
-        };
-        let json = serde_json::to_value(&response).unwrap();
-        assert_eq!(json["items"][0]["kind"], "shared_drive_root");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_deny_unknown_fields() {
-        // deny_unknown_fields on FolderPathFilterEntry rejects extra keys.
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "1",
-                "name": "T",
-                "path": "/T",
-                "driveId": "1",
-                "kind": "folder",
-                "extra_field": "should_not_exist"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "unknown fields should be rejected");
-        let err = result.unwrap_err();
-        assert!(
-            err.contains("unknown field") || err.contains("extra_field"),
-            "error should mention the unknown field: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_empty_id_rejected() {
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "",
-                "name": "Test",
-                "path": "/Test",
-                "driveId": "1",
-                "kind": "folder"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "empty id should be rejected");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_empty_name_rejected() {
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "1",
-                "name": "",
-                "path": "/Test",
-                "driveId": "1",
-                "kind": "folder"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "empty name should be rejected");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_empty_drive_id_rejected() {
-        let config = serde_json::json!({
-            "folder_path_filters": [{
-                "id": "1",
-                "name": "Test",
-                "path": "/Test",
-                "driveId": "",
-                "kind": "folder"
-            }]
-        });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_err(), "empty driveId should be rejected");
-    }
-
-    #[test]
-    fn test_parse_folder_path_filters_duplicate_id_rejected() {
-        let config = serde_json::json!({
+    fn test_folder_filter_valid_parse_with_dedup() {
+        let config = json!({
             "folder_path_filters": [
                 {
-                    "id": "dup-id",
-                    "name": "First",
-                    "path": "/First",
-                    "driveId": "d1",
-                    "kind": "folder"
+                    "id": "0ADRI000001",
+                    "name": "Engineering",
+                    "path": "/Engineering (Shared Drive)",
+                    "driveId": "0ADRI000001",
+                    "kind": "shared_drive_root"
                 },
                 {
-                    "id": "dup-id",
-                    "name": "Second",
-                    "path": "/Second",
-                    "driveId": "d2",
+                    "id": "1FOLDER0001",
+                    "name": "Docs",
+                    "path": "/Engineering/Docs",
+                    "driveId": "0ADRI000001",
                     "kind": "folder"
+                },
+                // duplicate of the first – must be silently dropped
+                {
+                    "id": "0ADRI000001",
+                    "name": "Duplicate",
+                    "path": "/Engineering (Shared Drive)",
+                    "driveId": "0ADRI000001",
+                    "kind": "shared_drive_root"
                 }
             ]
         });
-        let result = parse_folder_path_filters(&config);
-        assert!(result.is_ok(), "duplicate id should be deduplicated");
-        let filters = result.unwrap();
-        assert!(filters.is_some());
-        // Deduplication means only the first occurrence is kept.
+        let r = parse_folder_path_filters(&config).unwrap().unwrap();
+        assert_eq!(r.len(), 2, "duplicate id deduped away");
+        assert_eq!(r[0].name, "Engineering", "first occurrence wins");
+        assert_eq!(r[1].name, "Docs");
+        assert!(matches!(r[0].kind, FolderPathFilterKind::SharedDriveRoot));
+        assert!(matches!(r[1].kind, FolderPathFilterKind::Folder));
+    }
+
+    #[test]
+    fn test_folder_filter_malformed_rejected() {
+        // Table of invalid configurations — every row must produce Err.
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("null", serde_json::Value::Null),
+            ("not an array", json!("not-an-array")),
+            ("array of primitives", json!(["invalid"])),
+            ("missing required fields", json!([{"id": "only-id"}])),
+            (
+                "unknown kind",
+                json!([{
+                    "id":"1", "name":"T", "path":"/T", "driveId":"1", "kind":"nope"
+                }]),
+            ),
+            (
+                "unknown extra field",
+                json!([{
+                    "id":"1", "name":"T", "path":"/T", "driveId":"1", "kind":"folder",
+                    "extra":"x"
+                }]),
+            ),
+            (
+                "empty id",
+                json!([{
+                    "id":"", "name":"T", "path":"/T", "driveId":"1", "kind":"folder"
+                }]),
+            ),
+            (
+                "empty name",
+                json!([{
+                    "id":"1", "name":"", "path":"/T", "driveId":"1", "kind":"folder"
+                }]),
+            ),
+            (
+                "empty driveId",
+                json!([{
+                    "id":"1", "name":"T", "path":"/T", "driveId":"", "kind":"folder"
+                }]),
+            ),
+        ];
+        for (label, val) in &cases {
+            let config = json!({"folder_path_filters": val});
+            assert!(
+                parse_folder_path_filters(&config).is_err(),
+                "should reject: {}",
+                label
+            );
+        }
+    }
+
+    // ========================================================================
+    // Scope fingerprint tests
+    // ========================================================================
+
+    #[test]
+    fn scope_fingerprint_none_returns_all() {
+        assert_eq!(compute_scope_fingerprint(None), "all");
+        assert_eq!(compute_scope_fingerprint(Some(&[])), "all");
+    }
+
+    #[test]
+    fn scope_fingerprint_deterministic_sorted() {
+        let filters = vec![
+            FolderPathFilterEntry {
+                id: "drive-b".to_string(),
+                name: "B".to_string(),
+                path: "/B".to_string(),
+                drive_id: "b".to_string(),
+                kind: FolderPathFilterKind::SharedDriveRoot,
+            },
+            FolderPathFilterEntry {
+                id: "drive-a".to_string(),
+                name: "A".to_string(),
+                path: "/A".to_string(),
+                drive_id: "a".to_string(),
+                kind: FolderPathFilterKind::SharedDriveRoot,
+            },
+            FolderPathFilterEntry {
+                id: "redundant-folder".to_string(),
+                name: "Folder".to_string(),
+                path: "/A/Folder".to_string(),
+                drive_id: "a".to_string(),
+                kind: FolderPathFilterKind::Folder,
+            },
+        ];
+        let fp = compute_scope_fingerprint(Some(&filters));
+        // Fingerprint reflects effective scope: the selected drive root supersedes
+        // its redundant folder selection, and remaining entries are sorted.
         assert_eq!(
-            filters.as_ref().unwrap().len(),
-            1,
-            "duplicate id → deduped to 1"
+            fp,
+            "a:shared_drive_root:drive-a;b:shared_drive_root:drive-b"
         );
-        assert_eq!(filters.unwrap()[0].name, "First", "first occurrence wins");
+
+        // Reverse input order should produce same result.
+        let filters_rev: Vec<FolderPathFilterEntry> = filters.into_iter().rev().collect();
+        assert_eq!(compute_scope_fingerprint(Some(&filters_rev)), fp);
     }
 }
