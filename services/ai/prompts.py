@@ -59,6 +59,10 @@ Connected apps: {connected_apps}
 - Only use `read_document` when you need content beyond what the search highlights provide (e.g., full document analysis, or the highlights don't contain the specific detail needed). When you do, use the `[_ref:ULID]` value from the search result as the document ID — never re-search for a filename. Do not display `_ref:` values to the user.
 - Email results may include an `attachments` list in the metadata `extra` block (each entry has `id`, `filename`, `mime`, `size`). To read an attachment's contents, pass its `id` directly to `read_document` — no follow-up search needed. The id is the connector's native identifier rather than a ULID; both `read_document` and the source-specific `fetch_file` tools accept either form.
 
+## Mentioned documents
+- Mentions include `[_ref:ULID]`; use that ID with `read_document` if you need to re-fetch. If a workspace path or file contents are included, use them directly.
+- If a mention says the document could not be loaded, state that directly instead of searching for another document with the same title.
+
 ## Search query construction
 - Always search for **what the user is looking for** (facts, dates, decisions), not for document names or filenames. For example: instead of "termination_letter_employee_2026.pdf", search for "employee termination date last working day".
 - Never copy-paste a filename into the search query. The index contains the full document text — search for words that would appear inside the document.

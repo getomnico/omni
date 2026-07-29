@@ -1,7 +1,7 @@
 use crate::{
-    SourceType,
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
+    SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
@@ -14,6 +14,8 @@ pub struct TitleEntry {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+    pub source_type: String,
+    pub content_type: Option<String>,
 }
 
 pub struct DocumentRepository {
@@ -98,7 +100,7 @@ impl DocumentRepository {
     pub async fn fetch_all_title_entries(&self) -> Result<Vec<TitleEntry>, DatabaseError> {
         let entries = sqlx::query_as::<_, TitleEntry>(
             r#"
-            SELECT d.id, d.title, d.url, d.source_id
+            SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
             FROM documents d
             JOIN sources s ON d.source_id = s.id
             WHERE NOT s.is_deleted
@@ -108,6 +110,112 @@ impl DocumentRepository {
         .await?;
 
         Ok(entries)
+    }
+
+    /// Fetch a page of title entries whose content_type matches one of the given
+    /// values, using keyset pagination over the stable document ID.
+    ///
+    /// When `content_types` is empty the method returns no rows (fail-closed).
+    /// When `after_id` is None, returns the first page.
+    /// Pass the last document ID from the previous page as `after_id` to fetch
+    /// the next page.  Pages are ordered ascending by `d.id`.
+    pub async fn fetch_title_entries_by_types_paginated(
+        &self,
+        content_types: &[String],
+        after_id: Option<&str>,
+        page_size: i64,
+    ) -> Result<Vec<TitleEntry>, DatabaseError> {
+        if content_types.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if let Some(cursor) = after_id {
+            let entries = sqlx::query_as::<_, TitleEntry>(
+                r#"
+                SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
+                FROM documents d
+                JOIN sources s ON d.source_id = s.id
+                WHERE NOT s.is_deleted
+                  AND d.content_type = ANY($1)
+                  AND d.id > $2
+                ORDER BY d.id ASC
+                LIMIT $3
+                "#,
+            )
+            .bind(content_types)
+            .bind(cursor)
+            .bind(page_size)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(entries)
+        } else {
+            let entries = sqlx::query_as::<_, TitleEntry>(
+                r#"
+                SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
+                FROM documents d
+                JOIN sources s ON d.source_id = s.id
+                WHERE NOT s.is_deleted
+                  AND d.content_type = ANY($1)
+                ORDER BY d.id ASC
+                LIMIT $2
+                "#,
+            )
+            .bind(content_types)
+            .bind(page_size)
+            .fetch_all(&self.pool)
+            .await?;
+            Ok(entries)
+        }
+    }
+
+    /// Given a list of candidate document IDs, return the subset that the user
+    /// is allowed to access according to the existing permission semantics
+    /// (public, direct-user, domain, group). The full list is needed because
+    /// the permission check is per-document and candidates may reference the
+    /// same document via multiple FST keys.
+    ///
+    /// Given a list of candidate document IDs, return the subset that the user
+    /// is allowed to access according to the existing permission semantics
+    /// (public, direct-user, domain, group).
+    ///
+    /// Returns the allowed document IDs preserving the order of `candidate_ids`.
+    /// Returns empty vec when `candidate_ids` or `user_email` is empty.
+    ///
+    /// The generated filter already includes the ``permissions @@@`` expression,
+    /// so it is inserted directly (no extra wrapping).
+    pub async fn filter_accessible_titles(
+        &self,
+        candidate_ids: &[String],
+        user_email: &str,
+        user_groups: &[String],
+    ) -> Result<Vec<String>, DatabaseError> {
+        if candidate_ids.is_empty() || user_email.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let perm_filter = generate_permission_filter(user_email, user_groups);
+
+        let rows = sqlx::query_scalar::<_, String>(&format!(
+            r#"
+                SELECT d.id
+                FROM documents d
+                JOIN sources s ON d.source_id = s.id
+                WHERE d.id = ANY($1)
+                  AND NOT s.is_deleted
+                  AND {}
+                "#,
+            perm_filter
+        ))
+        .bind(candidate_ids)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let allowed: std::collections::HashSet<String> = rows.into_iter().collect();
+        Ok(candidate_ids
+            .iter()
+            .filter(|id| allowed.contains(*id))
+            .cloned()
+            .collect())
     }
 
     pub async fn fetch_random_documents(

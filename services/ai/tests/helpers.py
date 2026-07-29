@@ -447,6 +447,7 @@ class GatedRecordingLLM:
     """
 
     PERSISTED_BLOCK_EXTRAS: tuple[str, ...] = ()
+    supports_citations: bool = False
     model_name = "gated-test"
     provider_type = "test"
     supports_citations = False

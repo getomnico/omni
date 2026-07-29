@@ -145,8 +145,8 @@ pub async fn run_server() -> AnyhowResult<()> {
     if let Err(e) = title_index.refresh().await {
         error!("Failed initial typeahead index load: {}", e);
     }
-    title_index.start_background_refresh(300);
-    info!("Typeahead index initialized");
+    title_index.start_background_refresh(3600);
+    info!("Typeahead index initialized, refresh interval: 3600s");
 
     let operator_registry = Arc::new(OperatorRegistry::new(redis_client.clone()));
     if let Err(e) = operator_registry.refresh().await {

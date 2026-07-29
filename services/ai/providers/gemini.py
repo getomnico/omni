@@ -39,6 +39,7 @@ from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
 from . import ContextWindowInfo, LLMProvider, TokenUsage
+from .anthropic_message_adapter import extract_text_document
 from .types import ProviderError, ProviderType
 
 
@@ -117,6 +118,11 @@ def _convert_messages_to_gemini(
                     if sig
                     else types.Part(text=text)
                 )
+
+            elif block_type == "document" and role == "user":
+                document_text = extract_text_document(block)
+                if document_text is not None:
+                    parts.append(types.Part(text=document_text))
 
             elif block_type == "tool_use":
                 sig = _extract_thought_signature(block)

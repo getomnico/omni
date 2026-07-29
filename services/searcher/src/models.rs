@@ -141,6 +141,7 @@ pub struct SuggestedQuestionsResponse {
 pub struct TypeaheadQuery {
     pub q: String,
     pub limit: Option<usize>,
+    pub user_id: String,
 }
 
 impl TypeaheadQuery {
@@ -161,6 +162,8 @@ pub struct TypeaheadResult {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+    pub source_type: String,
+    pub content_type: String,
 }
 
 #[derive(Debug, Serialize)]
