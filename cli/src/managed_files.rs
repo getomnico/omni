@@ -10,7 +10,7 @@ pub const MANAGED_FILES: &[&str] = &[
     "docker/docker-compose.yml",
     "docker/docker-compose.local-inference.yml",
     "Caddyfile",
-    ".env.example",
+    ".env",
 ];
 
 pub const MANIFEST_PATH: &str = ".omni/managed-files.json";
@@ -18,6 +18,7 @@ pub const MANIFEST_PATH: &str = ".omni/managed-files.json";
 #[derive(Debug, Clone, Serialize)]
 pub struct FileChange {
     pub path: String,
+    pub source_path: String,
     pub exists_locally: bool,
     pub changed: bool,
     pub local_edit_detected: bool,
@@ -66,6 +67,15 @@ pub fn mark_changed_existing_files_as_local_edits(changes: &mut [FileChange]) {
     }
 }
 
+fn source_file(release_root: &Path, relative: &str) -> PathBuf {
+    // For .env, the release ships it as .env.example
+    if relative == ".env" {
+        release_root.join(".env.example")
+    } else {
+        release_root.join(relative)
+    }
+}
+
 fn analyze_one(
     root: &Path,
     release_root: &Path,
@@ -73,7 +83,12 @@ fn analyze_one(
     manifest: &ManagedManifest,
 ) -> Result<FileChange> {
     let local = root.join(relative);
-    let incoming = release_root.join(relative);
+    let incoming = source_file(release_root, relative);
+    let source_path = if relative == ".env" {
+        ".env.example".to_string()
+    } else {
+        relative.to_string()
+    };
     let exists_locally = local.exists();
     let changed = if exists_locally && incoming.exists() {
         fs::read(&local)? != fs::read(&incoming)?
@@ -95,6 +110,7 @@ fn analyze_one(
 
     Ok(FileChange {
         path: relative.to_string(),
+        source_path,
         exists_locally,
         changed,
         local_edit_detected,
@@ -168,6 +184,21 @@ pub fn replace_managed_files(
     }
 
     for relative in MANAGED_FILES {
+        // .env is handled separately by build_env_plan; still update .env.example reference
+        if *relative == ".env" {
+            let source = release_root.join(".env.example");
+            if source.exists() {
+                let destination = root.join(".env.example");
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&source, &destination).with_context(|| {
+                    format!("failed to replace .env.example from release asset")
+                })?;
+            }
+            continue;
+        }
+
         let source = release_root.join(relative);
         if !source.exists() {
             continue;

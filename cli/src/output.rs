@@ -66,7 +66,7 @@ pub fn print_file_changes(changes: &[FileChange]) {
     for change in changes {
         if let Some(diff) = &change.diff {
             if change.changed {
-                println!("\n--- {} (release)", change.path);
+                println!("\n--- {} (release)", change.source_path);
                 println!("+++ {} (local)", change.path);
                 for line in diff.lines() {
                     // Skip the ---/+++ file headers from the unified diff
