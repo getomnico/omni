@@ -123,13 +123,14 @@ class AnthropicProvider(LLMProvider):
             if tools:
                 request_params["tools"] = tools
                 logger.info(
-                    f"Sending request with {len(tools)} tools"
+                    f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                 )
             else:
                 logger.info("Sending request without tools")
 
             logger.info(
-                f"Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
+                f"Model: {self.model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}",
+                extra={"otel_skip": True},
             )
 
             if system_prompt:
@@ -138,18 +139,10 @@ class AnthropicProvider(LLMProvider):
             stream: AsyncStream[MessageStreamEvent] = await self.client.messages.create(
                 **request_params,
             )
-            logger.info("Stream created successfully")
-
             event_count = 0
             async for event in stream:
                 event_count += 1
-                if event.type == "content_block_start":
-                    logger.info("Content block start")
-                elif event.type == "content_block_stop":
-                    logger.info("Content block stop")
-                elif event.type == "message_delta":
-                    logger.info("Message delta received")
-                elif event.type == "message_stop":
+                if event.type == "message_stop":
                     logger.info("Message completed after %s events", event_count)
 
                 yield event

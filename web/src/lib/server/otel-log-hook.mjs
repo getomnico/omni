@@ -173,6 +173,12 @@ export function createPinoOtelHook() {
             }
         }
 
+        // Skip OTel export when otel_skip is set on the bindings object.
+        // The log line still reaches stdout via method.apply below.
+        if (bindings.otel_skip === true) {
+            return method.apply(this, args)
+        }
+
         // Map severity
         const severityNumber = PINO_LEVEL_TO_SEVERITY[level] ?? SeverityNumber.INFO
         const severityText = PINO_LEVEL_TO_TEXT[level] ?? 'INFO'

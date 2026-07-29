@@ -128,7 +128,10 @@ class OpenAIProvider(LLMProvider):
             if tools:
                 request_params["tools"] = _convert_tools_to_openai(tools)
                 logger.info(
-                    "Sending request with %s tools", len(tools)
+                    "Sending request with %s tools: %s",
+                    len(tools),
+                    [t.get("name", t.get("function", {})
+                     .get("name", "?")) for t in tools],
                 )
 
             logger.info(
@@ -136,6 +139,7 @@ class OpenAIProvider(LLMProvider):
                 active_model,
                 len(input_items),
                 request_params['max_output_tokens'],
+                extra={"otel_skip": True},
             )
 
             stream = await self.client.responses.create(**request_params)

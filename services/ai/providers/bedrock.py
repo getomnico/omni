@@ -494,7 +494,9 @@ class BedrockProvider(LLMProvider):
         elif "messageStop" in event:
             return RawMessageStopEvent(type="message_stop")
 
-        logger.debug("[BEDROCK] Skipping unknown event type")
+        logger.debug(
+            "[BEDROCK] Skipping unknown event type: %s", list(event.keys())
+        )
         return None
 
     async def stream_response(
@@ -526,42 +528,27 @@ class BedrockProvider(LLMProvider):
                 if tools:
                     request_params["tools"] = tools
                     logger.info(
-                        f"[BEDROCK] Sending request with {len(tools)} tools"
+                        f"[BEDROCK] Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                     )
                 else:
                     logger.info("[BEDROCK] Sending request without tools")
 
                 logger.info(
-                    f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
+                    f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}",
+                    extra={"otel_skip": True},
                 )
 
-                # Invoke with streaming response
-                logger.info(
-                    f"[BEDROCK] Invoking model {self.model_id} with streaming response"
-                )
+
 
                 if system_prompt:
                     request_params["system"] = system_prompt
 
                 stream = self.client.messages.create(**request_params)
 
-                logger.info(
-                    f"[BEDROCK] Stream created successfully, starting to process events"
-                )
                 event_count = 0
                 for event in stream:
                     event_count += 1
-                    if event.type == "content_block_start":
-                        logger.info(
-                            f"[ANTHROPIC] Content block start: type={event.content_block.type}"
-                        )
-                    elif event.type == "content_block_stop":
-                        logger.info("[ANTHROPIC] Content block stop")
-                    elif event.type == "message_delta":
-                        logger.info(
-                            f"[ANTHROPIC] Message delta stop reason: {event.delta.stop_reason}"
-                        )
-                    elif event.type == "message_stop":
+                    if event.type == "message_stop":
                         logger.info(
                             f"[ANTHROPIC] Message completed after {event_count} events"
                         )
@@ -570,7 +557,8 @@ class BedrockProvider(LLMProvider):
 
             elif self.model_family == "amazon":
                 logger.info(
-                    f"[BEDROCK-AMAZON] Using Amazon model family with model: {self.model_id}"
+                    f"[BEDROCK-AMAZON] Using Amazon model family with model: {self.model_id}",
+                    extra={"otel_skip": True},
                 )
 
                 # Prepare messages for sending to Bedrock
@@ -606,7 +594,7 @@ class BedrockProvider(LLMProvider):
 
                 response = self.client.converse_stream(**request_params)
 
-                logger.info("[BEDROCK-AMAZON] Stream created, processing chunks")
+
                 chunk_count = 0
                 for chunk in response["stream"]:
                     chunk_count += 1
@@ -621,7 +609,8 @@ class BedrockProvider(LLMProvider):
                             f"[BEDROCK-AMAZON] Skipping unknown chunk type: {list(chunk.keys())}"
                         )
                 logger.info(
-                    f"[BEDROCK-AMAZON] Stream completed after {chunk_count} chunks"
+                    f"[BEDROCK-AMAZON] Stream completed after {chunk_count} chunks",
+                    extra={"otel_skip": True},
                 )
             else:
                 raise ValueError(f"Unsupported model family: {self.model_family}")

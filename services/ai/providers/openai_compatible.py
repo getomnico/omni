@@ -310,7 +310,10 @@ class OpenAICompatibleProvider(LLMProvider):
             if tools:
                 params["tools"] = _convert_tools_to_openai(tools)
                 logger.info(
-                    "Sending request with %s tools", len(tools)
+                    "Sending request with %s tools: %s",
+                    len(tools),
+                    [t.get("name", t.get("function", {})
+                     .get("name", "?")) for t in tools],
                 )
 
             stream = await self.client.chat.completions.create(**params)

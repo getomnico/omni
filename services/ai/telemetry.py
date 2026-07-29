@@ -65,6 +65,18 @@ def _build_otlp_logs_url(endpoint: str) -> str:
     return f"{endpoint}/v1/logs"
 
 
+class OTelSkipFilter(logging.Filter):
+    """Logging filter that suppresses records flagged with ``otel_skip=True``
+    from reaching the OTel LoggingHandler.
+
+    The record still appears in stdout (other handlers see it); only OTel
+    export is skipped.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not getattr(record, "otel_skip", False)
+
+
 class TraceContextFilter(logging.Filter):
     """Logging filter that adds bounded ``trace_id`` and ``span_id`` fields
     to every ``LogRecord``.
@@ -204,6 +216,7 @@ def init_telemetry(app, service_name: str = "omni-ai"):
         logger_provider=logger_provider,
     )
     otel_handler.addFilter(TraceContextFilter())
+    otel_handler.addFilter(OTelSkipFilter())
     _otel_log_handler = otel_handler
 
     # Attach the OTel handler to the root logger.  Avoid duplicate handlers

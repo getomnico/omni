@@ -21,7 +21,9 @@ use opentelemetry_semantic_conventions::{
 };
 use std::{sync::OnceLock, time::Duration};
 use tracing::warn;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    filter::filter_fn, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer,
+};
 
 static TRACER_PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
 static METER_PROVIDER: OnceLock<SdkMeterProvider> = OnceLock::new();
@@ -183,8 +185,13 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
 
     // Bridge tracing events to OTel log records when a LoggerProvider
     // with OTLP export is active.
+    // Bridge tracing events to OTel log records, skipping records
+    // whose metadata carries the `otel_skip` field name.
     let otel_log_layer =
-        opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logger_provider);
+        opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logger_provider)
+            .with_filter(filter_fn(|metadata| {
+                !metadata.fields().iter().any(|f| f.name() == "otel_skip")
+            }));
 
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))

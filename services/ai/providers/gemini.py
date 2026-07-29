@@ -268,7 +268,9 @@ class GeminiProvider(LLMProvider):
             if tools:
                 config.tools = _convert_tools_to_gemini(tools)
                 logger.info(
-                    "Sending request with %s tools", len(tools)
+                    "Sending request with %s tools: %s",
+                    len(tools),
+                    [t.get("name", "?") for t in tools],
                 )
 
             logger.info(
@@ -276,6 +278,7 @@ class GeminiProvider(LLMProvider):
                 active_model,
                 len(contents),
                 config.max_output_tokens,
+                extra={"otel_skip": True},
             )
 
             # Emit message_start
