@@ -1854,7 +1854,9 @@ impl SyncManager {
         ctx: &SyncContext,
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
-        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
         let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
         let drive_cutoff = parse_google_time(Some(&drive_cutoff_date))
             .ok_or_else(|| anyhow!("Invalid Drive cutoff time: {}", drive_cutoff_date))?;
