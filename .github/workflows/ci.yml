@@ -677,3 +677,22 @@ jobs:
             --repo "${{ github.repository }}" \
             --verify-tag \
             --generate-notes
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.OMNI_ENTERPRISE_APP_ID }}
+          private-key: ${{ secrets.OMNI_ENTERPRISE_APP_PRIVATE_KEY }}
+          owner: getomnico
+          repositories: omni-enterprise
+
+      - name: Trigger omni-enterprise release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if ! gh workflow run build-enterprise.yml \
+            --repo getomnico/omni-enterprise \
+            --field tag_name="${GITHUB_REF_NAME}"; then
+            echo "::warning::Failed to trigger omni-enterprise release"
+          fi
