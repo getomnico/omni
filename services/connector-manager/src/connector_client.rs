@@ -45,7 +45,11 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            error!("Failed to get manifest: status={}", status);
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                otel_skip = true,
+                "Failed to get manifest: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: String::new(),
@@ -73,10 +77,17 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             if status.as_u16() == 404 && request.sync_mode == SyncType::Realtime {
-                debug!("Realtime sync unavailable: status={}", status);
+                debug!(
+                    otel_skip = true,
+                    "Realtime sync unavailable: {} - {}", status, body
+                );
             } else {
-                error!("Failed to trigger sync: status={}", status);
+                error!(
+                    otel_skip = true,
+                    "Failed to trigger sync: {} - {}", status, body
+                );
             }
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
@@ -183,7 +194,11 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            warn!("Failed to cancel sync: status={}", status);
+            let body = response.text().await.unwrap_or_default();
+            warn!(
+                otel_skip = true,
+                "Failed to cancel sync: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: String::new(),
@@ -207,7 +222,11 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            error!("Failed to execute action: status={}", status);
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                otel_skip = true,
+                "Failed to execute action: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: String::new(),
@@ -297,7 +316,11 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            error!("Failed to read resource: status={}", status);
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                otel_skip = true,
+                "Failed to read resource: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: String::new(),
@@ -324,7 +347,11 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            error!("Failed to get prompt: status={}", status);
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                otel_skip = true,
+                "Failed to get prompt: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: String::new(),
@@ -351,7 +378,11 @@ impl ConnectorClient {
 
         if !response.status().is_success() {
             let status = response.status();
-            error!("Failed to get skill: status={}", status);
+            let body = response.text().await.unwrap_or_default();
+            error!(
+                otel_skip = true,
+                "Failed to get skill: {} - {}", status, body
+            );
             return Err(ClientError::ConnectorError {
                 status: status.as_u16(),
                 message: String::new(),

@@ -487,7 +487,10 @@ impl SearchEngine {
         let content_types = request.content_types.as_deref();
         let attribute_filters = request.attribute_filters.as_ref();
 
-        debug!("Running fulltext search");
+        debug!(
+            otel_skip = true,
+            "Running fulltext search for {}", &request.query
+        );
         let search_hits = repo
             .search(
                 &request.query,
@@ -551,7 +554,10 @@ impl SearchEngine {
         offset: i64,
     ) -> Result<Vec<SearchResult>> {
         let start_time = Instant::now();
-        info!("Performing semantic search");
+        info!(
+            otel_skip = true,
+            "Performing semantic search for query '{}'", request.query
+        );
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
 
@@ -889,7 +895,10 @@ impl SearchEngine {
     }
 
     async fn generate_query_embedding(&self, query: &str) -> Result<Vec<f32>> {
-        debug!("Generating query embeddings");
+        debug!(
+            otel_skip = true,
+            "Generating query embeddings for query '{}'", query
+        );
         let embeddings = self
             .ai_client
             .generate_embeddings_with_options(
@@ -1034,7 +1043,10 @@ impl SearchEngine {
         user_groups: &[String],
         tantivy_query: Option<&str>,
     ) -> Result<(Vec<SearchResult>, i64)> {
-        info!("Performing hybrid search");
+        info!(
+            otel_skip = true,
+            "Performing hybrid search for query '{}'", request.query
+        );
         let start_time = Instant::now();
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
@@ -1298,7 +1310,10 @@ impl SearchEngine {
 
     /// Generate RAG context from search request using chunk-based approach with expanded context
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
-        info!("Generating RAG context");
+        info!(
+            otel_skip = true,
+            "Generating RAG context for query '{}'", request.query
+        );
 
         let user_groups = if let Some(email) = request.user_email() {
             let group_repo = GroupRepository::new(self.db_pool.pool());

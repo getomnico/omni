@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 /// A stream wrapper that collects chunks for caching while forwarding them to the client
 struct CachingStream<S> {
@@ -246,7 +246,10 @@ pub async fn ai_answer(
     Json(mut request): Json<SearchRequest>,
 ) -> Result<axum::response::Response<Body>, axum::http::StatusCode> {
     let answer_query_len = request.query.len();
-    info!("Received AI answer request");
+    info!(
+        otel_skip = true,
+        "Received AI answer request: {:?}", request
+    );
     hydrate_user_configuration(&state, &mut request)
         .await
         .map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
@@ -267,7 +270,10 @@ pub async fn ai_answer(
     // Try to get cached AI response first
     if let Ok(mut conn) = state.redis_client.get_multiplexed_async_connection().await {
         if let Ok(cached_answer) = conn.get::<_, String>(&cache_key).await {
-            info!("AI answer cache hit");
+            info!(
+                otel_skip = true,
+                "Cache hit for AI answer query: '{}'", request.query
+            );
             let response = axum::response::Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/plain; charset=utf-8")
@@ -279,7 +285,10 @@ pub async fn ai_answer(
     }
 
     // Cache miss - generate fresh response
-    info!("AI answer cache miss");
+    info!(
+        otel_skip = true,
+        "Cache miss for AI answer query: '{}'", request.query
+    );
 
     // Get RAG context by running hybrid search
     let context = match search_engine.get_rag_context(&request).await {
@@ -292,6 +301,7 @@ pub async fn ai_answer(
 
     // Build RAG prompt with context and citation instructions
     let prompt = search_engine.build_rag_prompt(&request.query, &context);
+    debug!(otel_skip = true, "RAG prompt: {}", prompt);
     info!("Built RAG prompt of length: {}", prompt.len());
 
     // Stream AI response

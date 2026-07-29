@@ -159,7 +159,7 @@ async fn create_document(
     let repo = DocumentRepository::new(state.db_pool.pool());
     let document = repo.create(doc).await?;
 
-    info!("Created document");
+    info!("Created document: {}", document.id);
     Ok(Json(document))
 }
 
@@ -208,7 +208,7 @@ async fn update_document(
 
     match updated_doc {
         Some(doc) => {
-            info!("Updated document");
+            info!("Updated document: {}", doc.id);
             Ok(Json(doc))
         }
         None => Err(error::IndexerError::NotFound(format!(
@@ -232,7 +232,7 @@ async fn delete_document(
         )));
     }
 
-    info!("Deleted document");
+    info!("Deleted document: {}", id);
     Ok(Json(json!({
         "message": "Document deleted successfully",
         "id": id

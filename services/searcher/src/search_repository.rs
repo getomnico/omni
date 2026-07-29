@@ -283,7 +283,7 @@ impl SearchDocumentRepository {
             offset_idx = offset_idx,
             min_score_ratio_idx = min_score_ratio_idx,
         );
-        debug!("Full search query: {} params", param_idx);
+        debug!(otel_skip = true, "Full search query: {}", full_query);
 
         let mut query_builder =
             sqlx::query_as::<_, SearchHitWithTotalRow>(&full_query).bind(tantivy_query);
