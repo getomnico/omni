@@ -168,8 +168,8 @@ class EmbeddingBatchProcessor:
                 # to allow higher-priority tasks (stream requests) to run
                 if processed_any:
                     await asyncio.sleep(ONLINE_BATCH_DELAY)
-            except Exception:
-                logger.error("Online processing loop error", exc_info=True)
+            except Exception as e:
+                logger.error("Online processing loop error: %s", e, exc_info=True)
                 await asyncio.sleep(10)
 
     async def _process_online_batch(self) -> bool:

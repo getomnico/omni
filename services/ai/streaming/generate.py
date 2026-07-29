@@ -739,6 +739,10 @@ async def stream_generator(
                         continue
 
                     logger.debug("Received event (index: %s)", event_index)
+                    logger.debug(
+                        "Event content: %s", event,
+                        extra={"otel_skip": True},
+                    )
                     event_index += 1
 
                     now = asyncio.get_running_loop().time()
@@ -810,6 +814,10 @@ async def stream_generator(
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
                             logger.info("Text block start")
+                            logger.debug(
+                                "Text block content: %s", event.content_block.text,
+                                extra={"otel_skip": True},
+                            )
                             text_block: TextBlockParam = TextBlockParam(
                                 type="text", text=event.content_block.text
                             )
@@ -819,7 +827,7 @@ async def stream_generator(
                             content_blocks.append(text_block)
                         elif event.content_block.type == "tool_use":
                             logger.info(
-                                "Tool use block start"
+                                "Tool use block start: %s", event.content_block.name
                             )
                             tool_block: ToolUseBlockParam = ToolUseBlockParam(
                                 type="tool_use",
@@ -834,6 +842,10 @@ async def stream_generator(
 
                     elif event.type == "citation":
                         logger.info("Citation received")
+                        logger.debug(
+                            "Citation content: %s", event.citation,
+                            extra={"otel_skip": True},
+                        )
                     elif event.type == "message_stop":
                         logger.info("Message stop received.")
                         message_stop_received = True

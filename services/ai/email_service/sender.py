@@ -94,7 +94,10 @@ class ResendEmailProvider(EmailProvider):
                 data = resp.json()
                 return SendResult(success=True, message_id=data.get("id"))
 
-            logger.error("Resend error: status=%d", resp.status_code)
+            logger.error(
+                "Resend error: status=%d body=%s", resp.status_code, resp.text,
+                extra={"otel_skip": True},
+            )
             return SendResult(success=False, error="Failed to send email via Resend")
         except Exception as e:
             logger.error("Resend send error: %s", e)

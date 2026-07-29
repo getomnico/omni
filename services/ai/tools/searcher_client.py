@@ -171,7 +171,10 @@ class SearcherClient:
         try:
             search_payload = request.model_dump(mode="json")
 
-            logger.info("Calling searcher service...")
+            logger.info(
+                "Calling searcher service with query: %s", request.query,
+                extra={"otel_skip": True},
+            )
 
             response = await self.client.post(
                 f"{self.searcher_url}/search", json=search_payload
@@ -197,7 +200,10 @@ class SearcherClient:
     async def search_people(self, request: PeopleSearchRequest) -> PeopleSearchResponse:
         """Search the people directory using omni-searcher service."""
         try:
-            logger.info("People search...")
+            logger.info(
+                "People search with query: %s", request.query,
+                extra={"otel_skip": True},
+            )
             response = await self.client.get(
                 f"{self.searcher_url}/people/search",
                 params={"q": request.query, "limit": request.limit},
