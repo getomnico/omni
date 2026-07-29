@@ -74,8 +74,17 @@ export interface ClickUpSourceConfig {
     space_filters?: string[]
 }
 
+export interface FolderPathFilter {
+    id: string
+    name: string
+    path: string
+    driveId: string
+    kind: 'shared_drive_root' | 'folder'
+}
+
 export interface GoogleDriveSourceConfig {
-    // Future: shared_drive_filters, mime_type_filters, folder_path_filters, etc.
+    folder_path_filters?: FolderPathFilter[]
+    // Future: shared_drive_filters, mime_type_filters, etc.
 }
 
 export interface GmailSourceConfig {

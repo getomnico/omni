@@ -7,6 +7,7 @@ import { serviceCredentialsRepository } from '$lib/server/repositories/service-c
 import { userRepository } from '$lib/server/db/users'
 import { getConfig } from '$lib/server/config'
 import { AuthType, SourceType } from '$lib/types'
+import type { FolderPathFilter } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
@@ -29,7 +30,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     const creds = await serviceCredentialsRepository.getOrgCredsBySourceId(source.id)
 
     const credsConfig = (creds?.config as { domain?: string } | null) ?? {}
-    const sourceConfig = (source.config as { domain?: string } | null) ?? {}
+    const sourceConfig =
+        (source.config as { domain?: string; folder_path_filters?: unknown } | null) ?? {}
+
+    const folderPathFilters = Array.isArray(sourceConfig?.folder_path_filters)
+        ? sourceConfig.folder_path_filters
+        : []
 
     const gmailSibling = await sourcesRepository.findActiveByTypeAndCreator(
         SourceType.GMAIL,
@@ -43,7 +49,72 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         principalEmail: creds?.principalEmail ?? '',
         domain: credsConfig.domain ?? sourceConfig.domain ?? '',
         gmailSiblingId: gmailSibling?.id ?? null,
+        folderPathFilters: folderPathFilters as FolderPathFilter[],
     }
+}
+
+function parseFolderPathFilters(formData: FormData): Record<string, unknown>[] {
+    const raw = formData.get('folder_path_filters') as string | null
+    if (!raw) return []
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(raw)
+    } catch {
+        throw error(400, 'folder_path_filters is not valid JSON')
+    }
+    if (!Array.isArray(parsed)) {
+        throw error(400, 'folder_path_filters must be a JSON array')
+    }
+    // Each entry must have all required fields with correct types and no unknown fields.
+    const allowedEntryKeys = ['id', 'name', 'path', 'driveId', 'kind']
+    const seenIds = new Set<string>()
+    for (const entry of parsed) {
+        if (!entry || typeof entry !== 'object') {
+            throw error(400, 'Each folder filter entry must be a non-null object')
+        }
+        const e = entry as Record<string, unknown>
+        // Reject unknown fields.
+        for (const key of Object.keys(e)) {
+            if (!allowedEntryKeys.includes(key)) {
+                throw error(400, `Unknown field '${key}' in folder filter entry`)
+            }
+        }
+        // Validate required string fields.
+        if (typeof e.id !== 'string' || !e.id) {
+            throw error(400, 'Each folder filter entry must have a non-empty id')
+        }
+        if (typeof e.name !== 'string' || !e.name) {
+            throw error(400, 'Each folder filter entry must have a non-empty name')
+        }
+        if (typeof e.path !== 'string' || !e.path) {
+            throw error(400, 'Each folder filter entry must have a non-empty path')
+        }
+        if (typeof e.driveId !== 'string' || !e.driveId) {
+            throw error(400, 'Each folder filter entry must have a non-empty driveId')
+        }
+        if (e.kind !== 'shared_drive_root' && e.kind !== 'folder') {
+            throw error(
+                400,
+                "Each folder filter entry must have kind 'shared_drive_root' or 'folder'",
+            )
+        }
+        // Deduplicate by stable ID (first-wins).
+        if (seenIds.has(e.id)) {
+            continue
+        }
+        seenIds.add(e.id)
+    }
+    // Return deduplicated array — first-wins.
+    const deduplicated: Record<string, unknown>[] = []
+    seenIds.clear()
+    for (const entry of parsed) {
+        const e = entry as Record<string, unknown>
+        const id = e.id as string
+        if (seenIds.has(id)) continue
+        seenIds.add(id)
+        deduplicated.push(e)
+    }
+    return deduplicated
 }
 
 export const actions: Actions = {
@@ -109,9 +180,30 @@ export const actions: Actions = {
                     }
                 }
 
+                const folderPathFilters = parseFolderPathFilters(formData)
+
+                // Merge folder_path_filters into config while PRESERVING all existing source config keys.
+                const existingConfig: Record<string, unknown> =
+                    source.config &&
+                    typeof source.config === 'object' &&
+                    !Array.isArray(source.config)
+                        ? (source.config as Record<string, unknown>)
+                        : {}
+
+                const mergedConfig: Record<string, unknown> = { ...existingConfig, domain }
+                mergedConfig.folder_path_filters = folderPathFilters
+
+                // Preserve existing credential config as well.
+                const existingCredConfig: Record<string, unknown> =
+                    existingCreds?.config &&
+                    typeof existingCreds.config === 'object' &&
+                    !Array.isArray(existingCreds.config)
+                        ? (existingCreds.config as Record<string, unknown>)
+                        : {}
+
                 await serviceCredentialsRepository.updateBySourceId(source.id, {
                     principalEmail,
-                    config: { domain },
+                    config: { ...existingCredConfig, domain },
                     credentials: serviceAccountJson
                         ? { service_account_key: serviceAccountJson }
                         : null,
@@ -122,11 +214,24 @@ export const actions: Actions = {
                     userFilterMode,
                     userWhitelist,
                     userBlacklist,
-                    config: { domain },
+                    config: mergedConfig,
                 })
             } else {
                 // OAuth or other auth types — admin can only toggle enabled.
-                await updateSourceById(source.id, { isActive })
+                // Still merge any config changes without destroying existing keys.
+                const existingConfig: Record<string, unknown> =
+                    source.config &&
+                    typeof source.config === 'object' &&
+                    !Array.isArray(source.config)
+                        ? (source.config as Record<string, unknown>)
+                        : {}
+                const folderPathFilters = parseFolderPathFilters(formData)
+                const mergedConfig: Record<string, unknown> = { ...existingConfig }
+                mergedConfig.folder_path_filters = folderPathFilters
+                await updateSourceById(source.id, {
+                    isActive,
+                    config: mergedConfig,
+                })
             }
 
             if (isActive) {

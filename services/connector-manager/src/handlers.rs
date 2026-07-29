@@ -358,159 +358,282 @@ pub async fn execute_action(
     _headers: HeaderMap,
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
-    info!(
-        "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
-        request.action,
-        request.source_id,
-        request.user_id,
-        request
-            .params
-            .as_object()
-            .map(|m| m.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default()
-    );
-
-    let source_repo = SourceRepository::new(state.db_pool.pool());
-    let source = source_repo
-        .find_by_id(request.source_id.clone())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
-
-    // Look up the connector manifest to get connector_url and action metadata
+    let is_transient = request.transient_credentials.is_some();
+    let source_type: SourceType;
+    let source: Option<Source>;
+    let creds: shared::models::ServiceCredential;
+    let mut params = request.params.clone();
+    let mut transient_actor_email = None;
     let manifests = get_registered_manifests(&state.redis_client).await;
-    let manifest = manifests
-        .iter()
-        .find(|m| m.source_types.contains(&source.source_type));
 
-    let connector_url = manifest
-        .as_ref()
-        .map(|m| m.connector_url.clone())
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Connector not registered for type: {:?}",
-                source.source_type
-            ))
+    let (connector_url, action_admin_only) = if is_transient {
+        // ======== TRANSIENT MODE ========
+        // Transient mode: source_type + transient_credentials required, no source/credential DB.
+        let tc = request.transient_credentials.as_ref().unwrap();
+        source_type = request.source_type.ok_or_else(|| {
+            ApiError::BadRequest(
+                "source_type is required when transient_credentials are provided".to_string(),
+            )
+        })?;
+        if request.source_id.is_some() {
+            return Err(ApiError::BadRequest(
+                "source_id must not be set when transient_credentials are provided".to_string(),
+            ));
+        }
+
+        // Resolve user/admin from user_id (required in transient mode).
+        let user_id = request.user_id.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("user_id is required in transient mode".to_string())
         })?;
 
-    let action_def = manifest.and_then(|m| m.actions.iter().find(|a| a.name == request.action));
-    let action_mode = action_def.map(|a| a.mode).unwrap_or_default();
-    // Reject unknown action names — they must exist in the manifest
-    let action_def = action_def.ok_or_else(|| {
-        ApiError::BadRequest(format!(
-            "Unknown action '{}' for source type {:?}",
-            request.action, source.source_type
-        ))
-    })?;
-    let action_admin_only = action_def.admin_only;
+        // Look up the connector manifest by source_type.
+        let manifest = manifests
+            .iter()
+            .find(|m| m.source_types.contains(&source_type))
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Connector not registered for type: {:?}",
+                    source_type
+                ))
+            })?;
 
-    // Generic read_only enforcement — the source config is the authority.
-    let source_read_only = source
-        .config
-        .get("read_only")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if let Some(m) = manifest.as_ref() {
-        if (m.read_only || source_read_only) && action_mode == ActionMode::Write {
+        let connector_url = manifest.connector_url.clone();
+        let action_def = manifest
+            .actions
+            .iter()
+            .find(|a| a.name == request.action)
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "Unknown action '{}' for source type {:?}",
+                    request.action, source_type
+                ))
+            })?;
+        if !action_def.source_types.contains(&source_type) {
             return Err(ApiError::BadRequest(format!(
-                "Action '{}' is not allowed: source is read-only",
+                "Action '{}' does not support source type {:?}",
+                request.action, source_type
+            )));
+        }
+        let action_admin_only = action_def.admin_only;
+        let action_mode = action_def.mode;
+
+        if action_mode != ActionMode::Read {
+            return Err(ApiError::BadRequest(format!(
+                "Transient action '{}' must be read-only",
                 request.action
             )));
         }
-    }
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = match resolve_credentials(
-        &creds_repo,
-        &request.source_id,
-        request.user_id.as_deref(),
-        action_admin_only,
-    )
-    .await?
-    {
-        CredentialResolution::Resolved(c) => c,
-        CredentialResolution::NeedsUserAuth { provider } => {
-            return Ok(needs_user_auth_response(
-                &request.source_id,
-                source.source_type,
-                provider,
-            )?);
-        }
-        CredentialResolution::NoCredentials => {
-            return Err(ApiError::NotFound(format!(
-                "Credentials not found for source: {}",
-                request.source_id
-            )));
-        }
-    };
-
-    // Resolve Omni document ID -> source external_id.
-    // TODO: replace hard-coded param names with a connector-declared resolve_params list.
-    let mut params = request.params.clone();
-    let doc_id = params
-        .get("document_id")
-        .or_else(|| params.get("file_id"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    if let Some(doc_id) = doc_id {
-        let doc_repo = DocumentRepository::new(state.db_pool.pool());
-        if let Ok(Some(doc)) = doc_repo.find_by_id(&doc_id).await {
-            info!(
-                "Resolved document/file ID {} -> external_id {}",
-                doc_id, doc.external_id
-            );
-            if let Some(obj) = params.as_object_mut() {
-                obj.remove("document_id");
-                obj.remove("file_id");
-                obj.insert(
-                    "file_id".to_string(),
-                    serde_json::Value::String(doc.external_id),
-                );
-            }
-        }
-        // If not found, assume the ID is already a source-native ID and pass through
-    }
-
-    // Merge source config into params for legacy connector compatibility.
-    // Connectors that use the typed context (e.g. Darwinbox) ignore these.
-    if params.is_null() {
-        params = serde_json::Value::Object(serde_json::Map::new());
-    }
-    if let (Some(src_obj), Some(params_obj)) = (source.config.as_object(), params.as_object_mut()) {
-        for (k, v) in src_obj {
-            params_obj.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-    }
-
-    // Resolve actor email for the execution context
-    let actor_email = if let Some(uid) = request.user_id.as_ref() {
         let user_repo = UserRepository::new(state.db_pool.pool());
         let user = user_repo
-            .find_by_id(uid.clone())
+            .find_by_id(user_id.clone())
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("User not found: {uid}")))?;
-        // Enforce admin_only action authorization
+            .ok_or_else(|| ApiError::NotFound(format!("User not found: {user_id}")))?;
         if action_admin_only && user.role != shared::models::UserRole::Admin {
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' requires admin privileges",
                 request.action
             )));
         }
-        Some(user.email)
+        transient_actor_email = Some(user.email);
+
+        // Adapt the transient payload to the connector SDK's credential model.
+        let tc = tc.clone();
+        creds = shared::models::ServiceCredential {
+            id: "transient".to_string(),
+            source_id: "transient".to_string(),
+            user_id: Some(user_id.clone()),
+            provider: tc.provider,
+            auth_type: tc.auth_type,
+            principal_email: tc.principal_email,
+            credentials: tc.credentials,
+            config: tc.config,
+            expires_at: None,
+            last_validated_at: None,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+        };
+        source = None;
+
+        info!(
+            "Executing transient action '{}' for source_type {:?} (user {:?})",
+            request.action, source_type, request.user_id
+        );
+
+        (connector_url, action_admin_only)
     } else {
-        None
+        // ======== PERSISTED MODE (unchanged) ========
+        if request.source_type.is_some() {
+            return Err(ApiError::BadRequest(
+                "source_type is only valid with transient_credentials".to_string(),
+            ));
+        }
+        let source_id = request
+            .source_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| ApiError::BadRequest("source_id is required".to_string()))?
+            .to_string();
+
+        let source_repo = SourceRepository::new(state.db_pool.pool());
+        let db_source = source_repo
+            .find_by_id(source_id.clone())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Source not found: {source_id}")))?;
+
+        source_type = db_source.source_type;
+
+        let manifest = manifests
+            .iter()
+            .find(|m| m.source_types.contains(&source_type))
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Connector not registered for type: {:?}",
+                    source_type
+                ))
+            })?;
+        let connector_url = manifest.connector_url.clone();
+
+        let action_def = manifest
+            .actions
+            .iter()
+            .find(|a| a.name == request.action)
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "Unknown action '{}' for source type {:?}",
+                    request.action, source_type
+                ))
+            })?;
+        if !action_def.source_types.contains(&source_type) {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' does not support source type {:?}",
+                request.action, source_type
+            )));
+        }
+        let action_admin_only = action_def.admin_only;
+        let action_mode = action_def.mode;
+
+        // Generic read_only enforcement — the source config is the authority.
+        let source_read_only = db_source
+            .config
+            .get("read_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if (manifest.read_only || source_read_only) && action_mode == ActionMode::Write {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' is not allowed: source is read-only",
+                request.action
+            )));
+        }
+
+        let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        creds = match resolve_credentials(
+            &creds_repo,
+            &source_id,
+            request.user_id.as_deref(),
+            action_admin_only,
+        )
+        .await?
+        {
+            CredentialResolution::Resolved(c) => c,
+            CredentialResolution::NeedsUserAuth { provider } => {
+                return Ok(needs_user_auth_response(&source_id, source_type, provider)?);
+            }
+            CredentialResolution::NoCredentials => {
+                return Err(ApiError::NotFound(format!(
+                    "Credentials not found for source: {source_id}"
+                )));
+            }
+        };
+
+        // Resolve Omni document ID -> source external_id (persisted mode only).
+        let doc_id = params
+            .get("document_id")
+            .or_else(|| params.get("file_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if let Some(doc_id) = doc_id {
+            let doc_repo = DocumentRepository::new(state.db_pool.pool());
+            if let Ok(Some(doc)) = doc_repo.find_by_id(&doc_id).await {
+                info!(
+                    "Resolved document/file ID {} -> external_id {}",
+                    doc_id, doc.external_id
+                );
+                if let Some(obj) = params.as_object_mut() {
+                    obj.remove("document_id");
+                    obj.remove("file_id");
+                    obj.insert(
+                        "file_id".to_string(),
+                        serde_json::Value::String(doc.external_id),
+                    );
+                }
+            }
+        }
+
+        // Merge source config into params for legacy connector compatibility.
+        if params.is_null() {
+            params = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let (Some(src_obj), Some(params_obj)) =
+            (db_source.config.as_object(), params.as_object_mut())
+        {
+            for (k, v) in src_obj {
+                params_obj.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+
+        source = Some(db_source);
+
+        info!(
+            "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
+            request.action,
+            source_id,
+            request.user_id,
+            request
+                .params
+                .as_object()
+                .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+
+        (connector_url, action_admin_only)
     };
 
+    // ==== Common path for both modes ====
+    // Resolve the actor email; transient mode already loaded the actor above.
+    let actor_email = if !is_transient {
+        if let Some(uid) = request.user_id.as_ref() {
+            let user_repo = UserRepository::new(state.db_pool.pool());
+            let user = user_repo
+                .find_by_id(uid.clone())
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .ok_or_else(|| ApiError::NotFound(format!("User not found: {uid}")))?;
+            // Enforce admin_only action authorization (user already validated for transient mode above).
+            if action_admin_only && user.role != shared::models::UserRole::Admin {
+                return Err(ApiError::BadRequest(format!(
+                    "Action '{}' requires admin privileges",
+                    request.action
+                )));
+            }
+            Some(user.email)
+        } else {
+            None
+        }
+    } else {
+        transient_actor_email
+    };
+
+    if params.is_null() {
+        params = serde_json::Value::Object(serde_json::Map::new());
+    }
+
     info!(
-        "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
-        request.action,
-        connector_url,
-        creds.id,
-        creds.provider,
-        creds.auth_type,
-        creds.principal_email,
+        "Dispatching action '{}' to connector {} (provider={:?}, auth_type={:?}, principal={:?})",
+        request.action, connector_url, creds.provider, creds.auth_type, creds.principal_email,
     );
 
     let client = ConnectorClient::new();
@@ -518,7 +641,7 @@ pub async fn execute_action(
         action: request.action,
         params,
         credentials: Some(creds),
-        source: Some(source),
+        source,
         actor_email,
     };
 
@@ -531,7 +654,6 @@ pub async fn execute_action(
     let status = response.status();
     let mut builder = axum::response::Response::builder().status(status);
 
-    // Forward all headers except hop-by-hop connection headers.
     let hop_by_hop = [
         "connection",
         "keep-alive",

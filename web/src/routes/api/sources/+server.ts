@@ -7,7 +7,6 @@ import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
 import { getSourcesByType } from '$lib/server/db/sources'
-import { env } from '$env/dynamic/private'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -77,7 +76,8 @@ export const GET: RequestHandler = async ({ locals }) => {
 }
 
 export const POST: RequestHandler = async ({ request, locals }) => {
-    if (!locals.user) {
+    const user = locals.user
+    if (!user) {
         throw error(401, 'Unauthorized')
     }
 
@@ -92,7 +92,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         throw error(400, 'Name and sourceType are required')
     }
 
-    if (scope === 'org' && locals.user.role !== 'admin') {
+    if (scope === 'org' && user.role !== 'admin') {
         throw error(403, 'Only admins can create org-wide sources')
     }
     const sourcesOfType = await getSourcesByType(sourceType)
@@ -104,7 +104,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         const uniqueSourceTypes: string[] = [SourceType.GOOGLE_DRIVE, SourceType.GMAIL]
         if (uniqueSourceTypes.includes(sourceType)) {
             const existingForUser = sourcesOfType.find(
-                (s) => s.scope === 'user' && s.createdBy === locals.user.id,
+                (s) => s.scope === 'user' && s.createdBy === user.id,
             )
             if (existingForUser) {
                 throw error(409, `A ${sourceType} source already exists`)
@@ -119,8 +119,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             name,
             sourceType,
             scope,
-            config: validatedConfig || {},
-            createdBy: locals.user.id,
+            config: config || {},
+            createdBy: user.id,
             isActive: isActive ?? false,
             syncIntervalSeconds: DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType],
         })
