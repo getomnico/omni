@@ -3,6 +3,7 @@
     import { Input } from '$lib/components/ui/input'
     import { X, Loader2, Search, AlertCircle, RefreshCw } from '@lucide/svelte'
     import * as Alert from '$lib/components/ui/alert'
+    import * as Popover from '$lib/components/ui/popover'
     import { onDestroy } from 'svelte'
     import type { FolderPathFilter } from '$lib/types'
     import type { DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse } from '$lib/types/search'
@@ -36,6 +37,7 @@
     let hasLoaded = $state(false)
     let errorMessage = $state('')
     let inputRef = $state<HTMLInputElement | null>(null)
+    let dropdownAnchor = $state<HTMLElement | null>(null)
 
     // Guard: only start auto-discovery after mount, and only when credential
     // context actually changes (not on first mount where persisted selected
@@ -349,30 +351,39 @@
     {/if}
 
     <!-- Search / typeahead -->
-    <div class="relative" class:opacity-50={disabled}>
-        <Search class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-        <Input
-            bind:ref={inputRef}
-            bind:value={searchQuery}
-            oninput={handleInput}
-            onfocus={handleFocus}
-            onblur={handleBlur}
-            placeholder="Search folders..."
-            class="px-10 py-1"
-            {disabled} />
-        {#if isLoading}
-            <Loader2 class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
-        {/if}
+    <Popover.Root bind:open={showDropdown}>
+        <div bind:this={dropdownAnchor} class="relative" class:opacity-50={disabled}>
+            <Search
+                class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+            <Input
+                bind:ref={inputRef}
+                bind:value={searchQuery}
+                oninput={handleInput}
+                onfocus={handleFocus}
+                onblur={handleBlur}
+                placeholder="Search folders..."
+                class="px-10 py-1"
+                {disabled} />
+            {#if isLoading}
+                <Loader2 class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
+            {/if}
+        </div>
 
-        <!-- Dropdown -->
         {#if showDropdown && filteredItems.length > 0}
-            <div
-                class="absolute z-50 mt-1 max-h-48 w-full overflow-y-auto rounded-md border bg-white shadow-lg dark:bg-slate-950">
+            <Popover.Content
+                customAnchor={dropdownAnchor}
+                align="start"
+                sideOffset={4}
+                trapFocus={false}
+                class="max-h-48 w-[var(--bits-popover-anchor-width)] overflow-y-auto p-0"
+                onOpenAutoFocus={(event) => event.preventDefault()}
+                onCloseAutoFocus={(event) => event.preventDefault()}>
                 {#each filteredItems as item (item.id)}
                     <button
                         type="button"
+                        onmousedown={(event) => event.preventDefault()}
                         onclick={() => selectItem(item)}
-                        class="hover:bg-muted flex w-full items-start gap-2 px-3 py-2 text-left text-sm">
+                        class="hover:bg-muted flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-left text-sm">
                         <div class="min-w-0 flex-1">
                             <div class="truncate font-medium">{item.name}</div>
                             <div class="text-muted-foreground truncate text-xs">{item.path}</div>
@@ -383,14 +394,9 @@
                         </span>
                     </button>
                 {/each}
-            </div>
-        {:else if showDropdown && searchQuery.trim().length > 0 && !isLoading}
-            <div
-                class="text-muted-foreground absolute z-50 mt-1 w-full rounded-md border bg-white px-3 py-2 text-sm shadow-lg dark:bg-slate-950">
-                No matching folders
-            </div>
+            </Popover.Content>
         {/if}
-    </div>
+    </Popover.Root>
 
     <!-- Selected items as chips -->
     {#if selected.length > 0}
