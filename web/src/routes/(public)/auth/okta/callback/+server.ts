@@ -3,8 +3,8 @@ import { loadOktaOAuthService } from '$lib/server/oauth/okta'
 import { handleSsoCallback } from '$lib/server/oauth/sso-callback'
 import type { RequestHandler } from './$types'
 
-export const GET: RequestHandler = async ({ url, cookies }) => {
-    await handleSsoCallback(url, cookies, {
+export const GET: RequestHandler = async ({ url, cookies, locals }) => {
+    return handleSsoCallback(url, cookies, {
         provider: 'okta',
         loadConfig: getOktaAuthConfig,
         loadService: loadOktaOAuthService,
@@ -18,6 +18,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
                 callbackUrl,
             ),
         callbackPath: '/auth/okta/callback',
+        logger: locals.logger,
     })
 }
 

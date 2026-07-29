@@ -107,11 +107,10 @@ const handleLogging: Handle = async ({ event, resolve }) => {
 
     logger.info('Request started', {
         method: event.request.method,
-        url: event.url.pathname + event.url.search,
+        url: event.url.pathname,
         userAgent: event.request.headers.get('user-agent'),
         ip: event.getClientAddress(),
         userId: event.locals.user?.id,
-        userEmail: event.locals.user?.email,
     })
 
     const response = await resolve(event)
@@ -120,7 +119,7 @@ const handleLogging: Handle = async ({ event, resolve }) => {
 
     logger.info('Request completed', {
         method: event.request.method,
-        url: event.url.pathname + event.url.search,
+        url: event.url.pathname,
         status: response.status,
         duration,
         userId: event.locals.user?.id,
@@ -135,7 +134,7 @@ export const handleError: HandleServerError = ({ error, event }) => {
     const logger = event.locals.logger || new Logger('error')
 
     logger.error('Unhandled server error', error as Error, {
-        url: event.url.pathname + event.url.search,
+        url: event.url.pathname,
         method: event.request.method,
         userId: event.locals.user?.id,
         requestId: event.locals.requestId,

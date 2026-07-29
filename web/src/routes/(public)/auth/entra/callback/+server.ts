@@ -3,8 +3,8 @@ import { loadEntraOAuthService } from '$lib/server/oauth/entra'
 import { handleSsoCallback } from '$lib/server/oauth/sso-callback'
 import type { RequestHandler } from './$types'
 
-export const GET: RequestHandler = async ({ url, cookies }) => {
-    await handleSsoCallback(url, cookies, {
+export const GET: RequestHandler = async ({ url, cookies, locals }) => {
+    return handleSsoCallback(url, cookies, {
         provider: 'entra',
         loadConfig: getEntraAuthConfig,
         loadService: loadEntraOAuthService,
@@ -18,6 +18,7 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
                 callbackUrl,
             ),
         callbackPath: '/auth/entra/callback',
+        logger: locals.logger,
     })
 }
 

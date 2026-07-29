@@ -2,6 +2,7 @@ import pino, { type Logger as PinoLogger } from 'pino'
 import { env } from '$env/dynamic/private'
 import { dev } from '$app/environment'
 import { ulid } from 'ulid'
+import { serializeError } from './error-serializer'
 
 const logLevel = env.LOG_LEVEL || (dev ? 'debug' : 'info')
 const logPretty = env.LOG_PRETTY === 'true' || dev
@@ -30,21 +31,13 @@ const pinoConfig: pino.LoggerOptions = {
         },
     },
     serializers: {
-        error: (err: Error) => ({
-            type: err.name,
-            message: err.message,
-            stack: err.stack,
-        }),
+        error: serializeError,
         request: (req: any) => ({
             method: req.method,
-            url: req.url,
-            headers: req.headers,
-            query: req.query,
-            params: req.params,
+            url: typeof req.url === 'string' ? req.url.split('?')[0] : undefined,
         }),
         response: (res: any) => ({
             statusCode: res.statusCode,
-            headers: res.headers,
         }),
     },
     ...(transport && { transport }),

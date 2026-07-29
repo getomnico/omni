@@ -84,7 +84,7 @@ export class AccountLinkingService {
 
         if (!isDomainApproved) {
             throw new Error(
-                `Registration is not allowed for domain: ${profile.email.split('@')[1]}. ` +
+                'Registration is not allowed for this email domain. ' +
                     'Please contact your administrator to approve your domain.',
             )
         }

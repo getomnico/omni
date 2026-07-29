@@ -4,7 +4,7 @@ import { app } from '$lib/server/config'
 import { OAuthStateManager } from '$lib/server/oauth/state'
 import { AccountLinkingService } from '$lib/server/oauth/accountLinking'
 import { createSession, generateSessionToken, setSessionTokenCookie } from '$lib/server/auth'
-import { logger } from '$lib/server/logger'
+import { logger, type Logger } from '$lib/server/logger'
 
 export interface SsoCallbackOptions {
     provider: string
@@ -12,6 +12,7 @@ export interface SsoCallbackOptions {
     loadService: () => Promise<any | null>
     createService: (ServiceClass: any, config: any, callbackUrl: string) => any
     callbackPath: string
+    logger?: Logger
 }
 
 function getErrorRedirect(error: unknown): string {
@@ -34,19 +35,22 @@ export async function handleSsoCallback(
     options: SsoCallbackOptions,
 ): Promise<never> {
     const { provider, loadConfig, loadService, createService, callbackPath } = options
+    const callbackLogger = options.logger ?? logger
 
     const code = url.searchParams.get('code')
     const state = url.searchParams.get('state')
     const error = url.searchParams.get('error')
 
     if (error) {
-        const errorDescription = url.searchParams.get('error_description') || 'Unknown OAuth error'
-        logger.error(`${provider} OAuth callback error:`, errorDescription)
+        callbackLogger.error(`${provider} OAuth callback rejected`, undefined, {
+            provider,
+            oauthError: error.slice(0, 100),
+        })
         redirect(302, '/login?error=oauth_error')
     }
 
     if (!code || !state) {
-        logger.error('Missing required OAuth parameters')
+        callbackLogger.error('Missing required OAuth parameters', undefined, { provider })
         redirect(302, '/login?error=invalid_oauth_response')
     }
 
@@ -107,12 +111,15 @@ export async function handleSsoCallback(
             redirectUrl.searchParams.set('linked', provider)
         }
 
-        logger.info(
-            `${provider} OAuth authentication successful for user: ${user.email} (${user.id})`,
-        )
+        callbackLogger.info(`${provider} OAuth authentication successful`, {
+            provider,
+            userId: user.id,
+            isNewUser,
+            isLinkedAccount,
+        })
         successUrl = redirectUrl.toString()
     } catch (error) {
-        logger.error(`${provider} OAuth callback error:`, error)
+        callbackLogger.error(`${provider} OAuth callback error`, error, { provider })
         redirect(302, getErrorRedirect(error))
     }
 
