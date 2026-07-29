@@ -370,12 +370,17 @@ pub async fn execute_action(
 ) -> Result<axum::response::Response, ApiError> {
     info!("Executing action");
 
+    let source_id = request
+        .source_id
+        .as_deref()
+        .ok_or_else(|| ApiError::BadRequest("source_id is required".to_string()))?;
+
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
-        .find_by_id(request.source_id.clone())
+        .find_by_id(source_id.to_string())
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
     // Look up the connector manifest to get connector_url and action metadata
     let manifests = get_registered_manifests(&state.redis_client).await;
@@ -423,7 +428,7 @@ pub async fn execute_action(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let creds = match resolve_credentials(
         &creds_repo,
-        &request.source_id,
+        source_id,
         request.user_id.as_deref(),
         action_admin_only,
     )
@@ -432,7 +437,7 @@ pub async fn execute_action(
         CredentialResolution::Resolved(c) => c,
         CredentialResolution::NeedsUserAuth { provider } => {
             return Ok(needs_user_auth_response(
-                &request.source_id,
+                source_id,
                 source.source_type,
                 provider,
             )?);
@@ -440,7 +445,7 @@ pub async fn execute_action(
         CredentialResolution::NoCredentials => {
             return Err(ApiError::NotFound(format!(
                 "Credentials not found for source: {}",
-                request.source_id
+                source_id
             )));
         }
     };
