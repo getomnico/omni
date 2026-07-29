@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use similar::{ChangeTag, TextDiff};
+use similar::TextDiff;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -103,30 +103,25 @@ fn analyze_one(
 }
 
 fn compute_file_diff(local: &Path, incoming: &Path) -> Option<String> {
-    let local_text = fs::read_to_string(local).ok()?;
     let incoming_text = fs::read_to_string(incoming).ok()?;
+    let local_text = fs::read_to_string(local).ok()?;
 
     if local_text == incoming_text {
         return None;
     }
 
     let diff = TextDiff::from_lines(&incoming_text, &local_text);
-    let mut result = String::new();
+    let fname = incoming
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file");
 
-    for change in diff.iter_all_changes() {
-        let marker = match change.tag() {
-            ChangeTag::Equal => ' ',
-            ChangeTag::Insert => '+',
-            ChangeTag::Delete => '-',
-        };
-        result.push(marker);
-        result.push_str(change.value());
-        if !change.value().ends_with("\n") {
-            result.push('\n');
-        }
-    }
-
-    Some(result)
+    Some(format!(
+        "{}",
+        diff.unified_diff()
+            .context_radius(3)
+            .header(&format!("a/{fname}"), &format!("b/{fname}"))
+    ))
 }
 
 pub fn create_backup(root: &Path, extra_paths: &[&str]) -> Result<PathBuf> {
@@ -233,6 +228,77 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn diff_is_collapsible_hunk_based() {
+        // Simulates a file with scattered changes — long unchanged regions should collapse
+        let tmp = tempfile::tempdir().unwrap();
+        let release = tmp.path().join("release");
+        let local = tmp.path().join("local");
+        fs::create_dir_all(release.join("docker")).unwrap();
+        fs::create_dir_all(local.join("docker")).unwrap();
+
+        let old = r#"services:
+  postgres:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+
+  searcher:
+    image: omni/searcher:latest
+    environment:
+      - FOO=bar
+
+  redis:
+    image: redis:7
+"#;
+        let new = r#"services:
+  postgres:
+    image: postgres:17
+    ports:
+      - "5432:5432"
+
+  search-service:
+    image: omni/search:latest
+    environment:
+      - FOO=bar
+      - BAZ=qux
+
+  redis:
+    image: redis:7-alpine
+"#;
+
+        fs::write(release.join("docker/docker-compose.yml"), old).unwrap();
+        fs::write(local.join("docker/docker-compose.yml"), new).unwrap();
+
+        let changes = analyze(&local, &release).unwrap();
+        let change = changes
+            .iter()
+            .find(|c| c.path == "docker/docker-compose.yml")
+            .unwrap();
+
+        assert!(change.changed);
+        let diff = change.diff.as_deref().unwrap();
+
+        // Should have @@ hunk headers (collapsible style), not every line
+        assert!(diff.contains("@@"), "diff should contain hunk headers");
+        // Should NOT contain every single line from the file
+        let context_line_count = diff.lines().filter(|l| l.starts_with(' ')).count();
+        assert!(
+            context_line_count <= 10,
+            "context lines should be limited, got {context_line_count}"
+        );
+        // Should show the changed lines
+        assert!(diff.contains("+    image: postgres:17"));
+        assert!(diff.contains("-    image: postgres:16"));
+        assert!(diff.contains("+  search-service:"));
+        assert!(diff.contains("-  searcher:"));
+        assert!(diff.contains("+      - BAZ=qux"));
+        assert!(diff.contains("+    image: redis:7-alpine"));
+        assert!(diff.contains("-    image: redis:7"));
+
+        eprintln!("\n=== Validated collapsible diff output ===\n{diff}\n");
+    }
 
     #[test]
     fn backs_up_managed_files_and_env() {
