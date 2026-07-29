@@ -92,7 +92,7 @@ pub struct TriggerSyncResponse {
 }
 
 /// Transient credentials accepted during setup/discovery before a source or
-/// credential row exists in the database. Used by the setup UI to preview
+/// credential row exists in the database. Used by the setup UI to discover
 /// connector capabilities (e.g. list shared drives) with an inline credential
 /// that has not yet been persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,7 +122,7 @@ pub struct ExecuteActionRequest {
     /// Source type hint, required when `transient_credentials` are provided.
     #[serde(default)]
     pub source_type: Option<SourceType>,
-    /// Inline credentials for setup/preview actions. When present, the request
+    /// Inline credentials for setup/discovery actions. When present, the request
     /// is handled in **transient mode**: `source_id` and DB credentials are
     /// not used, and `source_type` must identify the connector.
     #[serde(default)]

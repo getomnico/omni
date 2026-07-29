@@ -5,18 +5,15 @@ import { logger } from '$lib/server/logger'
 import { SourceType } from '$lib/types'
 
 /**
- * POST /api/preview-action
+ * Invokes an action directly on a connector before a source exists.
  *
- * Admin-only endpoint that forwards a transient credential (not yet persisted) to
- * the connector-manager's normal /action endpoint in **transient mode**.
- * The credential is never stored or returned.
+ * The transient credential is forwarded to connector-manager's normal /action
+ * endpoint and is never stored or returned.
  *
- * SECURITY: Strictly allowlisted — only action='discover_folders',
- * sourceType='google_drive', and JWT credentials are accepted.
- *
- * Request body size is limited to 64KB at the web boundary.
+ * SECURITY: Strictly allowlisted — currently only google_drive's
+ * discover_folders action with JWT credentials is accepted.
  */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = async ({ params: routeParams, request, locals }) => {
     // Admin-only
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -76,21 +73,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     // ======== STRICT ALLOWLIST ========
     // Reject unknown top-level fields.
-    const allowedFields = [
-        'sourceType',
-        'action',
-        'params',
-        'serviceAccountJson',
-        'principalEmail',
-        'domain',
-    ]
+    const allowedFields = ['action', 'params', 'serviceAccountJson', 'principalEmail', 'domain']
     for (const key of Object.keys(body)) {
         if (!allowedFields.includes(key)) {
             throw error(400, `Unknown field: '${key}'`)
         }
     }
 
-    const sourceType = body.sourceType as string | undefined
+    const sourceType = routeParams.sourceType
     const action = body.action as string | undefined
     const params = body.params as Record<string, unknown> | undefined
     const serviceAccountJson = body.serviceAccountJson as string | undefined
@@ -101,10 +91,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         throw error(400, 'Action is required')
     }
     if (action !== 'discover_folders') {
-        throw error(400, `Preview action '${action}' is not supported`)
+        throw error(400, `Connector action '${action}' is not supported`)
     }
-    if (!sourceType || sourceType !== SourceType.GOOGLE_DRIVE) {
-        throw error(400, 'Preview action only supports source_type: google_drive')
+    if (sourceType !== SourceType.GOOGLE_DRIVE) {
+        throw error(400, `Connector actions are not supported for source type '${sourceType}'`)
     }
 
     // Only allow empty params object for discover_folders.
@@ -119,7 +109,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     // Transient credentials must be provided for preview (not optional).
     if (!serviceAccountJson || !principalEmail || !domain) {
-        throw error(400, 'serviceAccountJson, principalEmail, and domain are required for preview')
+        throw error(
+            400,
+            'serviceAccountJson, principalEmail, and domain are required for connector actions',
+        )
     }
 
     // Validate types are strings.
@@ -149,7 +142,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                source_type: 'google_drive',
+                source_type: sourceType,
                 user_id: locals.user.id,
                 action: 'discover_folders',
                 params: params || {},
@@ -181,7 +174,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             } else {
                 errorMessage = (await response.text()) || errorMessage
             }
-            logger.error(`Preview action failed`, {
+            logger.error(`Connector action failed`, {
                 status: response.status,
                 error: errorMessage,
             })
@@ -194,7 +187,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         if (err && typeof err === 'object' && 'status' in err) {
             throw err
         }
-        logger.error('Error executing preview action:', err)
+        logger.error('Error executing connector action:', err)
         throw error(500, 'Internal server error')
     }
 }

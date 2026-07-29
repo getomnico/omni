@@ -23,7 +23,7 @@ vi.mock('$lib/server/logger', () => ({
 const { POST } = await import('./+server')
 
 function mockRequest(body: unknown, headers: Record<string, string> = {}): Request {
-    return new Request('http://localhost/api/preview-action', {
+    return new Request('http://localhost/api/connectors/google_drive/action', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
         body: JSON.stringify(body),
@@ -41,9 +41,11 @@ function mockLocals(): Record<string, unknown> {
 async function callPost(
     body: unknown,
     locals?: Record<string, unknown>,
+    sourceType = 'google_drive',
 ): Promise<{ status: number; body?: unknown }> {
     try {
         const response = await POST({
+            params: { sourceType },
             request: mockRequest(body),
             locals: locals ?? mockLocals(),
         } as unknown as Parameters<typeof POST>[0])
@@ -58,14 +60,13 @@ async function callPost(
     }
 }
 
-describe('POST /api/preview-action', () => {
+describe('POST /api/connectors/[sourceType]/action', () => {
     afterEach(() => {
         vi.unstubAllGlobals()
     })
 
     it('requires an admin', async () => {
         const request = {
-            sourceType: 'google_drive',
             action: 'discover_folders',
             serviceAccountJson: '{}',
             principalEmail: 'a@b.com',
@@ -74,6 +75,21 @@ describe('POST /api/preview-action', () => {
 
         expect((await callPost(request, { user: null })).status).toBe(401)
         expect((await callPost(request, { user: { id: 'u1', role: 'member' } })).status).toBe(403)
+    })
+
+    it('rejects connector source types without an allowlisted transient action', async () => {
+        const response = await callPost(
+            {
+                action: 'discover_folders',
+                serviceAccountJson: '{}',
+                principalEmail: 'a@b.com',
+                domain: 'b.com',
+            },
+            undefined,
+            'slack',
+        )
+
+        expect(response.status).toBe(400)
     })
 
     it('forwards validated setup credentials through the normal action endpoint', async () => {
@@ -90,7 +106,6 @@ describe('POST /api/preview-action', () => {
         vi.stubGlobal('fetch', connectorFetch)
 
         const response = await callPost({
-            sourceType: 'google_drive',
             action: 'discover_folders',
             serviceAccountJson: '{"client_email":"service@example.com"}',
             principalEmail: 'admin@example.com',

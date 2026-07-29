@@ -147,12 +147,11 @@
             let response: Response
 
             if (serviceAccountJson && principalEmail && domain) {
-                // Use preview API with transient credentials
-                response = await fetch('/api/preview-action', {
+                // Invoke the connector directly with transient credentials.
+                response = await fetch('/api/connectors/google_drive/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        sourceType: 'google_drive',
                         action: 'discover_folders',
                         params: {},
                         serviceAccountJson,
