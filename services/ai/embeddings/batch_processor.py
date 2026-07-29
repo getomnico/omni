@@ -212,7 +212,8 @@ class EmbeddingBatchProcessor:
                     except Exception as exc:
                         had_failure = True
                         logger.error(
-                            "Failed to process document"
+                            "Failed to process document %s: %s", item.document_id, exc,
+                            exc_info=True,
                         )
                         await self.queue_repo.mark_failed([item.id], str(exc))
                         self._docs_failed += 1
