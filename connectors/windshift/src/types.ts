@@ -1,9 +1,9 @@
-export type WindshiftSyncState = {
-  last_sync_at: string;
-};
-
 export type WindshiftSourceConfig = {
   workspace_keys?: string[];
+};
+
+export type WindshiftSyncState = {
+  workspace_cursors: Record<string, string>;
 };
 
 // Credentials are written by Omni's generic OAuth dispatcher
@@ -80,6 +80,19 @@ export type WindshiftPaginatedResponse<T> = {
     total_pages: number;
     has_more: boolean;
   };
+};
+
+export type WindshiftItemChange = {
+  item_id: number;
+  change_type: "upsert" | "delete";
+};
+
+export type WindshiftItemChangesResponse = {
+  changes: WindshiftItemChange[];
+  next_cursor: string;
+  watermark: string;
+  has_more: boolean;
+  reset_required: boolean;
 };
 
 export type WindshiftWorkspace = {

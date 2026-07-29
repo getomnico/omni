@@ -11,12 +11,12 @@ import { WindshiftApiClient } from "./client.js";
 import { generateItemContent, mapItemToDocument } from "./mappers.js";
 import type {
   WindshiftCredentials,
+  WindshiftItem,
   WindshiftSourceConfig,
   WindshiftSyncState,
 } from "./types.js";
 
 const logger = getLogger("windshift");
-const CHECKPOINT_INTERVAL = 100;
 
 const READ_SCOPES = [
   "mcp:access",
@@ -149,7 +149,7 @@ export class WindshiftConnector extends Connector<
     };
   }
 
-  // Windshift 0.8.3 exposes a public-client DCR endpoint. Omni registers
+  // Windshift exposes a public-client DCR endpoint. Omni registers
   // itself automatically, uses S256 PKCE, and binds every issued token to
   // this exact MCP resource. No administrator-managed client secret is needed.
   override get oauthConfig() {
@@ -214,15 +214,7 @@ export class WindshiftConnector extends Connector<
     // SDK and do not block document sync.
     await this.bootstrapMcp(credentials);
 
-    const client = new WindshiftApiClient(
-      transportBaseUrl,
-      accessToken,
-    );
-
-    const isIncremental = ctx.syncMode === SyncMode.INCREMENTAL;
-    const lastSyncAt = isIncremental ? state?.last_sync_at : undefined;
-    const cutoff = lastSyncAt ? new Date(lastSyncAt).getTime() : null;
-    let docsSinceCheckpoint = 0;
+    const client = new WindshiftApiClient(transportBaseUrl, accessToken);
 
     let allWorkspaces;
     try {
@@ -243,6 +235,12 @@ export class WindshiftConnector extends Connector<
             workspaceFilter.includes(w.key),
           )
         : allWorkspaces;
+      const incremental = ctx.syncMode === SyncMode.INCREMENTAL;
+      const nextState: WindshiftSyncState = {
+        workspace_cursors: incremental
+          ? { ...(state?.workspace_cursors ?? {}) }
+          : {},
+      };
 
       for (const workspace of workspaces) {
         if (ctx.isCancelled()) {
@@ -253,60 +251,37 @@ export class WindshiftConnector extends Connector<
           `Syncing items for workspace: ${workspace.name} (${workspace.key})`,
         );
 
-        let stoppedEarly = false;
-        for await (const item of client.fetchItems(workspace.id)) {
-          if (ctx.isCancelled()) {
-            await ctx.fail("Cancelled by user");
-            return;
-          }
-
-          // Server has no updated_since filter — sort=updated_at&order=desc lets us stop when
-          // we cross the cutoff. See plan: a Windshift-side updated_since param is the long-term fix.
-          if (cutoff !== null && new Date(item.updated_at).getTime() < cutoff) {
-            stoppedEarly = true;
-            break;
-          }
-
-          await ctx.incrementScanned();
-          try {
-            const comments = await client.fetchItemComments(item.id);
-            const content = generateItemContent(item, comments);
-            const contentId = await ctx.contentStorage.save(
-              content,
-              "text/markdown",
-            );
-            const doc = mapItemToDocument(
-              item,
-              comments,
-              contentId,
-              publicBaseUrl,
-              sourceOwnerEmail,
-            );
-            if (isIncremental) {
-              await ctx.emitUpdated(doc);
-            } else {
-              await ctx.emit(doc);
-            }
-            docsSinceCheckpoint++;
-            if (docsSinceCheckpoint >= CHECKPOINT_INTERVAL) {
-              await ctx.saveState({ last_sync_at: new Date().toISOString() });
-              docsSinceCheckpoint = 0;
-            }
-          } catch (e) {
-            const eid = `windshift:item:${item.id}`;
-            logger.warn(`Error processing ${eid}: ${e}`);
-            ctx.emitError(eid, String(e));
-          }
-        }
-
-        if (stoppedEarly) {
-          logger.info(
-            `Reached incremental cutoff for workspace ${workspace.key}, moving on`,
+        const workspaceKey = String(workspace.id);
+        const cursor = nextState.workspace_cursors[workspaceKey];
+        if (incremental && cursor !== undefined) {
+          await this.syncWorkspaceChanges(
+            client,
+            workspace.id,
+            cursor,
+            nextState,
+            publicBaseUrl,
+            sourceOwnerEmail,
+            ctx,
           );
+          continue;
         }
+
+        // Capture the watermark before crawling. Changes committed while the
+        // crawl is running remain above it and are replayed incrementally.
+        const primed = await client.fetchItemChanges(workspace.id);
+        await this.syncWorkspaceFull(
+          client,
+          workspace.id,
+          incremental,
+          publicBaseUrl,
+          sourceOwnerEmail,
+          ctx,
+        );
+        nextState.workspace_cursors[workspaceKey] = primed.watermark;
+        if (incremental) await ctx.saveState(nextState);
       }
 
-      await ctx.complete({ last_sync_at: new Date().toISOString() });
+      await ctx.complete(nextState);
       logger.info(
         `Sync completed: ${ctx.documentsScanned} scanned, ${ctx.documentsEmitted} emitted`,
       );
@@ -314,5 +289,122 @@ export class WindshiftConnector extends Connector<
       logger.error({ err: e }, "Sync failed with unexpected error");
       await ctx.fail(String(e));
     }
+  }
+
+  private async syncWorkspaceFull(
+    client: WindshiftApiClient,
+    workspaceId: number,
+    emitAsUpdate: boolean,
+    publicBaseUrl: string,
+    sourceOwnerEmail: string,
+    ctx: SyncContext,
+  ): Promise<void> {
+    for await (const item of client.fetchItems(workspaceId)) {
+      if (ctx.isCancelled()) throw new Error("Cancelled by user");
+      try {
+        await this.emitItem(
+          client,
+          item,
+          emitAsUpdate,
+          publicBaseUrl,
+          sourceOwnerEmail,
+          ctx,
+        );
+      } catch (e) {
+        const externalId = `windshift:item:${item.id}`;
+        logger.warn(`Error processing ${externalId}: ${e}`);
+        ctx.emitError(externalId, String(e));
+        throw e;
+      }
+    }
+  }
+
+  private async syncWorkspaceChanges(
+    client: WindshiftApiClient,
+    workspaceId: number,
+    initialCursor: string,
+    state: WindshiftSyncState,
+    publicBaseUrl: string,
+    sourceOwnerEmail: string,
+    ctx: SyncContext,
+  ): Promise<void> {
+    let cursor = initialCursor;
+    let through: string | undefined;
+    while (true) {
+      if (ctx.isCancelled()) throw new Error("Cancelled by user");
+      const page = await client.fetchItemChanges(workspaceId, cursor, through);
+      if (page.reset_required) {
+        throw new Error(
+          `Windshift change cursor for workspace ${workspaceId} is no longer valid; run a full sync`,
+        );
+      }
+      through ??= page.watermark;
+
+      const latestChanges = new Map<number, "upsert" | "delete">();
+      for (const change of page.changes) {
+        latestChanges.set(change.item_id, change.change_type);
+      }
+      const upsertIds = [...latestChanges]
+        .filter(([, changeType]) => changeType === "upsert")
+        .map(([itemId]) => itemId);
+      const items = await client.fetchItemsByIds(upsertIds);
+      const itemsById = new Map(items.map((item) => [item.id, item]));
+
+      for (const [itemId, changeType] of latestChanges) {
+        if (ctx.isCancelled()) throw new Error("Cancelled by user");
+        if (changeType === "delete") {
+          await ctx.emitDeleted(`windshift:item:${itemId}`);
+          continue;
+        }
+        const item = itemsById.get(itemId);
+        if (!item) {
+          // The item was deleted or became invisible after the change event.
+          await ctx.emitDeleted(`windshift:item:${itemId}`);
+          continue;
+        }
+        try {
+          await this.emitItem(
+            client,
+            item,
+            true,
+            publicBaseUrl,
+            sourceOwnerEmail,
+            ctx,
+          );
+        } catch (e) {
+          const externalId = `windshift:item:${item.id}`;
+          ctx.emitError(externalId, String(e));
+          throw new Error(`Failed to process ${externalId}: ${e}`);
+        }
+      }
+
+      cursor = page.next_cursor;
+      state.workspace_cursors[String(workspaceId)] = cursor;
+      await ctx.saveState(state);
+      if (!page.has_more) return;
+    }
+  }
+
+  private async emitItem(
+    client: WindshiftApiClient,
+    item: WindshiftItem,
+    update: boolean,
+    publicBaseUrl: string,
+    sourceOwnerEmail: string,
+    ctx: SyncContext,
+  ): Promise<void> {
+    await ctx.incrementScanned();
+    const comments = await client.fetchItemComments(item.id);
+    const content = generateItemContent(item, comments);
+    const contentId = await ctx.contentStorage.save(content, "text/markdown");
+    const doc = mapItemToDocument(
+      item,
+      comments,
+      contentId,
+      publicBaseUrl,
+      sourceOwnerEmail,
+    );
+    if (update) await ctx.emitUpdated(doc);
+    else await ctx.emit(doc);
   }
 }

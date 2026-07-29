@@ -17,8 +17,8 @@ test("item pagination uses REST v1 and normalizes nested fields", async () => {
       init?.headers && (init.headers as Record<string, string>).Authorization,
       "Bearer token",
     );
-    assert.equal(url.searchParams.get("sort"), "updated_at");
-    assert.equal(url.searchParams.get("order"), "desc");
+    assert.equal(url.searchParams.get("sort"), "key");
+    assert.equal(url.searchParams.get("order"), "asc");
     assert.equal(url.searchParams.get("workspace_id"), "1");
     return new Response(
       JSON.stringify({
@@ -84,16 +84,28 @@ test("workspace pagination and comments use REST v1 response shapes", async () =
         },
       });
     }
-    return Response.json([
-      {
-        id: 9,
-        item_id: 7,
-        content: "OAuth now works",
-        author: { id: 2, full_name: "Ada Lovelace" },
-        created_at: "2026-07-21T12:00:00Z",
-        updated_at: "2026-07-21T12:00:00Z",
+    assert.equal(url.searchParams.get("page"), "1");
+    assert.equal(url.searchParams.get("limit"), "50");
+    assert.equal(url.searchParams.get("order"), "desc");
+    return Response.json({
+      data: [
+        {
+          id: 9,
+          item_id: 7,
+          content: "OAuth now works",
+          author: { id: 2, full_name: "Ada Lovelace" },
+          created_at: "2026-07-21T12:00:00Z",
+          updated_at: "2026-07-21T12:00:00Z",
+        },
+      ],
+      pagination: {
+        page: 1,
+        limit: 50,
+        total: 1,
+        total_pages: 1,
+        has_more: false,
       },
-    ]);
+    });
   };
 
   try {
@@ -116,6 +128,63 @@ test("workspace pagination and comments use REST v1 response shapes", async () =
       "/rest/api/v1/workspaces",
       "/rest/api/v1/items/7/comments",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("item changes use string cursors and batch-fetch changed items", async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedPaths: string[] = [];
+  globalThis.fetch = async (input) => {
+    const url = new URL(String(input));
+    requestedPaths.push(`${url.pathname}?${url.searchParams}`);
+    if (url.pathname.endsWith("/items/changes")) {
+      assert.equal(url.searchParams.get("workspace_id"), "1");
+      assert.equal(url.searchParams.get("since"), "10");
+      assert.equal(url.searchParams.get("through"), "13");
+      assert.equal(url.searchParams.get("limit"), "500");
+      return Response.json({
+        changes: [
+          { item_id: 7, change_type: "upsert" },
+          { item_id: 8, change_type: "delete" },
+        ],
+        next_cursor: "13",
+        watermark: "13",
+        has_more: false,
+        reset_required: false,
+      });
+    }
+    assert.equal(url.pathname.endsWith("/items/batch"), true);
+    assert.equal(url.searchParams.get("ids"), "7,9");
+    return Response.json([
+      {
+        id: 7,
+        workspace_id: 1,
+        workspace_key: "ENG",
+        workspace_item_number: 7,
+        title: "Changed item",
+        created_at: "2026-07-21T12:00:00Z",
+        updated_at: "2026-07-21T12:00:00Z",
+      },
+    ]);
+  };
+
+  try {
+    const client = new WindshiftApiClient("https://windshift.example", "token");
+    const changes = await client.fetchItemChanges(1, "10", "13");
+    assert.deepEqual(changes.changes, [
+      { item_id: 7, change_type: "upsert" },
+      { item_id: 8, change_type: "delete" },
+    ]);
+    assert.equal(changes.next_cursor, "13");
+
+    const items = await client.fetchItemsByIds([7, 9]);
+    assert.deepEqual(
+      items.map((item) => item.id),
+      [7],
+    );
+    assert.equal(requestedPaths.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -17,7 +17,7 @@ sync, and MCP requests use the internal route.
 
 No OAuth client ID or secret is configured manually. Omni dynamically registers
 as a public client, uses S256 PKCE, and requests tokens bound to
-`${WINDSHIFT_BASE_URL}/mcp`. Windshift 0.8.3 or newer is required.
+`${WINDSHIFT_BASE_URL}/mcp`. Windshift 0.8.4 or newer is required.
 
 Each user connects Windshift from **My Integrations**. The initial authorization
 grants read access for that user's sync and read-only MCP tools. Write and
@@ -38,8 +38,9 @@ per-credential database lock.
 | Assignee                   | `attributes.assignee` and `assignee_email` |
 | Created/updated timestamps | Document metadata                          |
 
-Full sync walks visible workspaces and items. Incremental sync stops once items
-are older than the last checkpoint. Optional `workspace_keys` restricts sync to
-specific Windshift workspaces. Windshift is a personal source in Omni: every
-user has an independent sync backed by their own OAuth credential, and indexed
-items are visible only to that Omni user.
+Full sync walks visible workspaces and items while capturing each workspace's
+change watermark. Incremental sync then reads Windshift's ordered item change
+log, including comment activity and deletions. Optional `workspace_keys`
+restricts sync to specific Windshift workspaces. Windshift is a personal source
+in Omni: every user has an independent sync backed by their own OAuth
+credential, and indexed items are visible only to that Omni user.

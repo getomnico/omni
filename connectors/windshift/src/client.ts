@@ -3,9 +3,11 @@ import type {
   WindshiftPaginatedResponse,
   WindshiftWorkspace,
   WindshiftComment,
+  WindshiftItemChangesResponse,
 } from "./types.js";
 
 const PAGE_SIZE = 100;
+const CHANGE_PAGE_SIZE = 500;
 const MAX_COMMENTS_PER_ITEM = 50;
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -136,8 +138,8 @@ export class WindshiftApiClient {
       const params = new URLSearchParams({
         page: String(page),
         limit: String(PAGE_SIZE),
-        sort: "updated_at",
-        order: "desc",
+        sort: "key",
+        order: "asc",
       });
       if (workspaceId !== undefined) {
         params.set("workspace_id", String(workspaceId));
@@ -160,11 +162,38 @@ export class WindshiftApiClient {
     }
   }
 
-  async fetchItemComments(itemId: number): Promise<WindshiftComment[]> {
-    const data = await this.request<WindshiftCommentResponse[]>(
-      `/items/${itemId}/comments`,
+  async fetchItemChanges(
+    workspaceId: number,
+    since?: string,
+    through?: string,
+  ): Promise<WindshiftItemChangesResponse> {
+    const params = new URLSearchParams({
+      workspace_id: String(workspaceId),
+      limit: String(CHANGE_PAGE_SIZE),
+    });
+    if (since !== undefined) params.set("since", since);
+    if (through !== undefined) params.set("through", through);
+    return this.request<WindshiftItemChangesResponse>(
+      `/items/changes?${params}`,
     );
-    return data.slice(0, MAX_COMMENTS_PER_ITEM).map(mapComment);
+  }
+
+  async fetchItemsByIds(itemIds: number[]): Promise<WindshiftItem[]> {
+    if (itemIds.length === 0) return [];
+    const params = new URLSearchParams({ ids: itemIds.join(",") });
+    const items = await this.request<WindshiftItemResponse[]>(
+      `/items/batch?${params}`,
+    );
+    return items.map(mapItem);
+  }
+
+  async fetchItemComments(itemId: number): Promise<WindshiftComment[]> {
+    const response = await this.request<
+      WindshiftPaginatedResponse<WindshiftCommentResponse>
+    >(
+      `/items/${itemId}/comments?page=1&limit=${MAX_COMMENTS_PER_ITEM}&order=desc`,
+    );
+    return response.data.map(mapComment);
   }
 
   async getItem(itemId: number): Promise<WindshiftItem> {
