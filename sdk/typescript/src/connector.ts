@@ -86,19 +86,24 @@ export abstract class Connector<
     return this._mcpAdapter as McpAdapter;
   }
 
+  private async discoverMcpCatalog(credentials: TCredentials): Promise<boolean> {
+    const adapter = await this.getMcpAdapter();
+    if (!adapter) {
+      return false;
+    }
+    const { env, headers } = this.prepareMcpAuth(credentials);
+    await adapter.discover(env, headers);
+    return adapter.hasCachedCatalog();
+  }
+
   /**
    * Discover MCP tools/resources/prompts and cache them. Called when
    * credentials first become available (e.g., during initial sync).
    */
   async bootstrapMcp(credentials: TCredentials): Promise<void> {
-    const adapter = await this.getMcpAdapter();
-    if (!adapter) {
-      return;
-    }
-    const { env, headers } = this.prepareMcpAuth(credentials);
     logger.info('Bootstrapping MCP: discovering tools');
     try {
-      await adapter.discover(env, headers);
+      await this.discoverMcpCatalog(credentials);
     } catch (err) {
       logger.warn({ err }, 'MCP bootstrap failed');
     }
@@ -111,12 +116,15 @@ export abstract class Connector<
   async oauthCredentialReady(
     request: OAuthCredentialReadyRequest
   ): Promise<boolean> {
-    const adapter = await this.getMcpAdapter();
-    if (!adapter) {
+    logger.info('Refreshing MCP catalog after OAuth credential update');
+    try {
+      return await this.discoverMcpCatalog(request.credentials as TCredentials);
+    } catch (err) {
+      const adapter = await this.getMcpAdapter();
+      adapter?.clearCachedCatalog();
+      logger.warn({ err }, 'OAuth credential-ready MCP refresh failed');
       return false;
     }
-    await this.bootstrapMcp(request.credentials as TCredentials);
-    return adapter.hasCachedCatalog();
   }
 
   prepareMcpAuth(credentials: TCredentials): {

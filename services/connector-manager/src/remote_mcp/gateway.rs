@@ -1036,6 +1036,7 @@ fn action_from_tool(tool: &JsonValue, write_tools_enabled: bool) -> Option<Actio
                 .unwrap_or_else(|| json!({"type":"object","properties":{}})),
         )?,
         mode,
+        required_scopes: None,
         source_types: Vec::new(),
         admin_only: false,
         hidden: false,

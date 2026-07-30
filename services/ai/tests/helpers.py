@@ -258,6 +258,23 @@ def text_response_events(text: str):
     yield RawMessageStopEvent(type="message_stop")
 
 
+def empty_text_response_events():
+    """Yield a complete provider envelope containing an empty text block."""
+    yield message_start_event()
+    yield RawContentBlockStartEvent(
+        type="content_block_start",
+        index=0,
+        content_block=TextBlock(type="text", text=""),
+    )
+    yield RawContentBlockStopEvent(type="content_block_stop", index=0)
+    yield RawMessageDeltaEvent(
+        type="message_delta",
+        delta=Delta(stop_reason="end_turn", stop_sequence=None),
+        usage=MessageDeltaUsage(output_tokens=0),
+    )
+    yield RawMessageStopEvent(type="message_stop")
+
+
 def create_mock_llm(
     tool_call_json: dict[str, Any],
     response_text: str = "Here are the results.",
@@ -437,6 +454,7 @@ class GatedRecordingLLM:
     Each response entry follows the same convention as ``create_mock_llm_multi``:
 
     * ``("empty", None)``
+    * ``("empty_text", None)``
     * ``("text", "response string")``
     * ``("tool_call", {"name": ..., "input": ..., "id": ...})``
 
@@ -517,6 +535,11 @@ class GatedRecordingLLM:
         if kind == "empty":
             yield message_start_event()
             yield RawMessageStopEvent(type="message_stop")
+        elif kind == "empty_text":
+            for event in empty_text_response_events():
+                yield event
+                if self._inter_event_delay:
+                    await asyncio.sleep(self._inter_event_delay)
         elif kind == "tool_call":
             for event in tool_call_events(
                 payload["input"],

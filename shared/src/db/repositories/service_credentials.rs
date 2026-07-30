@@ -1,3 +1,5 @@
+use std::time::Duration as StdDuration;
+
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -8,6 +10,7 @@ use crate::encryption::{EncryptedData, EncryptionService};
 use crate::models::{AuthType, ServiceCredential, Source, SourceScope};
 
 const OAUTH_REFRESH_SKEW: Duration = Duration::minutes(1);
+const OAUTH_REFRESH_REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 #[derive(Deserialize)]
 struct OAuthRefreshResponse {
@@ -81,7 +84,10 @@ async fn refresh_oauth_tokens(creds: &mut ServiceCredential) -> Result<()> {
         ));
     }
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(OAUTH_REFRESH_REQUEST_TIMEOUT)
+        .build()
+        .context("failed to build OAuth refresh client")?;
     let mut request = client.post(&token_uri).form(&form);
     if auth_method == "client_secret_basic" {
         request = request.basic_auth(

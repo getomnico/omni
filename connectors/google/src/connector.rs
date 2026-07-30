@@ -997,6 +997,7 @@ impl Connector for GoogleConnector {
                     "properties": {},
                     "required": []
                 }),
+                required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
                 hidden: true,
