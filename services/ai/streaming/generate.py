@@ -736,7 +736,8 @@ async def stream_generator(
 
                 event_index = 0
                 message_stop_received = False
-                pending_message_start_sse: str | None = None
+                pending_message_sses: list[str] = []
+                message_stream_started = False
                 cancelled = False
                 last_cancel_check_at = 0.0
                 async for event in stream:
@@ -849,18 +850,27 @@ async def stream_generator(
 
                     event_json = event.to_json(indent=None)
                     event_sse = f"event: message\ndata: {event_json}\n\n"
-                    if event.type == "message_start":
-                        # Hold this until the provider emits actual content. If
-                        # it immediately stops, the retry below stays invisible
-                        # and the persistence wrapper does not create an empty
-                        # assistant row.
-                        pending_message_start_sse = event_sse
-                    elif event.type == "message_stop" and not content_blocks:
-                        pass
+                    has_substantive_content = any(
+                        block["type"] == "tool_use"
+                        or (
+                            block["type"] == "text"
+                            and str(block.get("text", "")).strip()
+                        )
+                        for block in content_blocks
+                    )
+                    if not message_stream_started:
+                        # Buffer the entire provider envelope until it contains
+                        # a tool call or non-whitespace text. Providers commonly
+                        # emit an empty text block before stopping; exposing that
+                        # envelope would create a duplicate assistant stream when
+                        # the empty-response retry below runs.
+                        pending_message_sses.append(event_sse)
+                        if has_substantive_content:
+                            for pending_sse in pending_message_sses:
+                                yield pending_sse
+                            pending_message_sses.clear()
+                            message_stream_started = True
                     else:
-                        if pending_message_start_sse is not None:
-                            yield pending_message_start_sse
-                            pending_message_start_sse = None
                         logger.debug("Yielding event to client: %s", event_json)
                         yield event_sse
 
@@ -880,19 +890,26 @@ async def stream_generator(
                     b["type"] == "text" and str(b.get("text", "")).strip()
                     for b in content_blocks
                 )
-                if not tool_calls and not has_text and empty_response_retries < 1:
-                    empty_response_retries += 1
-                    logger.warning(
-                        "Provider returned an empty response in iteration %s; "
-                        "retrying once with a continuation prompt",
-                        model_iteration,
-                    )
-                    conversation_messages.append(
-                        MessageParam(
-                            role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT
+                if not tool_calls and not has_text:
+                    if empty_response_retries < 1:
+                        empty_response_retries += 1
+                        logger.warning(
+                            "Provider returned an empty response in iteration %s; "
+                            "retrying once with a continuation prompt",
+                            model_iteration,
                         )
-                    )
-                    continue
+                        conversation_messages.append(
+                            MessageParam(
+                                role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT
+                            )
+                        )
+                        continue
+
+                    # Preserve the provider's final empty response after the
+                    # single recovery attempt has already been exhausted.
+                    for pending_sse in pending_message_sses:
+                        yield pending_sse
+                    pending_message_sses.clear()
                 parse_errors = parse_tool_call_inputs(
                     cast(list[ToolUseBlockParam], tool_calls)
                 )

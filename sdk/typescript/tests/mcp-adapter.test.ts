@@ -246,6 +246,45 @@ describe('Connector MCP integration', () => {
     expect(manifest.prompts).toHaveLength(1);
   });
 
+  it('does not report a stale catalog as refreshed when OAuth discovery fails', async () => {
+    class StdioMcpConnector extends Connector {
+      readonly name = 'mcp-test-stdio';
+      readonly version = '0.1.0';
+      readonly sourceTypes = ['mcp_test'];
+      failAuthentication = false;
+
+      get mcpServer(): StdioMcpServer {
+        return STDIO_SERVER;
+      }
+
+      prepareMcpEnv(): Record<string, string> {
+        if (this.failAuthentication) {
+          throw new Error('invalid OAuth credential');
+        }
+        return { TEST_MODE: '1' };
+      }
+
+      async sync(): Promise<void> {}
+    }
+
+    const connector = new StdioMcpConnector();
+    await connector.bootstrapMcp({});
+    connector.failAuthentication = true;
+
+    const refreshed = await connector.oauthCredentialReady({
+      source_id: 'source-1',
+      user_id: 'user-1',
+      provider: 'example',
+      flow: 'user_write',
+      credentials: { access_token: 'invalid' },
+    });
+
+    expect(refreshed).toBe(false);
+    expect((await connector.getManifest('http://test:8000')).mcp_catalog_loaded).toBe(
+      false
+    );
+  });
+
   it('stdio: delegates action execution to MCP tool', async () => {
     class StdioMcpConnector extends Connector {
       readonly name = 'mcp-test-stdio';

@@ -2534,10 +2534,10 @@ class TestStandaloneEndpoints:
     async def test_empty_provider_response_retries_once(
         self, seeded_chat, redis_client, redis_keys
     ):
-        """Retry a provider turn containing only message_start/message_stop."""
+        """Retry an empty provider turn without exposing its text envelope."""
         chat_id, _user_id, model_id = seeded_chat
         llm = GatedRecordingLLM(
-            [("empty", None), ("text", "Recovered after an empty response.")],
+            [("empty_text", None), ("text", "Recovered after an empty response.")],
             model_id,
         )
 
@@ -2546,6 +2546,10 @@ class TestStandaloneEndpoints:
             events = await collect_sse_events(client, chat_id)
 
         assert any(et == "end_of_stream" for et, _, _ in events)
+        message_payloads = [
+            json.loads(data) for event_type, data, _ in events if event_type == "message"
+        ]
+        assert sum(payload["type"] == "message_start" for payload in message_payloads) == 1
         assert len(llm.calls) == 2
         retry_messages = llm.calls[1]["messages"]
         assert retry_messages[-1] == {

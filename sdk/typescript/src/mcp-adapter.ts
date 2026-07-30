@@ -63,6 +63,12 @@ export class McpAdapter {
     );
   }
 
+  clearCachedCatalog(): void {
+    this.cachedActions = null;
+    this.cachedResources = null;
+    this.cachedPrompts = null;
+  }
+
   private async withSession<T>(
     env: Record<string, string> | undefined,
     headers: Record<string, string> | undefined,
@@ -116,15 +122,18 @@ export class McpAdapter {
     env?: Record<string, string>,
     headers?: Record<string, string>
   ): Promise<void> {
-    await this.withSession(env, headers, async (client) => {
-      this.cachedActions = await this.fetchActions(client);
-      this.cachedResources = await this.fetchResources(client);
-      this.cachedPrompts = await this.fetchPrompts(client);
-    });
+    const catalog = await this.withSession(env, headers, async (client) => ({
+      actions: await this.fetchActions(client),
+      resources: await this.fetchResources(client),
+      prompts: await this.fetchPrompts(client),
+    }));
+    this.cachedActions = catalog.actions;
+    this.cachedResources = catalog.resources;
+    this.cachedPrompts = catalog.prompts;
     logger.info(
-      `MCP discovery complete: ${this.cachedActions?.length ?? 0} tools, ` +
-        `${this.cachedResources?.length ?? 0} resources, ` +
-        `${this.cachedPrompts?.length ?? 0} prompts`
+      `MCP discovery complete: ${catalog.actions.length} tools, ` +
+        `${catalog.resources.length} resources, ` +
+        `${catalog.prompts.length} prompts`
     );
   }
 
