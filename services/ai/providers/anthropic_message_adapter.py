@@ -33,6 +33,20 @@ type OmniToolResultContentBlockParam = (
 type AnthropicMessageContent = str | Iterable[OmniContentBlockParam]
 
 
+def _is_empty_text_block(block: ContentBlockParam) -> bool:
+    """Return True if *block* is a text content block with empty/whitespace-only text."""
+    return bool(
+        block.get("type") == "text" and not (block.get("text") or "").strip()
+    )
+
+
+def _drain_empty_text_blocks(blocks: list[ContentBlockParam]) -> bool:
+    """Remove empty text blocks in-place; return True if any were removed."""
+    before = len(blocks)
+    blocks[:] = [b for b in blocks if not _is_empty_text_block(b)]
+    return len(blocks) < before
+
+
 def extract_text_document(block: DocumentBlockParam) -> str | None:
     """Convert a text-backed document block into provider-neutral text."""
     if block.get("type") != "document":
@@ -70,7 +84,9 @@ def _build_content_for_api(
 ) -> str | list[ContentBlockParam]:
     if isinstance(content, str):
         return content
-    return [_build_block_for_api(block) for block in content]
+    blocks = [_build_block_for_api(block) for block in content]
+    _drain_empty_text_blocks(blocks)
+    return blocks
 
 
 def _build_block_for_api(block: OmniContentBlockParam) -> ContentBlockParam:
@@ -104,7 +120,9 @@ def _build_tool_result_content_for_api(
 ) -> str | list[ToolResultContentBlockParam]:
     if isinstance(content, str):
         return content
-    return [_build_tool_result_content_block_for_api(block) for block in content]
+    blocks = [_build_tool_result_content_block_for_api(block) for block in content]
+    _drain_empty_text_blocks(blocks)
+    return blocks
 
 
 def _build_tool_result_content_block_for_api(

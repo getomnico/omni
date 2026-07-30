@@ -338,7 +338,9 @@ class OpenAIProvider(LLMProvider):
                 block_type = block.get("type")
 
                 if block_type == "text":
-                    text_parts.append(block.get("text", ""))
+                    text = block.get("text", "")
+                    if text:
+                        text_parts.append(text)
                 elif block_type == "document" and role == "user":
                     document_text = extract_text_document(block)
                     if document_text is not None:
@@ -363,7 +365,9 @@ class OpenAIProvider(LLMProvider):
                         for rb in result_content:
                             if isinstance(rb, dict):
                                 if rb.get("type") == "text":
-                                    parts.append(rb.get("text", ""))
+                                    t = rb.get("text", "")
+                                    if t:
+                                        parts.append(t)
                                 elif rb.get("type") == "search_result":
                                     title = rb.get("title", "")
                                     source = rb.get("source", "")

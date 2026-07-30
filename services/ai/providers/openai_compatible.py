@@ -208,7 +208,8 @@ def _convert_messages_to_openai(
                             continue
                         if rb.get("type") == "text":
                             rb = cast(TextBlockParam, rb)
-                            parts.append(rb["text"])
+                            if rb["text"]:
+                                parts.append(rb["text"])
                         elif rb.get("type") == "search_result":
                             title = rb.get("title", "")
                             source = rb.get("source", "")
