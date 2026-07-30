@@ -33,16 +33,14 @@ type OmniToolResultContentBlockParam = (
 type AnthropicMessageContent = str | Iterable[OmniContentBlockParam]
 
 
-def _is_empty_text_block(block: object) -> bool:
+def _is_empty_text_block(block: ContentBlockParam) -> bool:
     """Return True if *block* is a text content block with empty/whitespace-only text."""
     return bool(
-        isinstance(block, dict)
-        and block.get("type") == "text"
-        and not (block.get("text") or "").strip()
+        block.get("type") == "text" and not (block.get("text") or "").strip()
     )
 
 
-def _drain_empty_text_blocks(blocks: list) -> bool:
+def _drain_empty_text_blocks(blocks: list[ContentBlockParam]) -> bool:
     """Remove empty text blocks in-place; return True if any were removed."""
     before = len(blocks)
     blocks[:] = [b for b in blocks if not _is_empty_text_block(b)]
