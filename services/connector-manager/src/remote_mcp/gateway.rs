@@ -1,22 +1,19 @@
+use crate::credential_service::CredentialService;
 use crate::models::ConnectorManifest;
-use crate::remote_mcp::oauth::{parse_oauth_config, usable_oauth_credential, OAuthError};
+use crate::remote_mcp::oauth::parse_oauth_config;
 use futures::StreamExt;
 use redis::AsyncCommands;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use shared::db::repositories::ServiceCredentialsRepo;
 use shared::models::{
     ActionDefinition, ActionMode, AuthType, IntegrationType, McpPromptArgument,
     McpPromptDefinition, McpResourceDefinition, ServiceCredential, ServiceProvider, Source,
 };
 use shared::{traits::Repository, DatabasePool};
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tracing::warn;
 
 pub const REMOTE_MCP_CONNECTOR_ID_PREFIX: &str = "remote_mcp:";
@@ -28,9 +25,6 @@ const MAX_MCP_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MCP_CATALOG_ITEMS: usize = 200;
 const MAX_MCP_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_MCP_STRING_BYTES: usize = 8 * 1024;
-
-static REMOTE_MCP_OAUTH_REFRESH_LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> =
-    OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RemoteMcpConfig {
@@ -86,18 +80,13 @@ pub enum GatewayError {
 pub struct RemoteMcpGateway {
     db_pool: DatabasePool,
     redis_client: redis::Client,
-    http_client: Client,
 }
 
 impl RemoteMcpGateway {
     pub fn new(db_pool: DatabasePool, redis_client: redis::Client) -> Result<Self, GatewayError> {
-        let http_client = remote_mcp_client_builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
         Ok(Self {
             db_pool,
             redis_client,
-            http_client,
         })
     }
 
@@ -389,15 +378,14 @@ impl RemoteMcpGateway {
         match config.auth_type {
             None => Ok(Vec::new()),
             Some(AuthType::BearerToken) => {
-                let repo =
-                    ServiceCredentialsRepo::new(self.db_pool.pool().clone()).map_err(|e| {
-                        GatewayError::Protocol(format!(
-                            "failed to initialize credential repository: {e}"
-                        ))
-                    })?;
-                let credential = repo.find_org_credential(&source.id).await.map_err(|e| {
-                    GatewayError::Protocol(format!("failed to load bearer credential: {e}"))
-                })?;
+                let cred_service = CredentialService::new(self.db_pool.clone());
+                let credential =
+                    cred_service
+                        .get_org_credential(&source.id)
+                        .await
+                        .map_err(|e| {
+                            GatewayError::Protocol(format!("failed to load bearer credential: {e}"))
+                        })?;
                 let token = credential
                     .and_then(|c| {
                         c.credentials
@@ -414,17 +402,16 @@ impl RemoteMcpGateway {
                 )])
             }
             Some(AuthType::OAuth) => {
-                let repo =
-                    ServiceCredentialsRepo::new(self.db_pool.pool().clone()).map_err(|e| {
-                        GatewayError::Protocol(format!(
-                            "failed to initialize credential repository: {e}"
-                        ))
-                    })?;
-                let credential = repo.find_org_credential(&source.id).await.map_err(|e| {
-                    GatewayError::Protocol(format!(
-                        "failed to load OAuth bootstrap credential: {e}"
-                    ))
-                })?;
+                let cred_service = CredentialService::new(self.db_pool.clone());
+                let credential =
+                    cred_service
+                        .raw_org_credential(&source.id)
+                        .await
+                        .map_err(|e| {
+                            GatewayError::Protocol(format!(
+                                "failed to load OAuth bootstrap credential: {e}"
+                            ))
+                        })?;
                 let credential = match credential {
                     Some(credential) => {
                         let oauth_value = self
@@ -440,8 +427,10 @@ impl RemoteMcpGateway {
                             GatewayError::Protocol(format!("invalid OAuth metadata: {e}"))
                         })?;
                         Some(
-                            self.usable_oauth_credential_serialized(source, credential, &oauth)
-                                .await?,
+                            cred_service
+                                .refresh_credential_with_oauth(source, credential, &oauth)
+                                .await
+                                .map_err(|e| map_credential_service_error(source, e))?,
                         )
                     }
                     None => None,
@@ -474,14 +463,10 @@ impl RemoteMcpGateway {
         config: &RemoteMcpConfig,
         user_id: Option<&str>,
     ) -> Result<Vec<(String, String)>, GatewayError> {
-        let repo = match config.auth_type {
+        let cred_service = match config.auth_type {
             None => return Ok(Vec::new()),
             Some(AuthType::BearerToken | AuthType::OAuth) => {
-                ServiceCredentialsRepo::new(self.db_pool.pool().clone()).map_err(|e| {
-                    GatewayError::Protocol(format!(
-                        "failed to initialize credential repository: {e}"
-                    ))
-                })?
+                CredentialService::new(self.db_pool.clone())
             }
             Some(auth_type) => {
                 return Err(GatewayError::UnsupportedAuthType {
@@ -492,15 +477,18 @@ impl RemoteMcpGateway {
         };
 
         let org_credential = if config.auth_type == Some(AuthType::BearerToken) {
-            repo.find_org_credential(&source.id).await.map_err(|e| {
-                GatewayError::Protocol(format!("failed to load org credential: {e}"))
-            })?
+            cred_service
+                .get_org_credential(&source.id)
+                .await
+                .map_err(|e| {
+                    GatewayError::Protocol(format!("failed to load org credential: {e}"))
+                })?
         } else {
             None
         };
         let mut user_credential = match (config.auth_type, user_id) {
-            (Some(AuthType::OAuth), Some(uid)) => repo
-                .find_user_credential(&source.id, uid)
+            (Some(AuthType::OAuth), Some(uid)) => cred_service
+                .raw_user_credential(&source.id, uid)
                 .await
                 .map_err(|e| {
                     GatewayError::Protocol(format!("failed to load user credential: {e}"))
@@ -520,8 +508,10 @@ impl RemoteMcpGateway {
                 let oauth = parse_oauth_config(&oauth_value)
                     .map_err(|e| GatewayError::Protocol(format!("invalid OAuth metadata: {e}")))?;
                 user_credential = Some(
-                    self.usable_oauth_credential_serialized(source, credential, &oauth)
-                        .await?,
+                    cred_service
+                        .refresh_credential_with_oauth(source, credential, &oauth)
+                        .await
+                        .map_err(|e| map_credential_service_error(source, e))?,
                 );
             }
         }
@@ -533,41 +523,6 @@ impl RemoteMcpGateway {
             org_credential.as_ref(),
             user_credential.as_ref(),
         )
-    }
-
-    async fn usable_oauth_credential_serialized(
-        &self,
-        source: &Source,
-        credential: ServiceCredential,
-        oauth: &crate::remote_mcp::oauth::RemoteMcpOAuthConfig,
-    ) -> Result<ServiceCredential, GatewayError> {
-        let key = format!(
-            "{}:{}",
-            source.id,
-            credential.user_id.as_deref().unwrap_or("__org__")
-        );
-        let locks = REMOTE_MCP_OAUTH_REFRESH_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
-        let lock = {
-            let mut guard = locks.lock().await;
-            guard
-                .entry(key)
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
-        let _guard = lock.lock().await;
-
-        let repo = ServiceCredentialsRepo::new(self.db_pool.pool().clone()).map_err(|e| {
-            GatewayError::Protocol(format!("failed to create credential repo: {e}"))
-        })?;
-        let credential = repo
-            .find_by_id(&credential.id)
-            .await
-            .map_err(|e| GatewayError::Protocol(format!("failed to reload credential: {e}")))?
-            .ok_or_else(|| GatewayError::MissingCredentials(source.id.clone()))?;
-
-        usable_oauth_credential(&self.db_pool, &self.http_client, source, credential, oauth)
-            .await
-            .map_err(|e| oauth_error_to_gateway_error(source, e))
     }
 
     async fn discover_oauth_metadata(
@@ -1140,14 +1095,19 @@ pub(crate) async fn read_limited_response_text(
         .map_err(|e| GatewayError::Protocol(format!("MCP response was not UTF-8: {e}")))
 }
 
-fn oauth_error_to_gateway_error(source: &Source, error: OAuthError) -> GatewayError {
+fn map_credential_service_error(
+    source: &Source,
+    error: crate::credential_service::CredentialServiceError,
+) -> GatewayError {
     match error {
-        OAuthError::ReconnectRequired => GatewayError::NeedsUserAuth {
-            source_id: source.id.clone(),
-            source_type: source.source_type.clone(),
-            provider: ServiceProvider::RemoteMcp,
-        },
-        other => GatewayError::Protocol(format!("OAuth refresh failed: {other}")),
+        crate::credential_service::CredentialServiceError::ReconnectRequired => {
+            GatewayError::NeedsUserAuth {
+                source_id: source.id.clone(),
+                source_type: source.source_type.clone(),
+                provider: ServiceProvider::RemoteMcp,
+            }
+        }
+        other => GatewayError::Protocol(format!("credential refresh failed: {other}")),
     }
 }
 
@@ -1341,9 +1301,12 @@ mod tests {
     }
 
     #[test]
-    fn oauth_reconnect_maps_to_needs_user_auth() {
+    fn credential_reconnect_maps_to_needs_user_auth() {
         let source = source(json!({"endpoint_url":"https://mcp.example.com/mcp"}));
-        let err = oauth_error_to_gateway_error(&source, OAuthError::ReconnectRequired);
+        let err = map_credential_service_error(
+            &source,
+            crate::credential_service::CredentialServiceError::ReconnectRequired,
+        );
         assert!(matches!(
             err,
             GatewayError::NeedsUserAuth { source_id, source_type, provider }
