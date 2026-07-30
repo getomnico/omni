@@ -501,9 +501,15 @@ async fn do_oauth_refresh(
 
     let client = match http_client {
         Some(c) => c,
-        None => pinned_http_client_for_url(token_endpoint)
-            .await
-            .map_err(|e| CredentialServiceError::RefreshFailed(e.to_string()))?,
+        None => {
+            if remote_mcp {
+                pinned_http_client_for_url(token_endpoint)
+                    .await
+                    .map_err(|e| CredentialServiceError::RefreshFailed(e.to_string()))?
+            } else {
+                reqwest::Client::new()
+            }
+        }
     };
     let mut request = client
         .post(token_endpoint)
