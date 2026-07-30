@@ -21,6 +21,7 @@ use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
 
+use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
 use shared::models::{
@@ -434,7 +435,6 @@ pub async fn execute_action(
             ApiError::BadRequest("user_id is required in transient mode".to_string())
         })?;
 
-
         // Look up the connector manifest by source_type.
         let manifest = manifests
             .iter()
@@ -612,10 +612,9 @@ pub async fn execute_action(
             )));
         }
 
-        let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let cred_service = CredentialService::new(state.db_pool.clone());
         creds = match resolve_credentials(
-            &creds_repo,
+            &cred_service,
             &source_id,
             request.user_id.as_deref(),
             action_admin_only,
@@ -624,7 +623,11 @@ pub async fn execute_action(
         {
             CredentialResolution::Resolved(c) => c,
             CredentialResolution::NeedsUserAuth { provider } => {
-                return Ok(needs_user_auth_response(&source_id, source_type.to_string(), provider)?);
+                return Ok(needs_user_auth_response(
+                    &source_id,
+                    source_type.to_string(),
+                    provider,
+                )?);
             }
             CredentialResolution::NoCredentials => {
                 return Err(ApiError::NotFound(format!(
@@ -823,16 +826,16 @@ fn merge_org_and_user_credentials(
 ///   user_id (see migration 087).
 /// * `None` (sync, org-level agent) → org row.
 async fn resolve_credentials(
-    creds_repo: &ServiceCredentialsRepo,
+    cred_service: &CredentialService,
     source_id: &str,
     user_id: Option<&str>,
     admin_only: bool,
 ) -> Result<CredentialResolution, ApiError> {
-    let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+    let internal = |e: CredentialServiceError| ApiError::Internal(e.to_string());
 
     if admin_only {
-        let resolved = creds_repo
-            .find_org_credential(source_id)
+        let resolved = cred_service
+            .get_org_credential(source_id)
             .await
             .map_err(internal)?;
         match &resolved {
@@ -852,13 +855,13 @@ async fn resolve_credentials(
 
     match user_id {
         Some(uid) => {
-            if let Some(mut user_cred) = creds_repo
-                .find_user_credential(source_id, uid)
+            if let Some(mut user_cred) = cred_service
+                .get_user_credential(source_id, uid)
                 .await
                 .map_err(internal)?
             {
-                if let Some(org_cred) = creds_repo
-                    .find_org_credential(source_id)
+                if let Some(org_cred) = cred_service
+                    .get_org_credential(source_id)
                     .await
                     .map_err(internal)?
                 {
@@ -873,8 +876,8 @@ async fn resolve_credentials(
             // No per-user row — surface a NeedsUserAuth response so the UI
             // can prompt. Provider hint comes from the org row when present;
             // if neither row exists the source is misconfigured.
-            match creds_repo
-                .find_org_credential(source_id)
+            match cred_service
+                .get_org_credential(source_id)
                 .await
                 .map_err(internal)?
             {
@@ -897,8 +900,8 @@ async fn resolve_credentials(
             }
         }
         None => {
-            let resolved = creds_repo
-                .find_org_credential(source_id)
+            let resolved = cred_service
+                .get_org_credential(source_id)
                 .await
                 .map_err(internal)?;
             match &resolved {
@@ -1161,10 +1164,9 @@ pub async fn read_resource(
             ))
         })?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = cred_service
+        .get_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -1247,10 +1249,9 @@ pub async fn get_prompt(
             ))
         })?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = cred_service
+        .get_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -1326,10 +1327,9 @@ pub async fn oauth_credential_ready(
             ))
         })?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let cred_service = CredentialService::new(state.db_pool.clone());
     let creds = match resolve_credentials(
-        &creds_repo,
+        &cred_service,
         &request.source_id,
         request.user_id.as_deref(),
         false,
@@ -1540,10 +1540,9 @@ pub async fn get_skill(
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
-        let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        let creds = creds_repo
-            .find_owner_credential(&source)
+        let cred_service = CredentialService::new(state.db_pool.clone());
+        let creds = cred_service
+            .get_owner_credential(&source)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| {
@@ -1866,8 +1865,7 @@ pub async fn sdk_register(
                 .collect();
             let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
-            let repo = creds_repo;
-            if let Ok(Some((source_id, user_id))) = repo
+            if let Ok(Some((source_id, user_id))) = creds_repo
                 .find_any_user_oauth_for_provider(&source_type_strs, &provider)
                 .await
             {
@@ -1875,7 +1873,10 @@ pub async fn sdk_register(
                     "Recovery: found OAuth credential for {} / {} to refresh missing MCP catalog",
                     source_id, provider
                 );
-                match resolve_credentials(&repo, &source_id, Some(&user_id), false).await {
+                let recovery_cred_service = CredentialService::new(state.db_pool.clone());
+                match resolve_credentials(&recovery_cred_service, &source_id, Some(&user_id), false)
+                    .await
+                {
                     Ok(CredentialResolution::Resolved(recovery_creds)) => {
                         match serde_json::to_value(McpCredentials::from_service_credential(
                             &recovery_creds,
@@ -2831,11 +2832,9 @@ pub async fn sdk_get_credentials(
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
-
-    let creds = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = cred_service
+        .get_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| {
@@ -2865,11 +2864,9 @@ pub async fn sdk_get_source_sync_config(
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
-
-    let credentials = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let credentials = cred_service
+        .raw_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .map(|c| c.credentials)

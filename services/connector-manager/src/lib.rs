@@ -1,5 +1,6 @@
 pub mod config;
 pub mod connector_client;
+pub mod credential_service;
 pub mod handlers;
 pub mod models;
 pub mod remote_mcp;
