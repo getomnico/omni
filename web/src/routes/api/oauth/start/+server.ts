@@ -36,6 +36,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const returnTo = url.searchParams.get('return_to') ?? undefined
     const approvalId = url.searchParams.get('approval_id') ?? undefined
     const approvalChatId = url.searchParams.get('chat_id') ?? undefined
+    const requiredScopes = (url.searchParams.get('required_scopes') ?? '')
+        .split(',')
+        .map((scope) => scope.trim())
+        .filter(Boolean)
 
     if (sourceId) {
         if (flow !== 'org_source' && flow !== 'user_read' && flow !== 'user_write') {
@@ -105,6 +109,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             returnTo,
             approvalId,
             approvalChatId,
+            requiredScopes,
         })
         throw redirect(302, authUrl)
     }

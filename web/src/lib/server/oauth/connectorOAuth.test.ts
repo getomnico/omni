@@ -3,6 +3,7 @@ import { OAuthStateManager } from './state'
 import {
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
     type OAuthManifestConfig,
 } from './connectorOAuth'
@@ -95,5 +96,27 @@ describe('OAuth connector helpers', () => {
             ),
         ).toBe('client_secret_basic')
         expect(tokenEndpointAuthMethodForConfig(undefined, undefined)).toBe('client_secret_post')
+    })
+
+    it('limits write elevation to the requested connector scopes', () => {
+        const config: OAuthManifestConfig = {
+            ...baseManifest,
+            scopes: {
+                example: {
+                    read: ['mcp:access', 'items:read'],
+                    write: ['mcp:access', 'items:read', 'items:write', 'items:delete'],
+                },
+            },
+        }
+
+        expect(
+            scopesForExistingSourceUserFlow(config, 'example', 'write', ['items:write']),
+        ).toEqual(['mcp:access', 'items:read', 'items:write'])
+    })
+
+    it('rejects requested scopes not declared by the connector', () => {
+        expect(() =>
+            scopesForExistingSourceUserFlow(baseManifest, 'example', 'write', ['unexpected:write']),
+        ).toThrow('Unsupported write scopes')
     })
 })

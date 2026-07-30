@@ -10,6 +10,8 @@ import pytest
 import respx
 from httpx import Response
 
+import tools.connector_handler as connector_handler_module
+from db.models import Source
 from tools.connector_handler import ConnectorAction, ConnectorToolHandler
 from tools.omni_tool_result import (
     OAuthRequiredPayload,
@@ -18,8 +20,50 @@ from tools.omni_tool_result import (
 )
 from tools.registry import ToolContext
 
-
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.asyncio
+async def test_manifest_preserves_undeclared_and_explicit_empty_action_scopes():
+    source = Source(
+        id="src-1",
+        source_type="example",
+        name="Example",
+        is_active=True,
+        is_deleted=False,
+    )
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://cm.test",
+        user_id="user-1",
+        prefetched_sources=[source],
+    )
+    manifest = {
+        "source_type": "example",
+        "healthy": True,
+        "manifest": {
+            "actions": [
+                {
+                    "name": "undeclared",
+                    "description": "No action-level scope metadata",
+                },
+                {
+                    "name": "explicit_empty",
+                    "description": "Explicitly requires no OAuth scopes",
+                    "required_scopes": [],
+                },
+            ]
+        },
+    }
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.get("http://cm.test/connectors").mock(
+            return_value=Response(200, json=[manifest])
+        )
+        actions = await handler._fetch_actions()
+
+    by_name = {action.action_name: action for action in actions}
+    assert by_name["undeclared"].required_scopes is None
+    assert by_name["explicit_empty"].required_scopes == []
 
 
 def _register_action(handler: ConnectorToolHandler, source_id: str) -> None:
@@ -36,7 +80,124 @@ def _register_action(handler: ConnectorToolHandler, source_id: str) -> None:
     handler._initialized = True
 
 
+class _CredentialConnection:
+    def __init__(self, credential: dict) -> None:
+        self.credential = credential
+
+    async def fetchrow(self, _query: str, *_args: object) -> dict:
+        return self.credential
+
+
+class _AcquireConnection:
+    def __init__(self, credential: dict) -> None:
+        self.connection = _CredentialConnection(credential)
+
+    async def __aenter__(self) -> _CredentialConnection:
+        return self.connection
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _CredentialPool:
+    def __init__(self, credential: dict) -> None:
+        self.credential = credential
+
+    def acquire(self) -> _AcquireConnection:
+        return _AcquireConnection(self.credential)
+
+
 class TestConnectorHandlerOAuthRequired:
+    @pytest.mark.asyncio
+    async def test_existing_credential_missing_action_scope_requires_oauth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        handler = ConnectorToolHandler(
+            connector_manager_url="http://cm.test",
+            user_id="user-1",
+        )
+        handler._actions["windshift__add_comment"] = ConnectorAction(
+            source_id="src-1",
+            source_type="windshift",
+            source_name="Windshift",
+            action_name="add_comment",
+            description="Add a comment",
+            input_schema={"type": "object", "properties": {}},
+            mode="write",
+            required_scopes=["items:write"],
+        )
+        handler._initialized = True
+
+        async def fake_get_db_pool() -> _CredentialPool:
+            return _CredentialPool(
+                {
+                    "id": "credential-1",
+                    "provider": "windshift",
+                    "config": json.dumps(
+                        {"granted_scopes": ["mcp:access", "items:read"]}
+                    ),
+                }
+            )
+
+        monkeypatch.setattr(connector_handler_module, "get_db_pool", fake_get_db_pool)
+
+        payload = await handler.check_oauth_required(
+            "windshift__add_comment",
+            {},
+            ToolContext(chat_id="c1", user_id="user-1"),
+        )
+
+        assert payload is not None
+        assert payload.oauth_start_url == (
+            "/api/oauth/start?source_id=src-1&flow=user_write&"
+            "required_scopes=items%3Awrite"
+        )
+
+    @pytest.mark.asyncio
+    async def test_existing_credential_with_action_scope_does_not_require_oauth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        handler = ConnectorToolHandler(
+            connector_manager_url="http://cm.test",
+            user_id="user-1",
+        )
+        handler._actions["windshift__add_comment"] = ConnectorAction(
+            source_id="src-1",
+            source_type="windshift",
+            source_name="Windshift",
+            action_name="add_comment",
+            description="Add a comment",
+            input_schema={"type": "object", "properties": {}},
+            mode="write",
+            required_scopes=["items:write"],
+        )
+        handler._initialized = True
+
+        async def fake_get_db_pool() -> _CredentialPool:
+            return _CredentialPool(
+                {
+                    "id": "credential-1",
+                    "provider": "windshift",
+                    "config": {
+                        "granted_scopes": [
+                            "mcp:access",
+                            "items:read",
+                            "items:write",
+                        ]
+                    },
+                }
+            )
+
+        monkeypatch.setattr(connector_handler_module, "get_db_pool", fake_get_db_pool)
+
+        payload = await handler.check_oauth_required(
+            "windshift__add_comment",
+            {},
+            ToolContext(chat_id="c1", user_id="user-1"),
+        )
+
+        assert payload is None
+
     @pytest.mark.asyncio
     async def test_412_response_produces_structured_oauth_required(self):
         """A 412 needs_user_auth response from connector-manager must yield a

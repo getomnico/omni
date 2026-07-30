@@ -271,6 +271,11 @@ export class SyncContext {
     return true;
   }
 
+  /** Return the Omni email of the user who owns this source. */
+  async getUserEmailForSource(): Promise<string> {
+    return this.client.getUserEmailForSource(this._sourceId);
+  }
+
   /**
    * Checkpoint state for resumability. Call periodically for long syncs.
    *

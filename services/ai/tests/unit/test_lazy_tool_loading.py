@@ -77,6 +77,91 @@ async def test_chat_resume_restores_loaded_tool_from_successful_tool_call():
 
 
 @pytest.mark.asyncio
+async def test_chat_resume_restores_unique_exact_tool_search_match():
+    connector_handler = _connector_with(
+        [
+            _action("src-windshift-1", "windshift", "add_comment"),
+            _action("src-windshift-1", "windshift", "delete_comment"),
+        ]
+    )
+
+    messages = [
+        MessageParam(
+            role="assistant",
+            content=[
+                ToolUseBlockParam(
+                    type="tool_use",
+                    id="toolu_1",
+                    name="tool_search",
+                    input={"query": "add_comment"},
+                )
+            ],
+        ),
+        MessageParam(
+            role="user",
+            content=[
+                ToolResultBlockParam(
+                    type="tool_result",
+                    tool_use_id="toolu_1",
+                    content=[
+                        {
+                            "type": "text",
+                            "text": (
+                                "Exact match loaded and now callable: "
+                                "windshift__add_comment"
+                            ),
+                        }
+                    ],
+                    is_error=False,
+                )
+            ],
+        ),
+    ]
+
+    loaded = _loaded_tools_from_history(messages, connector_handler)
+
+    assert loaded == {"windshift__add_comment"}
+
+
+@pytest.mark.asyncio
+async def test_chat_resume_restores_tools_from_exact_source_search():
+    connector_handler = _connector_with(
+        [
+            _action("src-windshift-1", "windshift", "add_comment"),
+            _action("src-windshift-1", "windshift", "delete_comment"),
+        ]
+    )
+    messages = [
+        MessageParam(
+            role="assistant",
+            content=[
+                ToolUseBlockParam(
+                    type="tool_use",
+                    id="toolu_1",
+                    name="tool_search",
+                    input={"query": "windshift"},
+                )
+            ],
+        ),
+        MessageParam(
+            role="user",
+            content=[
+                ToolResultBlockParam(
+                    type="tool_result",
+                    tool_use_id="toolu_1",
+                    content=[{"type": "text", "text": "Exact source match loaded."}],
+                    is_error=False,
+                )
+            ],
+        ),
+    ]
+
+    loaded = _loaded_tools_from_history(messages, connector_handler)
+
+    assert loaded == {"windshift__add_comment", "windshift__delete_comment"}
+
+
+@pytest.mark.asyncio
 async def test_chat_resume_restores_loaded_tool_set_from_tool_call():
     connector_handler = _connector_with(
         [

@@ -442,6 +442,8 @@ async fn fetch_actions(client: &RmcpClient) -> Result<Vec<ActionDefinition>> {
             } else {
                 ActionMode::Write
             },
+            // Rust MCP adapter does not extract tool-level scope metadata yet.
+            required_scopes: None,
             source_types: Vec::new(),
             admin_only: false,
             hidden: false,

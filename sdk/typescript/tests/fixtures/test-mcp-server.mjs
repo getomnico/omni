@@ -21,12 +21,28 @@ function buildServer() {
     })
   );
 
-  server.tool(
+  server.registerTool(
     'add',
-    'Add two numbers',
-    { a: z.number(), b: z.number() },
+    {
+      description: 'Add two numbers',
+      inputSchema: { a: z.number(), b: z.number() },
+      _meta: { required_scopes: ['numbers:write'] },
+    },
     async (args) => ({
       content: [{ type: 'text', text: String(args.a + args.b) }],
+    })
+  );
+
+  server.registerTool(
+    'ping',
+    {
+      description: 'Return pong without requiring OAuth scopes',
+      annotations: { readOnlyHint: true },
+      inputSchema: {},
+      _meta: { required_scopes: [] },
+    },
+    async () => ({
+      content: [{ type: 'text', text: 'pong' }],
     })
   );
 

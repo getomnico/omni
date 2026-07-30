@@ -54,12 +54,16 @@ describe('McpAdapter (stdio)', () => {
     const adapter = new McpAdapter(STDIO_SERVER);
     const actions = await adapter.getActionDefinitions({ TEST_MODE: '1' });
     const names = actions.map((a) => a.name).sort();
-    expect(names).toEqual(['add', 'greet']);
+    expect(names).toEqual(['add', 'greet', 'ping']);
     const greet = actions.find((a) => a.name === 'greet')!;
     expect(greet.mode).toBe('read');
     expect(greet.description).toBe('Greet someone by name');
+    expect(greet.required_scopes).toBeUndefined();
     const add = actions.find((a) => a.name === 'add')!;
     expect(add.mode).toBe('write');
+    expect(add.required_scopes).toEqual(['numbers:write']);
+    const ping = actions.find((a) => a.name === 'ping')!;
+    expect(ping.required_scopes).toEqual([]);
   });
 
   it('lists resources', async () => {
@@ -117,7 +121,7 @@ describe('McpAdapter (stdio)', () => {
     await adapter.discover({ TEST_MODE: '1' });
     // No env — returns from cache without spawning
     const actions = await adapter.getActionDefinitions();
-    expect(actions.map((a) => a.name).sort()).toEqual(['add', 'greet']);
+    expect(actions.map((a) => a.name).sort()).toEqual(['add', 'greet', 'ping']);
     const resources = await adapter.getResourceDefinitions();
     expect(resources).toHaveLength(1);
     const prompts = await adapter.getPromptDefinitions();
@@ -158,7 +162,7 @@ describe('McpAdapter (Streamable HTTP)', () => {
   it('lists tools', async () => {
     const adapter = new McpAdapter({ transport: 'http', url });
     const actions = await adapter.getActionDefinitions(undefined, { 'X-Test': '1' });
-    expect(actions.map((a) => a.name).sort()).toEqual(['add', 'greet']);
+    expect(actions.map((a) => a.name).sort()).toEqual(['add', 'greet', 'ping']);
   });
 
   it('executes a tool', async () => {
@@ -197,7 +201,7 @@ describe('McpAdapter (Streamable HTTP)', () => {
     await adapter.discover(undefined, { 'X-Test': '1' });
     expect(
       (await adapter.getActionDefinitions()).map((a) => a.name).sort()
-    ).toEqual(['add', 'greet']);
+    ).toEqual(['add', 'greet', 'ping']);
     expect(await adapter.getResourceDefinitions()).toHaveLength(1);
     expect(await adapter.getPromptDefinitions()).toHaveLength(1);
   });
@@ -212,7 +216,7 @@ describe('McpAdapter (Streamable HTTP)', () => {
     const actions = await adapter.getActionDefinitions(undefined, {
       'X-Per-Call': 'yes',
     });
-    expect(actions).toHaveLength(2);
+    expect(actions).toHaveLength(3);
   });
 });
 
@@ -234,6 +238,7 @@ describe('Connector MCP integration', () => {
     await connector.bootstrapMcp({});
     const manifest: ConnectorManifest = await connector.getManifest('http://test:8000');
     expect(manifest.mcp_enabled).toBe(true);
+    expect(manifest.mcp_catalog_loaded).toBe(true);
     const actionNames = manifest.actions.map((a) => a.name);
     expect(actionNames).toContain('greet');
     expect(actionNames).toContain('add');

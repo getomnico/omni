@@ -3132,6 +3132,7 @@ mod tests {
                 description: "Export a database".to_string(),
                 input_schema,
                 mode: ActionMode::Read,
+                required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: false,
