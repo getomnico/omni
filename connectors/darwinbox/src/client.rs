@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use url::Url;
 
 use crate::auth::{add_api_key_and_dataset, apply_basic_auth, fetch_token};
@@ -341,9 +341,12 @@ impl DarwinboxClient {
                 .with_context(|| format!("failed to call Darwinbox API {path}"))?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                // Do not include response body in error to avoid leaking sensitive data
+                // Never deserialize or log the denial body: Darwinbox error
+                // envelopes can echo credentials, datasets, or employee data.
+                let capability = capability_for_endpoint(path);
                 return Err(anyhow!(
-                    "Darwinbox authentication/authorization failed (HTTP {status})"
+                    "Darwinbox denied {capability} access (HTTP {}); grant {path} access or disable the selected {capability} capability",
+                    status.as_u16()
                 ));
             }
             if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -362,5 +365,18 @@ impl DarwinboxClient {
         }
 
         Err(last_error.unwrap_or_else(|| anyhow!("Darwinbox API request failed")))
+    }
+}
+
+fn capability_for_endpoint(path: &str) -> &'static str {
+    match path {
+        "/masterapi/employee" => "People directory/caller resolution",
+        "/leavesactionapi/leavebalance" => "leave balance",
+        "/leavesactionapi/holidaylist" => "holiday calendar",
+        "/leavesactionapi/leaveActionTakenLeaves" => "leave requests",
+        "/AttendanceDataApi/monthly" => "attendance",
+        "/attendanceDataApi/timesheetdatewise" => "timesheet",
+        "/leavesactionapi/importleave" => "leave changes",
+        _ => "selected Darwinbox endpoint",
     }
 }

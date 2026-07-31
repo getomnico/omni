@@ -23,6 +23,8 @@ class EventType(str, Enum):
     DOCUMENT_UPDATED = "document_updated"
     DOCUMENT_DELETED = "document_deleted"
     GROUP_MEMBERSHIP_SYNC = "group_membership_sync"
+    PERSON_SYNC = "person_sync"
+    PERSON_DELETED = "person_deleted"
 
 
 class DocumentMetadata(BaseModel):
@@ -90,6 +92,35 @@ class DocumentEvent(BaseModel):
         return base
 
 
+class PersonSyncRecord(BaseModel):
+    """A single source-provenanced person upsert record.
+    Mirrors Rust shared::models::PersonSyncRecord.
+    """
+
+    external_id: str
+    email: str
+    display_name: str | None = None
+    given_name: str | None = None
+    middle_name: str | None = None
+    surname: str | None = None
+    job_title: str | None = None
+    department: str | None = None
+    division: str | None = None
+    company_name: str | None = None
+    office_location: str | None = None
+    work_country: str | None = None
+    employee_id: str | None = None
+    employee_type: str | None = None
+    cost_center: str | None = None
+    grade: str | None = None
+    band: str | None = None
+    confirmation_status: str | None = None
+    employment_start_date: str | None = None
+    employment_end_date: str | None = None
+    manager_external_id: str | None = None
+    source_updated_at: str | None = None
+
+
 class GroupMembershipSyncEvent(BaseModel):
     """Group membership sync event — mirrors Rust ConnectorEvent::GroupMembershipSync."""
 
@@ -114,10 +145,43 @@ class GroupMembershipSyncEvent(BaseModel):
         return result
 
 
+class PersonSyncEvent(BaseModel):
+    """Idempotent source-provenanced person upsert."""
+
+    type: Literal["person_sync"] = "person_sync"
+    sync_run_id: str
+    source_id: str
+    person: PersonSyncRecord
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.type,
+            "sync_run_id": self.sync_run_id,
+            "source_id": self.source_id,
+            "person": self.person.model_dump(mode="json", exclude_none=True),
+        }
+
+
+class PersonDeletedEvent(BaseModel):
+    """Remove one source's current person entry by canonical email."""
+
+    type: Literal["person_deleted"] = "person_deleted"
+    sync_run_id: str
+    source_id: str
+    email: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
 def _event_discriminator(v: Any) -> str:
     raw_type = v.get("type", "") if isinstance(v, dict) else getattr(v, "type", "")
     if raw_type == "group_membership_sync":
         return "group"
+    if raw_type == "person_sync":
+        return "person_sync"
+    if raw_type == "person_deleted":
+        return "person_deleted"
     return "document"
 
 
@@ -125,6 +189,8 @@ ConnectorEvent = Annotated[
     Union[
         Annotated[DocumentEvent, Tag("document")],
         Annotated[GroupMembershipSyncEvent, Tag("group")],
+        Annotated[PersonSyncEvent, Tag("person_sync")],
+        Annotated[PersonDeletedEvent, Tag("person_deleted")],
     ],
     Discriminator(_event_discriminator),
 ]

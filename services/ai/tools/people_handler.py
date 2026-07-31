@@ -27,7 +27,9 @@ class PeopleSearchHandler:
                 "name": TOOL_NAME,
                 "description": (
                     "Search the people directory to find colleagues by name, "
-                    "email, job title, or department."
+                    "email, job title, or department. Use the structured "
+                    "filters (department, office location, work country, "
+                    "employee type) to narrow results."
                 ),
                 "input_schema": {
                     "type": "object",
@@ -39,6 +41,22 @@ class PeopleSearchHandler:
                         "limit": {
                             "type": "integer",
                             "description": "Maximum number of results to return (default: 10)",
+                        },
+                        "department": {
+                            "type": "string",
+                            "description": "Filter results to this department, e.g. 'Marketing'.",
+                        },
+                        "office_location": {
+                            "type": "string",
+                            "description": "Filter results to this office location, e.g. 'Paris' or 'New York'.",
+                        },
+                        "work_country": {
+                            "type": "string",
+                            "description": "Filter results to this work country, e.g. 'India' or 'USA'.",
+                        },
+                        "employee_type": {
+                            "type": "string",
+                            "description": "Filter results to this employee type, e.g. 'Full Time'.",
                         },
                     },
                     "required": ["query"],
@@ -63,7 +81,14 @@ class PeopleSearchHandler:
             )
 
         limit = tool_input.get("limit", 10)
-        request = PeopleSearchRequest(query=query, limit=limit)
+        request = PeopleSearchRequest(
+            query=query,
+            limit=limit,
+            department=tool_input.get("department"),
+            office_location=tool_input.get("office_location"),
+            work_country=tool_input.get("work_country"),
+            employee_type=tool_input.get("employee_type"),
+        )
 
         try:
             response: PeopleSearchResponse = await self._searcher.client.search_people(
@@ -92,6 +117,14 @@ class PeopleSearchHandler:
                 parts.append(f"Title: {person.job_title}")
             if person.department:
                 parts.append(f"Department: {person.department}")
+            if person.company_name:
+                parts.append(f"Company: {person.company_name}")
+            if person.office_location:
+                parts.append(f"Office: {person.office_location}")
+            if person.work_country:
+                parts.append(f"Work Country: {person.work_country}")
+            if person.employee_id:
+                parts.append(f"Employee ID: {person.employee_id}")
             lines.append("\n".join(parts))
 
         text = "\n\n".join(lines)

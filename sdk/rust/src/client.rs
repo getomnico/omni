@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use shared::models::{ConnectorEvent, ConnectorManifest, ServiceCredential, Source, SyncType};
 
@@ -360,13 +360,36 @@ impl SdkClient {
             events,
         };
 
-        let response = self
-            .client
-            .post(format!("{}/sdk/events/batch", self.base_url))
-            .json(&request)
-            .send()
-            .await?;
-        ensure_ok(response, "flush_events").await?;
+        let result = async {
+            let response = self
+                .client
+                .post(format!("{}/sdk/events/batch", self.base_url))
+                .json(&request)
+                .send()
+                .await?;
+            ensure_ok(response, "flush_events").await?;
+            SdkResult::Ok(())
+        }
+        .await;
+
+        if let Err(error) = result {
+            error!(
+                sync_run_id,
+                source_id,
+                batch_size,
+                error = %error,
+                "SDK: Failed to flush events; retaining batch for retry"
+            );
+            let mut buffer = self.event_buffer.lock().await;
+            let entry = buffer.entry(key).or_insert_with(|| BufferEntry {
+                events: Vec::new(),
+                oldest_at: Instant::now(),
+            });
+            let mut retained = request.events;
+            retained.append(&mut entry.events);
+            entry.events = retained;
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -851,4 +874,81 @@ pub fn build_connector_url() -> String {
     let port =
         std::env::var("PORT").unwrap_or_else(|_| panic!("PORT environment variable is required."));
     format!("http://{}:{}", hostname, port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Router, http::StatusCode, routing::post};
+    use shared::models::{ConnectorEvent, PersonSyncRecord, SyncType};
+
+    fn person_event() -> ConnectorEvent {
+        ConnectorEvent::PersonSync {
+            sync_run_id: "run-1".into(),
+            source_id: "source-1".into(),
+            person: PersonSyncRecord {
+                external_id: "E1".into(),
+                email: "ada@example.com".into(),
+                display_name: None,
+                given_name: None,
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: None,
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: None,
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_person_flush_is_retained_and_propagated() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/sdk/events/batch",
+                    post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = SdkClient::new(&format!("http://{address}"));
+        client
+            .sync_types
+            .lock()
+            .await
+            .insert("run-1".into(), SyncType::Full);
+        client
+            .emit_event("run-1", "source-1", person_event())
+            .await
+            .unwrap();
+        let error = client.flush_events("run-1", "source-1").await.unwrap_err();
+        assert!(error.to_string().contains("flush_events"));
+        let buffer = client.event_buffer.lock().await;
+        let retained = &buffer
+            .get(&("run-1".into(), "source-1".into()))
+            .unwrap()
+            .events;
+        assert_eq!(retained.len(), 1);
+        assert!(matches!(
+            retained[0],
+            ConnectorEvent::PersonSync { ref person, .. } if person.email == "ada@example.com"
+        ));
+    }
 }

@@ -1,9 +1,9 @@
-use omni_connector_sdk::{AuthType, ServiceCredential, ServiceProvider, Source, SourceType};
+use omni_connector_sdk::{AuthType, ServiceCredential, ServiceProvider, Source};
 use omni_darwinbox_connector::actions::{action_definitions, action_policies, execute_action};
 use omni_darwinbox_connector::client::DarwinboxClient;
 use omni_darwinbox_connector::config::{
-    document_permissions, normalize_email, normalize_emails, DarwinboxSourceConfig, EmployeeField,
-    EmployeeScope,
+    DarwinboxSourceConfig, EmployeeField, EmployeeScope, document_permissions, normalize_email,
+    normalize_emails,
 };
 use omni_darwinbox_connector::credentials::DarwinboxCredentials;
 use omni_darwinbox_connector::models::EmployeeRecord;
@@ -216,7 +216,8 @@ fn employee_directory_requires_explicit_scope_and_fields() {
     .unwrap();
     let errors = config.validate().unwrap_err().join("; ");
     assert!(errors.contains("employee_scope"));
-    assert!(errors.contains("employee_fields"));
+    assert!(errors.contains("company_email"));
+    assert!(errors.contains("canonical organization-visible identity"));
 }
 
 #[test]
@@ -226,11 +227,13 @@ fn deprecated_permission_switch_is_rejected() {
         "authorization": { "use_darwinbox_permissions": true }
     }))
     .unwrap();
-    assert!(config
-        .validate()
-        .unwrap_err()
-        .iter()
-        .any(|e| e.contains("unsupported")));
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|e| e.contains("unsupported"))
+    );
 }
 
 #[test]
@@ -245,11 +248,13 @@ fn high_risk_raw_action_families_are_rejected() {
         "action_modules": { "hr_operations": true }
     }))
     .unwrap();
-    assert!(config
-        .validate()
-        .unwrap_err()
-        .iter()
-        .any(|e| e.contains("not implemented")));
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|e| e == "HR operations are not available")
+    );
 }
 
 #[test]
@@ -268,7 +273,10 @@ fn employee_scope_wire_shape_matches_ui() {
 #[test]
 fn action_manifest_and_policy_modes_match() {
     let definitions = action_definitions();
-    let policies = action_policies();
+    let policies: Vec<_> = action_policies()
+        .iter()
+        .filter(|policy| policy.available)
+        .collect();
     assert_eq!(definitions.len(), policies.len());
     for definition in definitions {
         let matches: Vec<_> = policies
@@ -295,9 +303,11 @@ fn employee_profile_acl_is_user_private() {
         Some("employee@example.com"),
     );
     assert!(!permissions.public);
-    assert!(permissions
-        .users
-        .contains(&"employee@example.com".to_string()));
+    assert!(
+        permissions
+            .users
+            .contains(&"employee@example.com".to_string())
+    );
     assert!(!permissions.users.contains(&"a@example.com".to_string()));
 }
 
@@ -359,11 +369,13 @@ fn untyped_sync_modules_are_rejected() {
         "sync_modules": { "holidays": true }
     }))
     .unwrap();
-    assert!(config
-        .validate()
-        .unwrap_err()
-        .iter()
-        .any(|error| error.contains("unavailable")));
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|error| error.contains("unavailable"))
+    );
 }
 
 #[test]
@@ -372,11 +384,13 @@ fn url_and_email_normalization_are_fail_closed() {
         "base_url": "http://localhost.attacker.example"
     }))
     .unwrap();
-    assert!(config
-        .validate()
-        .unwrap_err()
-        .iter()
-        .any(|e| e.contains("HTTPS")));
+    assert!(
+        config
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|e| e.contains("HTTPS"))
+    );
     assert_eq!(normalize_email(" A@Example.COM "), "a@example.com");
     assert_eq!(
         normalize_emails(&["A@B.com".into(), "a@b.com".into()]).len(),

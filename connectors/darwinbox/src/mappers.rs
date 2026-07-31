@@ -2,37 +2,7 @@
 //! Each entity type has its own mapper so raw provider fields are never
 //! serialized into indexed content, metadata, attributes, or logs.
 
-use omni_connector_sdk::ConnectorEvent;
 use serde_json::Value as JsonValue;
-
-use crate::config::{self, DarwinboxSourceConfig};
-use crate::models::EmployeeRecord;
-
-/// Map a Darwinbox employee record to a document-create event with the
-/// appropriate filtered content and ACL.
-pub fn employee_to_event(
-    employee: &EmployeeRecord,
-    sync_run_id: String,
-    source_id: String,
-    content_id: String,
-    config: &DarwinboxSourceConfig,
-) -> Option<ConnectorEvent> {
-    let permissions = config::document_permissions(
-        "employee_profile",
-        config,
-        &source_id,
-        employee.company_email_id.as_deref(),
-    );
-    let content = employee.content_filtered(&config.employee_fields);
-    employee.to_event_with_permissions(
-        sync_run_id,
-        source_id,
-        content_id,
-        content.len(),
-        &config.employee_fields,
-        permissions,
-    )
-}
 
 /// Map a generic Darwinbox entity to a document-create event with safe
 /// field projection and non-public ACL.

@@ -172,20 +172,58 @@ export interface GoogleAdsSourceConfig {
     sync_enabled?: boolean
 }
 
+export interface DarwinboxActionCapability {
+    name: string
+    module: string
+    mode: 'read' | 'write'
+    endpoints: string[]
+    available?: boolean
+}
+
+export interface DarwinboxSyncCapability {
+    name: string
+    available: boolean
+    mode?: string
+    endpoints?: string[]
+    reason?: string
+}
+
+export interface DarwinboxManifestExtraSchema {
+    action_groups?: Record<string, { read: string[]; write: string[] }>
+    action_capabilities?: DarwinboxActionCapability[]
+    sync_capabilities?: DarwinboxSyncCapability[]
+}
+
 export interface ConnectorListEntry {
     source_type: string
-    manifest: {
-        extra_schema?: {
-            action_groups?: Record<string, { read: string[]; write: string[] }>
-        }
-    }
+    manifest: { extra_schema?: DarwinboxManifestExtraSchema }
 }
+
+export type DarwinboxEmployeeField =
+    | 'name'
+    | 'employee_id'
+    | 'company_email'
+    | 'department'
+    | 'designation'
+    | 'office_location'
+    | 'manager_employee_id'
+    | 'employee_type'
+    | 'cost_center'
+    | 'work_country'
+    | 'grade'
+    | 'band'
+    | 'confirmation_status'
+    | 'employment_dates'
+
+export type DarwinboxEmployeeScope =
+    | { mode: 'all' }
+    | { mode: 'include'; employee_ids: string[]; employee_emails: string[]; departments: string[] }
 
 export interface DarwinboxSourceConfig {
     base_url: string
     read_only?: boolean
     default_timezone?: string
-    sync_modules?: {
+    sync_modules?: Record<string, boolean> & {
         employee_directory?: boolean
         deleted_employees?: boolean
         departments?: boolean
@@ -199,7 +237,7 @@ export interface DarwinboxSourceConfig {
         holidays?: boolean
         ats_jobs?: boolean
     }
-    action_modules?: {
+    action_modules?: Record<string, boolean> & {
         employee_self_service?: boolean
         manager_workflows?: boolean
         hr_operations?: boolean
@@ -215,22 +253,8 @@ export interface DarwinboxSourceConfig {
         max_batch_size?: number
         max_requests_per_minute?: number
     }
-    employee_scope?: {
-        mode: 'all' | 'include'
-        employee_ids?: string[]
-        employee_emails?: string[]
-        departments?: string[]
-    } | null
-    employee_fields?: Array<
-        | 'name'
-        | 'employee_id'
-        | 'company_email'
-        | 'department'
-        | 'designation'
-        | 'office_location'
-        | 'manager_employee_id'
-        | 'employee_type'
-    >
+    employee_scope?: DarwinboxEmployeeScope | null
+    employee_fields?: DarwinboxEmployeeField[]
 }
 
 export interface WindshiftSourceConfig {

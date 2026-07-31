@@ -21,6 +21,12 @@ pub enum EmployeeField {
     OfficeLocation,
     ManagerEmployeeId,
     EmployeeType,
+    CostCenter,
+    WorkCountry,
+    Grade,
+    Band,
+    ConfirmationStatus,
+    EmploymentDates,
 }
 
 /// How employee scope is determined for indexing.
@@ -41,6 +47,17 @@ pub enum EmployeeScope {
 }
 
 impl EmployeeScope {
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Include {
+                employee_ids,
+                employee_emails,
+                departments,
+            } => !employee_ids.is_empty() || !employee_emails.is_empty() || !departments.is_empty(),
+        }
+    }
+
     /// Returns true if the given employee record is within scope.
     pub fn includes(&self, employee: &crate::models::EmployeeRecord) -> bool {
         match self {
@@ -264,22 +281,35 @@ impl DarwinboxSourceConfig {
             errors.push("use_darwinbox_permissions is unsupported; remove it".to_string());
         }
         if self.sync_modules.employee_directory {
-            if self.employee_scope.is_none() {
+            if self
+                .employee_scope
+                .as_ref()
+                .map_or(true, |scope| !scope.is_valid())
+            {
                 errors.push(
-                    "employee_scope is required when employee_directory is enabled".to_string(),
+                    "employee_scope must be 'all' or a non-empty include filter when People directory is enabled"
+                        .to_string(),
                 );
             }
-            if self.employee_fields.is_empty() {
-                errors.push("employee_fields must contain at least one approved field".to_string());
+            if !self.employee_fields.contains(&EmployeeField::CompanyEmail) {
+                errors.push(
+                    "employee_fields must include company_email when People directory is enabled; company email is the canonical organization-visible identity"
+                        .to_string(),
+                );
             }
+        }
+        if self.sync_modules.deleted_employees {
+            errors.push("Deleted employee sync is unavailable; People directory derives removals from successful Employee Master runs".to_string());
         }
         if self.sync_modules.has_any_org_master()
             || self.sync_modules.positions
             || self.sync_modules.holidays
-            || self.sync_modules.ats_jobs
         {
+            errors.push("Organization master, position, and holiday sync are unavailable until typed response and reconciliation contracts are implemented".to_string());
+        }
+        if self.sync_modules.ats_jobs {
             errors.push(
-                "organization masters, positions, holidays, and ATS job sync are unavailable until typed Darwinbox response contracts are configured"
+                "ATS job sync is unavailable until a fail-closed audience policy is implemented"
                     .to_string(),
             );
         }
@@ -287,32 +317,33 @@ impl DarwinboxSourceConfig {
             errors.push("max_batch_size must be between 1 and 20".to_string());
         }
 
-        let actions_requested = self.action_modules.employee_self_service
-            || self.action_modules.manager_workflows
-            || self.action_modules.hr_operations
-            || self.action_modules.ats
-            || self.action_modules.reports;
+        let actions_requested = !self.authorization.allowed_actions.is_empty();
         if actions_requested {
             if !self.authorization.actions_enabled {
-                errors.push("action modules require actions_enabled=true".to_string());
+                errors.push("allowed actions require actions_enabled=true".to_string());
             }
-            if self.authorization.participant_emails.is_empty()
-                || self.authorization.allowed_actions.is_empty()
-            {
-                errors.push("actions require participant_emails and allowed_actions".to_string());
+            if self.authorization.participant_emails.is_empty() {
+                errors.push("actions require participant_emails".to_string());
             }
-            if self.action_modules.manager_workflows {
-                errors.push(
-                    "manager workflows require an explicit target employee scope".to_string(),
-                );
-            }
+        } else if self.authorization.actions_enabled {
+            errors.push("actions_enabled=true requires at least one allowed action".to_string());
+        }
+        if !actions_requested
+            && (self.action_modules.employee_self_service
+                || self.action_modules.manager_workflows
+                || self.action_modules.hr_operations
+                || self.action_modules.ats
+                || self.action_modules.reports)
+        {
+            errors.push("action modules must be disabled when no actions are selected".to_string());
         }
         if !self.read_only {
             if !self.authorization.write_acknowledged {
                 errors.push("disabling read_only requires write_acknowledged=true".to_string());
             }
             if !self.authorization.allowed_actions.iter().any(|action| {
-                crate::actions::find_action_policy(action).is_some_and(|policy| policy.is_write)
+                crate::actions::find_action_policy(action)
+                    .is_some_and(|policy| policy.available && policy.is_write)
             }) {
                 errors.push(
                     "disabling read_only requires at least one allowlisted write action"
@@ -320,35 +351,44 @@ impl DarwinboxSourceConfig {
                 );
             }
         }
-        // High-risk generic HR/ATS payloads remain unavailable until
-        // action-specific provider contracts have been reviewed.
-        if self.action_modules.hr_operations || self.action_modules.ats {
-            errors.push("HR and ATS actions are not implemented".to_string());
+        // Unavailable action modules
+        if self.action_modules.hr_operations {
+            errors.push("HR operations are not available".to_string());
         }
-        const UNTYPED_ACTIONS: &[&str] = &[
-            "regularize_my_attendance",
-            "add_pending_employee",
-            "activate_pending_employee",
-            "update_employee_record",
-            "update_employment_details",
-            "deactivate_employee",
-            "reactivate_employee",
-            "upload_employee_document",
-            "fetch_employee_history",
-            "list_jobs",
-            "get_job_detail",
-            "get_candidates",
-            "tag_candidate",
-            "reject_candidate",
-            "create_requisition",
-            "archive_requisition",
-        ];
+        if self.action_modules.ats {
+            errors.push("ATS actions are not available".to_string());
+        }
+        if self.action_modules.reports {
+            errors.push("Reports are not available".to_string());
+        }
+        if self.action_modules.manager_workflows {
+            errors.push("Manager workflows are not available".to_string());
+        }
+        // Validate allowed_actions against availability and module metadata.
         for action in &self.authorization.allowed_actions {
-            if crate::actions::find_action_policy(action).is_none() {
+            let Some(policy) = crate::actions::find_action_policy(action) else {
                 errors.push(format!("unknown Darwinbox action '{action}'"));
+                continue;
+            };
+            if !policy.available {
+                errors.push(format!(
+                    "action '{action}' is not available in this connector version"
+                ));
+                continue;
             }
-            if UNTYPED_ACTIONS.contains(&action.as_str()) {
-                errors.push(format!("action '{action}' is not implemented"));
+            let module_enabled = match policy.module {
+                "employee_self_service" => self.action_modules.employee_self_service,
+                "manager_workflows" => self.action_modules.manager_workflows,
+                "hr_operations" => self.action_modules.hr_operations,
+                "ats" => self.action_modules.ats,
+                "reports" => self.action_modules.reports,
+                _ => true,
+            };
+            if !module_enabled {
+                errors.push(format!(
+                    "action '{action}' requires the '{}' action module",
+                    policy.module
+                ));
             }
         }
 
@@ -388,7 +428,7 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 /// direct user emails or provider-scoped groups.
 pub fn document_permissions(
     content_type: &str,
-    config: &DarwinboxSourceConfig,
+    _config: &DarwinboxSourceConfig,
     _source_id: &str,
     employee_self_email: Option<&str>,
 ) -> omni_connector_sdk::DocumentPermissions {

@@ -277,11 +277,62 @@ struct GroupSyncEvent {
 }
 
 #[derive(Debug)]
+enum PersonMutation {
+    Sync {
+        source_id: String,
+        person: shared::models::PersonSyncRecord,
+        event_ids: Vec<String>,
+    },
+    Deleted {
+        source_id: String,
+        email: String,
+        event_ids: Vec<String>,
+    },
+}
+
+impl PersonMutation {
+    fn event_ids_mut(&mut self) -> &mut Vec<String> {
+        match self {
+            Self::Sync { event_ids, .. } | Self::Deleted { event_ids, .. } => event_ids,
+        }
+    }
+}
+
+fn sort_events_by_queue_order(events: &mut [ConnectorEventQueueItem]) {
+    events.sort_unstable_by(|left, right| left.id.cmp(&right.id));
+}
+
+fn partition_person_events_in_queue_order(
+    mut events: Vec<ConnectorEventQueueItem>,
+) -> (Vec<ConnectorEventQueueItem>, Vec<ConnectorEventQueueItem>) {
+    sort_events_by_queue_order(&mut events);
+    events
+        .into_iter()
+        .partition(|event| matches!(event.event_type.as_str(), "person_sync" | "person_deleted"))
+}
+
+fn replace_person_mutation(
+    mutations: &mut HashMap<String, PersonMutation>,
+    key: String,
+    event_id: String,
+    mut replacement: PersonMutation,
+) {
+    let mut event_ids = mutations
+        .remove(&key)
+        .map(|mut mutation| std::mem::take(mutation.event_ids_mut()))
+        .unwrap_or_default();
+    event_ids.push(event_id);
+    *replacement.event_ids_mut() = event_ids;
+    mutations.insert(key, replacement);
+}
+
+#[derive(Debug)]
 struct EventBatch {
     sync_run_id: String,
-    documents_upsert: Vec<(Document, Vec<String>)>, // (document, event_ids) — both creates and updates
-    documents_deleted: Vec<(String, String, Vec<String>)>, // (source_id, document_id, event_ids)
+    documents_upsert: Vec<(Document, Vec<String>)>,
+    documents_deleted: Vec<(String, String, Vec<String>)>,
     group_syncs: Vec<GroupSyncEvent>,
+    person_mutations: Vec<PersonMutation>,
 }
 
 impl EventBatch {
@@ -291,6 +342,7 @@ impl EventBatch {
             documents_upsert: Vec::new(),
             documents_deleted: Vec::new(),
             group_syncs: Vec::new(),
+            person_mutations: Vec::new(),
         }
     }
 
@@ -298,6 +350,7 @@ impl EventBatch {
         self.documents_upsert.is_empty()
             && self.documents_deleted.is_empty()
             && self.group_syncs.is_empty()
+            && self.person_mutations.is_empty()
     }
 }
 
@@ -365,6 +418,18 @@ impl QueueProcessor {
 
     pub fn with_poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
+        self
+    }
+
+    /// Override the full-sync batch size threshold (default: 1000).
+    pub fn with_full_batch_size(mut self, batch_size: i64) -> Self {
+        self.batching_config.full_batch_size = batch_size;
+        self
+    }
+
+    /// Override the full-sync max age threshold in seconds (default: 300).
+    pub fn with_full_max_age_secs(mut self, max_age_secs: i64) -> Self {
+        self.batching_config.full_max_age_secs = max_age_secs;
         self
     }
 
@@ -542,10 +607,29 @@ impl QueueProcessor {
         // calls are driven by poll_interval in the main loop.
         const MAX_BATCHES_PER_CALL: usize = 3;
 
-        // Sync-type-aware batching: only process if pending events meet a
-        // threshold (size or age). This lets small incremental trickles
-        // accumulate while full-sync bursts flow through quickly.
-        let summary = self.event_queue.get_queue_summary().await?;
+        let mut total_processed = 0;
+        let mut batches_dequeued = 0;
+
+        // Person mutations have their own global dequeue path. It is independent
+        // of sync type and readiness thresholds, and the queue admits at most
+        // the oldest unresolved mutation for each `(source, email)` identity.
+        // Reserve one batch slot for documents/groups so a sustained Person
+        // stream cannot starve the existing queue workload.
+        while batches_dequeued < MAX_BATCHES_PER_CALL - 1 {
+            let events = self
+                .event_queue
+                .dequeue_person_mutations_with_max_bytes(self.batch_size, self.batch_max_bytes)
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            batches_dequeued += 1;
+            total_processed += self.process_dequeued_events(events).await?;
+        }
+
+        // Sync-type-aware batching applies only to documents and groups. Person
+        // events are excluded from this summary and from every regular dequeue.
+        let summary = self.event_queue.get_non_person_queue_summary().await?;
         let (by_sync_type, orphan_count) = summarize_pending(&summary);
         let ready = self.batching_config.ready_sync_types(
             &by_sync_type,
@@ -561,17 +645,14 @@ impl QueueProcessor {
         if ready.is_empty() && orphan_count == 0 {
             if total_pending > 0 {
                 debug!(
-                    "Skipping batch: {} pending events do not meet sync-type thresholds",
+                    "Skipping batch: {} pending document/group events do not meet sync-type thresholds",
                     total_pending
                 );
             }
             return Ok(());
         }
 
-        let mut total_processed = 0;
-        let mut batches_dequeued = 0;
-
-        // Process orphan events first (no valid sync_run). These mainly happen
+        // Process orphan document/group events first (no valid sync_run). These mainly happen
         // in tests that enqueue directly without creating sync_run rows.
         while batches_dequeued < MAX_BATCHES_PER_CALL && orphan_count > 0 {
             let events = self
@@ -632,18 +713,24 @@ impl QueueProcessor {
             events.len()
         );
 
-        // A single dequeue may contain events from multiple sync runs (e.g.
-        // two simultaneous full syncs). Group by sync_run_id so that progress
-        // tracking and per-sync-run batching remain correct.
-        let mut by_sync_run: HashMap<String, Vec<ConnectorEventQueueItem>> = HashMap::new();
-        for ev in events {
-            by_sync_run
-                .entry(ev.sync_run_id.clone())
-                .or_default()
-                .push(ev);
-        }
+        // Person mutations can target the same canonical identity across sync
+        // runs. Apply them in global queue ULID order before preserving the
+        // existing per-run batching behavior for documents and groups.
+        let (person_events, other_events) = partition_person_events_in_queue_order(events);
+        let mut total_processed = self
+            .process_person_events_in_queue_order(person_events)
+            .await?;
 
-        let mut total_processed = 0;
+        // A single dequeue may contain events from multiple sync runs (e.g.
+        // two simultaneous full syncs). Group non-person events by sync_run_id
+        // so progress tracking and per-sync-run batching remain unchanged.
+        let mut by_sync_run: HashMap<String, Vec<ConnectorEventQueueItem>> = HashMap::new();
+        for event in other_events {
+            by_sync_run
+                .entry(event.sync_run_id.clone())
+                .or_default()
+                .push(event);
+        }
 
         for (sync_run_id, mut run_events) in by_sync_run {
             run_events.sort_by(|a, b| a.id.cmp(&b.id));
@@ -758,17 +845,100 @@ impl QueueProcessor {
         Ok(total_processed)
     }
 
+    async fn process_person_events_in_queue_order(
+        &self,
+        events: Vec<ConnectorEventQueueItem>,
+    ) -> Result<usize> {
+        if events.is_empty() {
+            return Ok(0);
+        }
+
+        let person_repo = PersonRepository::new(self.state.db_pool.pool());
+        let mut successful_event_ids = Vec::with_capacity(events.len());
+        let mut failed_events = Vec::new();
+
+        for event_item in events {
+            let event_id = event_item.id;
+            let event = match serde_json::from_value::<ConnectorEvent>(event_item.payload) {
+                Ok(event) => event,
+                Err(error) => {
+                    failed_events.push((event_id, error.to_string()));
+                    continue;
+                }
+            };
+
+            let operation = match event {
+                ConnectorEvent::PersonSync {
+                    source_id, person, ..
+                } => person_repo.apply_person_sync(&source_id, &person).await,
+                ConnectorEvent::PersonDeleted {
+                    source_id, email, ..
+                } => person_repo.apply_person_deleted(&source_id, &email).await,
+                _ => {
+                    failed_events.push((
+                        event_id,
+                        "person queue event contained a non-person payload".to_string(),
+                    ));
+                    continue;
+                }
+            };
+
+            match operation {
+                Ok(stats) => {
+                    info!("Applied globally ordered person mutation: {:?}", stats);
+                    successful_event_ids.push(event_id);
+                }
+                Err(error) => failed_events.push((event_id, error.to_string())),
+            }
+        }
+
+        let successful_count = successful_event_ids.len();
+        if !successful_event_ids.is_empty() {
+            if let Err(error) = self
+                .event_queue
+                .mark_events_completed_batch(successful_event_ids)
+                .await
+            {
+                error!(
+                    "Failed to mark {} ordered person events as completed: {}",
+                    successful_count, error
+                );
+            }
+        }
+        if !failed_events.is_empty() {
+            let failed_count = failed_events.len();
+            if let Err(error) = self
+                .event_queue
+                .mark_events_dead_letter_batch(failed_events)
+                .await
+            {
+                error!(
+                    "Failed to mark {} ordered person events as failed: {}",
+                    failed_count, error
+                );
+            }
+        }
+
+        Ok(successful_count)
+    }
+
     async fn group_events_by_type(
         &self,
         sync_run_id: String,
-        events: Vec<ConnectorEventQueueItem>,
+        mut events: Vec<ConnectorEventQueueItem>,
     ) -> Result<EventBatch> {
+        // PostgreSQL does not guarantee UPDATE ... RETURNING order. Queue IDs
+        // are ULIDs, so sorting here restores enqueue order before coalescing
+        // mutations and makes last-event-wins deterministic.
+        sort_events_by_queue_order(&mut events);
+
         let mut batch = EventBatch::new(sync_run_id);
 
         // Temporary storage for grouping events by document key
         // Single map for both creates and updates — both go through batch_upsert
         let mut upsert_docs: HashMap<String, (Document, Vec<String>)> = HashMap::new();
         let mut deleted_docs: HashMap<String, (String, String, Vec<String>)> = HashMap::new();
+        let mut person_mutations: HashMap<String, PersonMutation> = HashMap::new();
 
         for event_item in events {
             let event_id = event_item.id.clone();
@@ -886,11 +1056,42 @@ impl QueueProcessor {
                         });
                     }
                 }
+                ConnectorEvent::PersonSync {
+                    source_id, person, ..
+                } => {
+                    let key = format!("{}:{}", source_id, person.email.trim().to_lowercase());
+                    replace_person_mutation(
+                        &mut person_mutations,
+                        key,
+                        event_id,
+                        PersonMutation::Sync {
+                            source_id,
+                            person,
+                            event_ids: Vec::new(),
+                        },
+                    );
+                }
+                ConnectorEvent::PersonDeleted {
+                    source_id, email, ..
+                } => {
+                    let key = format!("{}:{}", source_id, email.trim().to_lowercase());
+                    replace_person_mutation(
+                        &mut person_mutations,
+                        key,
+                        event_id,
+                        PersonMutation::Deleted {
+                            source_id,
+                            email,
+                            event_ids: Vec::new(),
+                        },
+                    );
+                }
             }
         }
 
         batch.documents_upsert = upsert_docs.into_values().collect();
         batch.documents_deleted = deleted_docs.into_values().collect();
+        batch.person_mutations = person_mutations.into_values().collect();
 
         Ok(batch)
     }
@@ -964,6 +1165,45 @@ impl QueueProcessor {
                         );
                         for event_id in group_sync.event_ids {
                             result.failed_events.push((event_id, e.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        if !batch.person_mutations.is_empty() {
+            let person_repo = PersonRepository::new(self.state.db_pool.pool());
+            for mutation in batch.person_mutations {
+                let (source_id, event_ids, operation) = match mutation {
+                    PersonMutation::Sync {
+                        source_id,
+                        person,
+                        event_ids,
+                    } => {
+                        let operation = person_repo.apply_person_sync(&source_id, &person).await;
+                        (source_id, event_ids, operation)
+                    }
+                    PersonMutation::Deleted {
+                        source_id,
+                        email,
+                        event_ids,
+                    } => {
+                        let operation = person_repo.apply_person_deleted(&source_id, &email).await;
+                        (source_id, event_ids, operation)
+                    }
+                };
+                match operation {
+                    Ok(stats) => {
+                        info!(
+                            "Applied person mutation for source {}: {:?}",
+                            source_id, stats
+                        );
+                        result.successful_event_ids.extend(event_ids);
+                    }
+                    Err(error) => {
+                        error!("Person mutation failed for source {}: {}", source_id, error);
+                        for event_id in event_ids {
+                            result.failed_events.push((event_id, error.to_string()));
                         }
                     }
                 }
@@ -1347,6 +1587,167 @@ impl QueueProcessor {
 mod tests {
     use super::*;
     use shared::queue::{QueueSummary, QueueSummaryEntry};
+    use sqlx::types::time::OffsetDateTime;
+
+    fn test_person(email: &str) -> shared::models::PersonSyncRecord {
+        shared::models::PersonSyncRecord {
+            external_id: "EMP".into(),
+            email: email.into(),
+            display_name: None,
+            given_name: None,
+            middle_name: None,
+            surname: None,
+            job_title: None,
+            department: None,
+            division: None,
+            company_name: None,
+            office_location: None,
+            work_country: None,
+            employee_id: None,
+            employee_type: None,
+            cost_center: None,
+            grade: None,
+            band: None,
+            confirmation_status: None,
+            employment_start_date: None,
+            employment_end_date: None,
+            manager_external_id: None,
+            source_updated_at: None,
+        }
+    }
+
+    fn queue_item(id: &str, sync_run_id: &str, event_type: &str) -> ConnectorEventQueueItem {
+        ConnectorEventQueueItem {
+            id: id.into(),
+            sync_run_id: sync_run_id.into(),
+            source_id: "source".into(),
+            event_type: event_type.into(),
+            payload: serde_json::Value::Null,
+            status: EventStatus::Pending,
+            retry_count: 0,
+            max_retries: 3,
+            created_at: OffsetDateTime::now_utc(),
+            processed_at: None,
+            error_message: None,
+        }
+    }
+
+    #[test]
+    fn person_partition_preserves_global_order_across_sync_runs() {
+        let events = vec![
+            queue_item("01J00000000000000000000004", "run-a", "document_created"),
+            queue_item("01J00000000000000000000003", "run-a", "person_sync"),
+            queue_item("01J00000000000000000000001", "run-a", "person_sync"),
+            queue_item("01J00000000000000000000002", "run-b", "person_deleted"),
+        ];
+
+        let (person_events, other_events) = partition_person_events_in_queue_order(events);
+        assert_eq!(
+            person_events
+                .iter()
+                .map(|event| {
+                    (
+                        event.id.as_str(),
+                        event.sync_run_id.as_str(),
+                        event.event_type.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("01J00000000000000000000001", "run-a", "person_sync",),
+                ("01J00000000000000000000002", "run-b", "person_deleted",),
+                ("01J00000000000000000000003", "run-a", "person_sync",),
+            ]
+        );
+        assert_eq!(other_events.len(), 1);
+        assert_eq!(other_events[0].id, "01J00000000000000000000004");
+    }
+
+    #[test]
+    fn person_mutations_are_explicitly_ordered_and_last_event_wins() {
+        let mut queue_items = vec![
+            ConnectorEventQueueItem {
+                id: "01J00000000000000000000002".into(),
+                sync_run_id: "run".into(),
+                source_id: "source".into(),
+                event_type: "person_deleted".into(),
+                payload: serde_json::Value::Null,
+                status: EventStatus::Pending,
+                retry_count: 0,
+                max_retries: 3,
+                created_at: OffsetDateTime::now_utc(),
+                processed_at: None,
+                error_message: None,
+            },
+            ConnectorEventQueueItem {
+                id: "01J00000000000000000000001".into(),
+                sync_run_id: "run".into(),
+                source_id: "source".into(),
+                event_type: "person_sync".into(),
+                payload: serde_json::Value::Null,
+                status: EventStatus::Pending,
+                retry_count: 0,
+                max_retries: 3,
+                created_at: OffsetDateTime::now_utc(),
+                processed_at: None,
+                error_message: None,
+            },
+        ];
+        sort_events_by_queue_order(&mut queue_items);
+        assert_eq!(queue_items[0].event_type, "person_sync");
+        assert_eq!(queue_items[1].event_type, "person_deleted");
+
+        let key = "source:person@example.com".to_string();
+        let mut mutations = HashMap::new();
+        replace_person_mutation(
+            &mut mutations,
+            key.clone(),
+            "sync".into(),
+            PersonMutation::Sync {
+                source_id: "source".into(),
+                person: test_person("person@example.com"),
+                event_ids: Vec::new(),
+            },
+        );
+        replace_person_mutation(
+            &mut mutations,
+            key.clone(),
+            "delete".into(),
+            PersonMutation::Deleted {
+                source_id: "source".into(),
+                email: "person@example.com".into(),
+                event_ids: Vec::new(),
+            },
+        );
+        assert!(
+            matches!(mutations.get(&key), Some(PersonMutation::Deleted { event_ids, .. }) if event_ids == &["sync", "delete"])
+        );
+
+        let mut mutations = HashMap::new();
+        replace_person_mutation(
+            &mut mutations,
+            key.clone(),
+            "delete".into(),
+            PersonMutation::Deleted {
+                source_id: "source".into(),
+                email: "person@example.com".into(),
+                event_ids: Vec::new(),
+            },
+        );
+        replace_person_mutation(
+            &mut mutations,
+            key.clone(),
+            "sync".into(),
+            PersonMutation::Sync {
+                source_id: "source".into(),
+                person: test_person("person@example.com"),
+                event_ids: Vec::new(),
+            },
+        );
+        assert!(
+            matches!(mutations.get(&key), Some(PersonMutation::Sync { event_ids, .. }) if event_ids == &["delete", "sync"])
+        );
+    }
 
     #[test]
     fn test_parse_byte_size_accepts_plain_and_human_suffixes() {

@@ -12,6 +12,8 @@ export const EventType = {
   DOCUMENT_UPDATED: 'document_updated',
   DOCUMENT_DELETED: 'document_deleted',
   GROUP_MEMBERSHIP_SYNC: 'group_membership_sync',
+  PERSON_SYNC: 'person_sync',
+  PERSON_DELETED: 'person_deleted',
 } as const;
 export type EventType = (typeof EventType)[keyof typeof EventType];
 
@@ -46,17 +48,75 @@ export const DocumentSchema = z.object({
 });
 export type Document = z.infer<typeof DocumentSchema>;
 
-export const ConnectorEventSchema = z.object({
-  type: z.enum(['document_created', 'document_updated', 'document_deleted']),
+const DocumentEventIdentityFields = {
   sync_run_id: z.string(),
   source_id: z.string(),
   document_id: z.string(),
-  content_id: z.string().optional(),
-  metadata: DocumentMetadataSchema.optional(),
-  permissions: DocumentPermissionsSchema.optional(),
+};
+const DocumentEventContentFields = {
+  content_id: z.string(),
+  metadata: DocumentMetadataSchema,
   attributes: z.record(z.unknown()).optional(),
+};
+
+export const DocumentEventSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('document_created'),
+    ...DocumentEventIdentityFields,
+    ...DocumentEventContentFields,
+    permissions: DocumentPermissionsSchema,
+  }),
+  z.object({
+    type: z.literal('document_updated'),
+    ...DocumentEventIdentityFields,
+    ...DocumentEventContentFields,
+    permissions: DocumentPermissionsSchema.optional(),
+  }),
+  z.object({ type: z.literal('document_deleted'), ...DocumentEventIdentityFields }),
+]);
+export type DocumentEvent = z.infer<typeof DocumentEventSchema>;
+
+export const PersonSyncRecordSchema = z.object({
+  external_id: z.string(),
+  email: z.string(),
+  display_name: z.string().nullable().optional(),
+  given_name: z.string().nullable().optional(),
+  middle_name: z.string().nullable().optional(),
+  surname: z.string().nullable().optional(),
+  job_title: z.string().nullable().optional(),
+  department: z.string().nullable().optional(),
+  division: z.string().nullable().optional(),
+  company_name: z.string().nullable().optional(),
+  office_location: z.string().nullable().optional(),
+  work_country: z.string().nullable().optional(),
+  employee_id: z.string().nullable().optional(),
+  employee_type: z.string().nullable().optional(),
+  cost_center: z.string().nullable().optional(),
+  grade: z.string().nullable().optional(),
+  band: z.string().nullable().optional(),
+  confirmation_status: z.string().nullable().optional(),
+  employment_start_date: z.string().nullable().optional(),
+  employment_end_date: z.string().nullable().optional(),
+  manager_external_id: z.string().nullable().optional(),
+  source_updated_at: z.string().nullable().optional(),
 });
-export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
+export type PersonSyncRecord = z.infer<typeof PersonSyncRecordSchema>;
+
+export const PersonSyncEventSchema = z.object({
+  type: z.literal('person_sync'),
+  sync_run_id: z.string(),
+  source_id: z.string(),
+  person: PersonSyncRecordSchema,
+});
+export type PersonSyncEvent = z.infer<typeof PersonSyncEventSchema>;
+
+export const PersonDeletedEventSchema = z.object({
+  type: z.literal('person_deleted'),
+  sync_run_id: z.string(),
+  source_id: z.string(),
+  email: z.string(),
+});
+export type PersonDeletedEvent = z.infer<typeof PersonDeletedEventSchema>;
 
 export const GroupMembershipEventSchema = z.object({
   type: z.literal('group_membership_sync'),
@@ -67,6 +127,17 @@ export const GroupMembershipEventSchema = z.object({
   member_emails: z.array(z.string()).default([]),
 });
 export type GroupMembershipEvent = z.infer<typeof GroupMembershipEventSchema>;
+
+/**
+ * Discriminated union for all connector event types.
+ */
+export const ConnectorEventSchema = z.union([
+  DocumentEventSchema,
+  GroupMembershipEventSchema,
+  PersonSyncEventSchema,
+  PersonDeletedEventSchema,
+]);
+export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
 
 export const ActionDefinitionSchema = z.object({
   name: z.string(),
@@ -300,15 +371,30 @@ export const PromptRequestSchema = z.object({
 });
 export type PromptRequest = z.infer<typeof PromptRequestSchema>;
 
-export interface DocumentEventPayload {
-  type: typeof EventType.DOCUMENT_CREATED | typeof EventType.DOCUMENT_UPDATED | typeof EventType.DOCUMENT_DELETED;
+interface DocumentEventIdentityPayload {
   sync_run_id: string;
   source_id: string;
   document_id: string;
-  content_id?: string;
-  metadata?: DocumentMetadata;
+}
+
+export interface DocumentCreatedEventPayload extends DocumentEventIdentityPayload {
+  type: typeof EventType.DOCUMENT_CREATED;
+  content_id: string;
+  metadata: DocumentMetadata;
+  permissions: DocumentPermissions;
+  attributes?: Record<string, unknown>;
+}
+
+export interface DocumentUpdatedEventPayload extends DocumentEventIdentityPayload {
+  type: typeof EventType.DOCUMENT_UPDATED;
+  content_id: string;
+  metadata: DocumentMetadata;
   permissions?: DocumentPermissions;
   attributes?: Record<string, unknown>;
+}
+
+export interface DocumentDeletedEventPayload extends DocumentEventIdentityPayload {
+  type: typeof EventType.DOCUMENT_DELETED;
 }
 
 export interface GroupMembershipEventPayload {
@@ -320,7 +406,27 @@ export interface GroupMembershipEventPayload {
   member_emails: string[];
 }
 
-export type ConnectorEventPayload = DocumentEventPayload | GroupMembershipEventPayload;
+export interface PersonSyncEventPayload {
+  type: typeof EventType.PERSON_SYNC;
+  sync_run_id: string;
+  source_id: string;
+  person: PersonSyncRecord;
+}
+
+export interface PersonDeletedEventPayload {
+  type: typeof EventType.PERSON_DELETED;
+  sync_run_id: string;
+  source_id: string;
+  email: string;
+}
+
+export type ConnectorEventPayload =
+  | DocumentCreatedEventPayload
+  | DocumentUpdatedEventPayload
+  | DocumentDeletedEventPayload
+  | GroupMembershipEventPayload
+  | PersonSyncEventPayload
+  | PersonDeletedEventPayload;
 
 export function serializeConnectorEvent(event: ConnectorEventPayload): Record<string, unknown> {
   if (event.type === EventType.GROUP_MEMBERSHIP_SYNC) {
@@ -331,6 +437,24 @@ export function serializeConnectorEvent(event: ConnectorEventPayload): Record<st
       group_email: event.group_email,
       group_name: event.group_name,
       member_emails: event.member_emails,
+    };
+  }
+
+  if (event.type === EventType.PERSON_SYNC) {
+    return {
+      type: event.type,
+      sync_run_id: event.sync_run_id,
+      source_id: event.source_id,
+      person: event.person,
+    };
+  }
+
+  if (event.type === EventType.PERSON_DELETED) {
+    return {
+      type: event.type,
+      sync_run_id: event.sync_run_id,
+      source_id: event.source_id,
+      email: event.email,
     };
   }
 

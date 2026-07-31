@@ -4475,6 +4475,7 @@ dependencies = [
  "dashmap 6.2.1",
  "dotenvy",
  "futures",
+ "omni-indexer",
  "redis",
  "reqwest 0.12.28",
  "serde",

@@ -12,6 +12,8 @@ fn event_type_str(event: &ConnectorEvent) -> &'static str {
         ConnectorEvent::DocumentUpdated { .. } => "document_updated",
         ConnectorEvent::DocumentDeleted { .. } => "document_deleted",
         ConnectorEvent::GroupMembershipSync { .. } => "group_membership_sync",
+        ConnectorEvent::PersonSync { .. } => "person_sync",
+        ConnectorEvent::PersonDeleted { .. } => "person_deleted",
     }
 }
 
@@ -103,13 +105,14 @@ impl EventQueue {
             r#"
             WITH candidates AS (
                 SELECT q.id,
-                       COALESCE(cb.size_bytes, 0) AS content_size_bytes
+                       COALESCE(cb.size_bytes, 0) + octet_length(q.payload::text) AS content_size_bytes
                 FROM connector_events_queue q
                 LEFT JOIN content_blobs cb ON cb.id = CASE
                     WHEN length(q.payload->>'content_id') = $3 THEN (q.payload->>'content_id')::char(26)
                     ELSE NULL
                 END
                 WHERE q.status = 'pending'
+                  AND q.event_type NOT IN ('person_sync', 'person_deleted')
                 ORDER BY q.id
                 LIMIT $1
                 FOR UPDATE OF q SKIP LOCKED
@@ -153,6 +156,91 @@ impl EventQueue {
         Ok(Self::map_rows_to_items(rows))
     }
 
+    /// Dequeue Person mutations independently of sync-run type while preserving
+    /// FIFO for each `(source_id, normalized email)` identity.
+    ///
+    /// An older retryable mutation blocks only newer mutations for the same
+    /// identity. Completed and dead-lettered predecessors do not block, so a
+    /// failure for one person does not stall unrelated people.
+    pub async fn dequeue_person_mutations_with_max_bytes(
+        &self,
+        batch_size: i32,
+        max_bytes: i64,
+    ) -> Result<Vec<ConnectorEventQueueItem>> {
+        let rows = sqlx::query(
+            r#"
+            WITH candidates AS (
+                SELECT q.id,
+                       octet_length(q.payload::text) AS content_size_bytes
+                FROM connector_events_queue q
+                WHERE q.status = 'pending'
+                  AND q.event_type IN ('person_sync', 'person_deleted')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM connector_events_queue older
+                      WHERE older.id < q.id
+                        AND older.source_id = q.source_id
+                        AND older.event_type IN ('person_sync', 'person_deleted')
+                        AND CASE older.event_type
+                              WHEN 'person_sync' THEN lower(btrim(older.payload #>> '{person,email}'))
+                              ELSE lower(btrim(older.payload ->> 'email'))
+                            END IS NOT DISTINCT FROM
+                            CASE q.event_type
+                              WHEN 'person_sync' THEN lower(btrim(q.payload #>> '{person,email}'))
+                              ELSE lower(btrim(q.payload ->> 'email'))
+                            END
+                        AND (
+                            older.status IN ('pending', 'processing')
+                            OR (
+                                older.status = 'failed'
+                                AND older.retry_count < older.max_retries
+                            )
+                        )
+                  )
+                ORDER BY q.id
+                LIMIT $1
+                FOR UPDATE OF q SKIP LOCKED
+            ),
+            ranked AS (
+                SELECT id,
+                       row_number() OVER (ORDER BY id) AS row_num,
+                       SUM(content_size_bytes) OVER (
+                           ORDER BY id ROWS UNBOUNDED PRECEDING
+                       ) AS running_bytes
+                FROM candidates
+            ),
+            batch AS (
+                SELECT id
+                FROM ranked
+                WHERE row_num = 1 OR running_bytes <= $2
+            )
+            UPDATE connector_events_queue q
+            SET status = 'processing',
+                processing_started_at = NOW()
+            FROM batch
+            WHERE q.id = batch.id
+            RETURNING
+                q.id,
+                q.sync_run_id,
+                q.source_id,
+                q.event_type,
+                q.payload,
+                q.status,
+                q.retry_count,
+                q.max_retries,
+                q.created_at,
+                q.processed_at,
+                q.error_message
+            "#,
+        )
+        .bind(batch_size)
+        .bind(max_bytes)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(Self::map_rows_to_items(rows))
+    }
+
     pub async fn dequeue_batch_by_sync_type(
         &self,
         batch_size: i32,
@@ -172,7 +260,7 @@ impl EventQueue {
             r#"
             WITH candidates AS (
                 SELECT q.id,
-                       COALESCE(cb.size_bytes, 0) AS content_size_bytes
+                       COALESCE(cb.size_bytes, 0) + octet_length(q.payload::text) AS content_size_bytes
                 FROM connector_events_queue q
                 JOIN sync_runs s ON q.sync_run_id = s.id
                 LEFT JOIN content_blobs cb ON cb.id = CASE
@@ -180,7 +268,8 @@ impl EventQueue {
                     ELSE NULL
                 END
                 WHERE q.status = 'pending'
-                AND s.sync_type = $2
+                  AND q.event_type NOT IN ('person_sync', 'person_deleted')
+                  AND s.sync_type = $2
                 ORDER BY q.id
                 LIMIT $1
                 FOR UPDATE OF q SKIP LOCKED
@@ -242,7 +331,7 @@ impl EventQueue {
             r#"
             WITH candidates AS (
                 SELECT q.id,
-                       COALESCE(cb.size_bytes, 0) AS content_size_bytes
+                       COALESCE(cb.size_bytes, 0) + octet_length(q.payload::text) AS content_size_bytes
                 FROM connector_events_queue q
                 LEFT JOIN sync_runs s ON q.sync_run_id = s.id
                 LEFT JOIN content_blobs cb ON cb.id = CASE
@@ -250,7 +339,8 @@ impl EventQueue {
                     ELSE NULL
                 END
                 WHERE q.status = 'pending'
-                AND s.id IS NULL
+                  AND q.event_type NOT IN ('person_sync', 'person_deleted')
+                  AND s.id IS NULL
                 ORDER BY q.id
                 LIMIT $1
                 FOR UPDATE OF q SKIP LOCKED
@@ -459,6 +549,19 @@ impl EventQueue {
     }
 
     pub async fn get_queue_summary(&self) -> Result<QueueSummary> {
+        self.get_queue_summary_filtered(false).await
+    }
+
+    /// Summary used by document/group readiness thresholds. Person mutations
+    /// bypass those thresholds through their dedicated dequeue path.
+    pub async fn get_non_person_queue_summary(&self) -> Result<QueueSummary> {
+        self.get_queue_summary_filtered(true).await
+    }
+
+    async fn get_queue_summary_filtered(
+        &self,
+        exclude_person_mutations: bool,
+    ) -> Result<QueueSummary> {
         let rows = sqlx::query(
             r#"
             SELECT
@@ -466,7 +569,9 @@ impl EventQueue {
                 q.status,
                 COUNT(*) as count,
                 MIN(q.created_at) as oldest,
-                COALESCE(SUM(COALESCE(cb.size_bytes, 0)), 0)::BIGINT as size_bytes,
+                COALESCE(SUM(
+                    COALESCE(cb.size_bytes, 0) + pg_column_size(q.payload)::BIGINT
+                ), 0)::BIGINT as size_bytes,
                 COALESCE(BOOL_OR(s.status = 'completed'), false) as has_completed_sync
             FROM connector_events_queue q
             LEFT JOIN sync_runs s ON q.sync_run_id = s.id
@@ -474,10 +579,13 @@ impl EventQueue {
                 WHEN length(q.payload->>'content_id') = $1 THEN (q.payload->>'content_id')::char(26)
                 ELSE NULL
             END
+            WHERE NOT $2
+               OR q.event_type NOT IN ('person_sync', 'person_deleted')
             GROUP BY s.sync_type, q.status
             "#,
         )
         .bind(CONTENT_ID_LENGTH)
+        .bind(exclude_person_mutations)
         .fetch_all(&self.pool)
         .await?;
 

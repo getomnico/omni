@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use shared::{
-    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
     SourceType,
+    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
 };
 use std::collections::HashMap;
 
@@ -180,6 +180,22 @@ pub struct PersonResult {
     pub job_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub department: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub office_location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employee_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employee_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_center: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub band: Option<String>,
     pub score: f32,
 }
 

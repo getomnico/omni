@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -7,26 +8,27 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
-use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
+use shared::db::repositories::{
+    ConfigurationRepository, SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE,
+};
 use shared::models::{
     ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncType,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -2226,6 +2228,65 @@ use crate::models::{
     SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
+async fn lock_and_validate_sdk_event_source(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    source_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(SOURCE_MUTATION_LOCK_NAMESPACE)
+        .bind(source_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    let is_deleted: Option<bool> =
+        sqlx::query_scalar("SELECT is_deleted FROM sources WHERE id = $1")
+            .bind(source_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to validate event source: {error}"))
+            })?;
+    match is_deleted {
+        Some(false) => Ok(()),
+        Some(true) => Err(ApiError::BadRequest(
+            "Events may not be emitted for a deleted source".to_string(),
+        )),
+        None => Err(ApiError::BadRequest("Unknown event source".to_string())),
+    }
+}
+
+async fn validate_sdk_event_context(
+    sync_run_repo: &SyncRunRepository,
+    sync_run_id: &str,
+    source_id: &str,
+    events: &[shared::models::ConnectorEvent],
+) -> Result<(), ApiError> {
+    let sync_run = sync_run_repo
+        .find_by_id(sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to validate sync run: {e}")))?
+        .ok_or_else(|| ApiError::BadRequest("Unknown sync run".to_string()))?;
+    if sync_run.source_id != source_id {
+        return Err(ApiError::BadRequest(
+            "Sync run does not belong to the supplied source".to_string(),
+        ));
+    }
+    if sync_run.status != SyncStatus::Running {
+        return Err(ApiError::BadRequest(
+            "Events may only be emitted for a running sync run".to_string(),
+        ));
+    }
+    if events
+        .iter()
+        .any(|event| event.sync_run_id() != sync_run_id || event.source_id() != source_id)
+    {
+        return Err(ApiError::BadRequest(
+            "Event source_id/sync_run_id does not match the trusted request context".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn sdk_emit_event(
     State(state): State<AppState>,
     Json(request): Json<SdkEmitEventRequest>,
@@ -2235,20 +2296,34 @@ pub async fn sdk_emit_event(
         request.sync_run_id, request.source_id
     );
 
-    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+    let mut source_guard = state
+        .db_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    lock_and_validate_sdk_event_source(&mut source_guard, &request.source_id).await?;
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    validate_sdk_event_context(
+        &sync_run_repo,
+        &request.sync_run_id,
+        &request.source_id,
+        std::slice::from_ref(&request.event),
+    )
+    .await?;
 
-    // Enqueue the event
-    event_queue
+    EventQueue::new(state.db_pool.pool().clone())
         .enqueue(&request.source_id, &request.event)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {}", e)))?;
-
-    // Update heartbeat
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {e}")))?;
     sync_run_repo
         .update_activity(&request.sync_run_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {e}")))?;
+    source_guard
+        .commit()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to unlock event source: {error}")))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -2266,18 +2341,34 @@ pub async fn sdk_emit_batch(
         request.source_id
     );
 
-    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+    let mut source_guard = state
+        .db_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    lock_and_validate_sdk_event_source(&mut source_guard, &request.source_id).await?;
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    validate_sdk_event_context(
+        &sync_run_repo,
+        &request.sync_run_id,
+        &request.source_id,
+        &request.events,
+    )
+    .await?;
 
-    event_queue
+    EventQueue::new(state.db_pool.pool().clone())
         .enqueue_batch(&request.source_id, &request.events)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {}", e)))?;
-
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {e}")))?;
     sync_run_repo
         .update_activity(&request.sync_run_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {e}")))?;
+    source_guard
+        .commit()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to unlock event source: {error}")))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),

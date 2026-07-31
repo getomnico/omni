@@ -1,8 +1,8 @@
 use crate::client::SdkClient;
 use anyhow::Result;
-use shared::models::{ConnectorEvent, SourceType, SyncType};
-use std::sync::atomic::{AtomicBool, Ordering};
+use shared::models::{ConnectorEvent, PersonSyncRecord, SourceType, SyncType};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
 
 #[derive(Clone)]
@@ -97,6 +97,24 @@ impl SyncContext {
             .emit_event(&self.sync_run_id, &self.source_id, event)
             .await?;
         Ok(())
+    }
+
+    pub async fn emit_person_sync(&self, person: PersonSyncRecord) -> Result<()> {
+        self.emit_event(ConnectorEvent::PersonSync {
+            sync_run_id: self.sync_run_id.clone(),
+            source_id: self.source_id.clone(),
+            person,
+        })
+        .await
+    }
+
+    pub async fn emit_person_deleted(&self, email: String) -> Result<()> {
+        self.emit_event(ConnectorEvent::PersonDeleted {
+            sync_run_id: self.sync_run_id.clone(),
+            source_id: self.source_id.clone(),
+            email,
+        })
+        .await
     }
 
     /// Flush all buffered events for this (sync_run_id, source_id) pair.

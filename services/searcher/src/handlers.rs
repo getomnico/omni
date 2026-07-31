@@ -18,10 +18,10 @@ use axum::{
 };
 use futures_util::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::{
-    models::UserConfiguration, ConfigurationRepository, DocumentRepository, GroupRepository,
-    PersonRepository, Repository, UserRepository,
+    ConfigurationRepository, DocumentRepository, GroupRepository, PersonRepository,
+    PersonSearchFilter, Repository, UserRepository, models::UserConfiguration,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
@@ -450,9 +450,19 @@ pub async fn suggested_questions(
 }
 
 #[derive(Debug, serde::Deserialize)]
+pub struct AttributeValuesQuery {
+    pub keys: String,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
 pub struct PeopleSearchQuery {
     pub q: String,
     pub limit: Option<i64>,
+    pub department: Option<String>,
+    pub office_location: Option<String>,
+    pub work_country: Option<String>,
+    pub employee_type: Option<String>,
 }
 
 pub async fn people_search(
@@ -462,8 +472,15 @@ pub async fn people_search(
     let person_repo = PersonRepository::new(state.db_pool.pool());
     let limit = query.limit.unwrap_or(10).min(50);
 
+    let filter = PersonSearchFilter {
+        department: non_empty(&query.department),
+        office_location: non_empty(&query.office_location),
+        work_country: non_empty(&query.work_country),
+        employee_type: non_empty(&query.employee_type),
+    };
+
     let results = person_repo
-        .search_people(&query.q, limit)
+        .search_people(&query.q, limit, &filter)
         .await
         .map_err(|e| SearcherError::Internal(anyhow!("People search failed: {}", e)))?;
 
@@ -477,6 +494,14 @@ pub async fn people_search(
             surname: p.surname,
             job_title: p.job_title,
             department: p.department,
+            company_name: p.company_name,
+            office_location: p.office_location,
+            work_country: p.work_country,
+            employee_id: p.employee_id,
+            employee_type: p.employee_type,
+            cost_center: p.cost_center,
+            grade: p.grade,
+            band: p.band,
             score: p.score,
         })
         .collect();
@@ -484,10 +509,12 @@ pub async fn people_search(
     Ok(Json(PeopleSearchResponse { people }))
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct AttributeValuesQuery {
-    pub keys: String,
-    pub limit: Option<i64>,
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 pub async fn attribute_values(

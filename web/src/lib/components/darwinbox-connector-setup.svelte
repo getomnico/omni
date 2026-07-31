@@ -4,32 +4,19 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import * as Select from '$lib/components/ui/select'
-    import { AuthType, type ConnectorListEntry } from '$lib/types'
+    import {
+        AuthType,
+        type ConnectorListEntry,
+        type DarwinboxEmployeeField,
+        type DarwinboxManifestExtraSchema,
+    } from '$lib/types'
+    import {
+        DARWINBOX_EMPLOYEE_FIELDS,
+        availableActions,
+        buildDarwinboxConfig,
+        extractApiError,
+    } from '$lib/darwinbox-config'
     import { toast } from 'svelte-sonner'
-
-    /** Fetch all Darwinbox action names from the registered connector manifest.
-     * Groups come from extra_schema.action_groups derived from the connector's
-     * internal action policy table. */
-    async function getAllowedActions(readOnly: boolean): Promise<string[]> {
-        const resp = await fetch('/api/connectors')
-        if (!resp.ok) throw new Error('Failed to load connector actions')
-        const connectors: ConnectorListEntry[] = await resp.json()
-        const darwinbox = connectors.find((c) => c.source_type === 'darwinbox')
-        if (!darwinbox?.manifest) throw new Error('Darwinbox connector not registered')
-        const groups = darwinbox.manifest.extra_schema?.action_groups ?? {}
-        const result: string[] = []
-        for (const group of Object.values(groups)) {
-            if (!group) continue
-            for (const action of group.read ?? []) {
-                if (!result.includes(action)) result.push(action)
-            }
-            if (readOnly) continue
-            for (const action of group.write ?? []) {
-                if (!result.includes(action)) result.push(action)
-            }
-        }
-        return result
-    }
 
     interface Props {
         open: boolean
@@ -57,7 +44,56 @@
     let writeAcknowledged = $state(false)
     let participantEmails = $state('')
     let targetEmployeeIds = $state('')
+    let targetEmployeeEmails = $state('')
+    let targetDepartments = $state('')
+    let scopeMode = $state<'all' | 'include'>('all')
+    let peopleEnabled = $state(false)
+    let selectedFields = $state<DarwinboxEmployeeField[]>([])
+    let selectedActions = $state<string[]>([])
+    let manifest = $state<DarwinboxManifestExtraSchema>()
     let isSubmitting = $state(false)
+
+    $effect(() => {
+        if (open && !manifest) void loadManifest()
+    })
+
+    async function loadManifest() {
+        const response = await fetch('/api/connectors')
+        if (!response.ok)
+            throw new Error(
+                await extractApiError(response, 'Failed to load Darwinbox capabilities'),
+            )
+        const connectors: ConnectorListEntry[] = await response.json()
+        manifest = connectors.find((connector) => connector.source_type === 'darwinbox')?.manifest
+            .extra_schema
+        if (!manifest) toast.error('Darwinbox connector is not registered')
+    }
+
+    function toggle(items: string[], value: string, checked: boolean): string[] {
+        return checked ? [...new Set([...items, value])] : items.filter((item) => item !== value)
+    }
+
+    function csv(value: string): string[] {
+        return value
+            .split(',')
+            .map((item) => item.trim())
+            .filter(Boolean)
+    }
+
+    function label(value: string): string {
+        return value.replaceAll('_', ' ').replace(/\b\w/g, (character) => character.toUpperCase())
+    }
+
+    function actionGroups() {
+        const groups = new Map<string, ReturnType<typeof availableActions>>()
+        for (const action of availableActions(manifest).filter(
+            (item) => !readOnly || item.mode === 'read',
+        )) {
+            const group = action.module || 'directory'
+            groups.set(group, [...(groups.get(group) ?? []), action])
+        }
+        return [...groups.entries()]
+    }
 
     async function handleSubmit() {
         isSubmitting = true
@@ -90,18 +126,38 @@
                 .split(',')
                 .map((v) => v.trim().toLowerCase())
                 .filter(Boolean)
-            const targets = targetEmployeeIds
-                .split(',')
-                .map((v) => v.trim())
-                .filter(Boolean)
-            if (participants.length === 0) {
-                throw new Error('At least one approved participant email is required')
-            }
-            if (!readOnly && !writeAcknowledged) {
+            if (!manifest) throw new Error('Darwinbox capabilities have not loaded')
+            const config = buildDarwinboxConfig(
+                {
+                    baseUrl,
+                    readOnly,
+                    selectedSyncModules: peopleEnabled ? ['employee_directory'] : [],
+                    selectedActions,
+                    participantEmails: participants,
+                    employeeScope:
+                        scopeMode === 'all'
+                            ? { mode: 'all' }
+                            : {
+                                  mode: 'include',
+                                  employee_ids: csv(targetEmployeeIds),
+                                  employee_emails: csv(targetEmployeeEmails),
+                                  departments: csv(targetDepartments),
+                              },
+                    employeeFields: selectedFields,
+                    writeAcknowledged,
+                },
+                manifest,
+            )
+            if (
+                !readOnly &&
+                config.authorization?.allowed_actions?.some(
+                    (name) =>
+                        availableActions(manifest).find((action) => action.name === name)?.mode ===
+                        'write',
+                ) &&
+                !writeAcknowledged
+            )
                 throw new Error('Confirm write-mode acknowledgement before continuing')
-            }
-            // Derive allowed actions from registered connector manifest
-            const allowedActions = await getAllowedActions(readOnly)
 
             const sourceResponse = await fetch('/api/sources', {
                 method: 'POST',
@@ -111,55 +167,14 @@
                     name: 'Darwinbox',
                     sourceType: 'darwinbox',
                     isActive: true,
-                    config: {
-                        base_url: baseUrl.trim().replace(/\/$/, ''),
-                        read_only: readOnly,
-                        employee_scope: {
-                            mode: 'include',
-                            employee_ids: targets,
-                        },
-                        employee_fields: [
-                            'name',
-                            'employee_id',
-                            'company_email',
-                            'department',
-                            'designation',
-                            'office_location',
-                        ],
-                        sync_modules: {
-                            employee_directory: true,
-                            deleted_employees: true,
-                            departments: false,
-                            designations: false,
-                            office_locations: false,
-                            business_units: false,
-                            divisions: false,
-                            cost_centers: false,
-                            group_companies: false,
-                            positions: false,
-                            holidays: false,
-                            ats_jobs: false,
-                        },
-                        action_modules: {
-                            employee_self_service: true,
-                            manager_workflows: true,
-                            hr_operations: false,
-                            ats: false,
-                            reports: true,
-                        },
-                        authorization: {
-                            actions_enabled: true,
-                            write_acknowledged: writeAcknowledged,
-                            participant_emails: participants,
-                            allowed_actions: allowedActions,
-                            allowed_report_ids: [],
-                            max_batch_size: 1,
-                        },
-                    },
+                    config,
                 }),
             })
 
-            if (!sourceResponse.ok) throw new Error('Failed to create Darwinbox source')
+            if (!sourceResponse.ok)
+                throw new Error(
+                    await extractApiError(sourceResponse, 'Failed to create Darwinbox source'),
+                )
             const source = await sourceResponse.json()
 
             const credentials =
@@ -202,7 +217,12 @@
             })
 
             if (!credentialsResponse.ok) {
-                throw new Error('Failed to save Darwinbox credentials')
+                throw new Error(
+                    await extractApiError(
+                        credentialsResponse,
+                        'Failed to save Darwinbox credentials',
+                    ),
+                )
             }
 
             toast.success('Darwinbox source created')
@@ -229,6 +249,14 @@
         readOnly = true
         writeAcknowledged = false
         participantEmails = ''
+        targetEmployeeIds = ''
+        targetEmployeeEmails = ''
+        targetDepartments = ''
+        scopeMode = 'all'
+        peopleEnabled = false
+        selectedFields = []
+        selectedActions = []
+        isSubmitting = false
     }
 
     function handleCancel() {
@@ -375,6 +403,94 @@
                         type="password"
                         required />
                 </div>
+            </div>
+
+            <div class="space-y-3 rounded-md border p-3 text-sm">
+                <div class="font-medium">Sync capabilities</div>
+                {#each manifest?.sync_capabilities?.filter((capability) => capability.available) ?? [] as capability}
+                    <label class="flex cursor-pointer items-start gap-2">
+                        <input
+                            type="checkbox"
+                            checked={capability.name === 'employee_directory' && peopleEnabled}
+                            onchange={(event) => {
+                                if (capability.name === 'employee_directory')
+                                    peopleEnabled = event.currentTarget.checked
+                            }} />
+                        <span
+                            ><strong
+                                >{capability.name === 'employee_directory'
+                                    ? 'People directory'
+                                    : label(capability.name)}</strong
+                            >{#if capability.endpoints?.length}<span
+                                    class="text-muted-foreground block text-xs"
+                                    >Requires {capability.endpoints.join(', ')}</span
+                                >{/if}</span>
+                    </label>
+                {/each}
+                {#if peopleEnabled}
+                    <p class="text-muted-foreground text-xs">
+                        Selected fields are visible to authenticated organization members in the
+                        colleague directory.
+                    </p>
+                    <div class="flex gap-4">
+                        <label class="cursor-pointer"
+                            ><input type="radio" bind:group={scopeMode} value="all" /> All employees</label>
+                        <label class="cursor-pointer"
+                            ><input type="radio" bind:group={scopeMode} value="include" /> Include only</label>
+                    </div>
+                    {#if scopeMode === 'include'}
+                        <Input
+                            bind:value={targetEmployeeIds}
+                            placeholder="Employee IDs (comma separated)" />
+                        <Input
+                            bind:value={targetEmployeeEmails}
+                            placeholder="Employee emails (comma separated)" />
+                        <Input
+                            bind:value={targetDepartments}
+                            placeholder="Departments (comma separated)" />
+                    {/if}
+                    <div class="grid grid-cols-2 gap-2">
+                        {#each DARWINBOX_EMPLOYEE_FIELDS as field}
+                            <label class="cursor-pointer"
+                                ><input
+                                    type="checkbox"
+                                    checked={selectedFields.includes(field)}
+                                    onchange={(event) =>
+                                        (selectedFields = toggle(
+                                            selectedFields,
+                                            field,
+                                            event.currentTarget.checked,
+                                        ) as DarwinboxEmployeeField[])} />
+                                {label(field)}</label>
+                        {/each}
+                    </div>
+                {/if}
+            </div>
+
+            <div class="space-y-3 rounded-md border p-3 text-sm">
+                <div class="font-medium">Available actions</div>
+                {#each actionGroups() as [module, actions]}
+                    <fieldset class="space-y-2">
+                        <legend class="font-medium">{label(module)}</legend>
+                        {#each actions ?? [] as action}
+                            <label class="flex cursor-pointer items-start gap-2"
+                                ><input
+                                    type="checkbox"
+                                    checked={selectedActions.includes(action.name)}
+                                    onchange={(event) =>
+                                        (selectedActions = toggle(
+                                            selectedActions,
+                                            action.name,
+                                            event.currentTarget.checked,
+                                        ))} /><span
+                                    >{label(action.name)}<span
+                                        class="text-muted-foreground block text-xs"
+                                        >Requires {action.endpoints.join(', ')}</span
+                                    ></span
+                                ></label>
+                        {/each}
+                    </fieldset>
+                {/each}
             </div>
 
             <div class="space-y-3 rounded-md border p-3 text-sm">

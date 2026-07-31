@@ -7,8 +7,30 @@ use omni_connector_manager::source_cleanup::SourceCleanup;
 use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncStatus, SyncType};
+use shared::models::{
+    ConnectorEvent, DocumentMetadata, DocumentPermissions, PersonSyncRecord, SyncStatus, SyncType,
+};
 use shared::queue::EventQueue;
+
+struct DummyConnectorEmitter<'a> {
+    server: &'a TestServer,
+    source_id: String,
+    sync_run_id: String,
+}
+
+impl<'a> DummyConnectorEmitter<'a> {
+    async fn emit(&self, event: ConnectorEvent) {
+        self.server
+            .post("/sdk/events")
+            .json(&json!({
+                "sync_run_id": self.sync_run_id,
+                "source_id": self.source_id,
+                "event": event,
+            }))
+            .await
+            .assert_status(StatusCode::OK);
+    }
+}
 
 fn test_server(fixture: &common::TestFixture) -> TestServer {
     let config = TestServerConfig::builder()
@@ -794,6 +816,139 @@ async fn seed_deleted_source_with_documents(
 }
 
 #[tokio::test]
+async fn test_source_cleanup_queues_people_deactivation_before_source_deletion() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let (source_id, _) = seed_deleted_source_with_documents(pool, 0).await;
+    let person_id = shared::utils::generate_ulid();
+    sqlx::query(
+        "INSERT INTO people (id,email,is_active,source_data) VALUES ($1,'cleanup@example.com',true,jsonb_build_object($2::text,jsonb_build_object('external_id','EMP')))",
+    )
+    .bind(&person_id)
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let ordinary_run = create_running_sync(pool, &source_id).await;
+    EventQueue::new(pool.clone())
+        .enqueue(
+            &source_id,
+            &ConnectorEvent::PersonSync {
+                sync_run_id: ordinary_run.clone(),
+                source_id: source_id.clone(),
+                person: PersonSyncRecord {
+                    external_id: "LATE".into(),
+                    email: "late@example.com".into(),
+                    display_name: None,
+                    given_name: None,
+                    middle_name: None,
+                    surname: None,
+                    job_title: None,
+                    department: None,
+                    division: None,
+                    company_name: None,
+                    office_location: None,
+                    work_country: None,
+                    employee_id: None,
+                    employee_type: None,
+                    cost_center: None,
+                    grade: None,
+                    band: None,
+                    confirmation_status: None,
+                    employment_start_date: None,
+                    employment_end_date: None,
+                    manager_external_id: None,
+                    source_updated_at: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let ordinary_pending: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_sync' AND status='pending'",
+    )
+    .bind(&source_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(ordinary_pending, 1);
+    let cleanup_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_deleted'",
+    )
+    .bind(&source_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        cleanup_events, 0,
+        "ordinary person mutation must quiesce first"
+    );
+
+    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE sync_run_id=$1")
+        .bind(&ordinary_run)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO people (id,email,is_active,source_data) VALUES ($1,'late@example.com',true,jsonb_build_object($2::text,jsonb_build_object('external_id','LATE')))",
+    )
+    .bind(shared::utils::generate_ulid())
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+
+    let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(source_count, 1);
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue q JOIN sync_runs r ON r.id=q.sync_run_id WHERE q.source_id=$1 AND q.event_type='person_deleted' AND q.status='pending' AND r.trigger_type='source_cleanup_people' AND q.payload->>'email' IN ('cleanup@example.com','late@example.com')",
+    )
+    .bind(&source_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        queued, 2,
+        "cleanup must include data from the ordinary mutation"
+    );
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let cleanup_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_deleted'",
+    )
+    .bind(&source_id).fetch_one(pool).await.unwrap();
+    assert_eq!(cleanup_events, 2, "pending cleanup must be idempotent");
+
+    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE source_id=$1 AND event_type='person_deleted'")
+        .bind(&source_id).execute(pool).await.unwrap();
+    sqlx::query(
+        "UPDATE people SET source_data=source_data-$1, is_active=false WHERE source_data ? $1",
+    )
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 0,
+        "reconciled source should be physically deleted"
+    );
+}
+
+#[tokio::test]
 async fn test_source_cleanup() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let pool = fixture.state.db_pool.pool();
@@ -1040,4 +1195,444 @@ async fn test_incremental_after_failed_sync_starts_from_previous_successful_chec
         requests[0].checkpoint.as_ref().unwrap()["cursor"].as_str(),
         Some("successful")
     );
+}
+
+fn person_event(run: &str, source: &str, email: &str) -> ConnectorEvent {
+    ConnectorEvent::PersonDeleted {
+        sync_run_id: run.into(),
+        source_id: source.into(),
+        email: email.into(),
+    }
+}
+
+#[tokio::test]
+async fn sdk_event_rejects_mismatched_event_context_and_run_ownership() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let run = create_running_sync(pool, TEST_SOURCE_ID).await;
+    let other_source = seed_source(pool, "slack", true).await;
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "event": person_event(&run, &other_source, "01J00000000000000000000001")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": other_source,
+            "event": person_event(&run, &other_source, "01J00000000000000000000001")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    sqlx::query("UPDATE sync_runs SET status = 'completed' WHERE id = $1")
+        .bind(&run)
+        .execute(pool)
+        .await
+        .unwrap();
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "event": person_event(&run, TEST_SOURCE_ID, "01J00000000000000000000002")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_text_contains("running sync run");
+}
+
+#[tokio::test]
+async fn sdk_event_rejects_deleted_source_before_enqueue() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let run = create_running_sync(pool, TEST_SOURCE_ID).await;
+    sqlx::query("UPDATE sources SET is_deleted=true WHERE id=$1")
+        .bind(TEST_SOURCE_ID)
+        .execute(pool)
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "event": person_event(&run, TEST_SOURCE_ID, "deleted@example.com")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_text_contains("deleted source");
+
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn sdk_batch_rejects_mixed_context_atomically() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let run = create_running_sync(pool, TEST_SOURCE_ID).await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let response = server
+        .post("/sdk/events/batch")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "events": [
+                person_event(&run, TEST_SOURCE_ID, "01J00000000000000000000001"),
+                person_event("wrong-run", TEST_SOURCE_ID, "01J00000000000000000000002")
+            ]
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+async fn wait_for_person_queue(
+    pool: &sqlx::PgPool,
+    sync_run_ids: &[&str],
+    expected: i64,
+    timeout: std::time::Duration,
+) {
+    let start = std::time::Instant::now();
+    loop {
+        let completed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status='completed'",
+        )
+        .bind(sync_run_ids)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if completed == expected {
+            return;
+        }
+        if start.elapsed() > timeout {
+            let details: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT event_type, status, substring(error_message from 1 for 200) FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status<>'completed' ORDER BY id",
+            )
+            .bind(sync_run_ids)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            let incomplete: i64 = details.len() as i64;
+            let detail_str: String = details
+                .iter()
+                .map(|(et, st, err)| format!("  {} status={} err={:?}", et, st, err))
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "Person sync test timed out after {:.1}s: completed={}, incomplete={}\n{}completed events:\n{}",
+                timeout.as_secs_f64(),
+                completed,
+                incomplete,
+                detail_str,
+                {
+                    let completed_details: Vec<(String, String)> = sqlx::query_as(
+                        "SELECT event_type, status FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status='completed' ORDER BY id"
+                    )
+                    .bind(sync_run_ids)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+                    completed_details
+                        .iter()
+                        .map(|(et, st)| format!("  {} status={}", et, st))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_people_rows(pool: &sqlx::PgPool, source_id: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        let ready: bool = sqlx::query_scalar(
+            r#"
+            SELECT
+                (SELECT count(*) FROM people) = 3
+                AND EXISTS (
+                    SELECT 1 FROM people
+                    WHERE email='shared@example.com' AND source_data ? $1
+                )
+                AND EXISTS (
+                    SELECT 1 FROM people
+                    WHERE email='doc-only@example.com'
+                )
+            "#,
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if ready {
+            return;
+        }
+        assert!(
+            start.elapsed() <= std::time::Duration::from_secs(15),
+            "timed out waiting for implicit and explicit people writes"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn person_sync_and_document_extraction_merge_correctly() {
+    use shared::models::{DocumentMetadata, DocumentPermissions, PersonSyncRecord};
+
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let user_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N6";
+
+    // Seed two sources
+    let source_a = shared::utils::generate_ulid();
+    let source_b = shared::utils::generate_ulid();
+    sqlx::query(
+        "INSERT INTO sources (id,name,source_type,config,is_active,created_by,created_at,updated_at) VALUES ($1,'PersonSync Source','darwinbox','{}',true,$2,NOW(),NOW())",
+    )
+    .bind(&source_a)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sources (id,name,source_type,config,is_active,created_by,created_at,updated_at) VALUES ($1,'Document Source','local_files','{}',true,$2,NOW(),NOW())",
+    )
+    .bind(&source_b)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Create running sync runs for both
+    let run_a = create_running_sync(pool, &source_a).await;
+    let run_b = create_running_sync(pool, &source_b).await;
+
+    // Start indexer QueueProcessor in background
+    let indexer_state = fixture.indexer_state();
+    let processor = omni_indexer::QueueProcessor::new(indexer_state)
+        .with_poll_interval(std::time::Duration::from_millis(100))
+        .with_batch_size(1)
+        .with_full_batch_size(1)
+        .with_full_max_age_secs(1);
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Store content for the document event
+    let content_id = fixture
+        .state
+        .content_storage
+        .store_content(b"test document for person extraction", None)
+        .await
+        .unwrap();
+
+    // ── Emit PersonSync events for source_a (authoritative) ──
+    let emitter_a = DummyConnectorEmitter {
+        server: &server,
+        source_id: source_a.clone(),
+        sync_run_id: run_a.clone(),
+    };
+
+    // PersonSync for shared@example.com (case variant to test normalization)
+    emitter_a
+        .emit(ConnectorEvent::PersonSync {
+            sync_run_id: run_a.clone(),
+            source_id: source_a.clone(),
+            person: PersonSyncRecord {
+                external_id: "EMP-001".to_string(),
+                email: "Shared@Example.com".to_string(),
+                display_name: Some("Alice Authority".to_string()),
+                given_name: Some("Alice".to_string()),
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: Some("Engineering".to_string()),
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: Some("EMP-001".to_string()),
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        })
+        .await;
+
+    // PersonSync for another-only@example.com (only authoritative, no doc mention)
+    emitter_a
+        .emit(ConnectorEvent::PersonSync {
+            sync_run_id: run_a.clone(),
+            source_id: source_a.clone(),
+            person: PersonSyncRecord {
+                external_id: "EMP-002".to_string(),
+                email: "another-only@example.com".to_string(),
+                display_name: Some("Bob Only".to_string()),
+                given_name: None,
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: None,
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: Some("EMP-002".to_string()),
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        })
+        .await;
+
+    // ── Emit DocumentCreated for source_b with people references ──
+    let emitter_b = DummyConnectorEmitter {
+        server: &server,
+        source_id: source_b.clone(),
+        sync_run_id: run_b.clone(),
+    };
+    emitter_b
+        .emit(ConnectorEvent::DocumentCreated {
+            sync_run_id: run_b.clone(),
+            source_id: source_b.clone(),
+            document_id: "doc-1".to_string(),
+            content_id,
+            metadata: DocumentMetadata {
+                title: Some("Test Doc".to_string()),
+                author: Some("doc-only@example.com".to_string()),
+                ..Default::default()
+            },
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec![
+                    "Shared@Example.com".to_string(),
+                    "doc-only@example.com".to_string(),
+                ],
+                groups: vec![],
+            },
+            attributes: None,
+        })
+        .await;
+
+    // Wait for the exact test events and for implicit extraction, which runs
+    // immediately after the document event is marked completed.
+    wait_for_person_queue(
+        pool,
+        &[run_a.as_str(), run_b.as_str()],
+        3,
+        std::time::Duration::from_secs(15),
+    )
+    .await;
+    wait_for_people_rows(pool, &source_a).await;
+
+    // ── Assertions ──
+
+    // 1. shared@example.com: one merged row, authoritative fields from PersonSync,
+    //    source_data contains source_a entry
+    let shared_row: (String, Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT email, display_name, department, source_data ? $1 FROM people WHERE lower(email)='shared@example.com'",
+    )
+    .bind(&source_a)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        shared_row.0, "shared@example.com",
+        "email should be normalized to lowercase"
+    );
+    assert_eq!(
+        shared_row.1.as_deref(),
+        Some("Alice Authority"),
+        "display_name must come from authoritative PersonSync"
+    );
+    assert_eq!(shared_row.2.as_deref(), Some("Engineering"));
+    assert!(shared_row.3, "source_a must have an entry in source_data");
+
+    // 2. doc-only@example.com: one row, display_name is null (weak extraction
+    //    provides no name), source_data is empty
+    let doc_only_row: (String, Option<String>, bool, bool) = sqlx::query_as(
+        "SELECT email, display_name, is_active, source_data = '{}'::jsonb FROM people WHERE lower(email)='doc-only@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(doc_only_row.0, "doc-only@example.com");
+    assert!(
+        doc_only_row.1.is_none(),
+        "weak document extraction should not set a display_name"
+    );
+    assert!(doc_only_row.2, "doc-only person should be active");
+    assert!(
+        doc_only_row.3,
+        "source_data should be empty for doc-only people"
+    );
+
+    // 3. another-only@example.com: only from PersonSync, has display_name and source_data
+    let another_row: (String, Option<String>) = sqlx::query_as(
+        "SELECT email, display_name FROM people WHERE lower(email)='another-only@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(another_row.0, "another-only@example.com");
+    assert_eq!(
+        another_row.1.as_deref(),
+        Some("Bob Only"),
+        "PersonSync display_name must be stored"
+    );
+
+    // 4. Exactly 3 people rows, no duplicates
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM people")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(total, 3, "must have exactly 3 distinct canonical people");
+
+    // 5. No person duplicates by email
+    let dup_count: i64 =
+        sqlx::query_scalar("SELECT count(*) - count(DISTINCT lower(email)) FROM people")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(dup_count, 0, "no duplicate email rows");
+
+    processor_handle.abort();
+    // Give the processor a moment to shut down cleanly
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }

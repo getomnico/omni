@@ -69,6 +69,10 @@ class SearcherError(httpx.HTTPStatusError):
 class PeopleSearchRequest(BaseModel):
     query: str
     limit: int = 10
+    department: str | None = None
+    office_location: str | None = None
+    work_country: str | None = None
+    employee_type: str | None = None
 
 
 class PersonResult(BaseModel):
@@ -79,6 +83,14 @@ class PersonResult(BaseModel):
     surname: str | None = None
     job_title: str | None = None
     department: str | None = None
+    company_name: str | None = None
+    office_location: str | None = None
+    work_country: str | None = None
+    employee_id: str | None = None
+    employee_type: str | None = None
+    cost_center: str | None = None
+    grade: str | None = None
+    band: str | None = None
     score: float
 
 
@@ -198,9 +210,19 @@ class SearcherClient:
         """Search the people directory using omni-searcher service."""
         try:
             logger.info(f"People search with query: {request.query}...")
+            params: dict[str, str | int] = {"q": request.query, "limit": request.limit}
+            for field in (
+                "department",
+                "office_location",
+                "work_country",
+                "employee_type",
+            ):
+                value = getattr(request, field)
+                if value:
+                    params[field] = value
             response = await self.client.get(
                 f"{self.searcher_url}/people/search",
-                params={"q": request.query, "limit": request.limit},
+                params=params,
             )
 
             if response.status_code == 200:

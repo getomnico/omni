@@ -1,9 +1,9 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
-use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Duration, Utc};
-use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, SyncContext, SyncType};
-use serde_json::{json, Value as JsonValue};
+use anyhow::{Context, Result, bail};
+use chrono::Utc;
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, SyncContext};
+use serde_json::{Value as JsonValue, json};
 use tracing::{info, warn};
 
 use crate::client::DarwinboxClient;
@@ -11,7 +11,12 @@ use crate::config::{self, DarwinboxSourceConfig};
 use crate::mappers;
 use crate::models::{DarwinboxCheckpoint, DarwinboxSyncModuleKey, ModuleCheckpoint};
 
-const INCREMENTAL_OVERLAP_SECONDS: i64 = 900;
+/// Schema version for per-person events and successfully synced email state.
+const CURRENT_CHECKPOINT_SCHEMA: u16 = 4;
+
+fn removed_person_emails(previous: &BTreeSet<String>, current: &BTreeSet<String>) -> Vec<String> {
+    previous.difference(current).cloned().collect()
+}
 
 pub async fn run_sync(
     client: &DarwinboxClient,
@@ -29,61 +34,125 @@ pub async fn run_sync(
     if checkpoint.schema_version != 0 && checkpoint.schema_version < 2 {
         bail!("legacy Darwinbox checkpoint is incompatible; delete and recreate the source");
     }
-    let policy_fingerprint = serde_json::to_string(config)?;
-    if checkpoint.policy_fingerprint.as_deref() != Some(policy_fingerprint.as_str()) {
-        for document_id in checkpoint.indexed_document_ids.clone() {
-            ctx.emit_event(ConnectorEvent::DocumentDeleted {
+
+    // Bump schema for PersonSync-based checkpoint and discard state for
+    // document-producing modules that are unavailable in this version.
+    checkpoint.schema_version = CURRENT_CHECKPOINT_SCHEMA;
+    checkpoint
+        .modules
+        .retain(|module, _| *module == DarwinboxSyncModuleKey::EmployeeDirectory);
+
+    if config.sync_modules.employee_directory {
+        let response = client
+            .fetch_employees(None, None)
+            .await
+            .context("failed to fetch Darwinbox employee directory")?;
+
+        // A missing status is not a confirmed complete response, so it must
+        // never drive per-person removals.
+        let status = response
+            .status
+            .ok_or_else(|| anyhow::anyhow!("Darwinbox employee API response omitted status"))?;
+        if status != 1 && status != 200 {
+            bail!("Darwinbox employee API returned non-success status {status}");
+        }
+
+        if ctx.is_cancelled() {
+            ctx.cancel().await?;
+            return Ok(());
+        }
+
+        let people = response.to_person_sync_records(&config.employee_fields, |employee| {
+            employee
+                .employee_id
+                .as_deref()
+                .is_some_and(|id| !id.trim().is_empty())
+                && config.is_employee_in_scope(employee)
+        })?;
+        let mut external_ids = HashSet::with_capacity(people.len());
+        let mut current_emails = BTreeSet::new();
+        for person in &people {
+            if !external_ids.insert(person.external_id.clone()) {
+                bail!(
+                    "Darwinbox employee API returned duplicate employee_id {}",
+                    person.external_id
+                );
+            }
+            if !current_emails.insert(person.email.clone()) {
+                bail!("Darwinbox employee API returned duplicate company email");
+            }
+        }
+
+        for person in people {
+            if ctx.is_cancelled() {
+                ctx.cancel().await?;
+                return Ok(());
+            }
+            ctx.emit_event(ConnectorEvent::PersonSync {
                 sync_run_id: ctx.sync_run_id().to_string(),
                 source_id: ctx.source_id().to_string(),
-                document_id,
+                person,
             })
             .await?;
         }
-        checkpoint.schema_version = 2;
-        checkpoint.policy_fingerprint = Some(policy_fingerprint.clone());
-        checkpoint.indexed_document_ids.clear();
-        ctx.save_checkpoint(json!(checkpoint)).await?;
-    }
-    let previous_ids = checkpoint.indexed_document_ids.clone();
-    let mut current_ids = BTreeSet::new();
-    // Intermediate checkpoints retain every previously durable document plus
-    // newly emitted documents. If a later operation fails, the next run still
-    // has a complete revocation inventory.
-    let mut durable_ids = previous_ids.clone();
-    checkpoint.schema_version = 2;
-
-    // Employee directory — always processed if enabled, uses config for scope/ACL
-    if config.sync_modules.employee_directory {
-        sync_employee_directory(
-            client,
-            config,
-            ctx.source_id(),
-            &ctx,
-            &mut checkpoint,
-            &policy_fingerprint,
-            &mut current_ids,
-            &mut durable_ids,
-        )
-        .await?;
+        if ctx.is_cancelled() {
+            ctx.cancel().await?;
+            return Ok(());
+        }
+        for email in removed_person_emails(&checkpoint.synced_person_emails, &current_emails) {
+            if ctx.is_cancelled() {
+                ctx.cancel().await?;
+                return Ok(());
+            }
+            ctx.emit_event(ConnectorEvent::PersonDeleted {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: ctx.source_id().to_string(),
+                email,
+            })
+            .await?;
+        }
+        ctx.increment_scanned(current_emails.len() as i32).await?;
+        checkpoint.synced_person_emails = current_emails;
         set_module_watermark(
             &mut checkpoint,
             DarwinboxSyncModuleKey::EmployeeDirectory,
             Utc::now().to_rfc3339(),
         );
-        save_inventory_checkpoint(&ctx, &mut checkpoint, &policy_fingerprint, &durable_ids).await?;
+        if ctx.is_cancelled() {
+            ctx.cancel().await?;
+            return Ok(());
+        }
+        ctx.save_checkpoint(json!(checkpoint)).await?;
+    } else {
+        if ctx.is_cancelled() {
+            ctx.cancel().await?;
+            return Ok(());
+        }
+        for email in &checkpoint.synced_person_emails {
+            if ctx.is_cancelled() {
+                ctx.cancel().await?;
+                return Ok(());
+            }
+            ctx.emit_event(ConnectorEvent::PersonDeleted {
+                sync_run_id: ctx.sync_run_id().to_string(),
+                source_id: ctx.source_id().to_string(),
+                email: email.clone(),
+            })
+            .await?;
+        }
+        checkpoint.synced_person_emails.clear();
+        checkpoint
+            .modules
+            .remove(&DarwinboxSyncModuleKey::EmployeeDirectory);
+        if ctx.is_cancelled() {
+            ctx.cancel().await?;
+            return Ok(());
+        }
+        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
-    // Deleted employees
-    if config.sync_modules.deleted_employees {
-        let since = module_since(&checkpoint, DarwinboxSyncModuleKey::DeletedEmployees, &ctx);
-        sync_deleted_employees(client, since.as_deref(), &ctx).await?;
-        set_module_watermark(
-            &mut checkpoint,
-            DarwinboxSyncModuleKey::DeletedEmployees,
-            Utc::now().to_rfc3339(),
-        );
-        save_inventory_checkpoint(&ctx, &mut checkpoint, &policy_fingerprint, &durable_ids).await?;
-    }
+    // Employee removal is derived from the complete Employee Master response;
+    // no deleted-employee endpoint is required.
 
     // Org masters — each entity type as its own flag
     // Departments
@@ -95,7 +164,6 @@ pub async fn run_sync(
             "darwinbox:department",
             "/orgmasterapi/departmentlist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -108,7 +176,6 @@ pub async fn run_sync(
             "darwinbox:designation",
             "/orgmasterapi/designationlist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -121,7 +188,6 @@ pub async fn run_sync(
             "darwinbox:office_location",
             "/orgmasterapi/officelocationlist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -134,7 +200,6 @@ pub async fn run_sync(
             "darwinbox:business_unit",
             "/orgmasterapi/businessunitlist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -147,7 +212,6 @@ pub async fn run_sync(
             "darwinbox:division",
             "/orgmasterapi/divisionlist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -160,7 +224,6 @@ pub async fn run_sync(
             "darwinbox:cost_center",
             "/orgmasterapi/costcenterlist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -173,7 +236,6 @@ pub async fn run_sync(
             "darwinbox:group_company",
             "/orgmasterapi/groupcompanylist",
             &ctx,
-            &mut current_ids,
         )
         .await?;
     }
@@ -182,7 +244,6 @@ pub async fn run_sync(
     if config.sync_modules.positions {
         let response = client.fetch_position_master(None).await?;
         sync_typed_collection(
-            client,
             config,
             "position",
             "darwinbox:position",
@@ -190,7 +251,6 @@ pub async fn run_sync(
             ctx.source_id(),
             &ctx,
             mappers::format_position_item,
-            &mut current_ids,
         )
         .await?;
         set_module_watermark(
@@ -198,25 +258,24 @@ pub async fn run_sync(
             DarwinboxSyncModuleKey::PositionMaster,
             Utc::now().to_rfc3339(),
         );
-        save_inventory_checkpoint(&ctx, &mut checkpoint, &policy_fingerprint, &current_ids).await?;
+        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
     // Holidays
     if config.sync_modules.holidays {
-        sync_holidays(client, config, ctx.source_id(), &ctx, &mut current_ids).await?;
+        sync_holidays(client, config, ctx.source_id(), &ctx).await?;
         set_module_watermark(
             &mut checkpoint,
             DarwinboxSyncModuleKey::Holidays,
             Utc::now().to_rfc3339(),
         );
-        save_inventory_checkpoint(&ctx, &mut checkpoint, &policy_fingerprint, &current_ids).await?;
+        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
     // ATS jobs
     if config.sync_modules.ats_jobs {
         let response = client.fetch_jobs(None).await?;
         sync_typed_collection(
-            client,
             config,
             "ats_job",
             "darwinbox:job",
@@ -224,7 +283,6 @@ pub async fn run_sync(
             ctx.source_id(),
             &ctx,
             mappers::format_ats_job_item,
-            &mut current_ids,
         )
         .await?;
         set_module_watermark(
@@ -232,164 +290,13 @@ pub async fn run_sync(
             DarwinboxSyncModuleKey::AtsJobs,
             Utc::now().to_rfc3339(),
         );
-        save_inventory_checkpoint(&ctx, &mut checkpoint, &policy_fingerprint, &current_ids).await?;
+        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
-    for document_id in previous_ids.difference(&current_ids) {
-        ctx.emit_event(ConnectorEvent::DocumentDeleted {
-            sync_run_id: ctx.sync_run_id().to_string(),
-            source_id: ctx.source_id().to_string(),
-            document_id: document_id.clone(),
-        })
-        .await?;
-    }
-    save_inventory_checkpoint(&ctx, &mut checkpoint, &policy_fingerprint, &current_ids).await?;
+    // No document-level deletion reconciliation needed — PersonSync is authoritative
+    // for people data, and org-master modules use their own independent state.
 
     info!(source_id = ctx.source_id(), "Darwinbox sync completed");
-    Ok(())
-}
-
-async fn sync_employee_directory(
-    client: &DarwinboxClient,
-    config: &DarwinboxSourceConfig,
-    source_id: &str,
-    ctx: &SyncContext,
-    checkpoint: &mut DarwinboxCheckpoint,
-    policy_fingerprint: &str,
-    current_ids: &mut BTreeSet<String>,
-    durable_ids: &mut BTreeSet<String>,
-) -> Result<()> {
-    // Always fetch a complete snapshot so policy reconciliation is authoritative.
-    let response = client
-        .fetch_employees(None, None)
-        .await
-        .context("failed to fetch Darwinbox employee directory")?;
-
-    let mut emitted = 0i32;
-
-    for employee in response.employee_data {
-        if ctx.is_cancelled() {
-            ctx.cancel().await?;
-            return Ok(());
-        }
-
-        let Some(document_id) = employee.external_id() else {
-            warn!("Skipping Darwinbox employee without employee_id");
-            continue;
-        };
-
-        // Apply employee scope filter from config
-        if !config.is_employee_in_scope(&employee) {
-            continue;
-        }
-
-        // Use filtered content with only approved fields
-        let content = employee.content_filtered(&config.employee_fields);
-        let content_id = ctx
-            .store_content(&content)
-            .await
-            .with_context(|| format!("failed to store content for {document_id}"))?;
-
-        // Build event with config-derived non-public permissions
-        let permissions = config::document_permissions(
-            "employee_profile",
-            config,
-            source_id,
-            employee.company_email_id.as_deref(),
-        );
-
-        if let Some(event) = employee.to_event_with_permissions(
-            ctx.sync_run_id().to_string(),
-            source_id.to_string(),
-            content_id,
-            content.len(),
-            &config.employee_fields,
-            permissions,
-        ) {
-            // Persist a conservatively over-inclusive revocation inventory before
-            // the durable event can become visible to the indexer.
-            durable_ids.insert(document_id.clone());
-            save_inventory_checkpoint(ctx, checkpoint, policy_fingerprint, durable_ids).await?;
-            ctx.emit_event(event).await?;
-            current_ids.insert(document_id);
-            emitted += 1;
-        }
-
-        if emitted > 0 && emitted % 100 == 0 {
-            ctx.increment_scanned(100).await?;
-        }
-    }
-
-    if emitted % 100 != 0 {
-        ctx.increment_scanned(emitted % 100).await?;
-    }
-
-    Ok(())
-}
-
-async fn sync_deleted_employees(
-    client: &DarwinboxClient,
-    last_modified: Option<&str>,
-    ctx: &SyncContext,
-) -> Result<()> {
-    let provider_last_modified = last_modified.and_then(to_darwinbox_timestamp_with_overlap);
-    let response = client
-        .fetch_deleted_employees(provider_last_modified.as_deref())
-        .await
-        .context("failed to fetch deleted Darwinbox employees")?;
-
-    let cols = response
-        .get("cols")
-        .and_then(JsonValue::as_array)
-        .map(|cols| {
-            cols.iter()
-                .filter_map(JsonValue::as_str)
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let employee_id_idx = cols
-        .iter()
-        .position(|col| matches!(col.as_str(), "Candidate ID" | "Employee ID" | "Employee No"));
-
-    let Some(employee_id_idx) = employee_id_idx else {
-        warn!("Deleted employees response did not include an employee ID column");
-        return Ok(());
-    };
-
-    let rows = response
-        .get("output")
-        .and_then(JsonValue::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    let mut deleted = 0i32;
-    for row in rows {
-        if ctx.is_cancelled() {
-            ctx.cancel().await?;
-            return Ok(());
-        }
-        let Some(employee_id) = row
-            .as_array()
-            .and_then(|values| values.get(employee_id_idx))
-            .and_then(JsonValue::as_str)
-            .filter(|id| !id.trim().is_empty())
-        else {
-            continue;
-        };
-        ctx.emit_event(ConnectorEvent::DocumentDeleted {
-            sync_run_id: ctx.sync_run_id().to_string(),
-            source_id: ctx.source_id().to_string(),
-            document_id: format!("darwinbox:employee:{employee_id}"),
-        })
-        .await?;
-        deleted += 1;
-    }
-
-    if deleted > 0 {
-        ctx.increment_scanned(deleted).await?;
-    }
-
     Ok(())
 }
 
@@ -401,7 +308,6 @@ async fn sync_single_org_master(
     external_prefix: &str,
     path: &str,
     ctx: &SyncContext,
-    current_ids: &mut BTreeSet<String>,
 ) -> Result<()> {
     if ctx.is_cancelled() {
         ctx.cancel().await?;
@@ -454,7 +360,6 @@ async fn sync_single_org_master(
             ])),
         })
         .await?;
-        current_ids.insert(document_id);
         count += 1;
     }
     if count > 0 {
@@ -468,7 +373,6 @@ async fn sync_holidays(
     config: &DarwinboxSourceConfig,
     source_id: &str,
     ctx: &SyncContext,
-    current_ids: &mut BTreeSet<String>,
 ) -> Result<()> {
     let employees = client.fetch_employees(None, None).await?;
     let Some(employee_no) = employees
@@ -523,7 +427,6 @@ async fn sync_holidays(
             ])),
         })
         .await?;
-        current_ids.insert(document_id);
         count += 1;
     }
     if count > 0 {
@@ -535,7 +438,6 @@ async fn sync_holidays(
 /// Sync a typed collection using a safe mapper function that derives (title, safe_content)
 /// from only known fields of the provider response.
 async fn sync_typed_collection<'a, F>(
-    _client: &DarwinboxClient,
     config: &DarwinboxSourceConfig,
     content_type: &'a str,
     external_prefix: &'a str,
@@ -543,7 +445,6 @@ async fn sync_typed_collection<'a, F>(
     source_id: &str,
     ctx: &SyncContext,
     mapper: F,
-    current_ids: &mut BTreeSet<String>,
 ) -> Result<()>
 where
     F: Fn(&JsonValue) -> (String, String), // (title, safe_content)
@@ -592,7 +493,6 @@ where
             ])),
         })
         .await?;
-        current_ids.insert(document_id);
         count += 1;
     }
     if count > 0 {
@@ -660,29 +560,21 @@ fn slugify(value: &str) -> String {
         .to_string()
 }
 
-async fn save_inventory_checkpoint(
-    ctx: &SyncContext,
-    checkpoint: &mut DarwinboxCheckpoint,
-    policy_fingerprint: &str,
-    current_ids: &BTreeSet<String>,
-) -> Result<()> {
-    checkpoint.policy_fingerprint = Some(policy_fingerprint.to_string());
-    checkpoint.indexed_document_ids = current_ids.clone();
-    ctx.save_checkpoint(json!(checkpoint)).await
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn module_since(
-    checkpoint: &DarwinboxCheckpoint,
-    key: DarwinboxSyncModuleKey,
-    ctx: &SyncContext,
-) -> Option<String> {
-    if ctx.sync_mode() == SyncType::Full {
-        return None;
+    #[test]
+    fn complete_directory_diff_deletes_only_absent_emails() {
+        let previous = ["ada@example.com".into(), "grace@example.com".into()]
+            .into_iter()
+            .collect();
+        let current = ["ada@example.com".into()].into_iter().collect();
+        assert_eq!(
+            removed_person_emails(&previous, &current),
+            ["grace@example.com"]
+        );
     }
-    checkpoint
-        .modules
-        .get(&key)
-        .and_then(|module| module.watermark_ts.clone())
 }
 
 fn set_module_watermark(
@@ -697,10 +589,4 @@ fn set_module_watermark(
             in_progress: None,
         },
     );
-}
-
-fn to_darwinbox_timestamp_with_overlap(value: &str) -> Option<String> {
-    let parsed = DateTime::parse_from_rfc3339(value).ok()?;
-    let overlapped = parsed.with_timezone(&Utc) - Duration::seconds(INCREMENTAL_OVERLAP_SECONDS);
-    Some(overlapped.format("%d-%m-%Y %H:%M:%S").to_string())
 }
