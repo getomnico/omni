@@ -17,6 +17,7 @@ const base = {
     readOnly: false,
     selectedSyncModules: ['employee_directory', 'holidays'],
     selectedActions: ['profile'],
+    participantMode: 'all' as const,
     participantEmails: ['a@example.com'],
     employeeScope: { mode: 'all' as const },
     employeeFields: ['name' as const, 'company_email' as const],
@@ -104,15 +105,34 @@ describe('Darwinbox config builder', () => {
             buildDarwinboxConfig({ ...base, baseUrl: 'http://localhost:8080/' }, schema).base_url,
         ).toBe('http://localhost:8080')
     })
-    it('validates and deduplicates participant emails', () => {
+    it('defaults actions to everyone and clears the allowlist', () => {
+        const config = buildDarwinboxConfig(base, schema)
+        expect(config.authorization?.participant_mode).toBe('all')
+        expect(config.authorization?.participant_emails).toEqual([])
+    })
+    it('restricts actions when allowlist mode is chosen', () => {
         const config = buildDarwinboxConfig(
-            { ...base, participantEmails: [' A@example.com ', 'a@example.com'] },
+            {
+                ...base,
+                participantMode: 'allowlist',
+                participantEmails: [' A@example.com ', 'a@example.com'],
+            },
             schema,
         )
+        expect(config.authorization?.participant_mode).toBe('allowlist')
         expect(config.authorization?.participant_emails).toEqual(['a@example.com'])
         expect(() =>
-            buildDarwinboxConfig({ ...base, participantEmails: ['invalid'] }, schema),
+            buildDarwinboxConfig(
+                { ...base, participantMode: 'allowlist', participantEmails: ['invalid'] },
+                schema,
+            ),
         ).toThrow(/valid email/)
+        expect(() =>
+            buildDarwinboxConfig(
+                { ...base, participantMode: 'allowlist', participantEmails: [] },
+                schema,
+            ),
+        ).toThrow(/specific people/)
     })
     it('extracts connector JSON validation errors', async () => {
         const response = new Response(

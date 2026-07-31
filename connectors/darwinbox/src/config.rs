@@ -210,6 +210,10 @@ pub struct DarwinboxAuthorizationConfig {
     pub actions_enabled: bool,
     #[serde(default)]
     pub write_acknowledged: bool,
+    /// "all" (default) makes interactive actions available to every
+    /// authenticated user; "allowlist" restricts them to `participant_emails`.
+    #[serde(default)]
+    pub participant_mode: Option<String>,
     #[serde(default)]
     pub participant_emails: Vec<String>,
     #[serde(default)]
@@ -228,6 +232,7 @@ impl Default for DarwinboxAuthorizationConfig {
             use_darwinbox_permissions: None,
             actions_enabled: false,
             write_acknowledged: false,
+            participant_mode: None,
             participant_emails: Vec::new(),
             allowed_actions: Vec::new(),
             allowed_report_ids: Vec::new(),
@@ -245,7 +250,27 @@ impl DarwinboxSourceConfig {
             .unwrap_or(false)
     }
 
+    /// Resolve the effective participant mode. Configs created before
+    /// `participant_mode` existed carry only an email allowlist, so a missing
+    /// mode is derived from the list: a non-empty allowlist stays restricted
+    /// instead of silently opening up to everyone.
+    pub fn participant_mode(&self) -> &str {
+        match self.authorization.participant_mode.as_deref() {
+            Some(mode @ ("all" | "allowlist")) => mode,
+            _ => {
+                if self.authorization.participant_emails.is_empty() {
+                    "all"
+                } else {
+                    "allowlist"
+                }
+            }
+        }
+    }
+
     pub fn is_action_participant(&self, email: &str) -> bool {
+        if self.participant_mode() == "all" {
+            return true;
+        }
         let email = normalize_email(email);
         normalize_emails(&self.authorization.participant_emails).contains(&email)
     }
@@ -322,8 +347,17 @@ impl DarwinboxSourceConfig {
             if !self.authorization.actions_enabled {
                 errors.push("allowed actions require actions_enabled=true".to_string());
             }
-            if self.authorization.participant_emails.is_empty() {
-                errors.push("actions require participant_emails".to_string());
+            if self.participant_mode() == "allowlist"
+                && self.authorization.participant_emails.is_empty()
+            {
+                errors.push(
+                    "actions restricted to an allowlist require participant_emails".to_string(),
+                );
+            }
+            if let Some(mode) = self.authorization.participant_mode.as_deref() {
+                if !matches!(mode, "all" | "allowlist") {
+                    errors.push("participant_mode must be 'all' or 'allowlist'".to_string());
+                }
             }
         } else if self.authorization.actions_enabled {
             errors.push("actions_enabled=true requires at least one allowed action".to_string());

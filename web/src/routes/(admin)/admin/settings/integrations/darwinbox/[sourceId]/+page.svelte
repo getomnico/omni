@@ -13,6 +13,12 @@
     const scope = config.employee_scope ?? { mode: 'all' }
     let readOnly = $state(config.read_only !== false)
     let writeAcknowledged = $state(Boolean(authorization.write_acknowledged))
+    let participantMode = $state<'all' | 'allowlist'>(
+        authorization.participant_mode === 'allowlist' ||
+            (!authorization.participant_mode && (authorization.participant_emails?.length ?? 0) > 0)
+            ? 'allowlist'
+            : 'all',
+    )
     let scopeMode = $state<'all' | 'include'>(scope.mode)
     let isSubmitting = $state(false)
     const includeScope =
@@ -122,10 +128,26 @@
             </fieldset>
             <label class="flex cursor-pointer gap-2"
                 ><input name="read_only" type="checkbox" bind:checked={readOnly} /> Read-only mode</label>
-            <Input
-                name="participant_emails"
-                value={(authorization.participant_emails ?? []).join(', ')}
-                placeholder="Approved participant emails (required only for selected actions)" />
+            <fieldset class="space-y-2">
+                <legend class="font-medium">Action participants</legend><label
+                    class="flex cursor-pointer gap-2"
+                    ><input
+                        type="radio"
+                        name="participant_mode"
+                        value="all"
+                        bind:group={participantMode} /> Everyone (default)</label
+                ><label class="flex cursor-pointer gap-2"
+                    ><input
+                        type="radio"
+                        name="participant_mode"
+                        value="allowlist"
+                        bind:group={participantMode} /> Only specific people</label
+                >{#if participantMode === 'allowlist'}<Input
+                        name="participant_emails"
+                        value={(authorization.participant_emails ?? []).join(', ')}
+                        placeholder="Approved participant emails (comma-separated)" />
+                {/if}
+            </fieldset>
             {#if !readOnly}<label
                     class="flex cursor-pointer gap-2 rounded border border-amber-300 p-3"
                     ><input

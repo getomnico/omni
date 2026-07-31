@@ -57,6 +57,8 @@ export const actions: Actions = {
                     readOnly: form.has('read_only'),
                     selectedSyncModules: list(form, 'sync_modules'),
                     selectedActions: list(form, 'allowed_actions'),
+                    participantMode:
+                        form.get('participant_mode') === 'allowlist' ? 'allowlist' : 'all',
                     participantEmails: list(form, 'participant_emails').map((email) =>
                         email.toLowerCase(),
                     ),

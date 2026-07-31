@@ -237,6 +237,77 @@ fn deprecated_permission_switch_is_rejected() {
 }
 
 #[test]
+fn participant_mode_defaults_to_everyone_and_derives_legacy_allowlist() {
+    // Explicit "all" mode needs no emails and admits any caller.
+    let everyone: DarwinboxSourceConfig = serde_json::from_value(json!({
+        "base_url": "https://example.darwinbox.in",
+        "action_modules": { "employee_self_service": true },
+        "authorization": {
+            "actions_enabled": true,
+            "participant_mode": "all",
+            "allowed_actions": ["get_my_leave_balance"]
+        }
+    }))
+    .unwrap();
+    assert!(everyone.validate().is_ok());
+    assert!(everyone.is_action_participant("anyone@example.com"));
+    assert!(everyone.is_action_participant("another@example.com"));
+
+    // Legacy configs carry only emails: a non-empty allowlist stays restricted.
+    let legacy: DarwinboxSourceConfig = serde_json::from_value(json!({
+        "base_url": "https://example.darwinbox.in",
+        "action_modules": { "employee_self_service": true },
+        "authorization": {
+            "actions_enabled": true,
+            "participant_emails": ["a@example.com"],
+            "allowed_actions": ["get_my_leave_balance"]
+        }
+    }))
+    .unwrap();
+    assert_eq!(legacy.participant_mode(), "allowlist");
+    assert!(legacy.is_action_participant("a@example.com"));
+    assert!(!legacy.is_action_participant("outsider@example.com"));
+    assert!(legacy.validate().is_ok());
+
+    // Explicit allowlist with no emails is invalid; unknown mode is invalid.
+    let empty_allowlist: DarwinboxSourceConfig = serde_json::from_value(json!({
+        "base_url": "https://example.darwinbox.in",
+        "action_modules": { "employee_self_service": true },
+        "authorization": {
+            "actions_enabled": true,
+            "participant_mode": "allowlist",
+            "allowed_actions": ["get_my_leave_balance"]
+        }
+    }))
+    .unwrap();
+    assert!(
+        empty_allowlist
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|e| e.contains("participant_emails"))
+    );
+    let bogus: DarwinboxSourceConfig = serde_json::from_value(json!({
+        "base_url": "https://example.darwinbox.in",
+        "action_modules": { "employee_self_service": true },
+        "authorization": {
+            "actions_enabled": true,
+            "participant_mode": "friends",
+            "participant_emails": ["a@example.com"],
+            "allowed_actions": ["get_my_leave_balance"]
+        }
+    }))
+    .unwrap();
+    assert!(
+        bogus
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|e| e.contains("participant_mode"))
+    );
+}
+
+#[test]
 fn high_risk_raw_action_families_are_rejected() {
     let config: DarwinboxSourceConfig = serde_json::from_value(json!({
         "base_url": "https://example.darwinbox.in",

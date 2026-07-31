@@ -28,6 +28,7 @@ export interface DarwinboxConfigSelection {
     readOnly: boolean
     selectedSyncModules: string[]
     selectedActions: string[]
+    participantMode: 'all' | 'allowlist'
     participantEmails: string[]
     employeeScope: DarwinboxEmployeeScope | null
     employeeFields: DarwinboxEmployeeField[]
@@ -89,9 +90,13 @@ export function buildDarwinboxConfig(
     if (hasSelectedWrite && !selection.writeAcknowledged) {
         throw new Error('Confirm write-mode acknowledgement before continuing')
     }
-    if (selectedActions.length > 0 && participantEmails.length === 0) {
+    if (
+        selection.participantMode === 'allowlist' &&
+        selectedActions.length > 0 &&
+        participantEmails.length === 0
+    ) {
         throw new Error(
-            'At least one approved participant email is required when actions are selected',
+            'At least one approved participant email is required when restricting actions to specific people',
         )
     }
 
@@ -118,7 +123,11 @@ export function buildDarwinboxConfig(
             ...existing?.authorization,
             actions_enabled: selectedActions.length > 0,
             write_acknowledged: hasSelectedWrite ? selection.writeAcknowledged : false,
-            participant_emails: selectedActions.length > 0 ? participantEmails : [],
+            participant_mode: selection.participantMode,
+            participant_emails:
+                selection.participantMode === 'allowlist' && selectedActions.length > 0
+                    ? participantEmails
+                    : [],
             allowed_actions: selectedActions,
             allowed_report_ids: existing?.authorization?.allowed_report_ids ?? [],
             max_batch_size: existing?.authorization?.max_batch_size ?? 1,

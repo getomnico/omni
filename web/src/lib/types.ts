@@ -247,6 +247,7 @@ export interface DarwinboxSourceConfig {
     authorization?: {
         actions_enabled?: boolean
         write_acknowledged?: boolean
+        participant_mode?: 'all' | 'allowlist'
         participant_emails?: string[]
         allowed_actions?: string[]
         allowed_report_ids?: string[]
