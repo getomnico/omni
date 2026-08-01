@@ -63,7 +63,7 @@ BEGIN
         FROM people_email_dedupe d
         ORDER BY d.keeper_id, d.duplicate_id
     LOOP
-        -- Only pre-existing (pre-108) columns can differ here: the columns
+        -- Only pre-existing (pre-109) columns can differ here: the columns
         -- added above are born empty within this same transaction, so merging
         -- them would be a no-op.
         UPDATE people keeper
