@@ -10,7 +10,7 @@ import {
     type OAuthManifestConfig,
 } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
-import { IntegrationType, supportsDataSync, type DarwinboxManifestExtraSchema } from '$lib/types'
+import { IntegrationType, supportsDataSync } from '$lib/types'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -58,7 +58,7 @@ interface ConnectorInfo {
         actions?: unknown[]
         resources?: unknown[]
         oauth?: OAuthManifestConfig | null
-        extra_schema?: DarwinboxManifestExtraSchema
+        extra_schema?: unknown
     }
 }
 
@@ -124,7 +124,6 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         connected: boolean
     }[] = []
     let oauthProviders: OAuthIntegrationProvider[] = []
-    let darwinboxManifest: DarwinboxManifestExtraSchema | undefined
     const sourceHealth = new Map<string, 'healthy' | 'unhealthy'>()
 
     try {
@@ -146,9 +145,6 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
 
         if (connectorsResponse.ok) {
             const connectors: ConnectorInfo[] = await connectorsResponse.json()
-            darwinboxManifest = connectors.find(
-                (connector) => connector.source_type === 'darwinbox',
-            )?.manifest?.extra_schema
 
             // Group by connector_id to build integration list
             const integrationMap = new Map<
@@ -283,6 +279,5 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         oauthProviders,
         oauthRedirectUri: callbackUrl(),
         mcpTab,
-        darwinboxManifest,
     }
 }

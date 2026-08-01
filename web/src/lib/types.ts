@@ -172,90 +172,27 @@ export interface GoogleAdsSourceConfig {
     sync_enabled?: boolean
 }
 
-export interface DarwinboxActionCapability {
-    name: string
-    module: string
-    mode: 'read' | 'write'
-    endpoints: string[]
-    available?: boolean
-}
-
-export interface DarwinboxSyncCapability {
-    name: string
-    available: boolean
-    mode?: string
-    endpoints?: string[]
-    reason?: string
-}
-
-export interface DarwinboxManifestExtraSchema {
-    action_groups?: Record<string, { read: string[]; write: string[] }>
-    action_capabilities?: DarwinboxActionCapability[]
-    sync_capabilities?: DarwinboxSyncCapability[]
-}
-
 export interface ConnectorListEntry {
     source_type: string
-    manifest: { extra_schema?: DarwinboxManifestExtraSchema }
+    manifest: { extra_schema?: unknown }
 }
-
-export type DarwinboxEmployeeField =
-    | 'name'
-    | 'employee_id'
-    | 'company_email'
-    | 'department'
-    | 'designation'
-    | 'office_location'
-    | 'manager_employee_id'
-    | 'employee_type'
-    | 'cost_center'
-    | 'work_country'
-    | 'grade'
-    | 'band'
-    | 'confirmation_status'
-    | 'employment_dates'
-
-export type DarwinboxEmployeeScope =
-    | { mode: 'all' }
-    | { mode: 'include'; employee_ids: string[]; employee_emails: string[]; departments: string[] }
 
 export interface DarwinboxSourceConfig {
     base_url: string
     read_only?: boolean
     default_timezone?: string
-    sync_modules?: Record<string, boolean> & {
-        employee_directory?: boolean
-        deleted_employees?: boolean
-        departments?: boolean
-        designations?: boolean
-        office_locations?: boolean
-        business_units?: boolean
-        divisions?: boolean
-        cost_centers?: boolean
-        group_companies?: boolean
-        positions?: boolean
-        holidays?: boolean
-        ats_jobs?: boolean
-    }
-    action_modules?: Record<string, boolean> & {
-        employee_self_service?: boolean
-        manager_workflows?: boolean
-        hr_operations?: boolean
-        ats?: boolean
-        reports?: boolean
-    }
     authorization?: {
-        actions_enabled?: boolean
-        write_acknowledged?: boolean
         participant_mode?: 'all' | 'allowlist'
         participant_emails?: string[]
-        allowed_actions?: string[]
+        recruiter_emails?: string[]
         allowed_report_ids?: string[]
         max_batch_size?: number
-        max_requests_per_minute?: number
     }
-    employee_scope?: DarwinboxEmployeeScope | null
-    employee_fields?: DarwinboxEmployeeField[]
+}
+
+export interface ConnectorListEntry {
+    source_type: string
+    manifest: { extra_schema?: unknown }
 }
 
 export interface WindshiftSourceConfig {

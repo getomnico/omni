@@ -1,18 +1,57 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, SyncContext};
 use serde_json::{Value as JsonValue, json};
 use tracing::{info, warn};
 
-use crate::client::DarwinboxClient;
-use crate::config::{self, DarwinboxSourceConfig};
+use crate::client::{DarwinboxApiError, DarwinboxClient};
+use crate::config::{self, APPROVED_EMPLOYEE_FIELDS, DarwinboxSourceConfig};
 use crate::mappers;
 use crate::models::{DarwinboxCheckpoint, DarwinboxSyncModuleKey, ModuleCheckpoint};
 
 /// Schema version for per-person events and successfully synced email state.
 const CURRENT_CHECKPOINT_SCHEMA: u16 = 4;
+
+/// (content_type, external prefix, API path) for each org master entity.
+const ORG_MASTERS: &[(&str, &str, &str)] = &[
+    (
+        "department",
+        "darwinbox:department",
+        "/orgmasterapi/departmentlist",
+    ),
+    (
+        "designation",
+        "darwinbox:designation",
+        "/orgmasterapi/designationlist",
+    ),
+    (
+        "office_location",
+        "darwinbox:office_location",
+        "/orgmasterapi/officelocationlist",
+    ),
+    (
+        "business_unit",
+        "darwinbox:business_unit",
+        "/orgmasterapi/businessunitlist",
+    ),
+    (
+        "division",
+        "darwinbox:division",
+        "/orgmasterapi/divisionlist",
+    ),
+    (
+        "cost_center",
+        "darwinbox:cost_center",
+        "/orgmasterapi/costcenterlist",
+    ),
+    (
+        "group_company",
+        "darwinbox:group_company",
+        "/orgmasterapi/groupcompanylist",
+    ),
+];
 
 fn removed_person_emails(previous: &BTreeSet<String>, current: &BTreeSet<String>) -> Vec<String> {
     previous.difference(current).cloned().collect()
@@ -34,40 +73,45 @@ pub async fn run_sync(
     if checkpoint.schema_version != 0 && checkpoint.schema_version < 2 {
         bail!("legacy Darwinbox checkpoint is incompatible; delete and recreate the source");
     }
-
-    // Bump schema for PersonSync-based checkpoint and discard state for
-    // document-producing modules that are unavailable in this version.
     checkpoint.schema_version = CURRENT_CHECKPOINT_SCHEMA;
-    checkpoint
-        .modules
-        .retain(|module, _| *module == DarwinboxSyncModuleKey::EmployeeDirectory);
 
-    if config.sync_modules.employee_directory {
-        let response = client
-            .fetch_employees(None, None)
-            .await
-            .context("failed to fetch Darwinbox employee directory")?;
-
-        // A missing status is not a confirmed complete response, so it must
-        // never drive per-person removals.
-        let status = response
-            .status
-            .ok_or_else(|| anyhow::anyhow!("Darwinbox employee API response omitted status"))?;
-        if status != 1 && status != 200 {
-            bail!("Darwinbox employee API returned non-success status {status}");
+    // People directory — full Employee Master snapshot. The dataset key is the
+    // access control; a provider-side denial (4xx) skips the module with a
+    // warning instead of failing the run, and leaves the previous checkpoint
+    // intact so removals are still derivable on a later successful run.
+    let directory = match client.fetch_employees(None, None).await {
+        Ok(response) => {
+            // A missing status is not a confirmed complete response, so it
+            // must never drive per-person removals.
+            let status = response
+                .status
+                .ok_or_else(|| anyhow::anyhow!("Darwinbox employee API response omitted status"))?;
+            if status != 1 && status != 200 {
+                bail!("Darwinbox employee API returned non-success status {status}");
+            }
+            Some(response)
         }
-
-        if ctx.is_cancelled() {
-            ctx.cancel().await?;
-            return Ok(());
+        Err(DarwinboxApiError::NotPermitted { .. }) => {
+            warn!(
+                source_id = ctx.source_id(),
+                "Skipping People directory sync: Darwinbox denied /masterapi/employee access"
+            );
+            None
         }
+        Err(error) => return Err(error.into()),
+    };
 
-        let people = response.to_person_sync_records(&config.employee_fields, |employee| {
+    if ctx.is_cancelled() {
+        ctx.cancel().await?;
+        return Ok(());
+    }
+
+    if let Some(response) = &directory {
+        let people = response.to_person_sync_records(APPROVED_EMPLOYEE_FIELDS, |employee| {
             employee
                 .employee_id
                 .as_deref()
                 .is_some_and(|id| !id.trim().is_empty())
-                && config.is_employee_in_scope(employee)
         })?;
         let mut external_ids = HashSet::with_capacity(people.len());
         let mut current_emails = BTreeSet::new();
@@ -118,130 +162,35 @@ pub async fn run_sync(
             DarwinboxSyncModuleKey::EmployeeDirectory,
             Utc::now().to_rfc3339(),
         );
-        if ctx.is_cancelled() {
-            ctx.cancel().await?;
-            return Ok(());
-        }
-        ctx.save_checkpoint(json!(checkpoint)).await?;
-    } else {
-        if ctx.is_cancelled() {
-            ctx.cancel().await?;
-            return Ok(());
-        }
-        for email in &checkpoint.synced_person_emails {
-            if ctx.is_cancelled() {
-                ctx.cancel().await?;
-                return Ok(());
-            }
-            ctx.emit_event(ConnectorEvent::PersonDeleted {
-                sync_run_id: ctx.sync_run_id().to_string(),
-                source_id: ctx.source_id().to_string(),
-                email: email.clone(),
-            })
-            .await?;
-        }
-        checkpoint.synced_person_emails.clear();
-        checkpoint
-            .modules
-            .remove(&DarwinboxSyncModuleKey::EmployeeDirectory);
-        if ctx.is_cancelled() {
-            ctx.cancel().await?;
-            return Ok(());
-        }
-        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
-    // Employee removal is derived from the complete Employee Master response;
-    // no deleted-employee endpoint is required.
-
-    // Org masters — each entity type as its own flag
-    // Departments
-    if config.sync_modules.departments {
-        sync_single_org_master(
-            client,
-            config,
-            "department",
-            "darwinbox:department",
-            "/orgmasterapi/departmentlist",
-            &ctx,
-        )
+    // Org masters — every entity type is attempted; denied modules are
+    // skipped with a warning.
+    for (content_type, external_prefix, path) in ORG_MASTERS {
+        let ran = run_module(content_type, || async {
+            let response = client.fetch_org_master(path).await?;
+            sync_org_master(
+                config,
+                content_type,
+                external_prefix,
+                &response,
+                ctx.source_id(),
+                &ctx,
+            )
+            .await
+        })
         .await?;
-    }
-    // Designations
-    if config.sync_modules.designations {
-        sync_single_org_master(
-            client,
-            config,
-            "designation",
-            "darwinbox:designation",
-            "/orgmasterapi/designationlist",
-            &ctx,
-        )
-        .await?;
-    }
-    // Office locations
-    if config.sync_modules.office_locations {
-        sync_single_org_master(
-            client,
-            config,
-            "office_location",
-            "darwinbox:office_location",
-            "/orgmasterapi/officelocationlist",
-            &ctx,
-        )
-        .await?;
-    }
-    // Business units
-    if config.sync_modules.business_units {
-        sync_single_org_master(
-            client,
-            config,
-            "business_unit",
-            "darwinbox:business_unit",
-            "/orgmasterapi/businessunitlist",
-            &ctx,
-        )
-        .await?;
-    }
-    // Divisions
-    if config.sync_modules.divisions {
-        sync_single_org_master(
-            client,
-            config,
-            "division",
-            "darwinbox:division",
-            "/orgmasterapi/divisionlist",
-            &ctx,
-        )
-        .await?;
-    }
-    // Cost centers
-    if config.sync_modules.cost_centers {
-        sync_single_org_master(
-            client,
-            config,
-            "cost_center",
-            "darwinbox:cost_center",
-            "/orgmasterapi/costcenterlist",
-            &ctx,
-        )
-        .await?;
-    }
-    // Group companies
-    if config.sync_modules.group_companies {
-        sync_single_org_master(
-            client,
-            config,
-            "group_company",
-            "darwinbox:group_company",
-            "/orgmasterapi/groupcompanylist",
-            &ctx,
-        )
-        .await?;
+        if ran {
+            set_module_watermark(
+                &mut checkpoint,
+                DarwinboxSyncModuleKey::OrgMasters,
+                Utc::now().to_rfc3339(),
+            );
+        }
     }
 
     // Positions
-    if config.sync_modules.positions {
+    let ran = run_module("position", || async {
         let response = client.fetch_position_master(None).await?;
         sync_typed_collection(
             config,
@@ -252,28 +201,46 @@ pub async fn run_sync(
             &ctx,
             mappers::format_position_item,
         )
-        .await?;
+        .await
+    })
+    .await?;
+    if ran {
         set_module_watermark(
             &mut checkpoint,
             DarwinboxSyncModuleKey::PositionMaster,
             Utc::now().to_rfc3339(),
         );
-        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
-    // Holidays
-    if config.sync_modules.holidays {
-        sync_holidays(client, config, ctx.source_id(), &ctx).await?;
-        set_module_watermark(
-            &mut checkpoint,
-            DarwinboxSyncModuleKey::Holidays,
-            Utc::now().to_rfc3339(),
+    // Holidays — reuse the directory snapshot for the employee id instead of
+    // refetching the full Employee Master.
+    let directory_employee_id = directory.as_ref().and_then(|response| {
+        response
+            .employee_data
+            .iter()
+            .find_map(|employee| employee.employee_id.as_deref())
+    });
+    if let Some(employee_id) = directory_employee_id {
+        let ran = run_module("holiday", || async {
+            sync_holidays(client, config, ctx.source_id(), &ctx, employee_id).await
+        })
+        .await?;
+        if ran {
+            set_module_watermark(
+                &mut checkpoint,
+                DarwinboxSyncModuleKey::Holidays,
+                Utc::now().to_rfc3339(),
+            );
+        }
+    } else {
+        warn!(
+            source_id = ctx.source_id(),
+            "Skipping Darwinbox holiday sync: no employee_id was available from the Employee Master"
         );
-        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
     // ATS jobs
-    if config.sync_modules.ats_jobs {
+    let ran = run_module("ats_job", || async {
         let response = client.fetch_jobs(None).await?;
         sync_typed_collection(
             config,
@@ -284,38 +251,63 @@ pub async fn run_sync(
             &ctx,
             mappers::format_ats_job_item,
         )
-        .await?;
+        .await
+    })
+    .await?;
+    if ran {
         set_module_watermark(
             &mut checkpoint,
             DarwinboxSyncModuleKey::AtsJobs,
             Utc::now().to_rfc3339(),
         );
-        ctx.save_checkpoint(json!(checkpoint)).await?;
     }
 
-    // No document-level deletion reconciliation needed — PersonSync is authoritative
-    // for people data, and org-master modules use their own independent state.
+    if ctx.is_cancelled() {
+        ctx.cancel().await?;
+        return Ok(());
+    }
+    ctx.save_checkpoint(json!(checkpoint)).await?;
 
     info!(source_id = ctx.source_id(), "Darwinbox sync completed");
     Ok(())
 }
 
-/// Sync a single org master entity type using its typed mapper.
-async fn sync_single_org_master(
-    client: &DarwinboxClient,
+/// Run a sync module, returning `false` when the provider denied access (4xx)
+/// so the caller can warn and continue with the remaining modules. Non-denial
+/// failures propagate and fail the run.
+async fn run_module<F, Fut>(module: &str, f: F) -> Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    match f().await {
+        Ok(()) => Ok(true),
+        Err(error) if is_not_permitted(&error) => {
+            warn!("Skipping Darwinbox {module} sync: {error}");
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn is_not_permitted(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<DarwinboxApiError>()
+        .is_some_and(|api_error| matches!(api_error, DarwinboxApiError::NotPermitted { .. }))
+}
+
+/// Emit one document per org master record with entity attributes
+/// (e.g. `department`, `department_code`) for the search operators.
+async fn sync_org_master(
     config: &DarwinboxSourceConfig,
     content_type: &str,
     external_prefix: &str,
-    path: &str,
+    response: &JsonValue,
+    source_id: &str,
     ctx: &SyncContext,
 ) -> Result<()> {
-    if ctx.is_cancelled() {
-        ctx.cancel().await?;
-        return Ok(());
-    }
-    let response = client.fetch_org_master(path).await?;
-    let permissions = config::document_permissions(content_type, config, ctx.source_id(), None);
-    let items = extract_items(&response);
+    let permissions = config::document_permissions(content_type, config, source_id, None);
+    let items = extract_items(response);
     let mut count = 0i32;
 
     for item in &items {
@@ -330,35 +322,20 @@ async fn sync_single_org_master(
             );
             continue;
         };
-
-        let (title, safe_body) = mappers::format_org_master_item(item, content_type);
-        let content = safe_body;
-        let content_id = ctx.store_content(&content).await?;
+        let document =
+            mappers::format_org_master_item(item, content_type_to_attribute_key(content_type));
+        let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("{external_prefix}:{id}");
-        ctx.emit_event(ConnectorEvent::DocumentCreated {
-            sync_run_id: ctx.sync_run_id().to_string(),
-            source_id: ctx.source_id().to_string(),
-            document_id: document_id.clone(),
+        emit_document(
+            ctx,
+            content_type,
+            source_id,
+            &document_id,
             content_id,
-            metadata: DocumentMetadata {
-                title: Some(title.to_string()),
-                author: None,
-                created_at: None,
-                updated_at: None,
-                content_type: Some(content_type.to_string()),
-                mime_type: Some("text/markdown".to_string()),
-                size: Some(content.len().to_string()),
-                url: None,
-                path: None,
-                extra: None,
-            },
-            permissions: permissions.clone(),
-            attributes: Some(std::collections::HashMap::from([
-                ("source_type".to_string(), json!("darwinbox")),
-                ("content_type".to_string(), json!(content_type)),
-            ])),
-        })
+            &document,
+            &permissions,
+        )
         .await?;
         count += 1;
     }
@@ -366,6 +343,20 @@ async fn sync_single_org_master(
         ctx.increment_scanned(count).await?;
     }
     Ok(())
+}
+
+/// Map an org master content type to its search attribute key.
+fn content_type_to_attribute_key(content_type: &str) -> &'static str {
+    match content_type {
+        "department" => "department",
+        "designation" => "designation",
+        "office_location" => "office_location",
+        "business_unit" => "business_unit",
+        "division" => "division",
+        "cost_center" => "cost_center",
+        "group_company" => "group_company",
+        _ => "org_master",
+    }
 }
 
 async fn sync_holidays(
@@ -373,59 +364,37 @@ async fn sync_holidays(
     config: &DarwinboxSourceConfig,
     source_id: &str,
     ctx: &SyncContext,
+    employee_id: &str,
 ) -> Result<()> {
-    let employees = client.fetch_employees(None, None).await?;
-    let Some(employee_no) = employees
-        .employee_data
-        .iter()
-        .find_map(|employee| employee.employee_id.as_deref())
-    else {
-        warn!("Skipping Darwinbox holiday sync because no employee_id was available");
-        return Ok(());
-    };
     let year = Utc::now().format("%Y").to_string();
-    let response = client.fetch_holiday_list(employee_no, &year).await?;
+    let response = client.fetch_holiday_list(employee_id, &year).await?;
     let permissions = config::document_permissions("holiday", config, source_id, None);
     let items = extract_items(&response);
     let mut count = 0i32;
 
-    for (_idx, item) in items.iter().enumerate() {
+    for item in &items {
         if ctx.is_cancelled() {
             ctx.cancel().await?;
             return Ok(());
         }
-        let (title, safe_body) = mappers::format_holiday_item(item);
+        let document = mappers::format_holiday_item(item);
         let Some(date) = item.get("holiday_date").and_then(JsonValue::as_str) else {
             warn!("Skipping Darwinbox holiday without holiday_date");
             continue;
         };
-        let id = slugify(&format!("{date}-{title}"));
-        let content_id = ctx.store_content(&safe_body).await?;
+        let id = slugify(&format!("{date}-{}", document.title));
+        let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("darwinbox:holiday:{id}");
-        ctx.emit_event(ConnectorEvent::DocumentCreated {
-            sync_run_id: ctx.sync_run_id().to_string(),
-            source_id: source_id.to_string(),
-            document_id: document_id.clone(),
+        emit_document(
+            ctx,
+            "holiday",
+            source_id,
+            &document_id,
             content_id,
-            metadata: DocumentMetadata {
-                title: Some(title),
-                author: None,
-                created_at: None,
-                updated_at: None,
-                content_type: Some("holiday".to_string()),
-                mime_type: Some("text/markdown".to_string()),
-                size: Some(safe_body.len().to_string()),
-                url: None,
-                path: None,
-                extra: None,
-            },
-            permissions: permissions.clone(),
-            attributes: Some(std::collections::HashMap::from([
-                ("source_type".to_string(), json!("darwinbox")),
-                ("content_type".to_string(), json!("holiday")),
-            ])),
-        })
+            &document,
+            &permissions,
+        )
         .await?;
         count += 1;
     }
@@ -435,8 +404,8 @@ async fn sync_holidays(
     Ok(())
 }
 
-/// Sync a typed collection using a safe mapper function that derives (title, safe_content)
-/// from only known fields of the provider response.
+/// Sync a typed collection using a safe mapper function that derives a
+/// `SafeDocument` (title, content, attributes) from known fields only.
 async fn sync_typed_collection<'a, F>(
     config: &DarwinboxSourceConfig,
     content_type: &'a str,
@@ -447,7 +416,7 @@ async fn sync_typed_collection<'a, F>(
     mapper: F,
 ) -> Result<()>
 where
-    F: Fn(&JsonValue) -> (String, String), // (title, safe_content)
+    F: Fn(&JsonValue) -> mappers::SafeDocument,
 {
     let permissions = config::document_permissions(content_type, config, source_id, None);
     let items = extract_items(response);
@@ -465,33 +434,19 @@ where
             );
             continue;
         };
-        let (title, safe_body) = mapper(item);
-        let content_id = ctx.store_content(&safe_body).await?;
+        let document = mapper(item);
+        let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("{external_prefix}:{stable_id}");
-        ctx.emit_event(ConnectorEvent::DocumentCreated {
-            sync_run_id: ctx.sync_run_id().to_string(),
-            source_id: source_id.to_string(),
-            document_id: document_id.clone(),
+        emit_document(
+            ctx,
+            content_type,
+            source_id,
+            &document_id,
             content_id,
-            metadata: DocumentMetadata {
-                title: Some(title),
-                author: None,
-                created_at: None,
-                updated_at: None,
-                content_type: Some(content_type.to_string()),
-                mime_type: Some("text/markdown".to_string()),
-                size: Some(safe_body.len().to_string()),
-                url: None,
-                path: None,
-                extra: None,
-            },
-            permissions: permissions.clone(),
-            attributes: Some(std::collections::HashMap::from([
-                ("source_type".to_string(), json!("darwinbox")),
-                ("content_type".to_string(), json!(content_type)),
-            ])),
-        })
+            &document,
+            &permissions,
+        )
         .await?;
         count += 1;
     }
@@ -499,6 +454,51 @@ where
         ctx.increment_scanned(count).await?;
     }
     Ok(())
+}
+
+async fn emit_document(
+    ctx: &SyncContext,
+    content_type: &str,
+    source_id: &str,
+    document_id: &str,
+    content_id: String,
+    document: &mappers::SafeDocument,
+    permissions: &omni_connector_sdk::DocumentPermissions,
+) -> Result<()> {
+    ctx.emit_event(ConnectorEvent::DocumentCreated {
+        sync_run_id: ctx.sync_run_id().to_string(),
+        source_id: source_id.to_string(),
+        document_id: document_id.to_string(),
+        content_id,
+        metadata: DocumentMetadata {
+            title: Some(document.title.clone()),
+            author: None,
+            created_at: None,
+            updated_at: None,
+            content_type: Some(content_type.to_string()),
+            mime_type: Some("text/markdown".to_string()),
+            size: Some(document.body.len().to_string()),
+            url: None,
+            path: None,
+            extra: None,
+        },
+        permissions: permissions.clone(),
+        attributes: Some(doc_attributes(content_type, &document.attributes)),
+    })
+    .await
+}
+
+fn doc_attributes(content_type: &str, entity: &[(String, String)]) -> HashMap<String, JsonValue> {
+    let mut map = HashMap::from([
+        ("source_type".to_string(), json!("darwinbox")),
+        ("content_type".to_string(), json!(content_type)),
+    ]);
+    for (key, value) in entity {
+        if !value.trim().is_empty() {
+            map.insert(key.clone(), json!(value));
+        }
+    }
+    map
 }
 
 fn extract_stable_id(value: &JsonValue) -> Option<String> {

@@ -7,8 +7,8 @@ use omni_connector_sdk::{
 use serde_json::{Value as JsonValue, json};
 
 use crate::client::{
-    ApplyLeaveRequest, DarwinboxClient, LeaveDecision, LeaveDecisionRequest, LeaveRequestsRequest,
-    MonthlyAttendanceRequest, RevokeLeaveRequest,
+    ApplyLeaveRequest, DarwinboxApiError, DarwinboxClient, LeaveDecision, LeaveDecisionRequest,
+    LeaveRequestsRequest, MonthlyAttendanceRequest, RevokeLeaveRequest,
 };
 use crate::config::DarwinboxSourceConfig;
 use crate::credentials::DarwinboxCredentials;
@@ -443,26 +443,12 @@ pub async fn execute_action(
     let config: DarwinboxSourceConfig = serde_json::from_value(trusted_source.config)
         .context("failed to deserialize Darwinbox source config from trusted source")?;
 
-    if !config.authorization.actions_enabled {
-        return Err(anyhow!("Darwinbox actions are disabled for this source"));
-    }
-
     // Extract the authenticated actor identity.
     let caller_email = actor_email
         .ok_or_else(|| anyhow!("Darwinbox actions require an interactive authenticated user"))?;
     if !config.is_action_participant(&caller_email) {
         return Err(anyhow!(
             "caller is not an approved Darwinbox action participant"
-        ));
-    }
-    if !config
-        .authorization
-        .allowed_actions
-        .iter()
-        .any(|allowed| allowed == action)
-    {
-        return Err(anyhow!(
-            "action '{action}' is not allowlisted for this source"
         ));
     }
     if policy.is_write && config.read_only {
@@ -473,56 +459,42 @@ pub async fn execute_action(
     // Decode the integration credential only after all policy-only gates.
     let client = action_client(&config, credentials)?;
 
-    // Module enforcement: check that the action's module is enabled
-    match policy.module {
-        "employee_self_service" => ensure_enabled(
-            config.action_modules.employee_self_service,
-            "employee_self_service",
-        )?,
-        "manager_workflows" => {
-            ensure_enabled(config.action_modules.manager_workflows, "manager_workflows")?
-        }
-        "hr_operations" => ensure_enabled(config.action_modules.hr_operations, "hr_operations")?,
-        "ats" => ensure_enabled(config.action_modules.ats, "ats")?,
-        "reports" => ensure_enabled(config.action_modules.reports, "reports")?,
-        _ => {} // no module requirement
-    }
+    let result = (async {
+        let calling_employee = if policy.audience == "self" {
+            reject_identity_params(&params)?;
+            Some(resolve_calling_employee(&client, &caller_email).await?)
+        } else {
+            None
+        };
 
-    let calling_employee = if policy.audience == "self" {
-        reject_identity_params(&params)?;
-        Some(resolve_calling_employee(&client, &caller_email).await?)
-    } else {
-        None
-    };
-
-    // 3. Audience enforcement
-    match policy.audience {
-        "self" => {}
-        "manager" => {
-            // Manager: verify user is a manager (has direct reports)
-            let reports = direct_reports(&client, &caller_email, &config).await?;
-            if reports.is_empty() {
-                return Err(anyhow!("caller has no direct reports"));
+        // Audience enforcement
+        match policy.audience {
+            "self" => {}
+            "manager" => {
+                // Manager: verify user is a manager (has direct reports)
+                let reports = direct_reports(&client, &caller_email, &config).await?;
+                if reports.is_empty() {
+                    return Err(anyhow!("caller has no direct reports"));
+                }
             }
-        }
-        "recruiter" => {
-            // Recruiter: requires email in recruiter_emails list
-            let email = &caller_email;
-            let is_recruiter = config
-                .authorization
-                .recruiter_emails
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(email));
-            if !is_recruiter {
-                return Err(anyhow!(
-                    "action '{action}' requires recruiter authorization"
-                ));
+            "recruiter" => {
+                // Recruiter: requires email in recruiter_emails list
+                let email = &caller_email;
+                let is_recruiter = config
+                    .authorization
+                    .recruiter_emails
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(email));
+                if !is_recruiter {
+                    return Err(anyhow!(
+                        "action '{action}' requires recruiter authorization"
+                    ));
+                }
             }
+            _ => {}
         }
-        _ => {}
-    }
 
-    let result = match action {
+        let result = match action {
         "get_my_profile" => {
             let employee = calling_employee.as_ref().expect("self action resolved caller");
             // Sanitized response: include only safe fields
@@ -533,7 +505,6 @@ pub async fn execute_action(
             let employees = client.fetch_employees(None, None).await?.employee_data;
             let matches = employees
                 .into_iter()
-                .filter(|employee| config.is_employee_in_scope(employee))
                 .filter(|employee| {
                     employee
                         .display_name()
@@ -825,7 +796,21 @@ pub async fn execute_action(
         "archive_requisition" => {
             client.post_json::<JsonValue>("/requisitionApi/archiveRequisition", json!({ "requisition_id": required_str(&params, "requisition_id")?, "employee_id": required_str(&params, "employee_id")?, "reason": params.get("reason").and_then(JsonValue::as_str).unwrap_or("") }), false).await?
         }
-        _ => return Ok(ActionResponse::not_supported(action).into_response()),
+            _ => return Ok::<_, anyhow::Error>(None),
+        };
+        Ok::<_, anyhow::Error>(Some(result))
+    })
+    .await
+    .map_err(|error| {
+        if is_not_permitted(&error) {
+            anyhow!("This action is not allowed for this source: {error}")
+        } else {
+            error
+        }
+    })?;
+
+    let Some(result) = result else {
+        return Ok(ActionResponse::not_supported(action).into_response());
     };
 
     Ok(
@@ -955,16 +940,6 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
     project_object(value)
 }
 
-fn ensure_enabled(enabled: bool, module: &str) -> Result<()> {
-    if enabled {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Darwinbox action module '{module}' is disabled for this source"
-        ))
-    }
-}
-
 fn reject_identity_params(params: &JsonValue) -> Result<()> {
     for key in IDENTITY_PARAM_KEYS {
         if params.get(key).is_some() {
@@ -972,6 +947,12 @@ fn reject_identity_params(params: &JsonValue) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_not_permitted(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<DarwinboxApiError>()
+        .is_some_and(|api_error| matches!(api_error, DarwinboxApiError::NotPermitted { .. }))
 }
 
 fn reject_identity_payload(value: &JsonValue) -> Result<()> {
