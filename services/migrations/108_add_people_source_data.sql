@@ -63,10 +63,12 @@ BEGIN
         FROM people_email_dedupe d
         ORDER BY d.keeper_id, d.duplicate_id
     LOOP
+        -- Only pre-existing (pre-108) columns can differ here: the columns
+        -- added above are born empty within this same transaction, so merging
+        -- them would be a no-op.
         UPDATE people keeper
         SET display_name = COALESCE(keeper.display_name, loser.display_name),
             given_name = COALESCE(keeper.given_name, loser.given_name),
-            middle_name = COALESCE(keeper.middle_name, loser.middle_name),
             surname = COALESCE(keeper.surname, loser.surname),
             avatar_url = COALESCE(keeper.avatar_url, loser.avatar_url),
             job_title = COALESCE(keeper.job_title, loser.job_title),
@@ -78,18 +80,11 @@ BEGIN
             city = COALESCE(keeper.city, loser.city),
             state = COALESCE(keeper.state, loser.state),
             country = COALESCE(keeper.country, loser.country),
-            work_country = COALESCE(keeper.work_country, loser.work_country),
             employee_id = COALESCE(keeper.employee_id, loser.employee_id),
             employee_type = COALESCE(keeper.employee_type, loser.employee_type),
             cost_center = COALESCE(keeper.cost_center, loser.cost_center),
-            employment_start_date = COALESCE(keeper.employment_start_date, loser.employment_start_date),
-            employment_end_date = COALESCE(keeper.employment_end_date, loser.employment_end_date),
-            grade = COALESCE(keeper.grade, loser.grade),
-            band = COALESCE(keeper.band, loser.band),
-            confirmation_status = COALESCE(keeper.confirmation_status, loser.confirmation_status),
             is_active = keeper.is_active OR loser.is_active,
             metadata = loser.metadata || keeper.metadata,
-            source_data = loser.source_data || keeper.source_data,
             external_id = COALESCE(keeper.external_id, loser.external_id),
             created_at = LEAST(keeper.created_at, loser.created_at),
             updated_at = GREATEST(keeper.updated_at, loser.updated_at)
