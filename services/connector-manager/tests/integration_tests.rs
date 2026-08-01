@@ -909,7 +909,7 @@ async fn test_source_cleanup_queues_people_deactivation_before_source_deletion()
         .unwrap();
     assert_eq!(source_count, 1);
     let queued: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM connector_events_queue q JOIN sync_runs r ON r.id=q.sync_run_id WHERE q.source_id=$1 AND q.event_type='person_deleted' AND q.status='pending' AND r.trigger_type='source_cleanup_people' AND q.payload->>'email' IN ('cleanup@example.com','late@example.com')",
+        "SELECT count(*) FROM connector_events_queue q JOIN sync_runs r ON r.id=q.sync_run_id WHERE q.source_id=$1 AND q.event_type='person_deleted' AND q.status='pending' AND r.trigger_type='source_cleanup' AND q.payload->>'email' IN ('cleanup@example.com','late@example.com')",
     )
     .bind(&source_id)
     .fetch_one(pool)
@@ -999,6 +999,148 @@ async fn test_source_cleanup() {
     assert_eq!(
         source_count, 0,
         "Source row should be deleted after second cleanup call"
+    );
+}
+
+#[tokio::test]
+async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let (source_id, _) = seed_deleted_source_with_documents(pool, 0).await;
+
+    fn doc_event(sync_run_id: &str, source_id: &str, document_id: &str) -> ConnectorEvent {
+        ConnectorEvent::DocumentCreated {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            document_id: document_id.to_string(),
+            content_id: format!("{document_id}-content"),
+            metadata: DocumentMetadata::default(),
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec![],
+                groups: vec![],
+            },
+            attributes: None,
+        }
+    }
+
+    // A document already written by a settled event.
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, metadata, permissions, created_at, updated_at, last_indexed_at)
+        VALUES ($1, $2, 'ext-existing', 'Existing', '{}', '[]', NOW(), NOW(), NOW())
+        "#,
+    )
+    .bind(shared::utils::generate_ulid())
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // An already-admitted (pending) document event must quiesce before any
+    // document deletion or source deletion — otherwise a processing event's
+    // document write could land after the cleanup DELETE and be orphaned by
+    // the physical source deletion.
+    let run_id = create_running_sync(pool, &source_id).await;
+    let pending_id = EventQueue::new(pool.clone())
+        .enqueue(&source_id, &doc_event(&run_id, &source_id, "doc-1"))
+        .await
+        .unwrap();
+
+    // A failed event simulates a processing -> failed transition that the
+    // cleanup pass cannot observe atomically. It must be dead-lettered under
+    // the lock, and the dead-letter must survive the early return (commit, not
+    // rollback) so it can never be retried behind a deleted source.
+    let failed_id = EventQueue::new(pool.clone())
+        .enqueue(&source_id, &doc_event(&run_id, &source_id, "doc-2"))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE connector_events_queue SET status='failed' WHERE id=$1")
+        .bind(&failed_id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+
+    // Unresolved events block document deletion AND source deletion: the
+    // settled document must survive this pass untouched.
+    let (doc_count,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
+            .bind(&source_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        doc_count, 1,
+        "documents must not be deleted while events are unresolved"
+    );
+    let (source_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 1,
+        "pending non-person event must prevent physical source deletion"
+    );
+    let (pending,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM connector_events_queue WHERE id=$1 AND status='pending'",
+    )
+    .bind(&pending_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(pending, 1, "pending document event must remain pending");
+    let (dead,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM connector_events_queue WHERE id=$1 AND status='dead_letter'",
+    )
+    .bind(&failed_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dead, 1,
+        "failed non-person event must be dead-lettered under the lock and stay dead-lettered across the early return"
+    );
+
+    // Once the pending event settles, the next pass deletes the documents
+    // (bounded batch), then a final pass removes the source row.
+    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE id=$1")
+        .bind(&pending_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let (doc_count,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
+            .bind(&source_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        doc_count, 0,
+        "documents must be deleted only after all admitted events settle"
+    );
+    let (source_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 1,
+        "source must outlive the bounded document deletion pass"
+    );
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let (source_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 0,
+        "source must be deleted once all admitted events settle"
     );
 }
 

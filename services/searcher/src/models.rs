@@ -175,11 +175,15 @@ pub struct PersonResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub given_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub surname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub department: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub division: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub company_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +200,12 @@ pub struct PersonResult {
     pub grade: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub band: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employment_start_date: Option<chrono::NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employment_end_date: Option<chrono::NaiveDate>,
     pub score: f32,
 }
 

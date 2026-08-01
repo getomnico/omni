@@ -40,9 +40,11 @@ pub struct PersonSearchResult {
     pub email: String,
     pub display_name: Option<String>,
     pub given_name: Option<String>,
+    pub middle_name: Option<String>,
     pub surname: Option<String>,
     pub job_title: Option<String>,
     pub department: Option<String>,
+    pub division: Option<String>,
     pub company_name: Option<String>,
     pub office_location: Option<String>,
     pub work_country: Option<String>,
@@ -51,6 +53,9 @@ pub struct PersonSearchResult {
     pub cost_center: Option<String>,
     pub grade: Option<String>,
     pub band: Option<String>,
+    pub confirmation_status: Option<String>,
+    pub employment_start_date: Option<chrono::NaiveDate>,
+    pub employment_end_date: Option<chrono::NaiveDate>,
     pub score: f32,
 }
 
@@ -119,10 +124,12 @@ impl PersonRepository {
     ) -> Result<Vec<PersonSearchResult>, DatabaseError> {
         Ok(sqlx::query_as::<_, PersonSearchResult>(
             r#"
-            SELECT p.id, p.email, p.display_name, p.given_name, p.surname,
-                   p.job_title, p.department, p.company_name, p.office_location,
-                   p.work_country, p.employee_id, p.employee_type, p.cost_center,
-                   p.grade, p.band, pdb.score(p.id) AS score
+            SELECT p.id, p.email, p.display_name, p.given_name, p.middle_name,
+                   p.surname, p.job_title, p.department, p.division, p.company_name,
+                   p.office_location, p.work_country, p.employee_id, p.employee_type,
+                   p.cost_center, p.grade, p.band, p.confirmation_status,
+                   p.employment_start_date, p.employment_end_date,
+                   pdb.score(p.id) AS score
             FROM people p
             WHERE p.is_active = true
               AND p.id @@@ pdb.parse(query_string => $1, lenient => true)

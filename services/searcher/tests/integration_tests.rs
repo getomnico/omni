@@ -1689,20 +1689,32 @@ async fn test_person_search_structured_filters_and_rich_fields() -> Result<()> {
         sqlx::query(
             r#"
             INSERT INTO people (
-                id, email, display_name, department, office_location,
-                work_country, employee_type, employee_id, is_active, source_data
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, '{}')
+                id, email, display_name, given_name, middle_name, surname, department,
+                division, office_location, work_country, employee_type, employee_id,
+                confirmation_status, employment_start_date, employment_end_date,
+                is_active, source_data
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                true, '{}'
+            )
             ON CONFLICT (id) DO NOTHING
             "#,
         )
         .bind(id)
         .bind(email)
         .bind(name)
+        .bind(name.split(' ').next())
+        .bind("Middle")
+        .bind(name.split(' ').last())
         .bind(dept)
+        .bind("Corporate")
         .bind(office)
         .bind(country)
         .bind(etype)
         .bind(emp_id)
+        .bind("Confirmed")
+        .bind(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap())
+        .bind(Option::<chrono::NaiveDate>::None)
         .execute(pool)
         .await?;
     }
@@ -1768,6 +1780,15 @@ async fn test_person_search_structured_filters_and_rich_fields() -> Result<()> {
     assert!(first.cost_center.is_none());
     assert!(first.grade.is_none());
     assert!(first.band.is_none());
+    // Newly propagated directory fields are returned as well.
+    assert_eq!(first.middle_name.as_deref(), Some("Middle"));
+    assert_eq!(first.division.as_deref(), Some("Corporate"));
+    assert_eq!(first.confirmation_status.as_deref(), Some("Confirmed"));
+    assert_eq!(
+        first.employment_start_date,
+        Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap())
+    );
+    assert!(first.employment_end_date.is_none());
 
     // Endpoint passes structured filters through and returns rich fields.
     let request = Request::builder()
@@ -1783,6 +1804,10 @@ async fn test_person_search_structured_filters_and_rich_fields() -> Result<()> {
     assert_eq!(people[0]["department"], "Marketing");
     assert_eq!(people[0]["office_location"], "Paris");
     assert_eq!(people[0]["employee_id"], "EMP-1");
+    assert_eq!(people[0]["middle_name"], "Middle");
+    assert_eq!(people[0]["division"], "Corporate");
+    assert_eq!(people[0]["confirmation_status"], "Confirmed");
+    assert_eq!(people[0]["employment_start_date"], "2020-01-01");
 
     Ok(())
 }

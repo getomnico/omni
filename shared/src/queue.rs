@@ -161,7 +161,10 @@ impl EventQueue {
     ///
     /// An older retryable mutation blocks only newer mutations for the same
     /// identity. Completed and dead-lettered predecessors do not block, so a
-    /// failure for one person does not stall unrelated people.
+    /// failure for one person does not stall unrelated people. A failed
+    /// predecessor only blocks while it is still eligible for retry (within
+    /// the 24-hour retry window); expired failures are dead-lettered by
+    /// `retry_failed_events` and never wedge the identity.
     pub async fn dequeue_person_mutations_with_max_bytes(
         &self,
         batch_size: i32,
@@ -194,6 +197,7 @@ impl EventQueue {
                             OR (
                                 older.status = 'failed'
                                 AND older.retry_count < older.max_retries
+                                AND older.created_at > NOW() - INTERVAL '24 hours'
                             )
                         )
                   )
@@ -475,6 +479,28 @@ impl EventQueue {
         )
         .execute(&self.pool)
         .await?;
+
+        // Failures that will never be requeued (their retry window expired)
+        // must not linger: a failed person event otherwise blocks every newer
+        // mutation for the same identity forever.
+        let expired = sqlx::query(
+            r#"
+            UPDATE connector_events_queue
+            SET status = 'dead_letter',
+                error_message = 'Retry window expired'
+            WHERE status = 'failed'
+            AND retry_count < max_retries
+            AND created_at <= NOW() - INTERVAL '24 hours'
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        if expired.rows_affected() > 0 {
+            tracing::info!(
+                "Dead-lettered {} failed events outside the 24h retry window",
+                expired.rows_affected()
+            );
+        }
 
         Ok(result.rows_affected() as i64)
     }

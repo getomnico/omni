@@ -80,9 +80,11 @@ class PersonResult(BaseModel):
     email: str
     display_name: str | None = None
     given_name: str | None = None
+    middle_name: str | None = None
     surname: str | None = None
     job_title: str | None = None
     department: str | None = None
+    division: str | None = None
     company_name: str | None = None
     office_location: str | None = None
     work_country: str | None = None
@@ -91,6 +93,9 @@ class PersonResult(BaseModel):
     cost_center: str | None = None
     grade: str | None = None
     band: str | None = None
+    confirmation_status: str | None = None
+    employment_start_date: str | None = None
+    employment_end_date: str | None = None
     score: float
 
 

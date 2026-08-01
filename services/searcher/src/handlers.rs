@@ -491,9 +491,11 @@ pub async fn people_search(
             email: p.email,
             display_name: p.display_name,
             given_name: p.given_name,
+            middle_name: p.middle_name,
             surname: p.surname,
             job_title: p.job_title,
             department: p.department,
+            division: p.division,
             company_name: p.company_name,
             office_location: p.office_location,
             work_country: p.work_country,
@@ -502,6 +504,9 @@ pub async fn people_search(
             cost_center: p.cost_center,
             grade: p.grade,
             band: p.band,
+            confirmation_status: p.confirmation_status,
+            employment_start_date: p.employment_start_date,
+            employment_end_date: p.employment_end_date,
             score: p.score,
         })
         .collect();

@@ -3,7 +3,6 @@ use anyhow::Result;
 use shared::models::{ConnectorEvent, PersonSyncRecord, SourceType, SyncType};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::warn;
 
 #[derive(Clone)]
 pub struct SyncContext {
@@ -173,16 +172,12 @@ impl SyncContext {
         Ok(())
     }
 
-    /// Mark sync as failed. Best-effort flush of buffered events first — if
-    /// the flush itself fails we log and proceed, because marking the sync as
-    /// failed is more important than preserving partial progress.
+    /// Mark sync as failed. The client performs the scoped best-effort flush
+    /// of this run's buffered events and discards them only after connector
+    /// manager confirms the failure, so a failed report never loses events
+    /// that could still be admitted. Only this run's buffers are touched so
+    /// another run's retained batch can never block the failure report.
     pub async fn fail(&self, error: &str) -> Result<()> {
-        if let Err(e) = self.flush_all().await {
-            warn!(
-                "SDK: flush before fail() failed (continuing): sync_run={}: {}",
-                self.sync_run_id, e
-            );
-        }
         self.sdk_client.fail(&self.sync_run_id, error).await?;
         Ok(())
     }

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, StatusCode, header};
 use serde::de::DeserializeOwned;
 use serde_json::{Value as JsonValue, json};
 use url::Url;
@@ -328,7 +328,13 @@ impl DarwinboxClient {
             let token = fetch_token(&self.http, &self.base_url, &self.credentials)
                 .await?
                 .ok_or_else(|| anyhow!("token auth did not return a token"))?;
-            request = request.header("TOKEN", token.access_token);
+            // Darwinbox OAuth 2.0 expects the access token as a Bearer token;
+            // sending it in a custom TOKEN header makes every business API
+            // return 401 "Invalid Credentials".
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", token.access_token),
+            );
         }
 
         let mut last_error = None;

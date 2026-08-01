@@ -432,11 +432,6 @@ pub async fn execute_action(
             ));
         }
 
-        // Resolve user/admin from user_id (required in transient mode).
-        let user_id = request.user_id.as_ref().ok_or_else(|| {
-            ApiError::BadRequest("user_id is required in transient mode".to_string())
-        })?;
-
         // Look up the connector manifest by source_type.
         let manifest = manifests
             .iter()

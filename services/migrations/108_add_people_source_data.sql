@@ -142,8 +142,10 @@ USING bm25 (
     (email::pdb.simple('ascii_folding=true')),
     (display_name::pdb.simple('ascii_folding=true')),
     (given_name::pdb.simple('ascii_folding=true')),
+    (middle_name::pdb.simple('ascii_folding=true')),
     (surname::pdb.simple('ascii_folding=true')),
     (department::pdb.simple('ascii_folding=true')),
+    (division::pdb.simple('ascii_folding=true')),
     (job_title::pdb.simple('ascii_folding=true')),
     (company_name::pdb.simple('ascii_folding=true')),
     (office_location::pdb.simple('ascii_folding=true')),
@@ -152,8 +154,15 @@ USING bm25 (
     (cost_center::pdb.simple('ascii_folding=true')),
     (work_country::pdb.simple('ascii_folding=true')),
     (grade::pdb.simple('ascii_folding=true')),
-    (band::pdb.simple('ascii_folding=true'))
+    (band::pdb.simple('ascii_folding=true')),
+    (confirmation_status::pdb.simple('ascii_folding=true'))
 )
 WITH (key_field = 'id');
+
+-- Source cleanup enqueues internal person-deletion runs with a dedicated
+-- trigger type; admit it in the sync_runs trigger_type whitelist.
+ALTER TABLE sync_runs DROP CONSTRAINT IF EXISTS sync_runs_trigger_type_check;
+ALTER TABLE sync_runs ADD CONSTRAINT sync_runs_trigger_type_check
+CHECK (trigger_type IN ('scheduled', 'manual', 'webhook', 'source_cleanup'));
 
 COMMIT;

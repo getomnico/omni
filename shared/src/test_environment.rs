@@ -38,6 +38,26 @@ fn is_direct_bridge_mode() -> bool {
         .unwrap_or(false)
 }
 
+/// The migrator runs as a separate container, so it can never reach Postgres
+/// through localhost. In default mapped-port mode it must reach the Docker
+/// host via the host gateway; in direct bridge mode it can use the Postgres
+/// container's bridge IP directly.
+fn migrator_postgres_address_inner(
+    pg_ip: IpAddr,
+    pg_port: u16,
+    direct_bridge: bool,
+) -> (String, u16) {
+    if direct_bridge {
+        (pg_ip.to_string(), pg_port)
+    } else {
+        ("host.docker.internal".to_string(), pg_port)
+    }
+}
+
+fn migrator_postgres_address(pg_ip: IpAddr, pg_port: u16) -> (String, u16) {
+    migrator_postgres_address_inner(pg_ip, pg_port, is_direct_bridge_mode())
+}
+
 /// When direct bridge mode is active, containers are reachable via their
 /// default-bridge IP rather than localhost:mapped-port. Use the internal
 /// port directly, since cross-container traffic goes over the bridge network
@@ -153,9 +173,12 @@ impl TestEnvironment {
 
         let s3_endpoint = format!("http://{ls_host}:{ls_port}");
 
-        // Run migrations. In direct bridge mode the migrator container connects
-        // directly to Postgres's bridge IP; otherwise it uses host.docker.internal.
-        run_migrator_container(&pg_host, pg_port)?;
+        // Run migrations. The migrator is a separate container: in direct
+        // bridge mode it connects to Postgres's bridge IP, otherwise it uses
+        // the Docker host gateway (never localhost, which would resolve to the
+        // migrator container itself).
+        let (migrator_host, migrator_port) = migrator_postgres_address(pg_ip, pg_port);
+        run_migrator_container(&migrator_host, migrator_port)?;
 
         // Create database connection
         let database_url = format!("postgresql://omni:omni_password@{pg_host}:{pg_port}/omni_test");
@@ -432,6 +455,26 @@ mod tests {
             .await
             .unwrap();
         assert!(response.status().is_success());
+    }
+
+    #[test]
+    fn migrator_host_follows_bridge_mode() {
+        let pg_ip: IpAddr = "172.17.0.5".parse().unwrap();
+        let pg_port: u16 = 5432;
+
+        // Default mapped-port mode: the migrator container reaches Postgres
+        // through the Docker host gateway, never localhost.
+        assert_eq!(
+            migrator_postgres_address_inner(pg_ip, pg_port, false),
+            ("host.docker.internal".to_string(), pg_port)
+        );
+
+        // Direct bridge mode: the migrator uses the Postgres bridge IP with
+        // the container's internal port.
+        assert_eq!(
+            migrator_postgres_address_inner(pg_ip, pg_port, true),
+            (pg_ip.to_string(), pg_port)
+        );
     }
 }
 
