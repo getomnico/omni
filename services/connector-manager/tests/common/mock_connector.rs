@@ -1,17 +1,17 @@
 use axum::{
+    Router,
     extract::{Path, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
-    Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecordedSyncRequest {
@@ -31,10 +31,25 @@ pub struct RecordedCancelRequest {
     pub sync_run_id: String,
 }
 
+/// The subset of `ActionRequest` the mock connector records so tests can
+/// assert what connector-manager actually forwarded (action, trusted source,
+/// resolved credentials, actor email).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordedActionRequest {
+    pub action: String,
+    #[serde(default)]
+    pub source: Option<JsonValue>,
+    #[serde(default)]
+    pub credentials: Option<JsonValue>,
+    #[serde(default)]
+    pub actor_email: Option<String>,
+}
+
 #[derive(Clone)]
 struct MockState {
     sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
+    action_requests: Arc<Mutex<Vec<RecordedActionRequest>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
     active_syncs: Arc<Mutex<HashSet<String>>>,
@@ -49,6 +64,7 @@ pub struct MockConnector {
     port: u16,
     pub sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     pub cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
+    action_requests: Arc<Mutex<Vec<RecordedActionRequest>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
     active_syncs: Arc<Mutex<HashSet<String>>>,
@@ -61,6 +77,8 @@ impl MockConnector {
     pub async fn start() -> anyhow::Result<Self> {
         let sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>> = Arc::new(Mutex::new(Vec::new()));
         let cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let action_requests: Arc<Mutex<Vec<RecordedActionRequest>>> =
             Arc::new(Mutex::new(Vec::new()));
         let sync_response_status = Arc::new(Mutex::new(StatusCode::OK));
         let sync_response_body = Arc::new(Mutex::new(json!({"status": "accepted"})));
@@ -76,6 +94,7 @@ impl MockConnector {
             shutdown_rx,
             sync_requests.clone(),
             cancel_requests.clone(),
+            action_requests.clone(),
             sync_response_status.clone(),
             sync_response_body.clone(),
             active_syncs.clone(),
@@ -89,6 +108,7 @@ impl MockConnector {
             port,
             sync_requests,
             cancel_requests,
+            action_requests,
             sync_response_status,
             sync_response_body,
             active_syncs,
@@ -139,6 +159,7 @@ impl MockConnector {
             shutdown_rx,
             self.sync_requests.clone(),
             self.cancel_requests.clone(),
+            self.action_requests.clone(),
             self.sync_response_status.clone(),
             self.sync_response_body.clone(),
             self.active_syncs.clone(),
@@ -166,6 +187,10 @@ impl MockConnector {
     pub fn get_cancel_requests(&self) -> Vec<RecordedCancelRequest> {
         self.cancel_requests.lock().unwrap().clone()
     }
+
+    pub fn get_action_requests(&self) -> Vec<RecordedActionRequest> {
+        self.action_requests.lock().unwrap().clone()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -174,6 +199,7 @@ fn spawn_server(
     shutdown_rx: oneshot::Receiver<()>,
     sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
+    action_requests: Arc<Mutex<Vec<RecordedActionRequest>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
     active_syncs: Arc<Mutex<HashSet<String>>>,
@@ -182,6 +208,7 @@ fn spawn_server(
     let state = MockState {
         sync_requests,
         cancel_requests,
+        action_requests,
         sync_response_status,
         sync_response_body,
         active_syncs,
@@ -204,6 +231,7 @@ fn spawn_server(
         .route("/sync", post(handle_sync))
         .route("/sync/:sync_run_id", get(handle_sync_status))
         .route("/cancel", post(handle_cancel))
+        .route("/action", post(handle_action))
         .with_state(state);
 
     tokio::spawn(async move {
@@ -276,4 +304,12 @@ async fn handle_cancel(
     }
     state.cancel_requests.lock().unwrap().push(request);
     StatusCode::OK
+}
+
+async fn handle_action(
+    State(state): State<MockState>,
+    Json(request): Json<RecordedActionRequest>,
+) -> (StatusCode, Json<JsonValue>) {
+    state.action_requests.lock().unwrap().push(request);
+    (StatusCode::OK, Json(json!({ "ok": true })))
 }

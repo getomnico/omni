@@ -1,5 +1,5 @@
-use crate::people_extractor;
 use crate::AppState;
+use crate::people_extractor;
 use anyhow::{Context, Result};
 use shared::db::repositories::{
     DocumentRepository, GroupRepository, PersonRepository, SyncRunRepository,
@@ -14,7 +14,7 @@ use shared::storage::gc::{ContentBlobGC, GCConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::time::{interval, Duration, MissedTickBehavior};
+use tokio::time::{Duration, MissedTickBehavior, interval};
 use tracing::{debug, error, info, warn};
 
 // Default poll interval for draining the queue. Overridable via INDEXER_POLL_INTERVAL_SECS.

@@ -164,6 +164,125 @@ async fn token_errors_do_not_expose_provider_body() {
 }
 
 #[tokio::test]
+async fn client_credentials_business_request_uses_bearer_token_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/v2token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "client-cred-token",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/masterapi/employee"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": 1,
+            "message": "ok",
+            "employee_data": [{
+                "employee_id": "EMP001",
+                "first_name": "Asha",
+                "company_email_id": "asha@example.com"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let config: DarwinboxSourceConfig = serde_json::from_value(test_config(&server.uri())).unwrap();
+    let credentials = DarwinboxCredentials::ClientCredentials {
+        client_id: "client".to_string(),
+        client_secret: "secret".to_string(),
+        api_key: None,
+        dataset_key: "dataset".to_string(),
+    };
+    DarwinboxClient::new(&config, credentials)
+        .unwrap()
+        .fetch_employees(None, None)
+        .await
+        .unwrap();
+
+    let business_requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/masterapi/employee")
+        .collect::<Vec<_>>();
+    assert_eq!(business_requests.len(), 1);
+    let authorization = business_requests[0]
+        .headers
+        .get("authorization")
+        .expect("business request must carry Authorization")
+        .to_str()
+        .unwrap();
+    assert_eq!(authorization, "Bearer client-cred-token");
+    assert!(
+        business_requests[0].headers.get("TOKEN").is_none(),
+        "business request must not use the legacy TOKEN header"
+    );
+}
+
+#[tokio::test]
+async fn dynamic_token_business_request_uses_bearer_token_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/v1token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "dynamic-token",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/masterapi/employee"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": 1,
+            "message": "ok",
+            "employee_data": []
+        })))
+        .mount(&server)
+        .await;
+
+    let config: DarwinboxSourceConfig = serde_json::from_value(test_config(&server.uri())).unwrap();
+    let credentials = DarwinboxCredentials::DynamicToken {
+        client_id: "client".to_string(),
+        client_secret: "secret".to_string(),
+        grant_type: "authorization_code".to_string(),
+        code: Some("auth-code".to_string()),
+        refresh_token: None,
+        api_key: None,
+        dataset_key: "dataset".to_string(),
+    };
+    DarwinboxClient::new(&config, credentials)
+        .unwrap()
+        .fetch_employees(None, None)
+        .await
+        .unwrap();
+
+    let business_requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/masterapi/employee")
+        .collect::<Vec<_>>();
+    assert_eq!(business_requests.len(), 1);
+    let authorization = business_requests[0]
+        .headers
+        .get("authorization")
+        .expect("business request must carry Authorization")
+        .to_str()
+        .unwrap();
+    assert_eq!(authorization, "Bearer dynamic-token");
+    assert!(
+        business_requests[0].headers.get("TOKEN").is_none(),
+        "business request must not use the legacy TOKEN header"
+    );
+}
+
+#[tokio::test]
 async fn action_requires_trusted_source_config() {
     let error = execute_action(
         "get_my_leave_balance",

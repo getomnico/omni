@@ -6,11 +6,14 @@ use common::TEST_SOURCE_ID;
 use omni_connector_manager::source_cleanup::SourceCleanup;
 use redis::AsyncCommands;
 use serde_json::json;
-use shared::db::repositories::SyncRunRepository;
+use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
-    ConnectorEvent, DocumentMetadata, DocumentPermissions, PersonSyncRecord, SyncStatus, SyncType,
+    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest, DocumentMetadata,
+    DocumentPermissions, IntegrationType, PersonSyncRecord, ServiceCredential, ServiceProvider,
+    SourceType, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
+use time::OffsetDateTime;
 
 struct DummyConnectorEmitter<'a> {
     server: &'a TestServer,
@@ -1065,12 +1068,11 @@ async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
 
     // Unresolved events block document deletion AND source deletion: the
     // settled document must survive this pass untouched.
-    let (doc_count,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
-            .bind(&source_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let (doc_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
     assert_eq!(
         doc_count, 1,
         "documents must not be deleted while events are unresolved"
@@ -1112,12 +1114,11 @@ async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
         .await
         .unwrap();
     SourceCleanup::cleanup_deleted_sources(pool).await;
-    let (doc_count,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
-            .bind(&source_id)
-            .fetch_one(pool)
-            .await
-            .unwrap();
+    let (doc_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
     assert_eq!(
         doc_count, 0,
         "documents must be deleted only after all admitted events settle"
@@ -1777,4 +1778,177 @@ async fn person_sync_and_document_extraction_merge_correctly() {
     processor_handle.abort();
     // Give the processor a moment to shut down cleanly
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+// ============================================================================
+// Credential resolution for /action: org-only connectors vs per-user OAuth
+// ============================================================================
+
+/// Register a manifest with a single read action for the given source type.
+/// `oauth` mirrors what the connector SDK declares: connectors with a
+/// per-user OAuth flow populate it; org-credential connectors leave it None.
+async fn register_action_manifest(
+    fixture: &common::TestFixture,
+    connector_id: &str,
+    source_type: SourceType,
+    oauth: Option<serde_json::Value>,
+) {
+    let mut redis_conn = fixture
+        .state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let manifest = ConnectorManifest {
+        name: connector_id.to_string(),
+        display_name: connector_id.to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec![SyncType::Full],
+        connector_id: connector_id.to_string(),
+        connector_url: fixture.mock_connector.base_url.clone(),
+        integration_type: IntegrationType::Connector,
+        source_types: vec![source_type.to_string()],
+        description: None,
+        actions: vec![ActionDefinition {
+            name: "test_action".to_string(),
+            description: "test action".to_string(),
+            input_schema: json!({}),
+            mode: ActionMode::Read,
+            required_scopes: None,
+            source_types: vec![source_type],
+            admin_only: false,
+            hidden: false,
+        }],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        mcp_catalog_loaded: false,
+        prompts: vec![],
+        skills: vec![],
+        resources: vec![],
+        oauth,
+    };
+    let manifest_json = serde_json::to_string(&manifest).unwrap();
+    let _: () = redis_conn
+        .set_ex(
+            format!("connector:manifest:{connector_id}"),
+            &manifest_json,
+            600,
+        )
+        .await
+        .unwrap();
+}
+
+/// Insert an org-wide credential row (user_id NULL) for a source.
+async fn seed_org_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
+    let repo = ServiceCredentialsRepo::new(pool.clone()).unwrap();
+    let id = shared::utils::generate_ulid();
+    repo.create(ServiceCredential {
+        id: id.clone(),
+        source_id: source_id.to_string(),
+        user_id: None,
+        provider: ServiceProvider::Darwinbox,
+        auth_type: AuthType::ApiKey,
+        principal_email: Some("org@example.com".to_string()),
+        credentials: json!({"token": "org-token"}),
+        config: json!({}),
+        expires_at: None,
+        last_validated_at: None,
+        created_at: OffsetDateTime::now_utc(),
+        updated_at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    id
+}
+
+/// Connectors with an org-only credential model (no per-user OAuth, e.g.
+/// Darwinbox) must use the org credential when a user invokes an action
+/// without a per-user row — needs_user_auth would be a dead end since no
+/// per-user OAuth flow exists to complete. The actor identity still travels
+/// to the connector, whose own gates enforce participation.
+#[tokio::test]
+async fn test_action_org_only_connector_uses_org_credential_with_user_id() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    // Darwinbox-style connector: org-only credential model, no per-user OAuth.
+    register_action_manifest(&fixture, "darwinbox", SourceType::Darwinbox, None).await;
+    let source_id = seed_source(pool, "darwinbox", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    resp.assert_status(StatusCode::OK);
+
+    let recorded = fixture.mock_connector.get_action_requests();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "action must reach the connector (no needs_user_auth dead end)"
+    );
+    let req = &recorded[0];
+    assert_eq!(req.action, "test_action");
+    let creds = req.credentials.as_ref().expect("org credential forwarded");
+    assert_eq!(
+        creds["credentials"]["token"], "org-token",
+        "org credential must be used for an org-only connector invoked by a user"
+    );
+    assert_eq!(
+        req.actor_email.as_deref(),
+        Some("test@example.com"),
+        "actor email must still resolve from the caller-supplied user_id"
+    );
+}
+
+/// OAuth connectors keep the current behavior: a user invoking an action
+/// without a per-user credential row gets the needs_user_auth 412 so the UI
+/// can drive the per-user OAuth flow. The connector must never be called.
+#[tokio::test]
+async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    // Google-style connector: per-user OAuth declared in the manifest.
+    register_action_manifest(
+        &fixture,
+        "gmail",
+        SourceType::Gmail,
+        Some(json!({"provider": "google"})),
+    )
+    .await;
+    let source_id = seed_source(pool, "gmail", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    resp.assert_status(StatusCode::PRECONDITION_FAILED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "needs_user_auth");
+    assert!(
+        body["oauth_start_url"].as_str().is_some(),
+        "needs_user_auth must include the oauth_start_url CTA"
+    );
+    assert!(
+        fixture.mock_connector.get_action_requests().is_empty(),
+        "connector must not be reached while per-user OAuth is missing"
+    );
 }

@@ -1156,15 +1156,14 @@ mod tests {
             .emit_event("run-A", "source-A", person_event())
             .await
             .unwrap();
-        assert!(client
-            .flush_events("run-A", "source-A")
-            .await
-            .is_err());
-        assert!(client
-            .event_buffer
-            .lock()
-            .await
-            .contains_key(&("run-A".into(), "source-A".into())));
+        assert!(client.flush_events("run-A", "source-A").await.is_err());
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
 
         // Connector manager rejects the fail request: the run is still
         // running, so the buffered events must survive.
@@ -1217,15 +1216,14 @@ mod tests {
             .emit_event("run-A", "source-A", person_event())
             .await
             .unwrap();
-        assert!(client
-            .flush_events("run-A", "source-A")
-            .await
-            .is_err());
-        assert!(client
-            .event_buffer
-            .lock()
-            .await
-            .contains_key(&("run-A".into(), "source-A".into())));
+        assert!(client.flush_events("run-A", "source-A").await.is_err());
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
 
         // Once connector manager confirms the failure, the run is terminal
         // and its retained batch must be discarded.
@@ -1279,19 +1277,23 @@ mod tests {
             .emit_event("run-A", "source-A", person_event())
             .await
             .unwrap();
-        assert!(client
-            .event_buffer
-            .lock()
-            .await
-            .contains_key(&("run-A".into(), "source-A".into())));
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
 
         // Unsuccessful cancel: the run is still running, buffer intact.
         assert!(client.cancel("run-A").await.is_err());
-        assert!(client
-            .event_buffer
-            .lock()
-            .await
-            .contains_key(&("run-A".into(), "source-A".into())));
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
 
         // Confirmed cancel: terminal, buffer discarded.
         client.cancel("run-A").await.unwrap();
