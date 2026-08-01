@@ -6,7 +6,6 @@
     import * as Select from '$lib/components/ui/select'
     import {
         AuthType,
-        type ConnectorListEntry,
         type DarwinboxEmployeeField,
         type DarwinboxManifestExtraSchema,
     } from '$lib/types'
@@ -20,11 +19,12 @@
 
     interface Props {
         open: boolean
+        manifest?: DarwinboxManifestExtraSchema
         onSuccess?: () => void
         onCancel?: () => void
     }
 
-    let { open = false, onSuccess, onCancel }: Props = $props()
+    let { open = false, manifest, onSuccess, onCancel }: Props = $props()
 
     type DarwinboxAuthMode = 'basic' | 'client_credentials' | 'dynamic_token'
     type DarwinboxGrantType = 'authorization_code' | 'refresh_token'
@@ -50,24 +50,7 @@
     let peopleEnabled = $state(false)
     let selectedFields = $state<DarwinboxEmployeeField[]>([])
     let selectedActions = $state<string[]>([])
-    let manifest = $state<DarwinboxManifestExtraSchema>()
     let isSubmitting = $state(false)
-
-    $effect(() => {
-        if (open && !manifest) void loadManifest()
-    })
-
-    async function loadManifest() {
-        const response = await fetch('/api/connectors')
-        if (!response.ok)
-            throw new Error(
-                await extractApiError(response, 'Failed to load Darwinbox capabilities'),
-            )
-        const connectors: ConnectorListEntry[] = await response.json()
-        manifest = connectors.find((connector) => connector.source_type === 'darwinbox')?.manifest
-            .extra_schema
-        if (!manifest) toast.error('Darwinbox connector is not registered')
-    }
 
     function toggle(items: string[], value: string, checked: boolean): string[] {
         return checked ? [...new Set([...items, value])] : items.filter((item) => item !== value)
@@ -133,6 +116,7 @@
                     readOnly,
                     selectedSyncModules: peopleEnabled ? ['employee_directory'] : [],
                     selectedActions,
+                    participantMode: participants.length > 0 ? 'allowlist' : 'all',
                     participantEmails: participants,
                     employeeScope:
                         scopeMode === 'all'

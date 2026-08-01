@@ -760,6 +760,7 @@
 
 <DarwinboxConnectorSetup
     open={activeSetup === 'darwinbox'}
+    manifest={data.darwinboxManifest}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 
