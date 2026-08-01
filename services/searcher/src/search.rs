@@ -6,19 +6,19 @@ use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
+use shared::SourceType;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
 };
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
-use shared::SourceType;
 use shared::{
     AIClient, DatabasePool, ObjectStorage, Repository, SearcherConfig, StorageFactory,
     UserRepository,
 };
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -268,7 +268,7 @@ impl SearchEngine {
         let filtered_source_ids: Vec<String> = if let Some(ref st) = request.source_types {
             all_sources
                 .iter()
-                .filter(|(_, source_type)| st.contains(source_type))
+                .filter(|(_, source_type)| st.iter().any(|t| t.as_str() == source_type.as_str()))
                 .map(|(id, _)| id.clone())
                 .collect()
         } else {
@@ -345,7 +345,12 @@ impl SearchEngine {
         if !parsed.boosted_source_types.is_empty() {
             let boosted_source_ids: Vec<String> = all_sources
                 .iter()
-                .filter(|(_, st)| parsed.boosted_source_types.contains(st))
+                .filter(|(_, st)| {
+                    parsed
+                        .boosted_source_types
+                        .iter()
+                        .any(|t| t.as_str() == st.as_str())
+                })
                 .map(|(id, _)| id.clone())
                 .collect();
             if !boosted_source_ids.is_empty() {
