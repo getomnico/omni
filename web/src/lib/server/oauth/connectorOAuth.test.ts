@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { OAuthStateManager } from './state'
 import {
+    dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    oauthServiceBaseUrl,
     scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
     type OAuthManifestConfig,
@@ -66,6 +68,34 @@ describe('OAuth connector helpers', () => {
         ).toBe(false)
     })
 
+    it('builds provider-specific public-client registration metadata', () => {
+        expect(
+            dynamicRegistrationPayload(
+                'windshift',
+                'https://omni.example/api/oauth/callback',
+                'mcp:access',
+            ),
+        ).toEqual({
+            client_name: 'Omni Windshift MCP',
+            redirect_uris: ['https://omni.example/api/oauth/callback'],
+            grant_types: ['authorization_code', 'refresh_token'],
+            response_types: ['code'],
+            token_endpoint_auth_method: 'none',
+            scope: 'mcp:access',
+        })
+
+        expect(
+            dynamicRegistrationPayload(
+                'clickup',
+                'https://omni.example/api/oauth/callback',
+                'tasks:read',
+            ),
+        ).toMatchObject({
+            client_name: 'Omni ClickUp MCP',
+            grant_types: ['authorization_code'],
+        })
+    })
+
     it('checks configured state based on token endpoint auth method', () => {
         expect(isClientConfigComplete({ oauth_client_id: 'public-client' }, 'none')).toBe(true)
         expect(
@@ -98,11 +128,20 @@ describe('OAuth connector helpers', () => {
         expect(tokenEndpointAuthMethodForConfig(undefined, undefined)).toBe('client_secret_post')
     })
 
+    it('derives a deployment base URL from its OAuth authorization endpoint', () => {
+        expect(oauthServiceBaseUrl('https://windshift.example/oauth/authorize')).toBe(
+            'https://windshift.example',
+        )
+        expect(
+            oauthServiceBaseUrl('https://example.com/windshift/oauth/authorize?prompt=login'),
+        ).toBe('https://example.com/windshift')
+    })
+
     it('limits write elevation to the requested connector scopes', () => {
         const config: OAuthManifestConfig = {
             ...baseManifest,
             scopes: {
-                example: {
+                windshift: {
                     read: ['mcp:access', 'items:read'],
                     write: ['mcp:access', 'items:read', 'items:write', 'items:delete'],
                 },
@@ -110,7 +149,7 @@ describe('OAuth connector helpers', () => {
         }
 
         expect(
-            scopesForExistingSourceUserFlow(config, 'example', 'write', ['items:write']),
+            scopesForExistingSourceUserFlow(config, 'windshift', 'write', ['items:write']),
         ).toEqual(['mcp:access', 'items:read', 'items:write'])
     })
 

@@ -32,6 +32,7 @@ export enum SourceType {
     NEXTCLOUD = 'nextcloud',
     GOOGLE_ADS = 'google_ads',
     DARWINBOX = 'darwinbox',
+    WINDSHIFT = 'windshift',
 }
 
 export enum ServiceProvider {
@@ -51,6 +52,7 @@ export enum ServiceProvider {
     GOOGLE_ADS = 'google_ads',
     DARWINBOX = 'darwinbox',
     REMOTE_MCP = 'remote_mcp',
+    WINDSHIFT = 'windshift',
 }
 
 export enum AuthType {
@@ -231,6 +233,15 @@ export interface DarwinboxSourceConfig {
     >
 }
 
+export interface WindshiftSourceConfig {
+    workspace_keys?: string[]
+}
+
+export interface WindshiftCredentials {
+    access_token: string
+    refresh_token?: string
+}
+
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_DRIVE]: 1800,
     [SourceType.GMAIL]: 1800,
@@ -256,6 +267,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.NEXTCLOUD]: 3600,
     [SourceType.GOOGLE_ADS]: 3600,
     [SourceType.DARWINBOX]: 3600,
+    [SourceType.WINDSHIFT]: 1800,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const
