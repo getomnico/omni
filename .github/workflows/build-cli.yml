@@ -81,6 +81,7 @@ jobs:
           files: |
             ${{ matrix.asset-name }}
             ${{ matrix.asset-name }}.sha256
+          draft: true
 
   build-macos:
     name: Build ${{ matrix.asset-name }}
@@ -135,6 +136,7 @@ jobs:
           files: |
             ${{ matrix.asset-name }}
             ${{ matrix.asset-name }}.sha256
+          draft: true
 
   build-windows:
     name: Build omni-windows-x86_64.exe
@@ -176,3 +178,4 @@ jobs:
           files: |
             omni-windows-x86_64.exe
             omni-windows-x86_64.exe.sha256
+          draft: true

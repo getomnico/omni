@@ -678,7 +678,7 @@ jobs:
   # Release publishing (only after all builds succeed)
   # ---------------------------------------------------------------------------
   publish-release:
-    needs: [release-services, release-connectors, build-cli, package-deployment]
+    needs: [detect-changes, release-services, release-connectors, build-cli, package-deployment]
     if: needs.detect-changes.outputs.is-tag == 'true'
     runs-on: ubuntu-latest
     permissions:
@@ -688,12 +688,20 @@ jobs:
         with:
           fetch-depth: 0
       - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          gh release create "$TAG" \
-            --repo "${{ github.repository }}" \
-            --verify-tag \
-            --generate-notes
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; publishing it"
+            gh release edit "$TAG" --repo "$REPO" --draft=false
+          else
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --verify-tag \
+              --generate-notes
+          fi
 
       - name: Generate app token
         id: app-token

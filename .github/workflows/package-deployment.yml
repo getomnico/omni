@@ -58,3 +58,4 @@ jobs:
             omni-terraform-aws.tar.gz
             omni-terraform-gcp.tar.gz
             staging/install-cli.sh
+          draft: true
