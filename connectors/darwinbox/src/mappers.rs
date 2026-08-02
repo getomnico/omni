@@ -61,16 +61,18 @@ pub fn format_org_master_item(item: &JsonValue, attr_key: &'static str) -> SafeD
     }
 }
 
+/// Read a string field from a provider item, preferring `key` and falling
+/// back to `alias` so both Darwinbox response key variants are accepted.
+pub fn field_with_alias<'a>(item: &'a JsonValue, key: &'a str, alias: &'a str) -> Option<&'a str> {
+    item.get(key)
+        .and_then(JsonValue::as_str)
+        .or_else(|| item.get(alias).and_then(JsonValue::as_str))
+}
+
 /// Safely format a holiday item from known fields.
 pub fn format_holiday_item(item: &JsonValue) -> SafeDocument {
-    let name = item
-        .get("holiday_name")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("Holiday");
-    let date = item
-        .get("holiday_date")
-        .and_then(JsonValue::as_str)
-        .unwrap_or_default();
+    let name = field_with_alias(item, "name", "holiday_name").unwrap_or("Holiday");
+    let date = field_with_alias(item, "date", "holiday_date").unwrap_or_default();
     let description = item
         .get("description")
         .and_then(JsonValue::as_str)
@@ -141,5 +143,52 @@ pub fn format_ats_job_item(item: &JsonValue) -> SafeDocument {
             ("job_title".to_string(), title.to_string()),
             ("job_id".to_string(), job_id.to_string()),
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holiday_mapper_accepts_real_api_field_names() {
+        let item = serde_json::json!({
+            "id": 1,
+            "name": "Independence Day",
+            "date": "2026-08-15",
+            "year": 2026,
+            "holiday_repeats": false
+        });
+        let document = format_holiday_item(&item);
+        assert_eq!(document.title, "Independence Day");
+        assert!(document.body.contains("2026-08-15"));
+        assert!(
+            document
+                .attributes
+                .contains(&("holiday_name".to_string(), "Independence Day".to_string()))
+        );
+        assert!(
+            document
+                .attributes
+                .contains(&("holiday_date".to_string(), "2026-08-15".to_string()))
+        );
+    }
+
+    #[test]
+    fn holiday_mapper_falls_back_to_legacy_field_names() {
+        let item = serde_json::json!({
+            "id": 2,
+            "holiday_name": "Republic Day",
+            "holiday_date": "2026-01-26",
+            "year": 2026,
+            "holiday_repeats": true
+        });
+        let document = format_holiday_item(&item);
+        assert_eq!(document.title, "Republic Day");
+        assert!(
+            document
+                .attributes
+                .contains(&("holiday_date".to_string(), "2026-01-26".to_string()))
+        );
     }
 }

@@ -643,7 +643,7 @@ pub async fn execute_action(
         }
         "approve_leave_request" | "reject_leave_request" => {
             let employee_no = required_str(&params, "employee_no")?;
-            ensure_direct_report(&client, &caller_email, &config, employee_no).await?;
+            ensure_direct_report(&client, &caller_email, employee_no).await?;
             let decision = if action == "approve_leave_request" {
                 LeaveDecision::Approve
             } else {
@@ -683,7 +683,7 @@ pub async fn execute_action(
         }
         "get_direct_report_profile" => {
             let employee_no = required_str(&params, "employee_no")?;
-            ensure_direct_report(&client, &caller_email, &config, employee_no).await?;
+            ensure_direct_report(&client, &caller_email, employee_no).await?;
             let employee = client
                 .fetch_employees(Some(vec![employee_no.to_string()]), None)
                 .await?
@@ -739,15 +739,28 @@ pub async fn execute_action(
             }), false).await?
         }
         "fetch_report_ids" => {
-            client
-                .post_json::<JsonValue>("/reportsbuilderapi/reportids", json!({}), false)
-                .await?
+            if config.authorization.allowed_report_ids.is_empty() {
+                // Empty allowlist means no report actions are usable; do not
+                // call the provider at all.
+                json!({ "status": 1, "data": [] })
+            } else {
+                let response = client
+                    .post_json::<JsonValue>("/reportsbuilderapi/reportids", json!({}), false)
+                    .await?;
+                filter_allowed_reports(response, &config.authorization.allowed_report_ids)
+            }
         }
         "run_report" => {
+            let report_id = required_str(&params, "report_id")?;
+            if !report_is_allowlisted(&config, report_id) {
+                return Err(anyhow!(
+                    "report {report_id} is not allowlisted for this source"
+                ));
+            }
             client
                 .post_json::<JsonValue>(
                     "/reportsbuilderapi/reportdatav2",
-                    json!({ "report_id": required_str(&params, "report_id")? }),
+                    json!({ "report_id": report_id }),
                     false,
                 )
                 .await?
@@ -940,6 +953,55 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
     project_object(value)
 }
 
+/// True when `report_id` is present in the source's report allowlist.
+/// An empty allowlist allows nothing.
+fn report_is_allowlisted(config: &DarwinboxSourceConfig, report_id: &str) -> bool {
+    let report_id = report_id.trim();
+    config
+        .authorization
+        .allowed_report_ids
+        .iter()
+        .any(|id| id.trim() == report_id)
+}
+
+/// Prune every report whose id is not in the allowlist from a provider
+/// response, preserving the surrounding structure. Objects that declare a
+/// `report_id` are dropped entirely when the id is not allowed; objects
+/// without a `report_id` pass through unchanged.
+fn filter_allowed_reports(value: JsonValue, allowed: &[String]) -> JsonValue {
+    match value {
+        JsonValue::Object(object) => {
+            if let Some(id) = object.get("report_id").and_then(JsonValue::as_str)
+                && !allowed.iter().any(|allowed| allowed.trim() == id.trim())
+            {
+                return JsonValue::Null;
+            }
+            let filtered = object
+                .into_iter()
+                .filter_map(|(key, child)| {
+                    let child = filter_allowed_reports(child, allowed);
+                    (!child.is_null()).then_some((key, child))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            if filtered.is_empty() {
+                JsonValue::Null
+            } else {
+                JsonValue::Object(filtered)
+            }
+        }
+        JsonValue::Array(items) => JsonValue::Array(
+            items
+                .into_iter()
+                .filter_map(|item| {
+                    let item = filter_allowed_reports(item, allowed);
+                    (!item.is_null()).then_some(item)
+                })
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 fn reject_identity_params(params: &JsonValue) -> Result<()> {
     for key in IDENTITY_PARAM_KEYS {
         if params.get(key).is_some() {
@@ -991,7 +1053,7 @@ async fn resolve_calling_employee(
     client: &DarwinboxClient,
     caller_email: &str,
 ) -> Result<EmployeeRecord> {
-    let caller_email = caller_email.to_ascii_lowercase();
+    let caller_email = caller_email.trim().to_ascii_lowercase();
     let matches = client
         .fetch_employees(None, None)
         .await?
@@ -1021,33 +1083,50 @@ async fn direct_reports(
     caller_email: &str,
     config: &DarwinboxSourceConfig,
 ) -> Result<Vec<EmployeeRecord>> {
+    let mut reports = all_direct_reports(client, caller_email).await?;
+    // `max_batch_size` caps the report list handed to list/display actions;
+    // it must never truncate an authorization check (see `ensure_direct_report`).
+    reports.truncate(config.authorization.max_batch_size);
+    Ok(reports)
+}
+
+/// All direct reports of the caller, resolved from the employee master.
+/// Unbounded so authorization checks never lose scope to a display cap.
+/// A report is an employee whose `direct_manager_employee_id` matches the
+/// caller's `employee_id`; the caller themself is excluded even if their own
+/// record self-references their manager id (guards against self-approval).
+async fn all_direct_reports(
+    client: &DarwinboxClient,
+    caller_email: &str,
+) -> Result<Vec<EmployeeRecord>> {
     let manager = resolve_calling_employee(client, caller_email).await?;
-    let manager_id = employee_id(&manager)?.to_string();
+    let manager_id = employee_id(&manager)?.trim();
     let employees = client.fetch_employees(None, None).await?.employee_data;
     Ok(employees
         .into_iter()
         .filter(|employee| {
-            employee
+            let is_manager = employee.employee_id.as_deref().map(str::trim) == Some(manager_id);
+            let reports_to_manager = employee
                 .direct_manager_employee_id
                 .as_deref()
-                .map(|id| id == manager_id)
-                .unwrap_or(false)
+                .map(str::trim)
+                == Some(manager_id);
+            !is_manager && reports_to_manager
         })
-        .take(config.authorization.max_batch_size)
         .collect())
 }
 
 async fn ensure_direct_report(
     client: &DarwinboxClient,
     caller_email: &str,
-    config: &DarwinboxSourceConfig,
     employee_no: &str,
 ) -> Result<()> {
-    if direct_reports(client, caller_email, config)
+    let employee_no = employee_no.trim();
+    let is_report = all_direct_reports(client, caller_email)
         .await?
         .iter()
-        .any(|employee| employee.employee_id.as_deref() == Some(employee_no))
-    {
+        .any(|employee| employee.employee_id.as_deref().map(str::trim) == Some(employee_no));
+    if is_report {
         return Ok(());
     }
     Err(anyhow!(
@@ -1140,8 +1219,250 @@ fn write(
 
 #[cfg(test)]
 mod tests {
-    use super::{execute_action, sanitize_action_response};
+    use super::{
+        all_direct_reports, direct_reports, ensure_direct_report, execute_action,
+        sanitize_action_response,
+    };
+    use crate::client::DarwinboxClient;
+    use crate::credentials::DarwinboxCredentials;
     use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn test_config(base_url: &str) -> crate::config::DarwinboxSourceConfig {
+        serde_json::from_value(json!({
+            "base_url": base_url,
+            "authorization": { "participant_mode": "all", "max_batch_size": 20 }
+        }))
+        .unwrap()
+    }
+
+    fn test_credentials() -> DarwinboxCredentials {
+        DarwinboxCredentials::Basic {
+            username: "api-user".to_string(),
+            password: "secret".to_string(),
+            api_key: "api-key".to_string(),
+            dataset_key: "dataset-key".to_string(),
+        }
+    }
+
+    /// Employee master fixture: manager EMP001 plus two reports and two
+    /// non-reports (one with a different manager, one with no manager id).
+    fn employee_master() -> serde_json::Value {
+        json!({
+            "status": 1,
+            "employee_data": [
+                {"employee_id": "EMP001", "company_email_id": "mgr@example.com", "direct_manager_employee_id": "EMP000"},
+                {"employee_id": "EMP002", "company_email_id": "r1@example.com", "direct_manager_employee_id": "EMP001"},
+                {"employee_id": "EMP003", "company_email_id": "r2@example.com", "direct_manager_employee_id": " EMP001 "},
+                {"employee_id": "EMP004", "company_email_id": "o1@example.com", "direct_manager_employee_id": "EMP999"},
+                {"employee_id": "EMP005", "company_email_id": "o2@example.com"}
+            ]
+        })
+    }
+
+    async fn mock_employee_master(server: &MockServer, body: serde_json::Value) {
+        Mock::given(method("POST"))
+            .and(path("/masterapi/employee"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn direct_reports_are_strictly_scoped_to_the_callers_reports() {
+        let server = MockServer::start().await;
+        mock_employee_master(&server, employee_master()).await;
+        let config = test_config(&server.uri());
+        let client = DarwinboxClient::new(&config, test_credentials()).unwrap();
+
+        let reports = direct_reports(&client, "mgr@example.com", &config)
+            .await
+            .unwrap();
+        let ids = reports
+            .iter()
+            .filter_map(|e| e.employee_id.clone())
+            .collect::<Vec<_>>();
+        // EMP002 and EMP003 (whitespace-padded manager id still matches);
+        // EMP004 (different manager) and EMP005 (no manager) are excluded.
+        assert_eq!(ids, ["EMP002", "EMP003"]);
+    }
+
+    #[tokio::test]
+    async fn direct_reports_excludes_the_manager_themself() {
+        let server = MockServer::start().await;
+        // Manager self-references their own manager id; must not appear as
+        // their own direct report (guards self-approval via bad master data).
+        mock_employee_master(
+            &server,
+            json!({
+                "status": 1,
+                "employee_data": [
+                    {"employee_id": "EMP001", "company_email_id": "mgr@example.com", "direct_manager_employee_id": "EMP001"},
+                    {"employee_id": "EMP002", "company_email_id": "r1@example.com", "direct_manager_employee_id": "EMP001"}
+                ]
+            }),
+        )
+        .await;
+        let config = test_config(&server.uri());
+        let client = DarwinboxClient::new(&config, test_credentials()).unwrap();
+
+        let reports = all_direct_reports(&client, "mgr@example.com")
+            .await
+            .unwrap();
+        let ids = reports
+            .iter()
+            .filter_map(|e| e.employee_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["EMP002"]);
+    }
+
+    #[tokio::test]
+    async fn direct_reports_is_empty_when_the_caller_has_no_reports() {
+        let server = MockServer::start().await;
+        mock_employee_master(
+            &server,
+            json!({
+                "status": 1,
+                "employee_data": [
+                    {"employee_id": "EMP001", "company_email_id": "mgr@example.com"},
+                    {"employee_id": "EMP002", "company_email_id": "r1@example.com", "direct_manager_employee_id": "EMP999"}
+                ]
+            }),
+        )
+        .await;
+        let config = test_config(&server.uri());
+        let client = DarwinboxClient::new(&config, test_credentials()).unwrap();
+
+        let reports = direct_reports(&client, "mgr@example.com", &config)
+            .await
+            .unwrap();
+        assert!(reports.is_empty());
+
+        // An unresolvable caller fails loudly instead of returning an empty
+        // list (an empty list would open the manager gate to anyone).
+        let error = direct_reports(&client, "ghost@example.com", &config)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no Darwinbox employee"));
+    }
+
+    #[tokio::test]
+    async fn direct_reports_handles_duplicate_manager_ids() {
+        let server = MockServer::start().await;
+        mock_employee_master(
+            &server,
+            json!({
+                "status": 1,
+                "employee_data": [
+                    {"employee_id": "EMP001", "company_email_id": "mgr@example.com"},
+                    {"employee_id": "EMP002", "company_email_id": "r1@example.com", "direct_manager_employee_id": "EMP001"},
+                    {"employee_id": "EMP003", "company_email_id": "r2@example.com", "direct_manager_employee_id": "EMP001"}
+                ]
+            }),
+        )
+        .await;
+        let config = test_config(&server.uri());
+        let client = DarwinboxClient::new(&config, test_credentials()).unwrap();
+
+        let reports = all_direct_reports(&client, "mgr@example.com")
+            .await
+            .unwrap();
+        let ids = reports
+            .iter()
+            .filter_map(|e| e.employee_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["EMP002", "EMP003"]);
+    }
+
+    #[tokio::test]
+    async fn ensure_direct_report_rejects_non_reports() {
+        let server = MockServer::start().await;
+        mock_employee_master(&server, employee_master()).await;
+        let config = test_config(&server.uri());
+        let client = DarwinboxClient::new(&config, test_credentials()).unwrap();
+
+        ensure_direct_report(&client, "mgr@example.com", "EMP002")
+            .await
+            .unwrap();
+        // Whitespace-padded id still resolves to a report.
+        ensure_direct_report(&client, "mgr@example.com", "  EMP003 ")
+            .await
+            .unwrap();
+        let error = ensure_direct_report(&client, "mgr@example.com", "EMP004")
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("EMP004 is not a direct report of the caller")
+        );
+        let error = ensure_direct_report(&client, "mgr@example.com", "EMP001")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("not a direct report"));
+    }
+
+    #[test]
+    fn report_allowlist_admits_only_configured_ids() {
+        let config: crate::config::DarwinboxSourceConfig = serde_json::from_value(json!({
+            "base_url": "https://example.darwinbox.in",
+            "authorization": { "allowed_report_ids": ["R1", " R2 "] }
+        }))
+        .unwrap();
+        assert!(super::report_is_allowlisted(&config, "R1"));
+        assert!(super::report_is_allowlisted(&config, "R2"));
+        assert!(super::report_is_allowlisted(&config, " R2 "));
+        assert!(!super::report_is_allowlisted(&config, "R3"));
+
+        let empty: crate::config::DarwinboxSourceConfig = serde_json::from_value(json!({
+            "base_url": "https://example.darwinbox.in",
+            "authorization": { "allowed_report_ids": [] }
+        }))
+        .unwrap();
+        assert!(!super::report_is_allowlisted(&empty, "R1"));
+    }
+
+    #[test]
+    fn report_listing_prunes_ids_not_in_the_allowlist() {
+        let allowed = ["R1".to_string(), "R2".to_string()];
+        let response = json!({
+            "status": 1,
+            "data": [
+                {"report_id": "R1", "report_name": "Headcount"},
+                {"report_id": "R2", "report_name": "Attrition"},
+                {"report_id": "R3", "report_name": "Salaries"},
+                {"report_id": "R4"}
+            ]
+        });
+        let filtered = super::filter_allowed_reports(response.clone(), &allowed);
+        let ids = filtered["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["report_id"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["R1", "R2"]);
+        assert_eq!(filtered["status"], 1);
+
+        // An empty allowlist removes every report.
+        let filtered = super::filter_allowed_reports(response.clone(), &[]);
+        assert!(filtered["data"].as_array().unwrap().is_empty());
+        assert_eq!(filtered["status"], 1);
+
+        // Nested disallowed ids are pruned; non-report content survives.
+        let nested = json!({
+            "status": 1,
+            "results": [{"meta": {"report_id": "R9", "note": "x"}, "rows": [1, 2]}]
+        });
+        let filtered = super::filter_allowed_reports(nested, &allowed);
+        let item = &filtered["results"][0];
+        assert_eq!(item["rows"], json!([1, 2]));
+        assert!(item.get("meta").is_none());
+
+        let passthrough = super::filter_allowed_reports(json!({ "status": 1, "ok": true }), &[]);
+        assert_eq!(passthrough["status"], 1);
+    }
 
     #[test]
     fn response_projection_drops_scalar_arrays_and_sensitive_canaries() {

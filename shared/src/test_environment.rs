@@ -58,8 +58,54 @@ fn migrator_postgres_address(pg_ip: IpAddr, pg_port: u16) -> (String, u16) {
     migrator_postgres_address_inner(pg_ip, pg_port, is_direct_bridge_mode())
 }
 
+/// Best host address for reaching published container ports. On bare metal
+/// that is localhost; when the test process itself runs inside a container
+/// (e.g. a dev sandbox), published ports are only reachable through the
+/// Docker host's bridge gateway — the container's default route.
+fn mapped_port_host() -> IpAddr {
+    if is_inside_container() {
+        host_gateway_ip().unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+    } else {
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    }
+}
+
+fn is_inside_container() -> bool {
+    std::path::Path::new("/.dockerenv").exists()
+        || std::fs::read_to_string("/proc/1/cgroup")
+            .map(|content| {
+                content.contains("docker")
+                    || content.contains("containerd")
+                    || content.contains("kubepods")
+            })
+            .unwrap_or(false)
+}
+
+/// The default route's gateway, i.e. the Docker host's bridge IP as seen
+/// from a sibling container.
+fn host_gateway_ip() -> Option<IpAddr> {
+    let route = std::fs::read_to_string("/proc/net/route").ok()?;
+    for line in route.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let _iface = fields.next()?;
+        let destination = u32::from_str_radix(fields.next()?, 16).ok()?;
+        if destination != 0 {
+            continue;
+        }
+        let gateway = u32::from_str_radix(fields.next()?, 16).ok()?;
+        if gateway == 0 {
+            continue;
+        }
+        let octets = gateway.to_le_bytes();
+        return Some(IpAddr::V4(std::net::Ipv4Addr::new(
+            octets[0], octets[1], octets[2], octets[3],
+        )));
+    }
+    None
+}
+
 /// When direct bridge mode is active, containers are reachable via their
-/// default-bridge IP rather than localhost:mapped-port. Use the internal
+/// default-bridge IP rather than host-mapped ports. Use the internal
 /// port directly, since cross-container traffic goes over the bridge network
 /// without host port mapping.
 async fn resolve_ip(
@@ -73,7 +119,7 @@ async fn resolve_ip(
         let port = container
             .get_host_port_ipv4(ContainerPort::Tcp(internal_port))
             .await?;
-        Ok((IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port))
+        Ok((mapped_port_host(), port))
     }
 }
 
@@ -163,8 +209,13 @@ impl TestEnvironment {
         let redis_container = Redis::default().start().await?;
         let (redis_ip, redis_port) = resolve_ip_raw_redis(&redis_container, 6379).await?;
 
-        // Start LocalStack (S3)
-        let localstack_container = LocalStack::default().start().await?;
+        // Start LocalStack (S3). Only the s3 service is needed; booting the
+        // full service set is slow enough that the container log wait times
+        // out before the ready banner is emitted.
+        let localstack_container = LocalStack::default()
+            .with_env_var("SERVICES", "s3")
+            .start()
+            .await?;
         let (ls_ip, ls_port) = resolve_ip_raw_localstack(&localstack_container, 4566).await?;
 
         let pg_host = pg_ip.to_string();
@@ -180,9 +231,11 @@ impl TestEnvironment {
         let (migrator_host, migrator_port) = migrator_postgres_address(pg_ip, pg_port);
         run_migrator_container(&migrator_host, migrator_port)?;
 
-        // Create database connection
+        // Create database connection. ParadeDB restarts once after loading
+        // extensions, so use a generous acquire timeout instead of the
+        // 3-second default.
         let database_url = format!("postgresql://omni:omni_password@{pg_host}:{pg_port}/omni_test");
-        let db_pool = DatabasePool::new(&database_url).await?;
+        let db_pool = DatabasePool::new_with_options(&database_url, 10, 30).await?;
 
         // Seed test data
         Self::seed_database(db_pool.pool()).await?;
@@ -290,7 +343,7 @@ async fn resolve_ip_raw_redis(
         let port = container
             .get_host_port_ipv4(ContainerPort::Tcp(internal_port))
             .await?;
-        Ok((IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port))
+        Ok((mapped_port_host(), port))
     }
 }
 
@@ -305,7 +358,7 @@ async fn resolve_ip_raw_localstack(
         let port = container
             .get_host_port_ipv4(ContainerPort::Tcp(internal_port))
             .await?;
-        Ok((IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port))
+        Ok((mapped_port_host(), port))
     }
 }
 

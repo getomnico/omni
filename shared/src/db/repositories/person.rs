@@ -198,13 +198,14 @@ impl PersonRepository {
                 job_title, department, division, company_name, office_location,
                 work_country, employee_id, employee_type, cost_center, grade,
                 band, confirmation_status, employment_start_date,
-                employment_end_date, is_active, source_data, updated_at
+                employment_end_date, phone, top_department, is_active,
+                source_data, updated_at
             ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19::date,$20::date,true,jsonb_build_object($21::text,$22::jsonb),NOW()
+                $19::date,$20::date,$21,$22,true,jsonb_build_object($23::text,$24::jsonb),NOW()
             )
             ON CONFLICT (email) DO UPDATE SET
-                source_data=jsonb_set(people.source_data,ARRAY[$21::text],$22::jsonb,true),
+                source_data=jsonb_set(people.source_data,ARRAY[$23::text],$24::jsonb,true),
                 is_active=true, updated_at=NOW()
             RETURNING id
             "#,
@@ -229,6 +230,8 @@ impl PersonRepository {
         .bind(&person.confirmation_status)
         .bind(&person.employment_start_date)
         .bind(&person.employment_end_date)
+        .bind(&person.phone)
+        .bind(&person.top_department)
         .bind(source_id)
         .bind(source_value)
         .fetch_one(&mut *tx)
@@ -351,6 +354,8 @@ async fn refresh_canonical_fields(
             confirmation_status=(SELECT value->>'confirmation_status' FROM jsonb_each(p.source_data) WHERE NULLIF(value->>'confirmation_status','') IS NOT NULL ORDER BY key LIMIT 1),
             employment_start_date=(SELECT (value->>'employment_start_date')::date FROM jsonb_each(p.source_data) WHERE NULLIF(value->>'employment_start_date','') IS NOT NULL ORDER BY key LIMIT 1),
             employment_end_date=(SELECT (value->>'employment_end_date')::date FROM jsonb_each(p.source_data) WHERE NULLIF(value->>'employment_end_date','') IS NOT NULL ORDER BY key LIMIT 1),
+            phone=(SELECT value->>'phone' FROM jsonb_each(p.source_data) WHERE NULLIF(value->>'phone','') IS NOT NULL ORDER BY key LIMIT 1),
+            top_department=(SELECT value->>'top_department' FROM jsonb_each(p.source_data) WHERE NULLIF(value->>'top_department','') IS NOT NULL ORDER BY key LIMIT 1),
             manager_id=(
                 SELECT manager.id FROM jsonb_each(p.source_data) subject
                 JOIN people manager ON manager.source_data ? subject.key
@@ -358,7 +363,10 @@ async fn refresh_canonical_fields(
                 WHERE NULLIF(subject.value->>'manager_external_id','') IS NOT NULL
                 ORDER BY subject.key LIMIT 1
             ),
-            is_active=p.source_data<>'{}'::jsonb,
+            is_active=COALESCE(
+                (SELECT (value->>'is_active')::boolean FROM jsonb_each(p.source_data) WHERE value ? 'is_active' ORDER BY key LIMIT 1),
+                p.source_data<>'{}'::jsonb
+            ),
             updated_at=NOW()
         WHERE p.id=ANY($1::text[])
         "#,

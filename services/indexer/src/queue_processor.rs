@@ -1611,6 +1611,9 @@ mod tests {
             confirmation_status: None,
             employment_start_date: None,
             employment_end_date: None,
+            phone: None,
+            is_active: None,
+            top_department: None,
             manager_external_id: None,
             source_updated_at: None,
         }

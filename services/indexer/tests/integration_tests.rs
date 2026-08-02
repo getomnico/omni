@@ -1365,6 +1365,9 @@ fn person_record(
         confirmation_status: None,
         employment_start_date: None,
         employment_end_date: None,
+        phone: None,
+        is_active: None,
+        top_department: None,
         manager_external_id: manager.map(str::to_string),
         source_updated_at: None,
     }
@@ -1431,6 +1434,59 @@ async fn person_events_merge_sources_delete_source_scoped_and_resolve_managers()
             .await
             .unwrap();
     assert!(inactive);
+}
+
+#[tokio::test]
+async fn person_sync_persists_contact_status_and_top_department() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let repo = PersonRepository::new(pool);
+
+    let mut contact = person_record("EMP-C", "contact@example.com", None);
+    contact.phone = Some("+91-98765-43210".into());
+    contact.top_department = Some("People".into());
+    contact.is_active = Some(true);
+    repo.apply_person_sync(TEST_SOURCE_ID, &contact)
+        .await
+        .unwrap();
+
+    let row: (Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT phone, top_department, is_active FROM people WHERE email='contact@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (Some("+91-98765-43210".into()), Some("People".into()), true)
+    );
+
+    // A source-reported inactive employee maps to an inactive people row.
+    let mut resigned = person_record("EMP-D", "resigned@example.com", None);
+    resigned.is_active = Some(false);
+    repo.apply_person_sync(TEST_SOURCE_ID, &resigned)
+        .await
+        .unwrap();
+    let inactive: bool =
+        sqlx::query_scalar("SELECT NOT is_active FROM people WHERE email='resigned@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(inactive);
+
+    // Without an explicit status the row stays active (source reports person).
+    repo.apply_person_sync(
+        TEST_SOURCE_ID,
+        &person_record("EMP-E", "plain@example.com", None),
+    )
+    .await
+    .unwrap();
+    let active: bool =
+        sqlx::query_scalar("SELECT is_active FROM people WHERE email='plain@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(active);
 }
 
 #[tokio::test]
