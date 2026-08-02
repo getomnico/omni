@@ -1177,6 +1177,16 @@ pub struct PersonSyncRecord {
     pub employment_start_date: Option<String>,
     #[serde(default)]
     pub employment_end_date: Option<String>,
+    /// Contact phone number (e.g. Darwinbox `personal_mobile_no`).
+    #[serde(default)]
+    pub phone: Option<String>,
+    /// Source-reported employment activity. `None` means leave the people
+    /// row's current value untouched; only a source-provided value should map.
+    #[serde(default)]
+    pub is_active: Option<bool>,
+    /// Parent org unit (e.g. Darwinbox `top_department`).
+    #[serde(default)]
+    pub top_department: Option<String>,
     /// Manager's external ID within the same source.
     #[serde(default)]
     pub manager_external_id: Option<String>,

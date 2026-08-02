@@ -110,6 +110,13 @@ pub struct EmployeeWireRecord {
     pub date_of_joining: Option<String>,
     #[serde(default, rename = "date_of_exit")]
     pub date_of_exit: Option<String>,
+    // Extended workplace-directory fields (reviewed, safe to index)
+    #[serde(default, alias = "mobile_number")]
+    pub personal_mobile_no: Option<String>,
+    #[serde(default)]
+    pub employee_status: Option<String>,
+    #[serde(default)]
+    pub top_department: Option<String>,
 }
 
 /// Alias for backward compatibility during migration.
@@ -231,6 +238,14 @@ fn normalize_darwinbox_timestamp(value: Option<&str>) -> Option<String> {
     None
 }
 
+/// Map a Darwinbox `employee_status` value to an active flag: only an
+/// explicit `Active` counts as active; anything else (`Inactive`,
+/// `Resigned`, ...) maps to inactive. Empty values are normalized to `None`
+/// by the caller.
+fn derive_is_active(employee_status: &str) -> bool {
+    employee_status.trim().eq_ignore_ascii_case("Active")
+}
+
 impl EmployeeRecord {
     pub fn external_id(&self) -> Option<String> {
         self.employee_id
@@ -306,6 +321,24 @@ impl EmployeeRecord {
             employment_end_date: selected(EmployeeField::EmploymentDates)
                 .then(|| normalize_darwinbox_date(self.date_of_exit.as_deref()))
                 .flatten(),
+            phone: selected(EmployeeField::ContactNumber)
+                .then(|| self.personal_mobile_no.as_deref())
+                .flatten()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            top_department: selected(EmployeeField::TopDepartment)
+                .then(|| self.top_department.as_deref())
+                .flatten()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            is_active: selected(EmployeeField::EmploymentStatus)
+                .then(|| self.employee_status.as_deref())
+                .flatten()
+                .map(str::trim)
+                .filter(|status| !status.is_empty())
+                .map(derive_is_active),
             manager_external_id: selected(EmployeeField::ManagerEmployeeId)
                 .then(|| {
                     self.direct_manager_employee_id
@@ -568,6 +601,100 @@ mod tests {
         }))
         .unwrap();
         assert!(response.employee_data.is_empty());
+    }
+
+    #[test]
+    fn employee_wire_record_parses_contact_status_and_top_department() {
+        let response: EmployeeDataResponse = serde_json::from_value(serde_json::json!({
+            "status": 1,
+            "employee_data": [{
+                "employee_id": "E-1",
+                "company_email_id": "ada@example.com",
+                "personal_mobile_no": "  +91-98765-43210 ",
+                "employee_status": "Active",
+                "top_department": "People",
+                "future_unknown_field": {"nested": true}
+            }]
+        }))
+        .unwrap();
+        let employee = &response.employee_data[0];
+        assert_eq!(
+            employee.personal_mobile_no.as_deref(),
+            Some("  +91-98765-43210 ")
+        );
+        assert_eq!(employee.employee_status.as_deref(), Some("Active"));
+        assert_eq!(employee.top_department.as_deref(), Some("People"));
+    }
+
+    #[test]
+    fn employee_wire_record_accepts_mobile_number_alias() {
+        let response: EmployeeDataResponse = serde_json::from_value(serde_json::json!({
+            "status": 1,
+            "employee_data": [{
+                "employee_id": "E-1",
+                "company_email_id": "ada@example.com",
+                "mobile_number": "9876543210"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            response.employee_data[0].personal_mobile_no.as_deref(),
+            Some("9876543210")
+        );
+    }
+
+    #[test]
+    fn people_projection_maps_contact_status_and_top_department() {
+        let response = EmployeeDataResponse {
+            status: Some(1),
+            message: None,
+            employee_data: vec![EmployeeRecord {
+                employee_id: Some("E-1".into()),
+                first_name: Some("Ada".into()),
+                company_email_id: Some("ada@example.com".into()),
+                personal_mobile_no: Some("  +91-98765-43210 ".into()),
+                employee_status: Some("Active".into()),
+                top_department: Some("People".into()),
+                ..Default::default()
+            }],
+        };
+        let records = response
+            .to_person_sync_records(&crate::config::APPROVED_EMPLOYEE_FIELDS, |_| true)
+            .unwrap();
+        assert_eq!(records[0].phone.as_deref(), Some("+91-98765-43210"));
+        assert_eq!(records[0].top_department.as_deref(), Some("People"));
+        assert_eq!(records[0].is_active, Some(true));
+    }
+
+    #[test]
+    fn people_projection_derives_inactive_status_and_normalizes_empties() {
+        let response = EmployeeDataResponse {
+            status: Some(1),
+            message: None,
+            employee_data: vec![
+                EmployeeRecord {
+                    employee_id: Some("E-1".into()),
+                    company_email_id: Some("a@example.com".into()),
+                    employee_status: Some("Resigned".into()),
+                    personal_mobile_no: Some("   ".into()),
+                    top_department: Some("".into()),
+                    ..Default::default()
+                },
+                EmployeeRecord {
+                    employee_id: Some("E-2".into()),
+                    company_email_id: Some("b@example.com".into()),
+                    ..Default::default()
+                },
+            ],
+        };
+        let records = response
+            .to_person_sync_records(&crate::config::APPROVED_EMPLOYEE_FIELDS, |_| true)
+            .unwrap();
+        assert_eq!(records[0].is_active, Some(false));
+        assert_eq!(records[0].phone, None);
+        assert_eq!(records[0].top_department, None);
+        // No employee_status present -> leave the row's value untouched.
+        assert_eq!(records[1].is_active, None);
     }
 
     #[test]

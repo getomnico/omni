@@ -378,8 +378,8 @@ async fn sync_holidays(
             return Ok(());
         }
         let document = mappers::format_holiday_item(item);
-        let Some(date) = item.get("holiday_date").and_then(JsonValue::as_str) else {
-            warn!("Skipping Darwinbox holiday without holiday_date");
+        let Some(date) = mappers::field_with_alias(item, "date", "holiday_date") else {
+            warn!("Skipping Darwinbox holiday without date");
             continue;
         };
         let id = slugify(&format!("{date}-{}", document.title));
@@ -563,6 +563,11 @@ fn slugify(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use omni_connector_sdk::{SdkClient, SourceType, SyncType};
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn complete_directory_diff_deletes_only_absent_emails() {
@@ -574,6 +579,87 @@ mod tests {
             removed_person_emails(&previous, &current),
             ["grace@example.com"]
         );
+    }
+
+    #[tokio::test]
+    async fn holiday_sync_emits_documents_from_real_api_field_names() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/leavesactionapi/holidaylist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": 1,
+                "data": [{
+                    "id": 1,
+                    "name": "Independence Day",
+                    "date": "2026-08-15",
+                    "year": 2026,
+                    "holiday_repeats": false
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content_id": "c-1"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/events/batch"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/sync/run-1/scanned"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config: DarwinboxSourceConfig = serde_json::from_value(json!({
+            "base_url": server.uri(),
+            "authorization": { "participant_mode": "all" }
+        }))
+        .unwrap();
+        let credentials = crate::credentials::DarwinboxCredentials::Basic {
+            username: "api-user".to_string(),
+            password: "secret".to_string(),
+            api_key: "api-key".to_string(),
+            dataset_key: "dataset-key".to_string(),
+        };
+        let client = DarwinboxClient::new(&config, credentials).unwrap();
+        let ctx = SyncContext::new(
+            SdkClient::new(&server.uri()),
+            "run-1".to_string(),
+            "source-1".to_string(),
+            SourceType::Darwinbox,
+            SyncType::Full,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        sync_holidays(&client, &config, "source-1", &ctx, "EMP001")
+            .await
+            .unwrap();
+        ctx.flush().await.unwrap();
+
+        let batch = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.url.path() == "/sdk/events/batch")
+            .expect("events batch should be emitted");
+        let body: JsonValue = serde_json::from_slice(&batch.body).unwrap();
+        let events = body["events"]
+            .as_array()
+            .expect("batch should carry events");
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event["type"], "document_created");
+        assert_eq!(
+            event["document_id"],
+            "darwinbox:holiday:2026-08-15-independence-day"
+        );
+        assert_eq!(event["metadata"]["title"], "Independence Day");
+        assert_eq!(event["metadata"]["content_type"], "holiday");
     }
 }
 

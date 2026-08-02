@@ -163,8 +163,13 @@ impl TestEnvironment {
         let redis_container = Redis::default().start().await?;
         let (redis_ip, redis_port) = resolve_ip_raw_redis(&redis_container, 6379).await?;
 
-        // Start LocalStack (S3)
-        let localstack_container = LocalStack::default().start().await?;
+        // Start LocalStack (S3). Only the s3 service is needed; booting the
+        // full service set is slow enough that the container log wait times
+        // out before the ready banner is emitted.
+        let localstack_container = LocalStack::default()
+            .with_env_var("SERVICES", "s3")
+            .start()
+            .await?;
         let (ls_ip, ls_port) = resolve_ip_raw_localstack(&localstack_container, 4566).await?;
 
         let pg_host = pg_ip.to_string();
@@ -180,7 +185,9 @@ impl TestEnvironment {
         let (migrator_host, migrator_port) = migrator_postgres_address(pg_ip, pg_port);
         run_migrator_container(&migrator_host, migrator_port)?;
 
-        // Create database connection
+        // Create database connection. ParadeDB restarts once after loading
+        // extensions, so use a generous acquire timeout instead of the
+        // 3-second default.
         let database_url = format!("postgresql://omni:omni_password@{pg_host}:{pg_port}/omni_test");
         let db_pool = DatabasePool::new(&database_url).await?;
 

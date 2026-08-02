@@ -29,6 +29,9 @@ pub enum EmployeeField {
     Band,
     ConfirmationStatus,
     EmploymentDates,
+    ContactNumber,
+    EmploymentStatus,
+    TopDepartment,
 }
 
 /// Fixed approved field set projected into People records; not admin-configurable.
@@ -47,6 +50,9 @@ pub const APPROVED_EMPLOYEE_FIELDS: &[EmployeeField] = &[
     EmployeeField::Band,
     EmployeeField::ConfirmationStatus,
     EmployeeField::EmploymentDates,
+    EmployeeField::ContactNumber,
+    EmployeeField::EmploymentStatus,
+    EmployeeField::TopDepartment,
 ];
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
