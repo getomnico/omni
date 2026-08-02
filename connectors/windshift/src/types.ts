@@ -9,9 +9,10 @@ export type WindshiftSyncState = {
 // Credentials are written by Omni's generic OAuth dispatcher
 // (`web/src/lib/server/oauth/connectorOAuth.ts`) after the user completes
 // the authorization-code flow against Windshift's `/oauth/authorize` +
-// `/api/oauth/token`. The connector container reaches Windshift through
-// WINDSHIFT_BASE_URL (process env), not through credentials — one Omni
-// install pointing at one Windshift instance.
+// `/api/oauth/token`. The connector container reaches Windshift through the
+// admin-configured server URLs (stored in connector_configs, with
+// WINDSHIFT_BASE_URL env as a fallback) — one Omni install pointing at one
+// Windshift instance.
 export type WindshiftTokenCredentials = {
   access_token?: string;
   refresh_token?: string;

@@ -19,12 +19,22 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     const googleConnectorConfig = await getConnectorConfigPublic('google')
 
-    let windshiftBaseUrl: string | null = null
-    try {
-        const oauth = await getOAuthManifestForSourceType(SourceType.WINDSHIFT)
-        if (oauth?.auth_endpoint) windshiftBaseUrl = oauthServiceBaseUrl(oauth.auth_endpoint)
-    } catch (err) {
-        locals.logger.warn('Failed to load the Windshift connector URL', err)
+    // The Windshift server URL is an admin setting stored in connector_configs.
+    // Fall back to the connector manifest (env-var based deployments) until the
+    // admin configures it in the UI.
+    const windshiftConnectorConfig = await getConnectorConfigPublic('windshift')
+    const storedWindshiftBaseUrl = windshiftConnectorConfig?.config?.base_url
+    let windshiftBaseUrl: string | null =
+        typeof storedWindshiftBaseUrl === 'string' && storedWindshiftBaseUrl.trim().length > 0
+            ? storedWindshiftBaseUrl
+            : null
+    if (!windshiftBaseUrl) {
+        try {
+            const oauth = await getOAuthManifestForSourceType(SourceType.WINDSHIFT)
+            if (oauth?.auth_endpoint) windshiftBaseUrl = oauthServiceBaseUrl(oauth.auth_endpoint)
+        } catch (err) {
+            locals.logger.warn('Failed to load the Windshift connector URL', err)
+        }
     }
 
     const userSources = (await sourcesRepository.getByUserId(locals.user.id)).filter((source) =>

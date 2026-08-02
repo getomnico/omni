@@ -6,6 +6,7 @@ import {
     callbackUrl,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    oauthServiceBaseUrl,
     tokenEndpointAuthMethodForConfig,
     type OAuthManifestConfig,
 } from '$lib/server/oauth/connectorOAuth'
@@ -126,6 +127,17 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
     let oauthProviders: OAuthIntegrationProvider[] = []
     const sourceHealth = new Map<string, 'healthy' | 'unhealthy'>()
 
+    // Windshift is a personal OAuth source configured at the server level.
+    // The admin sets the base URLs here; the connector picks them up from
+    // connector_configs via connector-manager.
+    const savedWindshiftConfig = savedOAuthConfigByProvider.get('windshift')
+    const windshiftConfig = (savedWindshiftConfig?.config ?? {}) as {
+        base_url?: string
+        internal_base_url?: string
+    }
+    let windshiftRegistered = false
+    let windshiftManifestBaseUrl: string | null = null
+
     try {
         const [connectorsResponse, sourcesResponse] = await Promise.all([
             fetch(`${config.services.connectorManagerUrl}/connectors`),
@@ -160,6 +172,13 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             const oauthManifestByProvider = new Map<string, OAuthManifestConfig>()
 
             for (const connector of connectors) {
+                if (connector.source_type === 'windshift') {
+                    windshiftRegistered = true
+                    const oauth = connector.manifest?.oauth
+                    if (oauth?.auth_endpoint) {
+                        windshiftManifestBaseUrl = oauthServiceBaseUrl(oauth.auth_endpoint)
+                    }
+                }
                 if (connector.manifest?.integration_type === IntegrationType.REMOTE_MCP) continue
                 const connectorId = connector.manifest?.connector_id ?? connector.source_type
                 if (!integrationMap.has(connectorId)) {
@@ -279,5 +298,10 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         oauthProviders,
         oauthRedirectUri: callbackUrl(),
         mcpTab,
+        windshiftConfig,
+        windshiftRegistered,
+        // Effective URL when the connector is serving via env-var fallback
+        // (deployments that predate the UI setting).
+        windshiftEffectiveBaseUrl: windshiftConfig.base_url ?? windshiftManifestBaseUrl,
     }
 }

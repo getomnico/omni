@@ -26,6 +26,7 @@
     import notionLogo from '$lib/images/icons/notion.svg'
     import linearLogo from '$lib/images/icons/linear.svg'
     import githubLogo from '$lib/images/icons/github.svg'
+    import windshiftLogo from '$lib/images/icons/windshift.png'
     import nextcloudLogo from '$lib/images/icons/nextcloud.svg'
     import paperlessLogo from '$lib/images/icons/paperless.svg'
     import imapLogo from '$lib/images/icons/imap.svg'
@@ -62,6 +63,7 @@
     import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
     import NextcloudConnectorSetup from '$lib/components/nextcloud-connector-setup.svelte'
     import DarwinboxConnectorSetup from '$lib/components/darwinbox-connector-setup.svelte'
+    import WindshiftServerSetup from '$lib/components/windshift-server-setup.svelte'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { Badge } from '$lib/components/ui/badge'
     import { AuthType, SourceType } from '$lib/types'
@@ -507,6 +509,80 @@
                     {/if}
                 </div>
 
+                <!-- Windshift server (personal OAuth source, server-level config) -->
+                {#if data.windshiftRegistered}
+                    <div class="space-y-4">
+                        <div>
+                            <h2 class="text-xl font-semibold">Windshift server</h2>
+                            <p class="text-muted-foreground text-sm">
+                                Windshift is a personal OAuth source: users connect it from My
+                                Integrations. Configure the Windshift server URL here — no env vars
+                                required.
+                            </p>
+                        </div>
+
+                        <Card class="flex flex-col">
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-3">
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <img
+                                            src={windshiftLogo}
+                                            alt="Windshift"
+                                            class="h-6 w-6 object-contain" />
+                                    </div>
+                                    Windshift
+                                </CardTitle>
+                                <CardDescription>
+                                    Base URL of the Windshift instance Omni talks to. OAuth client
+                                    registration is automatic (DCR + PKCE); there is no client
+                                    secret to configure.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent class="flex-1 space-y-2">
+                                {#if data.windshiftConfig.base_url}
+                                    <div class="text-sm">
+                                        <span class="text-muted-foreground">Windshift URL:</span>
+                                        <code
+                                            class="bg-muted ml-2 rounded px-1.5 py-0.5 text-xs break-all">
+                                            {data.windshiftConfig.base_url}
+                                        </code>
+                                    </div>
+                                    {#if data.windshiftConfig.internal_base_url}
+                                        <div class="text-sm">
+                                            <span class="text-muted-foreground">Internal URL:</span>
+                                            <code
+                                                class="bg-muted ml-2 rounded px-1.5 py-0.5 text-xs break-all">
+                                                {data.windshiftConfig.internal_base_url}
+                                            </code>
+                                        </div>
+                                    {/if}
+                                {:else if data.windshiftEffectiveBaseUrl}
+                                    <div class="text-sm">
+                                        <span class="text-muted-foreground"
+                                            >Serving via env fallback:</span>
+                                        <code
+                                            class="bg-muted ml-2 rounded px-1.5 py-0.5 text-xs break-all">
+                                            {data.windshiftEffectiveBaseUrl}
+                                        </code>
+                                    </div>
+                                {:else}
+                                    <Badge variant="outline">Not configured</Badge>
+                                {/if}
+                            </CardContent>
+                            <CardFooter>
+                                <Button
+                                    size="sm"
+                                    variant={data.windshiftConfig.base_url ? 'outline' : 'default'}
+                                    class="cursor-pointer"
+                                    onclick={() => (activeSetup = 'windshift')}>
+                                    {data.windshiftConfig.base_url ? 'Edit' : 'Configure'}
+                                </Button>
+                            </CardFooter>
+                        </Card>
+                    </div>
+                {/if}
+
                 <!-- Available Integrations Section -->
                 <div class="space-y-4">
                     <div>
@@ -760,6 +836,13 @@
 
 <DarwinboxConnectorSetup
     open={activeSetup === 'darwinbox'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<WindshiftServerSetup
+    open={activeSetup === 'windshift'}
+    baseUrl={data.windshiftConfig.base_url ?? ''}
+    internalBaseUrl={data.windshiftConfig.internal_base_url ?? ''}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

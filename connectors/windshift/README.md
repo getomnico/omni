@@ -5,15 +5,20 @@ Windshift's MCP tools as Omni actions.
 
 ## Configuration
 
-Set `WINDSHIFT_BASE_URL` to the externally reachable Windshift base URL. If
-Windshift uses a context path, include it in the URL. Enable Windshift's MCP
-server with `MCP_ENABLED=true`.
+Windshift is configured in the admin UI under **Settings > Integrations >
+Windshift server**: enter the externally reachable Windshift base URL (and
+optionally an internal/connector-only route). No env vars are required — the
+setting is stored in the `connector_configs` table and the connector reads it
+from connector-manager, so changes propagate without a container restart. Enable
+Windshift's MCP server with `MCP_ENABLED=true`.
 
-For local or private networking, `WINDSHIFT_INTERNAL_BASE_URL` may point the
-connector container at the same Windshift instance through a different route.
-Browser authorization, resource binding, and document links still use
-`WINDSHIFT_BASE_URL`; server-side client registration, token exchange, user-info,
-sync, and MCP requests use the internal route.
+Deployments that predate the UI setting can still set `WINDSHIFT_BASE_URL` (and
+optionally `WINDSHIFT_INTERNAL_BASE_URL`) as a fallback; the UI setting wins
+when both are present. If Windshift uses a context path, include it in the URL.
+
+Browser authorization, resource binding, and document links always use the
+public Windshift URL; server-side client registration, token exchange,
+user-info, sync, and MCP requests use the internal route when one is set.
 
 No OAuth client ID or secret is configured manually. Omni dynamically registers
 as a public client, uses S256 PKCE, and requests tokens bound to
