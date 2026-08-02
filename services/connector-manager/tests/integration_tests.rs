@@ -6,9 +6,34 @@ use common::TEST_SOURCE_ID;
 use omni_connector_manager::source_cleanup::SourceCleanup;
 use redis::AsyncCommands;
 use serde_json::json;
-use shared::db::repositories::SyncRunRepository;
-use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncStatus, SyncType};
+use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
+use shared::models::{
+    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest, DocumentMetadata,
+    DocumentPermissions, IntegrationType, PersonSyncRecord, ServiceCredential, ServiceProvider,
+    SourceType, SyncStatus, SyncType,
+};
 use shared::queue::EventQueue;
+use time::OffsetDateTime;
+
+struct DummyConnectorEmitter<'a> {
+    server: &'a TestServer,
+    source_id: String,
+    sync_run_id: String,
+}
+
+impl<'a> DummyConnectorEmitter<'a> {
+    async fn emit(&self, event: ConnectorEvent) {
+        self.server
+            .post("/sdk/events")
+            .json(&json!({
+                "sync_run_id": self.sync_run_id,
+                "source_id": self.source_id,
+                "event": event,
+            }))
+            .await
+            .assert_status(StatusCode::OK);
+    }
+}
 
 fn test_server(fixture: &common::TestFixture) -> TestServer {
     let config = TestServerConfig::builder()
@@ -794,6 +819,139 @@ async fn seed_deleted_source_with_documents(
 }
 
 #[tokio::test]
+async fn test_source_cleanup_queues_people_deactivation_before_source_deletion() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let (source_id, _) = seed_deleted_source_with_documents(pool, 0).await;
+    let person_id = shared::utils::generate_ulid();
+    sqlx::query(
+        "INSERT INTO people (id,email,is_active,source_data) VALUES ($1,'cleanup@example.com',true,jsonb_build_object($2::text,jsonb_build_object('external_id','EMP')))",
+    )
+    .bind(&person_id)
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let ordinary_run = create_running_sync(pool, &source_id).await;
+    EventQueue::new(pool.clone())
+        .enqueue(
+            &source_id,
+            &ConnectorEvent::PersonSync {
+                sync_run_id: ordinary_run.clone(),
+                source_id: source_id.clone(),
+                person: PersonSyncRecord {
+                    external_id: "LATE".into(),
+                    email: "late@example.com".into(),
+                    display_name: None,
+                    given_name: None,
+                    middle_name: None,
+                    surname: None,
+                    job_title: None,
+                    department: None,
+                    division: None,
+                    company_name: None,
+                    office_location: None,
+                    work_country: None,
+                    employee_id: None,
+                    employee_type: None,
+                    cost_center: None,
+                    grade: None,
+                    band: None,
+                    confirmation_status: None,
+                    employment_start_date: None,
+                    employment_end_date: None,
+                    manager_external_id: None,
+                    source_updated_at: None,
+                },
+            },
+        )
+        .await
+        .unwrap();
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let ordinary_pending: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_sync' AND status='pending'",
+    )
+    .bind(&source_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(ordinary_pending, 1);
+    let cleanup_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_deleted'",
+    )
+    .bind(&source_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        cleanup_events, 0,
+        "ordinary person mutation must quiesce first"
+    );
+
+    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE sync_run_id=$1")
+        .bind(&ordinary_run)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO people (id,email,is_active,source_data) VALUES ($1,'late@example.com',true,jsonb_build_object($2::text,jsonb_build_object('external_id','LATE')))",
+    )
+    .bind(shared::utils::generate_ulid())
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+
+    let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(source_count, 1);
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue q JOIN sync_runs r ON r.id=q.sync_run_id WHERE q.source_id=$1 AND q.event_type='person_deleted' AND q.status='pending' AND r.trigger_type='source_cleanup' AND q.payload->>'email' IN ('cleanup@example.com','late@example.com')",
+    )
+    .bind(&source_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        queued, 2,
+        "cleanup must include data from the ordinary mutation"
+    );
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let cleanup_events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_deleted'",
+    )
+    .bind(&source_id).fetch_one(pool).await.unwrap();
+    assert_eq!(cleanup_events, 2, "pending cleanup must be idempotent");
+
+    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE source_id=$1 AND event_type='person_deleted'")
+        .bind(&source_id).execute(pool).await.unwrap();
+    sqlx::query(
+        "UPDATE people SET source_data=source_data-$1, is_active=false WHERE source_data ? $1",
+    )
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let source_count: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 0,
+        "reconciled source should be physically deleted"
+    );
+}
+
+#[tokio::test]
 async fn test_source_cleanup() {
     let fixture = common::setup_test_fixture().await.unwrap();
     let pool = fixture.state.db_pool.pool();
@@ -844,6 +1002,146 @@ async fn test_source_cleanup() {
     assert_eq!(
         source_count, 0,
         "Source row should be deleted after second cleanup call"
+    );
+}
+
+#[tokio::test]
+async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let (source_id, _) = seed_deleted_source_with_documents(pool, 0).await;
+
+    fn doc_event(sync_run_id: &str, source_id: &str, document_id: &str) -> ConnectorEvent {
+        ConnectorEvent::DocumentCreated {
+            sync_run_id: sync_run_id.to_string(),
+            source_id: source_id.to_string(),
+            document_id: document_id.to_string(),
+            content_id: format!("{document_id}-content"),
+            metadata: DocumentMetadata::default(),
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec![],
+                groups: vec![],
+            },
+            attributes: None,
+        }
+    }
+
+    // A document already written by a settled event.
+    sqlx::query(
+        r#"
+        INSERT INTO documents (id, source_id, external_id, title, metadata, permissions, created_at, updated_at, last_indexed_at)
+        VALUES ($1, $2, 'ext-existing', 'Existing', '{}', '[]', NOW(), NOW(), NOW())
+        "#,
+    )
+    .bind(shared::utils::generate_ulid())
+    .bind(&source_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // An already-admitted (pending) document event must quiesce before any
+    // document deletion or source deletion — otherwise a processing event's
+    // document write could land after the cleanup DELETE and be orphaned by
+    // the physical source deletion.
+    let run_id = create_running_sync(pool, &source_id).await;
+    let pending_id = EventQueue::new(pool.clone())
+        .enqueue(&source_id, &doc_event(&run_id, &source_id, "doc-1"))
+        .await
+        .unwrap();
+
+    // A failed event simulates a processing -> failed transition that the
+    // cleanup pass cannot observe atomically. It must be dead-lettered under
+    // the lock, and the dead-letter must survive the early return (commit, not
+    // rollback) so it can never be retried behind a deleted source.
+    let failed_id = EventQueue::new(pool.clone())
+        .enqueue(&source_id, &doc_event(&run_id, &source_id, "doc-2"))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE connector_events_queue SET status='failed' WHERE id=$1")
+        .bind(&failed_id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+
+    // Unresolved events block document deletion AND source deletion: the
+    // settled document must survive this pass untouched.
+    let (doc_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        doc_count, 1,
+        "documents must not be deleted while events are unresolved"
+    );
+    let (source_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 1,
+        "pending non-person event must prevent physical source deletion"
+    );
+    let (pending,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM connector_events_queue WHERE id=$1 AND status='pending'",
+    )
+    .bind(&pending_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(pending, 1, "pending document event must remain pending");
+    let (dead,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM connector_events_queue WHERE id=$1 AND status='dead_letter'",
+    )
+    .bind(&failed_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dead, 1,
+        "failed non-person event must be dead-lettered under the lock and stay dead-lettered across the early return"
+    );
+
+    // Once the pending event settles, the next pass deletes the documents
+    // (bounded batch), then a final pass removes the source row.
+    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE id=$1")
+        .bind(&pending_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let (doc_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM documents WHERE source_id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        doc_count, 0,
+        "documents must be deleted only after all admitted events settle"
+    );
+    let (source_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 1,
+        "source must outlive the bounded document deletion pass"
+    );
+
+    SourceCleanup::cleanup_deleted_sources(pool).await;
+    let (source_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM sources WHERE id=$1")
+        .bind(&source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        source_count, 0,
+        "source must be deleted once all admitted events settle"
     );
 }
 
@@ -1039,5 +1337,618 @@ async fn test_incremental_after_failed_sync_starts_from_previous_successful_chec
     assert_eq!(
         requests[0].checkpoint.as_ref().unwrap()["cursor"].as_str(),
         Some("successful")
+    );
+}
+
+fn person_event(run: &str, source: &str, email: &str) -> ConnectorEvent {
+    ConnectorEvent::PersonDeleted {
+        sync_run_id: run.into(),
+        source_id: source.into(),
+        email: email.into(),
+    }
+}
+
+#[tokio::test]
+async fn sdk_event_rejects_mismatched_event_context_and_run_ownership() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let run = create_running_sync(pool, TEST_SOURCE_ID).await;
+    let other_source = seed_source(pool, "slack", true).await;
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "event": person_event(&run, &other_source, "01J00000000000000000000001")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": other_source,
+            "event": person_event(&run, &other_source, "01J00000000000000000000001")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+
+    sqlx::query("UPDATE sync_runs SET status = 'completed' WHERE id = $1")
+        .bind(&run)
+        .execute(pool)
+        .await
+        .unwrap();
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "event": person_event(&run, TEST_SOURCE_ID, "01J00000000000000000000002")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_text_contains("running sync run");
+}
+
+#[tokio::test]
+async fn sdk_event_rejects_deleted_source_before_enqueue() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let run = create_running_sync(pool, TEST_SOURCE_ID).await;
+    sqlx::query("UPDATE sources SET is_deleted=true WHERE id=$1")
+        .bind(TEST_SOURCE_ID)
+        .execute(pool)
+        .await
+        .unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+
+    let response = server
+        .post("/sdk/events")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "event": person_event(&run, TEST_SOURCE_ID, "deleted@example.com")
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    response.assert_text_contains("deleted source");
+
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+async fn sdk_batch_rejects_mixed_context_atomically() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let run = create_running_sync(pool, TEST_SOURCE_ID).await;
+    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let response = server
+        .post("/sdk/events/batch")
+        .json(&json!({
+            "sync_run_id": run, "source_id": TEST_SOURCE_ID,
+            "events": [
+                person_event(&run, TEST_SOURCE_ID, "01J00000000000000000000001"),
+                person_event("wrong-run", TEST_SOURCE_ID, "01J00000000000000000000002")
+            ]
+        }))
+        .await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(before, after);
+}
+
+async fn wait_for_person_queue(
+    pool: &sqlx::PgPool,
+    sync_run_ids: &[&str],
+    expected: i64,
+    timeout: std::time::Duration,
+) {
+    let start = std::time::Instant::now();
+    loop {
+        let completed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status='completed'",
+        )
+        .bind(sync_run_ids)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if completed == expected {
+            return;
+        }
+        if start.elapsed() > timeout {
+            let details: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT event_type, status, substring(error_message from 1 for 200) FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status<>'completed' ORDER BY id",
+            )
+            .bind(sync_run_ids)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            let incomplete: i64 = details.len() as i64;
+            let detail_str: String = details
+                .iter()
+                .map(|(et, st, err)| format!("  {} status={} err={:?}", et, st, err))
+                .collect::<Vec<_>>()
+                .join("\n");
+            panic!(
+                "Person sync test timed out after {:.1}s: completed={}, incomplete={}\n{}completed events:\n{}",
+                timeout.as_secs_f64(),
+                completed,
+                incomplete,
+                detail_str,
+                {
+                    let completed_details: Vec<(String, String)> = sqlx::query_as(
+                        "SELECT event_type, status FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status='completed' ORDER BY id"
+                    )
+                    .bind(sync_run_ids)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+                    completed_details
+                        .iter()
+                        .map(|(et, st)| format!("  {} status={}", et, st))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_people_rows(pool: &sqlx::PgPool, source_id: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        let ready: bool = sqlx::query_scalar(
+            r#"
+            SELECT
+                (SELECT count(*) FROM people) = 3
+                AND EXISTS (
+                    SELECT 1 FROM people
+                    WHERE email='shared@example.com' AND source_data ? $1
+                )
+                AND EXISTS (
+                    SELECT 1 FROM people
+                    WHERE email='doc-only@example.com'
+                )
+            "#,
+        )
+        .bind(source_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if ready {
+            return;
+        }
+        assert!(
+            start.elapsed() <= std::time::Duration::from_secs(15),
+            "timed out waiting for implicit and explicit people writes"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn person_sync_and_document_extraction_merge_correctly() {
+    use shared::models::{DocumentMetadata, DocumentPermissions, PersonSyncRecord};
+
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let user_id = "01JGF7V3E0Y2R1X8P5Q7W9T4N6";
+
+    // Seed two sources
+    let source_a = shared::utils::generate_ulid();
+    let source_b = shared::utils::generate_ulid();
+    sqlx::query(
+        "INSERT INTO sources (id,name,source_type,config,is_active,created_by,created_at,updated_at) VALUES ($1,'PersonSync Source','darwinbox','{}',true,$2,NOW(),NOW())",
+    )
+    .bind(&source_a)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sources (id,name,source_type,config,is_active,created_by,created_at,updated_at) VALUES ($1,'Document Source','local_files','{}',true,$2,NOW(),NOW())",
+    )
+    .bind(&source_b)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Create running sync runs for both
+    let run_a = create_running_sync(pool, &source_a).await;
+    let run_b = create_running_sync(pool, &source_b).await;
+
+    // Start indexer QueueProcessor in background
+    let indexer_state = fixture.indexer_state();
+    let processor = omni_indexer::QueueProcessor::new(indexer_state)
+        .with_poll_interval(std::time::Duration::from_millis(100))
+        .with_batch_size(1)
+        .with_full_batch_size(1)
+        .with_full_max_age_secs(1);
+    let processor_handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Store content for the document event
+    let content_id = fixture
+        .state
+        .content_storage
+        .store_content(b"test document for person extraction", None)
+        .await
+        .unwrap();
+
+    // ── Emit PersonSync events for source_a (authoritative) ──
+    let emitter_a = DummyConnectorEmitter {
+        server: &server,
+        source_id: source_a.clone(),
+        sync_run_id: run_a.clone(),
+    };
+
+    // PersonSync for shared@example.com (case variant to test normalization)
+    emitter_a
+        .emit(ConnectorEvent::PersonSync {
+            sync_run_id: run_a.clone(),
+            source_id: source_a.clone(),
+            person: PersonSyncRecord {
+                external_id: "EMP-001".to_string(),
+                email: "Shared@Example.com".to_string(),
+                display_name: Some("Alice Authority".to_string()),
+                given_name: Some("Alice".to_string()),
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: Some("Engineering".to_string()),
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: Some("EMP-001".to_string()),
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        })
+        .await;
+
+    // PersonSync for another-only@example.com (only authoritative, no doc mention)
+    emitter_a
+        .emit(ConnectorEvent::PersonSync {
+            sync_run_id: run_a.clone(),
+            source_id: source_a.clone(),
+            person: PersonSyncRecord {
+                external_id: "EMP-002".to_string(),
+                email: "another-only@example.com".to_string(),
+                display_name: Some("Bob Only".to_string()),
+                given_name: None,
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: None,
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: Some("EMP-002".to_string()),
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        })
+        .await;
+
+    // ── Emit DocumentCreated for source_b with people references ──
+    let emitter_b = DummyConnectorEmitter {
+        server: &server,
+        source_id: source_b.clone(),
+        sync_run_id: run_b.clone(),
+    };
+    emitter_b
+        .emit(ConnectorEvent::DocumentCreated {
+            sync_run_id: run_b.clone(),
+            source_id: source_b.clone(),
+            document_id: "doc-1".to_string(),
+            content_id,
+            metadata: DocumentMetadata {
+                title: Some("Test Doc".to_string()),
+                author: Some("doc-only@example.com".to_string()),
+                ..Default::default()
+            },
+            permissions: DocumentPermissions {
+                public: false,
+                users: vec![
+                    "Shared@Example.com".to_string(),
+                    "doc-only@example.com".to_string(),
+                ],
+                groups: vec![],
+            },
+            attributes: None,
+        })
+        .await;
+
+    // Wait for the exact test events and for implicit extraction, which runs
+    // immediately after the document event is marked completed.
+    wait_for_person_queue(
+        pool,
+        &[run_a.as_str(), run_b.as_str()],
+        3,
+        std::time::Duration::from_secs(15),
+    )
+    .await;
+    wait_for_people_rows(pool, &source_a).await;
+
+    // ── Assertions ──
+
+    // 1. shared@example.com: one merged row, authoritative fields from PersonSync,
+    //    source_data contains source_a entry
+    let shared_row: (String, Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT email, display_name, department, source_data ? $1 FROM people WHERE lower(email)='shared@example.com'",
+    )
+    .bind(&source_a)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        shared_row.0, "shared@example.com",
+        "email should be normalized to lowercase"
+    );
+    assert_eq!(
+        shared_row.1.as_deref(),
+        Some("Alice Authority"),
+        "display_name must come from authoritative PersonSync"
+    );
+    assert_eq!(shared_row.2.as_deref(), Some("Engineering"));
+    assert!(shared_row.3, "source_a must have an entry in source_data");
+
+    // 2. doc-only@example.com: one row, display_name is null (weak extraction
+    //    provides no name), source_data is empty
+    let doc_only_row: (String, Option<String>, bool, bool) = sqlx::query_as(
+        "SELECT email, display_name, is_active, source_data = '{}'::jsonb FROM people WHERE lower(email)='doc-only@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(doc_only_row.0, "doc-only@example.com");
+    assert!(
+        doc_only_row.1.is_none(),
+        "weak document extraction should not set a display_name"
+    );
+    assert!(doc_only_row.2, "doc-only person should be active");
+    assert!(
+        doc_only_row.3,
+        "source_data should be empty for doc-only people"
+    );
+
+    // 3. another-only@example.com: only from PersonSync, has display_name and source_data
+    let another_row: (String, Option<String>) = sqlx::query_as(
+        "SELECT email, display_name FROM people WHERE lower(email)='another-only@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(another_row.0, "another-only@example.com");
+    assert_eq!(
+        another_row.1.as_deref(),
+        Some("Bob Only"),
+        "PersonSync display_name must be stored"
+    );
+
+    // 4. Exactly 3 people rows, no duplicates
+    let total: i64 = sqlx::query_scalar("SELECT count(*) FROM people")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(total, 3, "must have exactly 3 distinct canonical people");
+
+    // 5. No person duplicates by email
+    let dup_count: i64 =
+        sqlx::query_scalar("SELECT count(*) - count(DISTINCT lower(email)) FROM people")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(dup_count, 0, "no duplicate email rows");
+
+    processor_handle.abort();
+    // Give the processor a moment to shut down cleanly
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+// ============================================================================
+// Credential resolution for /action: org-only connectors vs per-user OAuth
+// ============================================================================
+
+/// Register a manifest with a single read action for the given source type.
+/// `oauth` mirrors what the connector SDK declares: connectors with a
+/// per-user OAuth flow populate it; org-credential connectors leave it None.
+async fn register_action_manifest(
+    fixture: &common::TestFixture,
+    connector_id: &str,
+    source_type: SourceType,
+    oauth: Option<serde_json::Value>,
+) {
+    let mut redis_conn = fixture
+        .state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let manifest = ConnectorManifest {
+        name: connector_id.to_string(),
+        display_name: connector_id.to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec![SyncType::Full],
+        connector_id: connector_id.to_string(),
+        connector_url: fixture.mock_connector.base_url.clone(),
+        integration_type: IntegrationType::Connector,
+        source_types: vec![source_type.to_string()],
+        description: None,
+        actions: vec![ActionDefinition {
+            name: "test_action".to_string(),
+            description: "test action".to_string(),
+            input_schema: json!({}),
+            mode: ActionMode::Read,
+            required_scopes: None,
+            source_types: vec![source_type],
+            admin_only: false,
+            hidden: false,
+        }],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        mcp_catalog_loaded: false,
+        prompts: vec![],
+        skills: vec![],
+        resources: vec![],
+        oauth,
+    };
+    let manifest_json = serde_json::to_string(&manifest).unwrap();
+    let _: () = redis_conn
+        .set_ex(
+            format!("connector:manifest:{connector_id}"),
+            &manifest_json,
+            600,
+        )
+        .await
+        .unwrap();
+}
+
+/// Insert an org-wide credential row (user_id NULL) for a source.
+async fn seed_org_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
+    let repo = ServiceCredentialsRepo::new(pool.clone()).unwrap();
+    let id = shared::utils::generate_ulid();
+    repo.create(ServiceCredential {
+        id: id.clone(),
+        source_id: source_id.to_string(),
+        user_id: None,
+        provider: ServiceProvider::Darwinbox,
+        auth_type: AuthType::ApiKey,
+        principal_email: Some("org@example.com".to_string()),
+        credentials: json!({"token": "org-token"}),
+        config: json!({}),
+        expires_at: None,
+        last_validated_at: None,
+        created_at: OffsetDateTime::now_utc(),
+        updated_at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    id
+}
+
+/// Connectors with an org-only credential model (no per-user OAuth, e.g.
+/// Darwinbox) must use the org credential when a user invokes an action
+/// without a per-user row — needs_user_auth would be a dead end since no
+/// per-user OAuth flow exists to complete. The actor identity still travels
+/// to the connector, whose own gates enforce participation.
+#[tokio::test]
+async fn test_action_org_only_connector_uses_org_credential_with_user_id() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    // Darwinbox-style connector: org-only credential model, no per-user OAuth.
+    register_action_manifest(&fixture, "darwinbox", SourceType::Darwinbox, None).await;
+    let source_id = seed_source(pool, "darwinbox", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    resp.assert_status(StatusCode::OK);
+
+    let recorded = fixture.mock_connector.get_action_requests();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "action must reach the connector (no needs_user_auth dead end)"
+    );
+    let req = &recorded[0];
+    assert_eq!(req.action, "test_action");
+    let creds = req.credentials.as_ref().expect("org credential forwarded");
+    assert_eq!(
+        creds["credentials"]["token"], "org-token",
+        "org credential must be used for an org-only connector invoked by a user"
+    );
+    assert_eq!(
+        req.actor_email.as_deref(),
+        Some("test@example.com"),
+        "actor email must still resolve from the caller-supplied user_id"
+    );
+}
+
+/// OAuth connectors keep the current behavior: a user invoking an action
+/// without a per-user credential row gets the needs_user_auth 412 so the UI
+/// can drive the per-user OAuth flow. The connector must never be called.
+#[tokio::test]
+async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    // Google-style connector: per-user OAuth declared in the manifest.
+    register_action_manifest(
+        &fixture,
+        "gmail",
+        SourceType::Gmail,
+        Some(json!({"provider": "google"})),
+    )
+    .await;
+    let source_id = seed_source(pool, "gmail", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    resp.assert_status(StatusCode::PRECONDITION_FAILED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "needs_user_auth");
+    assert!(
+        body["oauth_start_url"].as_str().is_some(),
+        "needs_user_auth must include the oauth_start_url CTA"
+    );
+    assert!(
+        fixture.mock_connector.get_action_requests().is_empty(),
+        "connector must not be reached while per-user OAuth is missing"
     );
 }

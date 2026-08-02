@@ -1,9 +1,8 @@
 use crate::client::SdkClient;
 use anyhow::Result;
-use shared::models::{ConnectorEvent, SourceType, SyncType};
-use std::sync::atomic::{AtomicBool, Ordering};
+use shared::models::{ConnectorEvent, PersonSyncRecord, SourceType, SyncType};
 use std::sync::Arc;
-use tracing::warn;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
 pub struct SyncContext {
@@ -99,6 +98,24 @@ impl SyncContext {
         Ok(())
     }
 
+    pub async fn emit_person_sync(&self, person: PersonSyncRecord) -> Result<()> {
+        self.emit_event(ConnectorEvent::PersonSync {
+            sync_run_id: self.sync_run_id.clone(),
+            source_id: self.source_id.clone(),
+            person,
+        })
+        .await
+    }
+
+    pub async fn emit_person_deleted(&self, email: String) -> Result<()> {
+        self.emit_event(ConnectorEvent::PersonDeleted {
+            sync_run_id: self.sync_run_id.clone(),
+            source_id: self.source_id.clone(),
+            email,
+        })
+        .await
+    }
+
     /// Flush all buffered events for this (sync_run_id, source_id) pair.
     pub async fn flush(&self) -> Result<()> {
         self.sdk_client
@@ -155,16 +172,12 @@ impl SyncContext {
         Ok(())
     }
 
-    /// Mark sync as failed. Best-effort flush of buffered events first — if
-    /// the flush itself fails we log and proceed, because marking the sync as
-    /// failed is more important than preserving partial progress.
+    /// Mark sync as failed. The client performs the scoped best-effort flush
+    /// of this run's buffered events and discards them only after connector
+    /// manager confirms the failure, so a failed report never loses events
+    /// that could still be admitted. Only this run's buffers are touched so
+    /// another run's retained batch can never block the failure report.
     pub async fn fail(&self, error: &str) -> Result<()> {
-        if let Err(e) = self.flush_all().await {
-            warn!(
-                "SDK: flush before fail() failed (continuing): sync_run={}: {}",
-                self.sync_run_id, e
-            );
-        }
         self.sdk_client.fail(&self.sync_run_id, error).await?;
         Ok(())
     }

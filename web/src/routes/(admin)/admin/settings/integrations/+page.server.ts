@@ -58,6 +58,7 @@ interface ConnectorInfo {
         actions?: unknown[]
         resources?: unknown[]
         oauth?: OAuthManifestConfig | null
+        extra_schema?: unknown
     }
 }
 

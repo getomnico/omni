@@ -416,13 +416,27 @@ mod tests {
         let pool = env.db_pool.pool().clone();
         let queue = EventQueue::new(pool.clone());
 
+        let mut ids = Vec::new();
         for i in 0..3 {
             let content_id = insert_sized_content(&pool, 1).await;
             let event = make_event_with_content("run-1", &format!("tiny-doc-{}", i), content_id);
-            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+            ids.push(queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap());
         }
 
-        let batch = queue.dequeue_batch_with_max_bytes(2, 100).await.unwrap();
+        // The byte budget includes event payload text, so calibrate it from a
+        // measured payload to stay generous enough that the count limit binds.
+        let payload: i64 = sqlx::query_scalar(
+            "SELECT octet_length(payload::text)::bigint FROM connector_events_queue WHERE id = $1",
+        )
+        .bind(&ids[0])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let batch = queue
+            .dequeue_batch_with_max_bytes(2, payload * 2 + 1000)
+            .await
+            .unwrap();
         assert_eq!(batch.len(), 2);
         assert_eq!(queue.get_pending_count().await.unwrap(), 1);
     }
@@ -433,15 +447,28 @@ mod tests {
         let pool = env.db_pool.pool().clone();
         let queue = EventQueue::new(pool.clone());
 
+        let mut ids = Vec::new();
         for i in 0..3 {
             let content_id = insert_sized_content(&pool, 20).await;
             let event = make_event_with_content("run-1", &format!("medium-doc-{}", i), content_id);
-            queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+            ids.push(queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap());
         }
 
-        let batch = queue.dequeue_batch_with_max_bytes(10, 45).await.unwrap();
-        assert_eq!(batch.len(), 2);
-        assert_eq!(queue.get_pending_count().await.unwrap(), 1);
+        // Budget admits exactly the first event once payload text is counted.
+        let payload: i64 = sqlx::query_scalar(
+            "SELECT octet_length(payload::text)::bigint FROM connector_events_queue WHERE id = $1",
+        )
+        .bind(&ids[0])
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let batch = queue
+            .dequeue_batch_with_max_bytes(10, payload + 30)
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(queue.get_pending_count().await.unwrap(), 2);
     }
 
     #[tokio::test]
@@ -541,7 +568,307 @@ mod tests {
             .find(|entry| entry.sync_type.is_none() && entry.status == EventStatus::Pending)
             .unwrap();
         assert_eq!(pending_orphan.count, 1);
-        assert_eq!(pending_orphan.size_bytes, 42);
+        let payload_bytes: i64 = sqlx::query_scalar(
+            "SELECT pg_column_size(payload)::BIGINT FROM connector_events_queue WHERE source_id = $1 AND status = 'pending' LIMIT 1",
+        )
+        .bind(TEST_SOURCE_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending_orphan.size_bytes, 42 + payload_bytes);
+    }
+
+    #[tokio::test]
+    async fn test_person_payload_is_counted_but_excluded_from_document_readiness() {
+        use shared::models::PersonSyncRecord;
+
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+        let event = ConnectorEvent::PersonSync {
+            sync_run_id: "missing-run".into(),
+            source_id: TEST_SOURCE_ID.into(),
+            person: PersonSyncRecord {
+                external_id: "employee-1".into(),
+                email: "person@example.com".into(),
+                display_name: Some("A sufficiently large inline person payload".into()),
+                given_name: None,
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: None,
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: None,
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        };
+        queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+
+        let summary = queue.get_queue_summary().await.unwrap();
+        let pending = summary
+            .entries
+            .iter()
+            .find(|entry| entry.sync_type.is_none() && entry.status == EventStatus::Pending)
+            .unwrap();
+        assert_eq!(pending.count, 1);
+        assert!(pending.size_bytes > 0);
+        assert!(
+            queue
+                .get_non_person_queue_summary()
+                .await
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+
+        let person_batch = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(person_batch.len(), 1);
+        assert_eq!(person_batch[0].event_type, "person_sync");
+    }
+
+    #[tokio::test]
+    async fn person_dequeue_preserves_identity_fifo_across_sync_types_and_retries() {
+        use shared::models::PersonSyncRecord;
+
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+        let full_run = ulid::Ulid::new().to_string();
+        let incremental_run = ulid::Ulid::new().to_string();
+        let realtime_run = ulid::Ulid::new().to_string();
+        insert_sync_run(&pool, &full_run, "full").await;
+        insert_sync_run(&pool, &incremental_run, "incremental").await;
+        insert_sync_run(&pool, &realtime_run, "realtime").await;
+
+        let person = |email: &str| PersonSyncRecord {
+            external_id: "EMP".into(),
+            email: email.into(),
+            display_name: None,
+            given_name: None,
+            middle_name: None,
+            surname: None,
+            job_title: None,
+            department: None,
+            division: None,
+            company_name: None,
+            office_location: None,
+            work_country: None,
+            employee_id: None,
+            employee_type: None,
+            cost_center: None,
+            grade: None,
+            band: None,
+            confirmation_status: None,
+            employment_start_date: None,
+            employment_end_date: None,
+            manager_external_id: None,
+            source_updated_at: None,
+        };
+        let first = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonSync {
+                    sync_run_id: full_run.clone(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    person: person("Person@Example.com"),
+                },
+            )
+            .await
+            .unwrap();
+        let second = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonDeleted {
+                    sync_run_id: incremental_run.clone(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    email: "person@example.com".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let third = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonSync {
+                    sync_run_id: realtime_run.clone(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    person: person("PERSON@example.com"),
+                },
+            )
+            .await
+            .unwrap();
+        let unrelated = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonSync {
+                    sync_run_id: incremental_run.clone(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    person: person("other@example.com"),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Regular sync-type dequeue never claims person events.
+        assert!(
+            queue
+                .dequeue_batch_by_sync_type(10, SyncType::Full)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Only the oldest event for an identity is eligible. An unrelated
+        // identity can proceed in the same bounded batch.
+        let initial = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        let initial_ids: std::collections::HashSet<_> =
+            initial.iter().map(|event| event.id.as_str()).collect();
+        assert_eq!(initial_ids.len(), 2);
+        assert!(initial_ids.contains(first.as_str()));
+        assert!(initial_ids.contains(unrelated.as_str()));
+        assert!(!initial_ids.contains(second.as_str()));
+        assert!(!initial_ids.contains(third.as_str()));
+
+        queue.mark_failed(&first, "retry me").await.unwrap();
+        queue.mark_completed(&unrelated).await.unwrap();
+        assert!(
+            queue
+                .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+                .await
+                .unwrap()
+                .is_empty(),
+            "retryable failure must block newer mutations for the identity"
+        );
+
+        queue.retry_failed_events().await.unwrap();
+        let retried = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].id, first);
+        queue.mark_completed(&first).await.unwrap();
+
+        let delete = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(delete.len(), 1);
+        assert_eq!(delete[0].id, second);
+        queue.mark_completed(&second).await.unwrap();
+
+        let resync = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(resync.len(), 1);
+        assert_eq!(resync[0].id, third);
+    }
+
+    #[tokio::test]
+    async fn person_fifo_expired_failure_does_not_block_identity() {
+        use shared::models::PersonSyncRecord;
+
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let queue = EventQueue::new(pool.clone());
+        let full_run = ulid::Ulid::new().to_string();
+        let newer_run = ulid::Ulid::new().to_string();
+        insert_sync_run(&pool, &full_run, "full").await;
+        insert_sync_run(&pool, &newer_run, "incremental").await;
+
+        let person = |email: &str| PersonSyncRecord {
+            external_id: "EMP".into(),
+            email: email.into(),
+            display_name: None,
+            given_name: None,
+            middle_name: None,
+            surname: None,
+            job_title: None,
+            department: None,
+            division: None,
+            company_name: None,
+            office_location: None,
+            work_country: None,
+            employee_id: None,
+            employee_type: None,
+            cost_center: None,
+            grade: None,
+            band: None,
+            confirmation_status: None,
+            employment_start_date: None,
+            employment_end_date: None,
+            manager_external_id: None,
+            source_updated_at: None,
+        };
+        let stale = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonSync {
+                    sync_run_id: full_run.clone(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    person: person("stale@example.com"),
+                },
+            )
+            .await
+            .unwrap();
+        let newer = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonSync {
+                    sync_run_id: newer_run.clone(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    person: person("stale@example.com"),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Age the stale event beyond the retry window and fail it.
+        sqlx::query(
+            "UPDATE connector_events_queue SET created_at = NOW() - INTERVAL '48 hours' WHERE id = $1",
+        )
+        .bind(&stale)
+        .execute(&pool)
+        .await
+        .unwrap();
+        queue.mark_failed(&stale, "transient outage").await.unwrap();
+
+        // A failed predecessor with retries remaining but outside the retry
+        // window must not block the newer mutation for the same identity.
+        let batch = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].id, newer);
+
+        // The retry sweep dead-letters the expired failure so it never lingers.
+        queue.retry_failed_events().await.unwrap();
+        let (status,): (String,) =
+            sqlx::query_as("SELECT status FROM connector_events_queue WHERE id = $1")
+                .bind(&stale)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "dead_letter");
     }
 
     /// Companion: `dequeue_batch_by_sync_type` must continue to work for

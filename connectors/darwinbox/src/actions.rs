@@ -1,14 +1,14 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum::response::Response;
 use chrono::{Datelike, Utc};
 use omni_connector_sdk::{
     ActionDefinition, ActionMode, ActionResponse, ServiceCredential, Source, SourceType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 
 use crate::client::{
-    ApplyLeaveRequest, DarwinboxClient, LeaveDecision, LeaveDecisionRequest, LeaveRequestsRequest,
-    MonthlyAttendanceRequest, RevokeLeaveRequest,
+    ApplyLeaveRequest, DarwinboxApiError, DarwinboxClient, LeaveDecision, LeaveDecisionRequest,
+    LeaveRequestsRequest, MonthlyAttendanceRequest, RevokeLeaveRequest,
 };
 use crate::config::DarwinboxSourceConfig;
 use crate::credentials::DarwinboxCredentials;
@@ -21,18 +21,45 @@ pub struct ActionPolicy {
     pub mode: ActionMode,
     pub audience: &'static str,
     pub is_write: bool,
+    /// Whether this action appears in the manifest/UI and can be selected.
+    /// Unavailable actions are still recognized at execution to return a
+    /// clear error, but they cannot be configured, listed, or executed
+    /// through normal paths.
+    pub available: bool,
+}
+
+pub fn action_endpoints(action: &str) -> &'static [&'static str] {
+    match action {
+        "get_my_profile" | "find_employee" => &["/masterapi/employee"],
+        "get_my_leave_balance" => &["/masterapi/employee", "/leavesactionapi/leavebalance"],
+        "get_holiday_calendar" => &["/masterapi/employee", "/leavesactionapi/holidaylist"],
+        "get_my_leave_requests" => &[
+            "/masterapi/employee",
+            "/leavesactionapi/leaveActionTakenLeaves",
+        ],
+        "get_my_attendance" => &["/masterapi/employee", "/AttendanceDataApi/monthly"],
+        "get_my_timesheet" => &[
+            "/masterapi/employee",
+            "/attendanceDataApi/timesheetdatewise",
+        ],
+        "apply_my_leave" | "revoke_my_leave" => {
+            &["/masterapi/employee", "/leavesactionapi/importleave"]
+        }
+        _ => &[],
+    }
 }
 
 /// All registered actions with their policy metadata.
 pub fn action_policies() -> &'static [ActionPolicy] {
     &[
-        // Self-service (employee reads)
+        // Self-service (employee reads) — all available
         ActionPolicy {
             name: "get_my_profile",
             module: "employee_self_service",
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_my_leave_balance",
@@ -40,6 +67,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_holiday_calendar",
@@ -47,6 +75,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_my_leave_requests",
@@ -54,6 +83,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_my_attendance",
@@ -61,6 +91,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_my_timesheet",
@@ -68,14 +99,16 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
-        // Self-service (employee writes) — always classified as writes
+        // Self-service (employee writes) — available but require write-mode
         ActionPolicy {
             name: "apply_my_leave",
             module: "employee_self_service",
             mode: ActionMode::Write,
             audience: "self",
             is_write: true,
+            available: true,
         },
         ActionPolicy {
             name: "revoke_my_leave",
@@ -83,21 +116,25 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "self",
             is_write: true,
+            available: true,
         },
+        // Unavailable: single blocked action
         ActionPolicy {
             name: "regularize_my_attendance",
             module: "employee_self_service",
             mode: ActionMode::Write,
             audience: "self",
             is_write: true,
+            available: false,
         },
-        // Manager reads
+        // Manager workflows — unavailable until authorization and typing are reviewed
         ActionPolicy {
             name: "list_pending_leave_approvals",
             module: "manager_workflows",
             mode: ActionMode::Read,
             audience: "manager",
             is_write: false,
+            available: false,
         },
         ActionPolicy {
             name: "get_team_leave_calendar",
@@ -105,6 +142,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "manager",
             is_write: false,
+            available: false,
         },
         ActionPolicy {
             name: "get_team_attendance_exceptions",
@@ -112,6 +150,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "manager",
             is_write: false,
+            available: false,
         },
         ActionPolicy {
             name: "get_direct_report_profile",
@@ -119,6 +158,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "manager",
             is_write: false,
+            available: false,
         },
         // Manager writes
         ActionPolicy {
@@ -127,6 +167,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "manager",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "reject_leave_request",
@@ -134,30 +175,33 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "manager",
             is_write: true,
+            available: false,
         },
-        // Directory (read-only, not a write)
+        // Directory (available, no module)
         ActionPolicy {
             name: "find_employee",
             module: "",
             mode: ActionMode::Read,
             audience: "self",
             is_write: false,
+            available: true,
         },
-        // HR admin reads
+        // HR operations — unavailable
         ActionPolicy {
             name: "fetch_employee_history",
             module: "hr_operations",
             mode: ActionMode::Read,
             audience: "hr_admin",
             is_write: false,
+            available: false,
         },
-        // HR admin writes
         ActionPolicy {
             name: "add_pending_employee",
             module: "hr_operations",
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "activate_pending_employee",
@@ -165,6 +209,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "update_employee_record",
@@ -172,6 +217,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "update_employment_details",
@@ -179,6 +225,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "deactivate_employee",
@@ -186,6 +233,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "reactivate_employee",
@@ -193,6 +241,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "upload_employee_document",
@@ -200,14 +249,16 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "hr_admin",
             is_write: true,
+            available: false,
         },
-        // Reports
+        // Reports — unavailable until allowed_report_ids enforcement is added
         ActionPolicy {
             name: "fetch_report_ids",
             module: "reports",
             mode: ActionMode::Read,
             audience: "",
             is_write: false,
+            available: false,
         },
         ActionPolicy {
             name: "run_report",
@@ -215,14 +266,16 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "",
             is_write: false,
+            available: false,
         },
-        // ATS reads
+        // ATS — unavailable until audience policy is safe
         ActionPolicy {
             name: "list_jobs",
             module: "ats",
             mode: ActionMode::Read,
             audience: "recruiter",
             is_write: false,
+            available: false,
         },
         ActionPolicy {
             name: "get_job_detail",
@@ -230,6 +283,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "recruiter",
             is_write: false,
+            available: false,
         },
         ActionPolicy {
             name: "get_candidates",
@@ -237,14 +291,15 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "recruiter",
             is_write: false,
+            available: false,
         },
-        // ATS writes
         ActionPolicy {
             name: "tag_candidate",
             module: "ats",
             mode: ActionMode::Write,
             audience: "recruiter",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "reject_candidate",
@@ -252,6 +307,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "recruiter",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "create_requisition",
@@ -259,6 +315,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "recruiter",
             is_write: true,
+            available: false,
         },
         ActionPolicy {
             name: "archive_requisition",
@@ -266,6 +323,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "recruiter",
             is_write: true,
+            available: false,
         },
     ]
 }
@@ -275,208 +333,89 @@ pub fn find_action_policy(action: &str) -> Option<&'static ActionPolicy> {
     action_policies().iter().find(|p| p.name == action)
 }
 
+/// Returns true if the action is available for selection and execution.
+pub fn is_action_available(action: &str) -> bool {
+    find_action_policy(action).map_or(false, |p| p.available)
+}
+
+/// Returns list of currently available actions only.
+pub fn available_action_names() -> Vec<&'static str> {
+    action_policies()
+        .iter()
+        .filter(|p| p.available)
+        .map(|p| p.name)
+        .collect()
+}
+
 pub fn action_definitions() -> Vec<ActionDefinition> {
     let source_types = vec![SourceType::Darwinbox];
-    vec![
-        read(
-            "get_my_profile",
-            "Get the calling employee's Darwinbox profile.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "find_employee",
-            "Find employees in the synced Darwinbox directory.",
-            json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_my_leave_balance",
-            "Get the calling employee's leave balances.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_holiday_calendar",
-            "Get holidays for a year/employee calendar.",
-            json!({ "type": "object", "properties": { "year": { "type": "string" } }, "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "apply_my_leave",
-            "Apply leave for the calling employee.",
-            json!({ "type": "object", "properties": { "leave_name": { "type": "string" }, "message": { "type": "string" }, "from_date": { "type": "string" }, "to_date": { "type": "string" }, "is_half_day": { "type": "string", "enum": ["Yes", "No"], "default": "No" }, "is_paid_or_unpaid": { "type": "string", "enum": ["paid", "unpaid"], "default": "paid" } }, "required": ["leave_name", "message", "from_date", "to_date"], "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "revoke_my_leave",
-            "Revoke leave for the calling employee.",
-            json!({ "type": "object", "properties": { "leave_id": { "type": "string" }, "revoke_reason": { "type": "string" } }, "required": ["leave_id", "revoke_reason"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_my_leave_requests",
-            "Get leave requests for the calling employee.",
-            json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "action": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_my_attendance",
-            "Get attendance for the calling employee.",
-            json!({ "type": "object", "properties": { "from_date": { "type": "string" }, "to_date": { "type": "string" }, "month": { "type": "string" } }, "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "regularize_my_attendance",
-            "Submit backdated attendance regularization for the calling employee.",
-            json!({ "type": "object", "properties": { "attendance": { "type": "object" } }, "required": ["attendance"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_my_timesheet",
-            "Get timesheet entries for the calling employee.",
-            json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "list_pending_leave_approvals",
-            "List pending leave approvals for a manager.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "approve_leave_request",
-            "Approve a leave request.",
-            json!({ "type": "object", "properties": { "leave_id": { "type": "string" }, "employee_no": { "type": "string" }, "manager_message": { "type": "string" } }, "required": ["leave_id", "employee_no"], "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "reject_leave_request",
-            "Reject a leave request.",
-            json!({ "type": "object", "properties": { "leave_id": { "type": "string" }, "employee_no": { "type": "string" }, "manager_message": { "type": "string" } }, "required": ["leave_id", "employee_no"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_team_leave_calendar",
-            "Get team leave calendar for a manager.",
-            json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_team_attendance_exceptions",
-            "Get team attendance exceptions for a manager.",
-            json!({ "type": "object", "properties": { "from_date": { "type": "string" }, "to_date": { "type": "string" } }, "required": ["from_date", "to_date"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_direct_report_profile",
-            "Get a direct report's profile after manager authorization.",
-            json!({ "type": "object", "properties": { "employee_no": { "type": "string" } }, "required": ["employee_no"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "add_pending_employee",
-            "Add a pending employee record.",
-            json!({ "type": "object", "properties": { "employee": { "type": "object" } }, "required": ["employee"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "activate_pending_employee",
-            "Activate pending employees.",
-            json!({ "type": "object", "properties": { "user_ids": { "type": "array", "items": { "type": "string" } } }, "required": ["user_ids"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "update_employee_record",
-            "Update an employee record.",
-            json!({ "type": "object", "properties": { "employee": { "type": "object" } }, "required": ["employee"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "update_employment_details",
-            "Update employee employment details.",
-            json!({ "type": "object", "properties": { "employment_details": { "type": "object" } }, "required": ["employment_details"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "deactivate_employee",
-            "Deactivate an employee.",
-            json!({ "type": "object", "properties": { "employees": { "type": "array", "items": { "type": "object" } } }, "required": ["employees"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "reactivate_employee",
-            "Reactivate a deactivated employee.",
-            json!({ "type": "object", "properties": { "employees": { "type": "array", "items": { "type": "object" } } }, "required": ["employees"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_write(
-            "upload_employee_document",
-            "Upload an employee document.",
-            json!({ "type": "object", "properties": { "employee_no": { "type": "string" }, "document_type": { "type": "string" }, "attachment": { "type": "string" } }, "required": ["employee_no", "document_type", "attachment"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_read(
-            "fetch_employee_history",
-            "Fetch employee history.",
-            json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "filter_on_effective_date": { "type": "number" } }, "required": ["from", "to", "filter_on_effective_date"], "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_read(
-            "fetch_report_ids",
-            "Fetch available Darwinbox report IDs.",
-            json!({ "type": "object", "properties": {}, "additionalProperties": false }),
-            &source_types,
-        ),
-        admin_read(
-            "run_report",
-            "Run a Darwinbox report by ID.",
-            json!({ "type": "object", "properties": { "report_id": { "type": "string" } }, "required": ["report_id"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "list_jobs",
-            "List Darwinbox ATS jobs.",
-            json!({ "type": "object", "properties": { "job_updated_timestamp_from": { "type": "string" } }, "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_job_detail",
-            "Get Darwinbox ATS job details.",
-            json!({ "type": "object", "properties": { "job_id": { "type": "string" } }, "required": ["job_id"], "additionalProperties": false }),
-            &source_types,
-        ),
-        read(
-            "get_candidates",
-            "Fetch Darwinbox ATS candidates.",
-            json!({ "type": "object", "properties": { "updated_from": { "type": "string" }, "updated_to": { "type": "string" }, "job_id": { "type": "string" } }, "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "tag_candidate",
-            "Add tags to Darwinbox ATS candidate profiles.",
-            json!({ "type": "object", "properties": { "candidate_ids": { "type": "array", "items": { "type": "string" } }, "tags": { "type": "array", "items": { "type": "string" } } }, "required": ["candidate_ids", "tags"], "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "reject_candidate",
-            "Reject Darwinbox ATS candidates.",
-            json!({ "type": "object", "properties": { "candidate_ids": { "type": "array", "items": { "type": "string" } }, "reason": { "type": "string" } }, "required": ["candidate_ids"], "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "create_requisition",
-            "Create a Darwinbox requisition.",
-            json!({ "type": "object", "properties": { "requisition": { "type": "object" } }, "required": ["requisition"], "additionalProperties": false }),
-            &source_types,
-        ),
-        write(
-            "archive_requisition",
-            "Archive a Darwinbox requisition.",
-            json!({ "type": "object", "properties": { "requisition_id": { "type": "string" }, "employee_id": { "type": "string" }, "reason": { "type": "string" } }, "required": ["requisition_id", "employee_id"], "additionalProperties": false }),
-            &source_types,
-        ),
-    ]
+    let mut definitions = Vec::new();
+
+    // Only emit definitions for available actions
+    for policy in action_policies() {
+        if !policy.available {
+            continue;
+        }
+        let def = match policy.name {
+            "get_my_profile" => read(
+                "get_my_profile",
+                "Get the calling employee's Darwinbox profile.",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+                &source_types,
+            ),
+            "find_employee" => read(
+                "find_employee",
+                "Find employees in the synced Darwinbox directory.",
+                json!({ "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "get_my_leave_balance" => read(
+                "get_my_leave_balance",
+                "Get the calling employee's leave balances.",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+                &source_types,
+            ),
+            "get_holiday_calendar" => read(
+                "get_holiday_calendar",
+                "Get holidays for a year/employee calendar.",
+                json!({ "type": "object", "properties": { "year": { "type": "string" } }, "additionalProperties": false }),
+                &source_types,
+            ),
+            "get_my_leave_requests" => read(
+                "get_my_leave_requests",
+                "Get leave requests for the calling employee.",
+                json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "action": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "get_my_attendance" => read(
+                "get_my_attendance",
+                "Get attendance for the calling employee.",
+                json!({ "type": "object", "properties": { "from_date": { "type": "string" }, "to_date": { "type": "string" }, "month": { "type": "string" } }, "additionalProperties": false }),
+                &source_types,
+            ),
+            "get_my_timesheet" => read(
+                "get_my_timesheet",
+                "Get timesheet entries for the calling employee.",
+                json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "apply_my_leave" => write(
+                "apply_my_leave",
+                "Apply leave for the calling employee.",
+                json!({ "type": "object", "properties": { "leave_name": { "type": "string" }, "message": { "type": "string" }, "from_date": { "type": "string" }, "to_date": { "type": "string" }, "is_half_day": { "type": "string", "enum": ["Yes", "No"], "default": "No" }, "is_paid_or_unpaid": { "type": "string", "enum": ["paid", "unpaid"], "default": "paid" } }, "required": ["leave_name", "message", "from_date", "to_date"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "revoke_my_leave" => write(
+                "revoke_my_leave",
+                "Revoke leave for the calling employee.",
+                json!({ "type": "object", "properties": { "leave_id": { "type": "string" }, "revoke_reason": { "type": "string" } }, "required": ["leave_id", "revoke_reason"], "additionalProperties": false }),
+                &source_types,
+            ),
+            _ => continue,
+        };
+        definitions.push(def);
+    }
+    definitions
 }
 
 pub async fn execute_action(
@@ -489,6 +428,13 @@ pub async fn execute_action(
     // Look up the action policy to determine authorization requirements
     let policy =
         find_action_policy(action).ok_or_else(|| anyhow!("unknown Darwinbox action: {action}"))?;
+    // This gate deliberately precedes trusted-source, config, credential and
+    // provider access so stale allowlists cannot execute hidden actions.
+    if !policy.available {
+        return Err(anyhow!(
+            "Darwinbox action '{action}' is not available in this connector version"
+        ));
+    }
 
     // Extract source config and actor from trusted context.
     let trusted_source = source.ok_or_else(|| {
@@ -497,26 +443,12 @@ pub async fn execute_action(
     let config: DarwinboxSourceConfig = serde_json::from_value(trusted_source.config)
         .context("failed to deserialize Darwinbox source config from trusted source")?;
 
-    if !config.authorization.actions_enabled {
-        return Err(anyhow!("Darwinbox actions are disabled for this source"));
-    }
-
     // Extract the authenticated actor identity.
     let caller_email = actor_email
         .ok_or_else(|| anyhow!("Darwinbox actions require an interactive authenticated user"))?;
     if !config.is_action_participant(&caller_email) {
         return Err(anyhow!(
             "caller is not an approved Darwinbox action participant"
-        ));
-    }
-    if !config
-        .authorization
-        .allowed_actions
-        .iter()
-        .any(|allowed| allowed == action)
-    {
-        return Err(anyhow!(
-            "action '{action}' is not allowlisted for this source"
         ));
     }
     if policy.is_write && config.read_only {
@@ -527,65 +459,52 @@ pub async fn execute_action(
     // Decode the integration credential only after all policy-only gates.
     let client = action_client(&config, credentials)?;
 
-    // Module enforcement: check that the action's module is enabled
-    match policy.module {
-        "employee_self_service" => ensure_enabled(
-            config.action_modules.employee_self_service,
-            "employee_self_service",
-        )?,
-        "manager_workflows" => {
-            ensure_enabled(config.action_modules.manager_workflows, "manager_workflows")?
-        }
-        "hr_operations" => ensure_enabled(config.action_modules.hr_operations, "hr_operations")?,
-        "ats" => ensure_enabled(config.action_modules.ats, "ats")?,
-        "reports" => ensure_enabled(config.action_modules.reports, "reports")?,
-        _ => {} // no module requirement
-    }
-
-    // 3. Audience enforcement
-    match policy.audience {
-        "self" => {
-            // Self-service: requires user email context
+    let result = (async {
+        let calling_employee = if policy.audience == "self" {
             reject_identity_params(&params)?;
-            let _employee = resolve_calling_employee(&client, &caller_email).await?;
-            // (employee is used in the action match below)
-        }
-        "manager" => {
-            // Manager: verify user is a manager (has direct reports)
-            let reports = direct_reports(&client, &caller_email, &config).await?;
-            if reports.is_empty() {
-                return Err(anyhow!("caller has no direct reports"));
-            }
-        }
-        "recruiter" => {
-            // Recruiter: requires email in recruiter_emails list
-            let email = &caller_email;
-            let is_recruiter = config
-                .authorization
-                .recruiter_emails
-                .iter()
-                .any(|e| e.eq_ignore_ascii_case(email));
-            if !is_recruiter {
-                return Err(anyhow!(
-                    "action '{action}' requires recruiter authorization"
-                ));
-            }
-        }
-        _ => {}
-    }
+            Some(resolve_calling_employee(&client, &caller_email).await?)
+        } else {
+            None
+        };
 
-    let result = match action {
+        // Audience enforcement
+        match policy.audience {
+            "self" => {}
+            "manager" => {
+                // Manager: verify user is a manager (has direct reports)
+                let reports = direct_reports(&client, &caller_email, &config).await?;
+                if reports.is_empty() {
+                    return Err(anyhow!("caller has no direct reports"));
+                }
+            }
+            "recruiter" => {
+                // Recruiter: requires email in recruiter_emails list
+                let email = &caller_email;
+                let is_recruiter = config
+                    .authorization
+                    .recruiter_emails
+                    .iter()
+                    .any(|e| e.eq_ignore_ascii_case(email));
+                if !is_recruiter {
+                    return Err(anyhow!(
+                        "action '{action}' requires recruiter authorization"
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        let result = match action {
         "get_my_profile" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
             // Sanitized response: include only safe fields
-            json!({ "employee": safe_employee_profile(&employee) })
+            json!({ "employee": safe_employee_profile(employee) })
         }
         "find_employee" => {
             let query = required_str(&params, "query")?.to_ascii_lowercase();
             let employees = client.fetch_employees(None, None).await?.employee_data;
             let matches = employees
                 .into_iter()
-                .filter(|employee| config.is_employee_in_scope(employee))
                 .filter(|employee| {
                     employee
                         .display_name()
@@ -616,13 +535,13 @@ pub async fn execute_action(
             json!({ "employees": matches.into_iter().map(|e| safe_employee_profile(&e)).collect::<Vec<_>>() })
         }
         "get_my_leave_balance" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             client.fetch_leave_balance(employee_no).await?
         }
         "get_holiday_calendar" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             let year = params
                 .get("year")
                 .and_then(JsonValue::as_str)
@@ -631,8 +550,8 @@ pub async fn execute_action(
             client.fetch_holiday_list(employee_no, &year).await?
         }
         "apply_my_leave" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             client
                 .apply_leave(ApplyLeaveRequest {
                     employee_no: employee_no.to_string(),
@@ -650,8 +569,8 @@ pub async fn execute_action(
                 .await?
         }
         "revoke_my_leave" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             client
                 .revoke_leave(RevokeLeaveRequest {
                     employee_no: employee_no.to_string(),
@@ -661,8 +580,8 @@ pub async fn execute_action(
                 .await?
         }
         "get_my_leave_requests" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             client
                 .fetch_leave_requests(LeaveRequestsRequest {
                     employee_nos: vec![employee_no.to_string()],
@@ -673,8 +592,8 @@ pub async fn execute_action(
                 .await?
         }
         "get_my_attendance" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             let month = optional_str(&params, "month")
                 .map(str::to_string)
                 .or_else(|| default_attendance_month(&params, &config));
@@ -688,8 +607,8 @@ pub async fn execute_action(
                 .await?
         }
         "regularize_my_attendance" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             let attendance = params
                 .get("attendance")
                 .cloned()
@@ -700,8 +619,8 @@ pub async fn execute_action(
                 .await?
         }
         "get_my_timesheet" => {
-            let employee = resolve_calling_employee(&client, &caller_email).await?;
-            let employee_no = employee_id(&employee)?;
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
             client
                 .fetch_timesheet(
                     employee_no,
@@ -877,7 +796,21 @@ pub async fn execute_action(
         "archive_requisition" => {
             client.post_json::<JsonValue>("/requisitionApi/archiveRequisition", json!({ "requisition_id": required_str(&params, "requisition_id")?, "employee_id": required_str(&params, "employee_id")?, "reason": params.get("reason").and_then(JsonValue::as_str).unwrap_or("") }), false).await?
         }
-        _ => return Ok(ActionResponse::not_supported(action).into_response()),
+            _ => return Ok::<_, anyhow::Error>(None),
+        };
+        Ok::<_, anyhow::Error>(Some(result))
+    })
+    .await
+    .map_err(|error| {
+        if is_not_permitted(&error) {
+            anyhow!("This action is not allowed for this source: {error}")
+        } else {
+            error
+        }
+    })?;
+
+    let Some(result) = result else {
+        return Ok(ActionResponse::not_supported(action).into_response());
     };
 
     Ok(
@@ -1007,16 +940,6 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
     project_object(value)
 }
 
-fn ensure_enabled(enabled: bool, module: &str) -> Result<()> {
-    if enabled {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "Darwinbox action module '{module}' is disabled for this source"
-        ))
-    }
-}
-
 fn reject_identity_params(params: &JsonValue) -> Result<()> {
     for key in IDENTITY_PARAM_KEYS {
         if params.get(key).is_some() {
@@ -1024,6 +947,12 @@ fn reject_identity_params(params: &JsonValue) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn is_not_permitted(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<DarwinboxApiError>()
+        .is_some_and(|api_error| matches!(api_error, DarwinboxApiError::NotPermitted { .. }))
 }
 
 fn reject_identity_payload(value: &JsonValue) -> Result<()> {
@@ -1209,41 +1138,9 @@ fn write(
     )
 }
 
-fn admin_read(
-    name: &str,
-    description: &str,
-    input_schema: JsonValue,
-    source_types: &[SourceType],
-) -> ActionDefinition {
-    action(
-        name,
-        description,
-        input_schema,
-        ActionMode::Read,
-        true,
-        source_types,
-    )
-}
-
-fn admin_write(
-    name: &str,
-    description: &str,
-    input_schema: JsonValue,
-    source_types: &[SourceType],
-) -> ActionDefinition {
-    action(
-        name,
-        description,
-        input_schema,
-        ActionMode::Write,
-        true,
-        source_types,
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use super::sanitize_action_response;
+    use super::{execute_action, sanitize_action_response};
     use serde_json::json;
 
     #[test]
@@ -1264,6 +1161,18 @@ mod tests {
         assert!(!serialized.contains("SECRET"));
         assert!(!serialized.contains("salary"));
         assert!(!serialized.contains("bank_account"));
+    }
+
+    #[tokio::test]
+    async fn unavailable_action_is_rejected_before_trusted_context() {
+        let error = execute_action("regularize_my_attendance", json!({}), None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not available in this connector version")
+        );
     }
 }
 

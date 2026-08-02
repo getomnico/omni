@@ -18,7 +18,9 @@ pub use document::{DocumentRepository, TitleEntry};
 pub use embedding::EmbeddingRepository;
 pub use embedding_provider::EmbeddingProviderRepository;
 pub use group::GroupRepository;
-pub use person::{PersonRepository, PersonSearchResult, PersonUpsert};
+pub use person::{
+    PersonRepository, PersonSearchFilter, PersonSearchResult, PersonSyncResult, PersonUpsert,
+};
 pub use service_credentials::ServiceCredentialsRepo;
 pub use source::SourceRepository;
 pub use sync_run::SyncRunRepository;

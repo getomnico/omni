@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -7,26 +8,27 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
-use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
+use shared::db::repositories::{
+    ConfigurationRepository, SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE,
+};
 use shared::models::{
     ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncType,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -430,11 +432,6 @@ pub async fn execute_action(
             ));
         }
 
-        // Resolve user/admin from user_id (required in transient mode).
-        let user_id = request.user_id.as_ref().ok_or_else(|| {
-            ApiError::BadRequest("user_id is required in transient mode".to_string())
-        })?;
-
         // Look up the connector manifest by source_type.
         let manifest = manifests
             .iter()
@@ -618,6 +615,7 @@ pub async fn execute_action(
             &source_id,
             request.user_id.as_deref(),
             action_admin_only,
+            manifest.oauth.is_some(),
         )
         .await?
         {
@@ -818,10 +816,14 @@ fn merge_org_and_user_credentials(
 /// * `admin_only` action → org row regardless of user_id. These actions
 ///   (e.g. Google Admin directory ops) require the service-account credential
 ///   the admin set up org-wide; per-user OAuth scopes don't cover them.
-/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
-///   No fallback to org credentials — if the user hasn't connected, return
-///   `NeedsUserAuth` so the UI can prompt. When both rows exist, org-level
-///   setup credentials/config are merged under the user's OAuth token. Personal
+/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row when it
+///   exists; when it doesn't, `supports_user_oauth` decides: connectors with
+///   a per-user OAuth flow surface `NeedsUserAuth` so the UI can prompt,
+///   while org-credential-only connectors (no per-user OAuth) fall back to
+///   the org row — the actor identity is still resolved downstream and the
+///   connector's own gates (participant allowlist, allowed_actions, audience)
+///   remain the row-level control. When both rows exist, org-level setup
+///   credentials/config are merged under the user's OAuth token. Personal
 ///   sources satisfy this because their cred row is keyed on the owner's
 ///   user_id (see migration 087).
 /// * `None` (sync, org-level agent) → org row.
@@ -830,6 +832,7 @@ async fn resolve_credentials(
     source_id: &str,
     user_id: Option<&str>,
     admin_only: bool,
+    supports_user_oauth: bool,
 ) -> Result<CredentialResolution, ApiError> {
     let internal = |e: CredentialServiceError| ApiError::Internal(e.to_string());
 
@@ -873,31 +876,31 @@ async fn resolve_credentials(
                 );
                 return Ok(CredentialResolution::Resolved(user_cred));
             }
-            // No per-user row — surface a NeedsUserAuth response so the UI
-            // can prompt. Provider hint comes from the org row when present;
-            // if neither row exists the source is misconfigured.
-            match cred_service
+            // No per-user row. OAuth connectors surface NeedsUserAuth so the
+            // UI can prompt; org-credential-only connectors fall back to the
+            // org row (same as the user_id=None branch) — the actor identity
+            // still resolves downstream and the connector's own gates
+            // (participant allowlist, allowed_actions, audience) apply.
+            let org_credential = cred_service
                 .get_org_credential(source_id)
                 .await
-                .map_err(internal)?
-            {
-                Some(org) => {
-                    info!(
-                        "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
-                        source_id, uid, org.provider
-                    );
-                    Ok(CredentialResolution::NeedsUserAuth {
-                        provider: org.provider,
-                    })
-                }
-                None => {
-                    warn!(
-                        "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
-                        source_id, uid
-                    );
-                    Ok(CredentialResolution::NoCredentials)
-                }
+                .map_err(internal)?;
+            let resolution = resolve_missing_user_credential(org_credential, supports_user_oauth);
+            match &resolution {
+                CredentialResolution::Resolved(org) => info!(
+                    "resolve_credentials(source={}, user={}): no per-user cred, org row exists → org cred {}",
+                    source_id, uid, org.id
+                ),
+                CredentialResolution::NeedsUserAuth { provider } => info!(
+                    "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
+                    source_id, uid, provider
+                ),
+                CredentialResolution::NoCredentials => warn!(
+                    "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
+                    source_id, uid
+                ),
             }
+            Ok(resolution)
         }
         None => {
             let resolved = cred_service
@@ -918,6 +921,27 @@ async fn resolve_credentials(
                 .map(CredentialResolution::Resolved)
                 .unwrap_or(CredentialResolution::NoCredentials))
         }
+    }
+}
+
+/// Decide the credential outcome when no per-user credential row exists.
+///
+/// Pure decision used by `resolve_credentials`: OAuth connectors
+/// (`supports_user_oauth=true`) surface `NeedsUserAuth` so the UI can prompt;
+/// org-credential-only connectors (e.g. Darwinbox, with no per-user OAuth
+/// flow) fall back to the org row — the actor identity still resolves
+/// downstream and the connector's own gates (participant allowlist,
+/// allowed_actions, audience) remain the row-level control.
+fn resolve_missing_user_credential(
+    org_credential: Option<ServiceCredential>,
+    supports_user_oauth: bool,
+) -> CredentialResolution {
+    match org_credential {
+        Some(org) if !supports_user_oauth => CredentialResolution::Resolved(org),
+        Some(org) => CredentialResolution::NeedsUserAuth {
+            provider: org.provider,
+        },
+        None => CredentialResolution::NoCredentials,
     }
 }
 
@@ -1333,6 +1357,7 @@ pub async fn oauth_credential_ready(
         &request.source_id,
         request.user_id.as_deref(),
         false,
+        true, // credential-ready only exists for per-user OAuth flows
     )
     .await?
     {
@@ -1874,8 +1899,14 @@ pub async fn sdk_register(
                     source_id, provider
                 );
                 let recovery_cred_service = CredentialService::new(state.db_pool.clone());
-                match resolve_credentials(&recovery_cred_service, &source_id, Some(&user_id), false)
-                    .await
+                match resolve_credentials(
+                    &recovery_cred_service,
+                    &source_id,
+                    Some(&user_id),
+                    false,
+                    true, // MCP catalog recovery replays a per-user OAuth flow
+                )
+                .await
                 {
                     Ok(CredentialResolution::Resolved(recovery_creds)) => {
                         match serde_json::to_value(McpCredentials::from_service_credential(
@@ -2226,6 +2257,65 @@ use crate::models::{
     SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
+async fn lock_and_validate_sdk_event_source(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    source_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(SOURCE_MUTATION_LOCK_NAMESPACE)
+        .bind(source_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    let is_deleted: Option<bool> =
+        sqlx::query_scalar("SELECT is_deleted FROM sources WHERE id = $1")
+            .bind(source_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to validate event source: {error}"))
+            })?;
+    match is_deleted {
+        Some(false) => Ok(()),
+        Some(true) => Err(ApiError::BadRequest(
+            "Events may not be emitted for a deleted source".to_string(),
+        )),
+        None => Err(ApiError::BadRequest("Unknown event source".to_string())),
+    }
+}
+
+async fn validate_sdk_event_context(
+    sync_run_repo: &SyncRunRepository,
+    sync_run_id: &str,
+    source_id: &str,
+    events: &[shared::models::ConnectorEvent],
+) -> Result<(), ApiError> {
+    let sync_run = sync_run_repo
+        .find_by_id(sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to validate sync run: {e}")))?
+        .ok_or_else(|| ApiError::BadRequest("Unknown sync run".to_string()))?;
+    if sync_run.source_id != source_id {
+        return Err(ApiError::BadRequest(
+            "Sync run does not belong to the supplied source".to_string(),
+        ));
+    }
+    if sync_run.status != SyncStatus::Running {
+        return Err(ApiError::BadRequest(
+            "Events may only be emitted for a running sync run".to_string(),
+        ));
+    }
+    if events
+        .iter()
+        .any(|event| event.sync_run_id() != sync_run_id || event.source_id() != source_id)
+    {
+        return Err(ApiError::BadRequest(
+            "Event source_id/sync_run_id does not match the trusted request context".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn sdk_emit_event(
     State(state): State<AppState>,
     Json(request): Json<SdkEmitEventRequest>,
@@ -2235,20 +2325,34 @@ pub async fn sdk_emit_event(
         request.sync_run_id, request.source_id
     );
 
-    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+    let mut source_guard = state
+        .db_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    lock_and_validate_sdk_event_source(&mut source_guard, &request.source_id).await?;
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    validate_sdk_event_context(
+        &sync_run_repo,
+        &request.sync_run_id,
+        &request.source_id,
+        std::slice::from_ref(&request.event),
+    )
+    .await?;
 
-    // Enqueue the event
-    event_queue
+    EventQueue::new(state.db_pool.pool().clone())
         .enqueue(&request.source_id, &request.event)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {}", e)))?;
-
-    // Update heartbeat
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {e}")))?;
     sync_run_repo
         .update_activity(&request.sync_run_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {e}")))?;
+    source_guard
+        .commit()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to unlock event source: {error}")))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -2266,18 +2370,34 @@ pub async fn sdk_emit_batch(
         request.source_id
     );
 
-    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+    let mut source_guard = state
+        .db_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    lock_and_validate_sdk_event_source(&mut source_guard, &request.source_id).await?;
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    validate_sdk_event_context(
+        &sync_run_repo,
+        &request.sync_run_id,
+        &request.source_id,
+        &request.events,
+    )
+    .await?;
 
-    event_queue
+    EventQueue::new(state.db_pool.pool().clone())
         .enqueue_batch(&request.source_id, &request.events)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {}", e)))?;
-
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {e}")))?;
     sync_run_repo
         .update_activity(&request.sync_run_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {e}")))?;
+    source_guard
+        .commit()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to unlock event source: {error}")))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -3426,5 +3546,54 @@ mod tests {
             maybe_filter_xlsx_extracted_text("text/plain", Some("notes.txt"), text),
             text
         );
+    }
+
+    fn org_credential(id: &str, provider: ServiceProvider) -> ServiceCredential {
+        ServiceCredential {
+            id: id.to_string(),
+            source_id: "source-1".to_string(),
+            user_id: None,
+            provider,
+            auth_type: shared::models::AuthType::ApiKey,
+            principal_email: Some("org@example.com".to_string()),
+            credentials: json!({}),
+            config: json!({}),
+            expires_at: None,
+            last_validated_at: None,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+        }
+    }
+
+    #[test]
+    fn missing_user_credential_with_org_only_connector_resolves_org_credential() {
+        let org = org_credential("org-cred", ServiceProvider::Darwinbox);
+        match resolve_missing_user_credential(Some(org.clone()), false) {
+            CredentialResolution::Resolved(c) => assert_eq!(c.id, org.id),
+            _ => panic!("expected Resolved(org credential)"),
+        }
+    }
+
+    #[test]
+    fn missing_user_credential_with_oauth_connector_yields_needs_user_auth() {
+        let org = org_credential("org-cred", ServiceProvider::Google);
+        match resolve_missing_user_credential(Some(org), true) {
+            CredentialResolution::NeedsUserAuth { provider } => {
+                assert_eq!(provider, ServiceProvider::Google)
+            }
+            _ => panic!("expected NeedsUserAuth with provider"),
+        }
+    }
+
+    #[test]
+    fn missing_user_credential_with_no_org_credential_yields_no_credentials() {
+        match resolve_missing_user_credential(None, false) {
+            CredentialResolution::NoCredentials => {}
+            _ => panic!("expected NoCredentials"),
+        }
+        match resolve_missing_user_credential(None, true) {
+            CredentialResolution::NoCredentials => {}
+            _ => panic!("expected NoCredentials even with supports_user_oauth=true"),
+        }
     }
 }

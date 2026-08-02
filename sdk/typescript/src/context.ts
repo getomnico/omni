@@ -8,6 +8,9 @@ import {
   type DocumentPermissions,
   type ConnectorEventPayload,
   type GroupMembershipEventPayload,
+  type PersonDeletedEventPayload,
+  type PersonSyncEventPayload,
+  type PersonSyncRecord,
 } from './models.js';
 import { ContentStorage } from './storage.js';
 import { getLogger } from './logger.js';
@@ -151,7 +154,13 @@ export class SyncContext {
     const batch = this.eventBuffer;
     this.eventBuffer = [];
     this.oldestEventAt = null;
-    await this.client.emitEventBatch(this._syncRunId, this._sourceId, batch);
+    try {
+      await this.client.emitEventBatch(this._syncRunId, this._sourceId, batch);
+    } catch (error) {
+      this.eventBuffer = [...batch, ...this.eventBuffer];
+      this.oldestEventAt ??= Date.now();
+      throw error;
+    }
   }
 
   async emit(doc: Document): Promise<void> {
@@ -170,7 +179,7 @@ export class SyncContext {
       document_id: doc.external_id,
       content_id: doc.content_id,
       metadata,
-      permissions: doc.permissions,
+      permissions: doc.permissions ?? { public: false, users: [], groups: [] },
       attributes: doc.attributes,
     };
     await this.bufferEvent(event);
@@ -218,6 +227,26 @@ export class SyncContext {
       group_email: groupEmail,
       group_name: groupName,
       member_emails: memberEmails,
+    };
+    await this.bufferEvent(event);
+  }
+
+  async emitPersonSync(person: PersonSyncRecord): Promise<void> {
+    const event: PersonSyncEventPayload = {
+      type: EventType.PERSON_SYNC,
+      sync_run_id: this._syncRunId,
+      source_id: this._sourceId,
+      person,
+    };
+    await this.bufferEvent(event);
+  }
+
+  async emitPersonDeleted(email: string): Promise<void> {
+    const event: PersonDeletedEventPayload = {
+      type: EventType.PERSON_DELETED,
+      sync_run_id: this._syncRunId,
+      source_id: this._sourceId,
+      email,
     };
     await this.bufferEvent(event);
   }

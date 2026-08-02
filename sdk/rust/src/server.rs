@@ -1,4 +1,4 @@
-use crate::client::{build_connector_url, SdkClient, SdkError};
+use crate::client::{SdkClient, SdkError, build_connector_url};
 use crate::connector::{Connector, SyncRequestValidationError};
 use crate::context::SyncContext;
 use crate::mcp_adapter::{McpAdapter, McpServer};
@@ -8,22 +8,22 @@ use crate::models::{
 };
 use anyhow::{Context, Result};
 use axum::{
+    Router,
     extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     middleware,
     response::{IntoResponse, Json, Response},
     routing::{get, post},
-    Router,
 };
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use serde::de::DeserializeOwned;
 use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tower::ServiceBuilder;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info, warn};
@@ -513,7 +513,7 @@ where
 
         match result {
             Ok(()) => {
-                if ctx.sync_mode() != SyncType::Realtime {
+                if ctx.sync_mode() != SyncType::Realtime && !ctx.is_cancelled() {
                     if let Err(error) = ctx.complete().await {
                         error!("Failed to auto-complete sync {}: {}", sync_run_id, error);
                     }

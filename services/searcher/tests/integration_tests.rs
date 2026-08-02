@@ -6,9 +6,9 @@ use axum::{
     http::{Method, Request, StatusCode},
 };
 use common::SearcherTestFixture;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::db::repositories::{
-    DocumentRepository, GroupRepository, PersonRepository, PersonUpsert,
+    DocumentRepository, GroupRepository, PersonRepository, PersonSearchFilter, PersonUpsert,
 };
 use shared::models::DocumentPermissions;
 use tower::ServiceExt;
@@ -184,10 +184,12 @@ async fn test_capability_search_indexes_search_text() -> Result<()> {
         }),
     )
     .await?;
-    assert!(disallowed_by_source["results"]
-        .as_array()
-        .unwrap()
-        .is_empty());
+    assert!(
+        disallowed_by_source["results"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 
     Ok(())
 }
@@ -256,11 +258,13 @@ async fn test_capability_sync_prunes_stale_rows_for_publisher_and_type() -> Resu
     )
     .await?;
     assert_capability_present(&search_response, "tool:gmail__send_email", "quokka");
-    assert!(!search_response["results"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|result| result["id"] == "tool:gmail__old_tool"));
+    assert!(
+        !search_response["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| result["id"] == "tool:gmail__old_tool")
+    );
 
     Ok(())
 }
@@ -1577,9 +1581,10 @@ async fn test_person_search_by_name() -> Result<()> {
     seed_people(pool).await;
 
     let person_repo = PersonRepository::new(pool);
+    let filter = PersonSearchFilter::default();
 
     // Search for "sam" — should match Sam Wilson (via email token "sam")
-    let results = person_repo.search_people("sam", 10).await?;
+    let results = person_repo.search_people("sam", 10, &filter).await?;
     assert!(
         !results.is_empty(),
         "Expected at least 1 result for 'sam', got 0",
@@ -1588,17 +1593,19 @@ async fn test_person_search_by_name() -> Result<()> {
     assert!(emails.contains(&"sam.wilson@example.com"));
 
     // Search for "samantha" — should match Samantha Lee
-    let results = person_repo.search_people("samantha", 10).await?;
+    let results = person_repo.search_people("samantha", 10, &filter).await?;
     assert!(!results.is_empty(), "Expected results for 'samantha'");
     assert_eq!(results[0].email, "samantha.lee@example.com");
 
     // Search for "alice" — should match Alice Smith
-    let results = person_repo.search_people("alice", 10).await?;
+    let results = person_repo.search_people("alice", 10, &filter).await?;
     assert!(!results.is_empty(), "Expected results for 'alice'");
     assert_eq!(results[0].email, "alice.smith@example.com");
 
     // Search for a non-existent name
-    let results = person_repo.search_people("zzzznotaperson", 10).await?;
+    let results = person_repo
+        .search_people("zzzznotaperson", 10, &filter)
+        .await?;
     assert!(results.is_empty());
 
     Ok(())
@@ -1647,6 +1654,160 @@ async fn test_people_search_endpoint() -> Result<()> {
     assert!(first.get("id").is_some());
     assert!(first.get("email").is_some());
     assert!(first.get("score").is_some());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_person_search_structured_filters_and_rich_fields() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let person_repo = PersonRepository::new(pool);
+
+    for (id, email, name, dept, office, country, etype, emp_id) in [
+        (
+            "01J0000000000000000000T01",
+            "maya@example.com",
+            "Maya Rao",
+            "Marketing",
+            "Paris",
+            "France",
+            "Full Time",
+            "EMP-1",
+        ),
+        (
+            "01J0000000000000000000T02",
+            "noor@example.com",
+            "Noor Khan",
+            "Engineering",
+            "Bengaluru",
+            "India",
+            "Contract",
+            "EMP-2",
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO people (
+                id, email, display_name, given_name, middle_name, surname, department,
+                division, office_location, work_country, employee_type, employee_id,
+                confirmation_status, employment_start_date, employment_end_date,
+                is_active, source_data
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                true, '{}'
+            )
+            ON CONFLICT (id) DO NOTHING
+            "#,
+        )
+        .bind(id)
+        .bind(email)
+        .bind(name)
+        .bind(name.split(' ').next())
+        .bind("Middle")
+        .bind(name.split(' ').last())
+        .bind(dept)
+        .bind("Corporate")
+        .bind(office)
+        .bind(country)
+        .bind(etype)
+        .bind(emp_id)
+        .bind("Confirmed")
+        .bind(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap())
+        .bind(Option::<chrono::NaiveDate>::None)
+        .execute(pool)
+        .await?;
+    }
+
+    // Structured filter: name + department narrows to the Marketing person.
+    let results = person_repo
+        .search_people(
+            "maya",
+            10,
+            &PersonSearchFilter {
+                department: Some("Marketing".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(
+        results.len(),
+        1,
+        "expected exactly Maya with Marketing filter"
+    );
+    assert_eq!(results[0].email, "maya@example.com");
+
+    // Filter excludes the other department.
+    let results = person_repo
+        .search_people(
+            "maya",
+            10,
+            &PersonSearchFilter {
+                department: Some("Engineering".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(
+        results.is_empty(),
+        "expected no results for Maya in Engineering"
+    );
+
+    // Multiple filters combine.
+    let results = person_repo
+        .search_people(
+            "example.com",
+            10,
+            &PersonSearchFilter {
+                office_location: Some("Paris".to_string()),
+                work_country: Some("France".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].email, "maya@example.com");
+
+    // Rich fields are returned with each result.
+    let first = &results[0];
+    assert_eq!(first.display_name.as_deref(), Some("Maya Rao"));
+    assert_eq!(first.department.as_deref(), Some("Marketing"));
+    assert_eq!(first.office_location.as_deref(), Some("Paris"));
+    assert_eq!(first.work_country.as_deref(), Some("France"));
+    assert_eq!(first.employee_type.as_deref(), Some("Full Time"));
+    assert_eq!(first.employee_id.as_deref(), Some("EMP-1"));
+    assert!(first.company_name.is_none());
+    assert!(first.cost_center.is_none());
+    assert!(first.grade.is_none());
+    assert!(first.band.is_none());
+    // Newly propagated directory fields are returned as well.
+    assert_eq!(first.middle_name.as_deref(), Some("Middle"));
+    assert_eq!(first.division.as_deref(), Some("Corporate"));
+    assert_eq!(first.confirmation_status.as_deref(), Some("Confirmed"));
+    assert_eq!(
+        first.employment_start_date,
+        Some(chrono::NaiveDate::from_ymd_opt(2020, 1, 1).unwrap())
+    );
+    assert!(first.employment_end_date.is_none());
+
+    // Endpoint passes structured filters through and returns rich fields.
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/people/search?q=maya&department=Marketing")
+        .body(Body::empty())?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    let people = json["people"].as_array().expect("Expected people array");
+    assert_eq!(people.len(), 1);
+    assert_eq!(people[0]["department"], "Marketing");
+    assert_eq!(people[0]["office_location"], "Paris");
+    assert_eq!(people[0]["employee_id"], "EMP-1");
+    assert_eq!(people[0]["middle_name"], "Middle");
+    assert_eq!(people[0]["division"], "Corporate");
+    assert_eq!(people[0]["confirmation_status"], "Confirmed");
+    assert_eq!(people[0]["employment_start_date"], "2020-01-01");
 
     Ok(())
 }

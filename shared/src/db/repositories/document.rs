@@ -1,7 +1,7 @@
 use crate::{
+    SourceType,
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
-    SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
@@ -282,9 +282,12 @@ impl DocumentRepository {
         Ok(source_ids)
     }
 
-    pub async fn fetch_active_sources(&self) -> Result<Vec<(String, SourceType)>, DatabaseError> {
-        let rows: Vec<(String, SourceType)> =
-            sqlx::query_as(r#"SELECT id, source_type FROM sources WHERE NOT is_deleted"#)
+    pub async fn fetch_active_sources(&self) -> Result<Vec<(String, String)>, DatabaseError> {
+        // source_type is free-form text for remote MCP sources, so decode it as
+        // a string rather than the SourceType enum; callers compare against
+        // requested source types by name.
+        let rows: Vec<(String, String)> =
+            sqlx::query_as(r#"SELECT id, source_type::text FROM sources WHERE NOT is_deleted"#)
                 .fetch_all(&self.pool)
                 .await?;
 

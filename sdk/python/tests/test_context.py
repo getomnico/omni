@@ -6,6 +6,7 @@ from omni_connector import (
     Document,
     DocumentMetadata,
     DocumentPermissions,
+    PersonSyncRecord,
     SyncContext,
     UserFilterMode,
 )
@@ -373,3 +374,25 @@ class TestShouldIndexUser:
     def test_defaults_to_all_when_no_filter_specified(self):
         ctx = self._make_ctx()
         assert ctx.should_index_user("anyone@example.com") is True
+
+@pytest.mark.asyncio
+async def test_emit_person_sync_serializes_canonical_event(sdk_client, mock_connector_manager):
+    ctx = SyncContext(sdk_client=sdk_client, sync_run_id="run-1", source_id="source-1")
+    await ctx.emit_person_sync(PersonSyncRecord(external_id="E1", email="ada@example.com"))
+    await ctx.emit_person_deleted("grace@example.com")
+    await ctx.flush()
+    payload = json.loads(mock_connector_manager.calls[-1].request.content)
+    assert payload["events"] == [
+        {
+            "type": "person_sync",
+            "sync_run_id": "run-1",
+            "source_id": "source-1",
+            "person": {"external_id": "E1", "email": "ada@example.com"},
+        },
+        {
+            "type": "person_deleted",
+            "sync_run_id": "run-1",
+            "source_id": "source-1",
+            "email": "grace@example.com",
+        },
+    ]

@@ -2,8 +2,8 @@ use axum::response::IntoResponse;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
+use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use tracing::warn;
 
@@ -1014,6 +1014,18 @@ pub enum ConnectorEvent {
         group_name: Option<String>,
         member_emails: Vec<String>,
     },
+    /// Idempotently creates or updates one source-provenanced person.
+    PersonSync {
+        sync_run_id: String,
+        source_id: String,
+        person: PersonSyncRecord,
+    },
+    /// Removes one source's current knowledge of a person by canonical email.
+    PersonDeleted {
+        sync_run_id: String,
+        source_id: String,
+        email: String,
+    },
 }
 
 impl ConnectorEvent {
@@ -1023,6 +1035,8 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::DocumentDeleted { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::GroupMembershipSync { sync_run_id, .. } => sync_run_id,
+            ConnectorEvent::PersonSync { sync_run_id, .. }
+            | ConnectorEvent::PersonDeleted { sync_run_id, .. } => sync_run_id,
         }
     }
 
@@ -1032,6 +1046,8 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { source_id, .. } => source_id,
             ConnectorEvent::DocumentDeleted { source_id, .. } => source_id,
             ConnectorEvent::GroupMembershipSync { source_id, .. } => source_id,
+            ConnectorEvent::PersonSync { source_id, .. }
+            | ConnectorEvent::PersonDeleted { source_id, .. } => source_id,
         }
     }
 
@@ -1041,7 +1057,17 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { document_id, .. } => document_id,
             ConnectorEvent::DocumentDeleted { document_id, .. } => document_id,
             ConnectorEvent::GroupMembershipSync { group_email, .. } => group_email,
+            ConnectorEvent::PersonSync { person, .. } => &person.email,
+            ConnectorEvent::PersonDeleted { email, .. } => email,
         }
+    }
+
+    /// Returns true for events that mutate source-provenanced person data.
+    pub fn is_person_event(&self) -> bool {
+        matches!(
+            self,
+            ConnectorEvent::PersonSync { .. } | ConnectorEvent::PersonDeleted { .. }
+        )
     }
 }
 
@@ -1102,6 +1128,61 @@ pub struct ConnectorEventQueueItem {
     #[serde(with = "time::serde::iso8601::option")]
     pub processed_at: Option<OffsetDateTime>,
     pub error_message: Option<String>,
+}
+
+/// A single source-provenanced person upsert.
+/// Only reviewed, workplace-directory-safe fields are included; personal
+/// HR fields (mobile, DOB, addresses, bank/salary data, raw provider JSON)
+/// are intentionally absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonSyncRecord {
+    /// Stable, required, unique within the source (e.g. Darwinbox employee ID).
+    pub external_id: String,
+    /// Required business email used as the canonical human identity.
+    pub email: String,
+    /// Full display name (e.g. first + middle + last).
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub given_name: Option<String>,
+    #[serde(default)]
+    pub middle_name: Option<String>,
+    #[serde(default)]
+    pub surname: Option<String>,
+    #[serde(default)]
+    pub job_title: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub division: Option<String>,
+    #[serde(default)]
+    pub company_name: Option<String>,
+    #[serde(default)]
+    pub office_location: Option<String>,
+    #[serde(default)]
+    pub work_country: Option<String>,
+    #[serde(default)]
+    pub employee_id: Option<String>,
+    #[serde(default)]
+    pub employee_type: Option<String>,
+    #[serde(default)]
+    pub cost_center: Option<String>,
+    #[serde(default)]
+    pub grade: Option<String>,
+    #[serde(default)]
+    pub band: Option<String>,
+    #[serde(default)]
+    pub confirmation_status: Option<String>,
+    #[serde(default)]
+    pub employment_start_date: Option<String>,
+    #[serde(default)]
+    pub employment_end_date: Option<String>,
+    /// Manager's external ID within the same source.
+    #[serde(default)]
+    pub manager_external_id: Option<String>,
+    /// Provider-side modification timestamp (e.g. latest_modified_any_attribute).
+    #[serde(default)]
+    pub source_updated_at: Option<String>,
 }
 
 /// Type/mode of a sync run. Serializes as a lowercase string on the wire
