@@ -7,7 +7,7 @@ use url::Url;
 use crate::auth::{add_api_key_and_dataset, apply_basic_auth, fetch_token};
 use crate::config::DarwinboxSourceConfig;
 use crate::credentials::DarwinboxCredentials;
-use crate::models::EmployeeDataResponse;
+use crate::models::{EmployeeDataResponse, HolidayListResponse};
 
 /// Darwinbox API call outcome, split so sync/action callers can tolerate
 /// provider-side denials without treating them as transient failures.
@@ -194,7 +194,7 @@ impl DarwinboxClient {
         &self,
         employee_no: &str,
         year: &str,
-    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
+    ) -> std::result::Result<HolidayListResponse, DarwinboxApiError> {
         self.post_json(
             "/leavesactionapi/holidaylist",
             json!({ "employee_no": employee_no, "year": year }),

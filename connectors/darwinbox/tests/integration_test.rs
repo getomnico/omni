@@ -518,11 +518,16 @@ fn org_master_mappers_emit_searchable_attributes() {
             .contains(&("division_code".to_string(), "CORP".to_string()))
     );
 
-    let holiday = mappers::format_holiday_item(&serde_json::json!({
-        "holiday_name": "Republic Day",
-        "holiday_date": "2025-01-26",
-        "description": "National holiday"
-    }));
+    let holiday = mappers::format_holiday_item(&omni_darwinbox_connector::models::HolidayItem {
+        id: Some("a68f996eb7bec5".into()),
+        name: "Republic Day".into(),
+        date: "2025-01-26".into(),
+        year: Some("2025".into()),
+        holiday_repeats: Some("No".into()),
+        is_optional: Some("No".into()),
+        is_national: Some("Yes".into()),
+    });
+    assert_eq!(holiday.title, "Republic Day");
     assert!(
         holiday
             .attributes

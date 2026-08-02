@@ -172,6 +172,42 @@ impl EmployeeDataResponse {
     }
 }
 
+/// Response envelope for `POST /leavesactionapi/holidaylist`.
+///
+/// Shape verified live against a production tenant: holidays are returned
+/// under the top-level `holidays` key. `holidays` and each item's `name`/
+/// `date` are required — a response without them is a shape mismatch and
+/// fails the module loudly.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HolidayListResponse {
+    #[serde(default)]
+    pub status: Option<i32>,
+    pub holidays: Vec<HolidayItem>,
+    #[serde(default)]
+    pub errors: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// One holiday entry as returned by the Darwinbox holiday-list API.
+/// All fields are strings on the verified tenant; optional fields tolerate
+/// absence with `#[serde(default)]`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct HolidayItem {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub name: String,
+    pub date: String,
+    #[serde(default)]
+    pub year: Option<String>,
+    #[serde(default)]
+    pub holiday_repeats: Option<String>,
+    #[serde(default)]
+    pub is_optional: Option<String>,
+    #[serde(default)]
+    pub is_national: Option<String>,
+}
+
 fn normalize_darwinbox_date(value: Option<&str>) -> Option<String> {
     let value = value?.trim();
     if value.is_empty() {
@@ -733,5 +769,87 @@ mod tests {
                 .to_person_sync_records(&[EmployeeField::EmploymentDates], |_| true)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn holiday_response_deserializes_the_verified_live_shape() {
+        let response: HolidayListResponse = serde_json::from_value(serde_json::json!({
+            "status": 1,
+            "holidays": [{
+                "id": "a68f996eb7bec5",
+                "name": "New Year's Holiday",
+                "date": "2026-01-01",
+                "year": "2026",
+                "holiday_repeats": "No",
+                "is_optional": "No",
+                "is_national": "No"
+            }],
+            "errors": [],
+            "message": "Successfully Loaded All Holidays"
+        }))
+        .unwrap();
+        assert_eq!(response.status, Some(1));
+        assert_eq!(response.holidays.len(), 1);
+        let holiday = &response.holidays[0];
+        assert_eq!(holiday.id.as_deref(), Some("a68f996eb7bec5"));
+        assert_eq!(holiday.name, "New Year's Holiday");
+        assert_eq!(holiday.date, "2026-01-01");
+        assert_eq!(holiday.year.as_deref(), Some("2026"));
+        assert_eq!(holiday.holiday_repeats.as_deref(), Some("No"));
+        assert_eq!(holiday.is_optional.as_deref(), Some("No"));
+        assert_eq!(holiday.is_national.as_deref(), Some("No"));
+    }
+
+    #[test]
+    fn holiday_response_requires_name_and_date_on_every_item() {
+        // A missing `holidays` key is a shape mismatch and must fail loudly.
+        assert!(
+            serde_json::from_value::<HolidayListResponse>(serde_json::json!({
+                "status": 1,
+                "result": []
+            }))
+            .is_err()
+        );
+        // A non-array `holidays` value is likewise a shape mismatch.
+        assert!(
+            serde_json::from_value::<HolidayListResponse>(serde_json::json!({
+                "holidays": "oops"
+            }))
+            .is_err()
+        );
+        // An item without `date` is a shape mismatch and must fail loudly.
+        assert!(
+            serde_json::from_value::<HolidayListResponse>(serde_json::json!({
+                "status": 1,
+                "holidays": [{"id": "a68f996eb7bec5", "name": "Independence Day"}]
+            }))
+            .is_err()
+        );
+        // An item without `name` is likewise a shape mismatch.
+        assert!(
+            serde_json::from_value::<HolidayListResponse>(serde_json::json!({
+                "status": 1,
+                "holidays": [{"id": "a68f996eb7bec5", "date": "2026-08-15"}]
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn holiday_response_tolerates_absent_envelope_and_optional_fields() {
+        // `errors`/`message`/optional item fields may be absent; defaults apply.
+        let response: HolidayListResponse = serde_json::from_value(serde_json::json!({
+            "status": 1,
+            "holidays": [{"name": "Independence Day", "date": "2026-08-15"}]
+        }))
+        .unwrap();
+        assert!(response.errors.is_empty());
+        assert_eq!(response.message, None);
+        let holiday = &response.holidays[0];
+        assert_eq!(holiday.id, None);
+        assert_eq!(holiday.year, None);
+        assert_eq!(holiday.holiday_repeats, None);
+        assert_eq!(holiday.is_optional, None);
+        assert_eq!(holiday.is_national, None);
     }
 }

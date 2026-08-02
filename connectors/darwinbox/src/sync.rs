@@ -369,20 +369,15 @@ async fn sync_holidays(
     let year = Utc::now().format("%Y").to_string();
     let response = client.fetch_holiday_list(employee_id, &year).await?;
     let permissions = config::document_permissions("holiday", config, source_id, None);
-    let items = extract_items(&response);
     let mut count = 0i32;
 
-    for item in &items {
+    for item in &response.holidays {
         if ctx.is_cancelled() {
             ctx.cancel().await?;
             return Ok(());
         }
         let document = mappers::format_holiday_item(item);
-        let Some(date) = mappers::field_with_alias(item, "date", "holiday_date") else {
-            warn!("Skipping Darwinbox holiday without date");
-            continue;
-        };
-        let id = slugify(&format!("{date}-{}", document.title));
+        let id = slugify(&format!("{}-{}", item.date, document.title));
         let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("darwinbox:holiday:{id}");
@@ -588,13 +583,17 @@ mod tests {
             .and(path("/leavesactionapi/holidaylist"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "status": 1,
-                "data": [{
-                    "id": 1,
+                "holidays": [{
+                    "id": "a68f996eb7bec5",
                     "name": "Independence Day",
                     "date": "2026-08-15",
-                    "year": 2026,
-                    "holiday_repeats": false
-                }]
+                    "year": "2026",
+                    "holiday_repeats": "No",
+                    "is_optional": "No",
+                    "is_national": "Yes"
+                }],
+                "errors": [],
+                "message": "Successfully Loaded All Holidays"
             })))
             .mount(&server)
             .await;
@@ -660,6 +659,53 @@ mod tests {
         );
         assert_eq!(event["metadata"]["title"], "Independence Day");
         assert_eq!(event["metadata"]["content_type"], "holiday");
+    }
+
+    #[tokio::test]
+    async fn holiday_sync_fails_loudly_on_mismatched_envelope() {
+        // A shape without the `holidays` key (the pre-fix fallback path) must
+        // fail the module, not silently produce zero documents.
+        for body in [
+            json!({ "status": 1, "result": [] }),
+            json!({ "holidays": "oops" }),
+            json!({ "status": 1, "holidays": [{ "name": "No Date" }] }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/leavesactionapi/holidaylist"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+
+            let config: DarwinboxSourceConfig = serde_json::from_value(json!({
+                "base_url": server.uri(),
+                "authorization": { "participant_mode": "all" }
+            }))
+            .unwrap();
+            let credentials = crate::credentials::DarwinboxCredentials::Basic {
+                username: "api-user".to_string(),
+                password: "secret".to_string(),
+                api_key: "api-key".to_string(),
+                dataset_key: "dataset-key".to_string(),
+            };
+            let client = DarwinboxClient::new(&config, credentials).unwrap();
+            let ctx = SyncContext::new(
+                SdkClient::new(&server.uri()),
+                "run-1".to_string(),
+                "source-1".to_string(),
+                SourceType::Darwinbox,
+                SyncType::Full,
+                Arc::new(AtomicBool::new(false)),
+            );
+
+            let error = sync_holidays(&client, &config, "source-1", &ctx, "EMP001")
+                .await
+                .expect_err("mismatched holiday envelope must fail the module");
+            assert!(
+                format!("{error}").contains("Darwinbox API request failed"),
+                "unexpected error: {error}"
+            );
+        }
     }
 }
 
