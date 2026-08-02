@@ -712,12 +712,18 @@ jobs:
           owner: getomnico
           repositories: omni-enterprise
 
-      - name: Trigger omni-enterprise release
+      - name: Push tag to omni-enterprise
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          if ! gh workflow run build-enterprise.yml \
-            --repo getomnico/omni-enterprise \
-            --field tag_name="${GITHUB_REF_NAME}"; then
-            echo "::warning::Failed to trigger omni-enterprise release"
+          TAG="${GITHUB_REF_NAME}"
+          REPO="getomnico/omni-enterprise"
+          if gh api "repos/${REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists in ${REPO}; nothing to do"
+          else
+            SHA="$(gh api "repos/${REPO}/commits/master" --jq .sha)"
+            gh api --method POST "repos/${REPO}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${SHA}"
+            echo "Pushed tag ${TAG} to ${REPO}"
           fi
