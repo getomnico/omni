@@ -547,7 +547,15 @@ pub async fn execute_action(
                 .and_then(JsonValue::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(|| current_year(&config));
-            client.fetch_holiday_list(employee_no, &year).await?
+            // The action relays the raw envelope to the response sanitizer
+            // (the typed `fetch_holiday_list` is for the sync module).
+            client
+                .post_json::<JsonValue>(
+                    "/leavesactionapi/holidaylist",
+                    json!({ "employee_no": employee_no, "year": year }),
+                    false,
+                )
+                .await?
         }
         "apply_my_leave" => {
             let employee = calling_employee.as_ref().expect("self action resolved caller");
