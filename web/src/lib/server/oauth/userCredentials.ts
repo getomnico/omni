@@ -68,7 +68,9 @@ export class UserOAuthCredentialsService {
 
         const scopes = tokens.scope ? tokens.scope.split(' ') : []
         const accessTokenJson = JSON.stringify(encryptToken(tokens.access_token))
-        const refreshTokenJson = JSON.stringify(encryptToken(tokens.refresh_token))
+        const refreshTokenJson = tokens.refresh_token
+            ? JSON.stringify(encryptToken(tokens.refresh_token))
+            : null
 
         const insertQuery = sql`
             INSERT INTO user_oauth_credentials (
