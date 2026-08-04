@@ -103,6 +103,10 @@ class ConnectorAction:
     admin_only: bool = False
     hidden: bool = False
     integration_type: str = "connector"
+    # True when the connector declares a per-user OAuth flow (manifest.oauth).
+    # Org-only connectors (e.g. Darwinbox) run actions against the org
+    # credential and must never surface an OAuth prompt.
+    supports_user_oauth: bool = False
 
 
 class ConnectorToolHandler:
@@ -276,6 +280,7 @@ class ConnectorToolHandler:
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
                             integration_type=integration_type,
+                            supports_user_oauth=bool(manifest.get("oauth")),
                         )
                     )
 
@@ -489,6 +494,12 @@ class ConnectorToolHandler:
             provider = "remote_mcp"
         else:
             if org_credential is None:
+                return None
+            # Connectors without a per-user OAuth flow (e.g. Darwinbox) run
+            # against the org credential; connector-manager resolves the same
+            # way (`resolve_missing_user_credential`), so an OAuth prompt here
+            # would dead-end an action that would otherwise execute.
+            if not action.supports_user_oauth:
                 return None
             provider = org_credential["provider"]
 
