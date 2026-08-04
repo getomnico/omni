@@ -117,9 +117,7 @@ async def _resolve_llm_provider(state: AppState, agent: Agent) -> ResolvedModel:
         raise RuntimeError("Agent has no model configured")
     resolved = await state.provider_cache.resolve_for_model(agent.model_id)
     if resolved is None:
-        raise RuntimeError(
-            f"Agent model {agent.model_id} is no longer available"
-        )
+        raise RuntimeError(f"Agent model {agent.model_id} is no longer available")
     return resolved
 
 
@@ -533,7 +531,9 @@ async def _run_agent_loop(
     agent_user_groups = None
     if agent_user_email and not is_org_agent:
         try:
-            agent_user_groups = await GroupRepository().find_groups_for_user(agent_user_email)
+            agent_user_groups = await GroupRepository().find_groups_for_user(
+                agent_user_email
+            )
         except Exception:
             logger.error(
                 "Group lookup failed for agent user %s — failing closed",
@@ -670,6 +670,23 @@ async def _run_agent_loop(
                                     input="",
                                 )
                             )
+                        elif event.content_block.type == "thinking":
+                            # Keep provider block indexes aligned so tool input
+                            # deltas land on the right block.
+                            content_blocks.append(
+                                ThinkingBlockParam(
+                                    type="thinking",
+                                    thinking=event.content_block.thinking,
+                                    signature=event.content_block.signature,
+                                )
+                            )
+                        elif event.content_block.type == "redacted_thinking":
+                            content_blocks.append(
+                                RedactedThinkingBlockParam(
+                                    type="redacted_thinking",
+                                    data=event.content_block.data,
+                                )
+                            )
                     elif event.type == "content_block_delta":
                         if event.delta.type == "text_delta":
                             if event.index < len(content_blocks):
@@ -677,15 +694,35 @@ async def _run_agent_loop(
                                     TextBlockParam, content_blocks[event.index]
                                 )
                                 text_block["text"] += event.delta.text
-                        elif event.delta.type == "input_json_delta" and event.index < len(
-                            content_blocks
+                        elif (
+                            event.delta.type == "input_json_delta"
+                            and event.index < len(content_blocks)
                         ):
                             tool_block = cast(
                                 ToolUseBlockParam, content_blocks[event.index]
                             )
                             tool_block["input"] = (
-                                cast(str, tool_block["input"]) + event.delta.partial_json
+                                cast(str, tool_block["input"])
+                                + event.delta.partial_json
                             )
+                        elif event.delta.type == "thinking_delta" and event.index < len(
+                            content_blocks
+                        ):
+                            thinking_block = cast(
+                                ThinkingBlockParam, content_blocks[event.index]
+                            )
+                            thinking_block["thinking"] = (
+                                cast(str, thinking_block.get("thinking", ""))
+                                + event.delta.thinking
+                            )
+                        elif (
+                            event.delta.type == "signature_delta"
+                            and event.index < len(content_blocks)
+                        ):
+                            thinking_block = cast(
+                                ThinkingBlockParam, content_blocks[event.index]
+                            )
+                            thinking_block["signature"] = event.delta.signature
                     elif event.type == "message_stop":
                         break
                 break

@@ -17,8 +17,10 @@ from anthropic import MessageStreamEvent
 from anthropic.types import (
     ContentBlockParam,
     MessageParam,
+    RedactedThinkingBlockParam,
     TextBlockParam,
     TextCitationParam,
+    ThinkingBlockParam,
     ToolParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
@@ -794,6 +796,40 @@ async def stream_generator(
                                 cast(str, tool_use_block["input"])
                                 + event.delta.partial_json
                             )
+                        elif event.delta.type == "thinking_delta":
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received thinking delta for unknown content block index {event.index}, creating new thinking block"
+                                )
+                                content_blocks.append(
+                                    ThinkingBlockParam(
+                                        type="thinking", thinking="", signature=""
+                                    )
+                                )
+                            thinking_block = cast(
+                                ThinkingBlockParam, content_blocks[event.index]
+                            )
+                            thinking_block["thinking"] = (
+                                cast(str, thinking_block.get("thinking", ""))
+                                + event.delta.thinking
+                            )
+                        elif event.delta.type == "signature_delta":
+                            # Anthropic streams the thinking signature separately
+                            # from the block; it is required for multi-turn
+                            # continuity, so carry it onto the thinking block.
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received signature delta for unknown content block index {event.index}, creating new thinking block"
+                                )
+                                content_blocks.append(
+                                    ThinkingBlockParam(
+                                        type="thinking", thinking="", signature=""
+                                    )
+                                )
+                            signature_block = cast(
+                                ThinkingBlockParam, content_blocks[event.index]
+                            )
+                            signature_block["signature"] = event.delta.signature
                         elif event.delta.type == "citations_delta":
                             if event.index >= len(content_blocks):
                                 logger.warning(
@@ -841,6 +877,37 @@ async def stream_generator(
                                 event.content_block, tool_block, provider_extras
                             )
                             content_blocks.append(tool_block)
+                        elif event.content_block.type == "thinking":
+                            logger.info("Thinking block start")
+                            content_blocks.append(
+                                ThinkingBlockParam(
+                                    type="thinking",
+                                    thinking=event.content_block.thinking,
+                                    signature=event.content_block.signature,
+                                )
+                            )
+                        elif event.content_block.type == "redacted_thinking":
+                            logger.info("Redacted thinking block start")
+                            content_blocks.append(
+                                RedactedThinkingBlockParam(
+                                    type="redacted_thinking",
+                                    data=event.content_block.data,
+                                )
+                            )
+                        else:
+                            # Keep provider content block indexes aligned for any
+                            # block type we don't model, so later deltas land on
+                            # the correct slot instead of synthesizing a bogus
+                            # tool_use block with an empty id.
+                            logger.info(
+                                f"Content block start for unhandled type: {event.content_block.type}"
+                            )
+                            content_blocks.append(
+                                cast(
+                                    ContentBlockParam,
+                                    dict(event.content_block),
+                                )
+                            )
 
                     elif event.type == "citation":
                         logger.info(f"Citation received: {event.citation}")
