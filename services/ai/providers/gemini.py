@@ -47,14 +47,6 @@ def _gemini_status_code(e: BaseException) -> int | None:
     return e.code if isinstance(e, APIError) else None
 
 
-def _gemini_context_overflow(e: BaseException) -> bool:
-    return (
-        isinstance(e, APIError)
-        and e.code == 400
-        and "too many tokens" in str(e).lower()
-    )
-
-
 logger = logging.getLogger(__name__)
 
 THOUGHT_SIGNATURE_KEY = "_gemini_thought_signature"
@@ -468,7 +460,6 @@ class GeminiProvider(LLMProvider):
                 model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
-                is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
     async def generate_response(
@@ -513,7 +504,6 @@ class GeminiProvider(LLMProvider):
                 model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
-                is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
     async def health_check(
