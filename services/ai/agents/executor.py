@@ -751,6 +751,11 @@ async def _run_agent_loop(
         parse_errors: list[ToolResultBlockParam] = []
         for tool_call in tool_calls:
             raw_input = cast(str, tool_call["input"])
+            if not raw_input.strip():
+                # No-arg tool calls stream an empty ``input_json_delta``;
+                # treat the empty input as a valid ``{}``.
+                tool_call["input"] = {}
+                continue
             try:
                 tool_call["input"] = json.loads(raw_input)
             except json.JSONDecodeError as e:

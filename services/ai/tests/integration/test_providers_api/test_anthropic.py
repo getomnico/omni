@@ -1,11 +1,10 @@
 """Integration test for the Anthropic provider — live tool-call round trip."""
 
-import json
 import os
 import re
 
 import pytest
-from anthropic.types import MessageParam
+from anthropic.types import MessageParam, ToolUseBlockParam
 
 from tests.integration.test_providers_api.conftest import (
     require_env,
@@ -13,6 +12,7 @@ from tests.integration.test_providers_api.conftest import (
     report_usage,
 )
 from providers.anthropic import AnthropicProvider
+from streaming.persist import parse_tool_call_inputs
 
 pytestmark = pytest.mark.real_llm
 
@@ -26,6 +26,18 @@ _WEATHER_TOOL = {
         "type": "object",
         "properties": {"city": {"type": "string"}},
         "required": ["city"],
+    },
+}
+
+# A no-arg tool: Anthropic streams an empty ``input_json_delta`` for these,
+# and the pipeline must accept the empty input as ``{}``.
+_NO_ARG_TOOL = {
+    "name": "get_my_balance",
+    "description": "Get the calling user's current balance. Takes no arguments.",
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
     },
 }
 
@@ -86,33 +98,57 @@ def _rebuild_assistant_blocks(
 
 class TestAnthropic:
     @pytest.mark.parametrize(
-        "thinking", [None, _THINKING], ids=["no-thinking", "thinking"]
+        ("tool", "content", "thinking"),
+        [
+            pytest.param(
+                _WEATHER_TOOL,
+                "What is the weather in Bangalore? Use the get_weather tool.",
+                None,
+                id="arg-tool-no-thinking",
+            ),
+            pytest.param(
+                _WEATHER_TOOL,
+                "What is the weather in Bangalore? Use the get_weather tool.",
+                _THINKING,
+                id="arg-tool-thinking",
+            ),
+            pytest.param(
+                _NO_ARG_TOOL,
+                "Call get_my_balance.",
+                None,
+                id="no-arg-tool",
+            ),
+        ],
     )
-    async def test_stream(self, thinking: dict | None) -> None:
-        """Stream a forced tool call and continue with the tool result.
+    async def test_stream(
+        self, tool: dict, content: str, thinking: dict | None
+    ) -> None:
+        """Stream a forced tool call, parse it through the real pipeline, and
+        continue with the tool result.
 
-        With ``thinking`` enabled, the model streams an extended-thinking
-        block before the tool_use, shifting the tool_use (and its input
-        deltas) to a higher content-block index.  The assistant message must
-        be rebuilt from the streamed blocks exactly, and the follow-up
-        request must be accepted by the API — this is the request shape that
-        failed with a 400 on ``tool_use.id`` when an empty id leaked into
-        the persisted history.
+        Covers the request shapes that broke in production:
+
+        * With ``thinking`` enabled, the model streams an extended-thinking
+          block before the tool_use, shifting the tool_use (and its input
+          deltas) to a higher content-block index.  The assistant message
+          must be rebuilt from the streamed blocks exactly, or tool input
+          deltas land on a synthetic ``tool_use`` with an empty id that the
+          API rejects (400 ``tool_use.id``).
+        * No-arg tools stream an empty ``input_json_delta``; the pipeline's
+          ``parse_tool_call_inputs`` must accept that as ``{}`` rather than
+          failing with "Invalid JSON in tool input".
+
+        The follow-up request must be accepted by the API in all cases.
         """
         provider = AnthropicProvider(api_key=API_KEY, model=MODEL)
-        messages: list[MessageParam] = [
-            {
-                "role": "user",
-                "content": "What is the weather in Bangalore? Use the get_weather tool.",
-            }
-        ]
+        messages: list[MessageParam] = [{"role": "user", "content": content}]
 
         events = [
             e
             async for e in provider.stream_response(
                 prompt="",
                 messages=messages,
-                tools=[_WEATHER_TOOL],
+                tools=[tool],
                 max_tokens=_MAX_TOKENS,
                 thinking=thinking,
             )
@@ -126,15 +162,26 @@ class TestAnthropic:
                 "Expected a thinking block with a signature "
                 "(thinking was enabled but no thinking block was streamed)"
             )
-        assert tool_use_id is not None, "Model did not call get_weather"
+        assert tool_use_id is not None, f"Model did not call {tool['name']}"
         assert re.fullmatch(
             r"[a-zA-Z0-9_-]+", tool_use_id
         ), f"Invalid tool_use id: {tool_use_id!r}"
 
-        # The API streams tool input as partial JSON; the pipeline persists
-        # it as a parsed object, which is what the follow-up request sends.
-        tool_block = next(b for b in assistant_blocks if b["type"] == "tool_use")
-        tool_block["input"] = json.loads(tool_block["input"])
+        # Run the rebuilt tool_use blocks through the real pipeline parser —
+        # this is what broke for no-arg tools (empty input) and, with
+        # thinking, what used to receive a synthetic empty-id block.  It
+        # mutates the blocks in place, so the continuation below sends the
+        # parsed input object.
+        from typing import cast
+
+        tool_use_blocks = cast(
+            list[ToolUseBlockParam],
+            [b for b in assistant_blocks if b["type"] == "tool_use"],
+        )
+        parse_errors = parse_tool_call_inputs(tool_use_blocks)
+        assert (
+            parse_errors == []
+        ), f"parse_tool_call_inputs rejected valid tool call: {parse_errors}"
 
         # Continuation with the tool_result — must be accepted by the API.
         continuation: list[MessageParam] = [
@@ -156,7 +203,7 @@ class TestAnthropic:
             async for e in provider.stream_response(
                 prompt="",
                 messages=continuation,
-                tools=[_WEATHER_TOOL],
+                tools=[tool],
                 max_tokens=_MAX_TOKENS,
                 thinking=thinking,
             )
