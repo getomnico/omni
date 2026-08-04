@@ -16,6 +16,10 @@ Deployments that predate the UI setting can still set `WINDSHIFT_BASE_URL` (and
 optionally `WINDSHIFT_INTERNAL_BASE_URL`) as a fallback; the UI setting wins
 when both are present. If Windshift uses a context path, include it in the URL.
 
+Saved URLs are validated against SSRF (same policy as remote MCP sources):
+only http(s), no credentials/fragments, and the resolved address must be
+publicly routable — loopback and private-network addresses are rejected.
+
 Browser authorization, resource binding, and document links always use the
 public Windshift URL; server-side client registration, token exchange,
 user-info, sync, and MCP requests use the internal route when one is set.

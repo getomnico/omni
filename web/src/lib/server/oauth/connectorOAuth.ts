@@ -187,8 +187,11 @@ async function loadClientCreds(
     return null
 }
 
-function isRemoteMcpProvider(provider: string): boolean {
-    return provider.startsWith('remote_mcp:')
+/// Providers whose OAuth endpoints are admin-configured URLs (remote MCP
+/// servers, Windshift). Server-side fetches to these endpoints must go
+/// through SSRF validation and pinned-DNS resolution.
+function isAdminConfiguredEndpointProvider(provider: string): boolean {
+    return provider.startsWith('remote_mcp:') || provider === 'windshift'
 }
 
 async function remoteMcpCredentialFetch(
@@ -196,7 +199,7 @@ async function remoteMcpCredentialFetch(
     endpoint: string,
     init: RequestInit,
 ): Promise<Response> {
-    if (!isRemoteMcpProvider(provider)) {
+    if (!isAdminConfiguredEndpointProvider(provider)) {
         return fetch(endpoint, {
             ...init,
             signal: init.signal ?? AbortSignal.timeout(20_000),
@@ -222,7 +225,7 @@ async function readLimitedResponseText(response: Response): Promise<string> {
 }
 
 async function readCredentialJson(provider: string, response: Response): Promise<unknown> {
-    if (isRemoteMcpProvider(provider)) return readRemoteMcpLimitedJson(response)
+    if (isAdminConfiguredEndpointProvider(provider)) return readRemoteMcpLimitedJson(response)
     const text = await readLimitedResponseText(response)
     return text.trim() ? JSON.parse(text) : {}
 }
@@ -232,7 +235,7 @@ async function readCredentialText(_provider: string, response: Response): Promis
 }
 
 async function validateRemoteMcpOAuthConfigUrls(config: OAuthManifestConfig): Promise<void> {
-    if (!isRemoteMcpProvider(config.provider)) return
+    if (!isAdminConfiguredEndpointProvider(config.provider)) return
     await validateRemoteMcpUrlForCredentialUse(config.auth_endpoint)
     await validateRemoteMcpUrlForCredentialUse(config.token_endpoint)
     await validateRemoteMcpUrlForCredentialUse(config.userinfo_endpoint)
@@ -679,7 +682,7 @@ export async function exchangeCodeAndIdentify(
 
     await validateRemoteMcpOAuthConfigUrls(config)
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
-    if (isRemoteMcpProvider(config.provider)) {
+    if (isAdminConfiguredEndpointProvider(config.provider)) {
         await validateRemoteMcpUrlForCredentialUse(tokenEndpoint)
     }
     logger.info('Starting connector OAuth token exchange', {

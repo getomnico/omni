@@ -73,7 +73,16 @@
             })
 
             if (!response.ok) {
-                throw new Error('Failed to save Windshift server configuration')
+                let message = 'Failed to save Windshift server configuration'
+                try {
+                    const body = await response.json()
+                    if (typeof body?.message === 'string' && body.message) {
+                        message = body.message
+                    }
+                } catch {
+                    // Non-JSON error body; keep the generic message
+                }
+                throw new Error(message)
             }
 
             toast.success('Windshift server configuration saved')
@@ -139,6 +148,11 @@
                     route when set.
                 </p>
             </div>
+
+            <p class="text-muted-foreground text-xs">
+                URLs are validated against SSRF: only publicly routable http(s) addresses are
+                accepted. Loopback and private-network addresses are rejected.
+            </p>
         </div>
 
         <Dialog.Footer>
