@@ -29,6 +29,28 @@ _WEATHER_TOOL = {
     },
 }
 
+# Mirrors a connector action schema (e.g. darwinbox) that declares
+# `additionalProperties: false`. The genai SDK serializes that key as the
+# snake_case `additional_properties`, which the Gemini API rejects with a 400
+# INVALID_ARGUMENT — the provider must strip it before sending. Keeping it in
+# the live round trip guards that path end-to-end: if sanitization regresses,
+# this request 400s before a single event streams.
+_DARWINBOX_STYLE_TOOL = {
+    "name": "darwinbox__get_attendance",
+    "description": "Get attendance for the calling employee.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "from_date": {"type": "string"},
+            "to_date": {"type": "string"},
+            "month": {"type": "string"},
+        },
+        "additionalProperties": False,
+    },
+}
+
+_TOOLS = [_WEATHER_TOOL, _DARWINBOX_STYLE_TOOL]
+
 
 class TestGemini:
     async def test_stream(self) -> None:
@@ -39,6 +61,10 @@ class TestGemini:
         ``_gemini_thought_signature`` sidecar on the ``tool_use`` block,
         which must survive the rebuild and round trip.  The follow-up
         request must be accepted by the API.
+
+        The tool list also includes a darwinbox-style schema with
+        ``additionalProperties: false`` (see ``_DARWINBOX_STYLE_TOOL``) to
+        guard the provider's schema sanitization against the real API.
         """
         provider = GeminiProvider(api_key=API_KEY, model=MODEL)
         messages: list[MessageParam] = [
@@ -53,7 +79,7 @@ class TestGemini:
             async for e in provider.stream_response(
                 prompt="",
                 messages=messages,
-                tools=[_WEATHER_TOOL],
+                tools=_TOOLS,
                 max_tokens=512,
             )
         ]
@@ -121,7 +147,7 @@ class TestGemini:
             async for e in provider.stream_response(
                 prompt="",
                 messages=continuation,
-                tools=[_WEATHER_TOOL],
+                tools=_TOOLS,
                 max_tokens=512,
             )
         ]
