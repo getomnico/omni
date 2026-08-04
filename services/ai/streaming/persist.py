@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, NotRequired, TypedDict, cast
 
 from anthropic.types import (
+    ContentBlockParam,
     MessageParam,
     TextBlockParam,
     ToolResultBlockParam,
@@ -199,7 +200,7 @@ def approval_required_event(
 
 
 def partial_assistant_message(
-    content_blocks: list[TextBlockParam | ToolUseBlockParam],
+    content_blocks: list[ContentBlockParam],
 ) -> MessageParam | None:
     """Build a ``MessageParam`` from partial content blocks.
 
@@ -207,12 +208,18 @@ def partial_assistant_message(
     tool-use blocks), which lets the caller avoid emitting a ``save_message``
     event for a genuinely empty response.
     """
-    persisted_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+    persisted_blocks: list[ContentBlockParam] = []
     for block in content_blocks:
         if block["type"] == "text":
             text_block = cast(TextBlockParam, block)
             if text_block["text"].strip():
                 persisted_blocks.append(cast(TextBlockParam, dict(text_block)))
+            continue
+
+        if block["type"] in ("thinking", "redacted_thinking"):
+            # Extended-thinking blocks carry the signature Anthropic requires
+            # in later turns of a tool-use conversation; keep them.
+            persisted_blocks.append(cast(ContentBlockParam, dict(block)))
             continue
 
         tool_block = cast(ToolUseBlockParam, dict(block))

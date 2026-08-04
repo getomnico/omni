@@ -97,6 +97,8 @@ class AnthropicProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
+        thinking: dict[str, Any] | None = None,
+        output_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Anthropic Claude API."""
         try:
@@ -118,6 +120,12 @@ class AnthropicProvider(LLMProvider):
                 "max_tokens": max_tokens or 8192,
                 "stream": True,
             }
+
+            if thinking is not None:
+                request_params["thinking"] = thinking
+
+            if output_config is not None:
+                request_params["output_config"] = output_config
 
             # Add tools if provided
             if tools:

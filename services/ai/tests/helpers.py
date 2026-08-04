@@ -19,8 +19,11 @@ from anthropic.types import (
     RawMessageDeltaEvent,
     RawMessageStartEvent,
     RawMessageStopEvent,
+    SignatureDelta,
     TextBlock,
     TextDelta,
+    ThinkingBlock,
+    ThinkingDelta,
     ToolUseBlock,
     Usage,
 )
@@ -197,6 +200,67 @@ def tool_call_events(
         ),
     )
     yield RawContentBlockStopEvent(type="content_block_stop", index=0)
+    yield RawMessageDeltaEvent(
+        type="message_delta",
+        delta=Delta(stop_reason="tool_use", stop_sequence=None),
+        usage=MessageDeltaUsage(output_tokens=30),
+    )
+    yield RawMessageStopEvent(type="message_stop")
+
+
+def thinking_tool_call_events(
+    tool_call_json: dict[str, Any],
+    tool_name: str = "search_documents",
+    tool_id: str = "toolu_think",
+):
+    """Yield Anthropic SDK events simulating a tool_use turn on a model that
+    streams an extended-thinking block first.
+
+    Mirrors claude-sonnet-5: a ``thinking`` block occupies index 0 and the
+    tool_use (plus its ``input_json_delta``) live at index 1.  The stream
+    handler must account for the thinking block or the tool input deltas
+    land on a synthesized ``tool_use`` with an empty id (see the
+    ``tool_use.id`` 400 regression).
+    """
+    yield message_start_event()
+    yield RawContentBlockStartEvent(
+        type="content_block_start",
+        index=0,
+        content_block=ThinkingBlock(type="thinking", thinking="", signature=""),
+    )
+    yield RawContentBlockDeltaEvent(
+        type="content_block_delta",
+        index=0,
+        delta=ThinkingDelta(
+            type="thinking_delta", thinking="Let me reason about this..."
+        ),
+    )
+    # Anthropic streams the thinking signature in its own delta event.
+    yield RawContentBlockDeltaEvent(
+        type="content_block_delta",
+        index=0,
+        delta=SignatureDelta(type="signature_delta", signature="sig_test_abc"),
+    )
+    yield RawContentBlockStopEvent(type="content_block_stop", index=0)
+    yield RawContentBlockStartEvent(
+        type="content_block_start",
+        index=1,
+        content_block=ToolUseBlock(
+            type="tool_use",
+            id=tool_id,
+            name=tool_name,
+            input={},
+        ),
+    )
+    yield RawContentBlockDeltaEvent(
+        type="content_block_delta",
+        index=1,
+        delta=InputJSONDelta(
+            type="input_json_delta",
+            partial_json=json.dumps(tool_call_json),
+        ),
+    )
+    yield RawContentBlockStopEvent(type="content_block_stop", index=1)
     yield RawMessageDeltaEvent(
         type="message_delta",
         delta=Delta(stop_reason="tool_use", stop_sequence=None),
@@ -421,12 +485,10 @@ def assert_sse_wire(events: list[tuple[str | None, str, str | None]]) -> None:
     """
     seen_ids: list[str] = []
     for idx, (event_type, data, sse_id) in enumerate(events):
-        assert event_type is not None, (
-            f"Event {idx} is missing event: field. data={data!r}"
-        )
-        assert data is not None, (
-            f"Event {idx} (type={event_type}) has no data: line"
-        )
+        assert (
+            event_type is not None
+        ), f"Event {idx} is missing event: field. data={data!r}"
+        assert data is not None, f"Event {idx} (type={event_type}) has no data: line"
         if event_type == "heartbeat":
             # Heartbeats are synthetic and don't carry an id: line.
             continue
@@ -542,6 +604,15 @@ class GatedRecordingLLM:
                     await asyncio.sleep(self._inter_event_delay)
         elif kind == "tool_call":
             for event in tool_call_events(
+                payload["input"],
+                tool_name=payload.get("name", "search_documents"),
+                tool_id=payload.get("id", f"toolu_{call_idx}"),
+            ):
+                yield event
+                if self._inter_event_delay:
+                    await asyncio.sleep(self._inter_event_delay)
+        elif kind == "thinking_tool_call":
+            for event in thinking_tool_call_events(
                 payload["input"],
                 tool_name=payload.get("name", "search_documents"),
                 tool_id=payload.get("id", f"toolu_{call_idx}"),

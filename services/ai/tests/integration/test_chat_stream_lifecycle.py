@@ -90,15 +90,25 @@ def _build_chat_app(
     app = FastAPI()
     app.state = AppState()
     from provider_cache import ResolvedModel
+
     async def _resolve_for_model(mid: str):
         return ResolvedModel(provider=llm_provider, model_record_id=mid, model_name=mid)
+
     async def _resolve_default():
-        return ResolvedModel(provider=llm_provider, model_record_id=model_id, model_name=model_id)
+        return ResolvedModel(
+            provider=llm_provider, model_record_id=model_id, model_name=model_id
+        )
+
     async def _resolve_secondary_or_default():
-        return ResolvedModel(provider=llm_provider, model_record_id=model_id, model_name=model_id)
+        return ResolvedModel(
+            provider=llm_provider, model_record_id=model_id, model_name=model_id
+        )
+
     app.state.provider_cache.resolve_for_model = _resolve_for_model
     app.state.provider_cache.resolve_default = _resolve_default
-    app.state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
+    app.state.provider_cache.resolve_secondary_or_default = (
+        _resolve_secondary_or_default
+    )
     app.state.searcher_tool = SearcherTool()
     app.state.content_storage = None
     app.state.redis_client = redis_client
@@ -1690,6 +1700,94 @@ class TestMultiTurn:
             "No user message with tool_result found. " "Tool was not executed."
         )
 
+    @pytest.mark.asyncio
+    async def test_thinking_block_keeps_tool_use_index_aligned(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """claude-sonnet-5 streams an extended-thinking block before the
+        tool_use, shifting the tool_use (and its input deltas) to index 1.
+
+        Regression for the Anthropic 400 ``messages.1.content.1.tool_use.id``
+        failure: the stream handler must account for the thinking block, or
+        the tool input deltas land on a synthesized ``tool_use`` with an
+        empty id that gets persisted and replayed to the API.
+        """
+        chat_id, _user_id, model_id = seeded_chat
+
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "thinking_tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "leave balance"},
+                        "id": "toolu_think123",
+                    },
+                ),
+                ("text", "Here is your leave balance."),
+            ],
+            model_id,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            et in ("end_of_stream", "stream_error") for et, _, _ in events
+        ), "No terminal event"
+        assert not any(
+            et == "stream_error" for et, _, _ in events
+        ), f"Stream errored: {[e for e in events if e[0] == 'stream_error']}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert len(assistant_msgs) == 2, (
+            f"Expected 2 assistant msgs (tool turn + text turn), "
+            f"got {len(assistant_msgs)}"
+        )
+
+        # The tool turn must contain exactly one tool_use with the real id
+        # and full input — never a synthesized block with an empty id.
+        tool_turn = assistant_msgs[0]
+        tool_uses = [
+            b
+            for b in tool_turn.message.get("content", [])
+            if b.get("type") == "tool_use"
+        ]
+        assert len(tool_uses) == 1, f"Expected exactly 1 tool_use, got {tool_uses}"
+        assert tool_uses[0]["id"] == "toolu_think123", tool_uses[0]
+        assert tool_uses[0]["input"] == {"query": "leave balance"}, tool_uses[0]
+
+        # The thinking block (with its signature) is preserved so Anthropic
+        # can continue the extended-thinking tool-use turn on replay.
+        thinking_blocks = [
+            b
+            for b in tool_turn.message.get("content", [])
+            if b.get("type") == "thinking"
+        ]
+        assert (
+            len(thinking_blocks) == 1
+        ), f"Expected 1 thinking block, got {thinking_blocks}"
+        assert thinking_blocks[0]["signature"] == "sig_test_abc"
+
+        # The second LLM request's history must not contain an empty-id
+        # tool_use, and must still reference the original tool_use id.
+        second_call_messages = llm.calls[1]["messages"]
+        history_tool_uses = [
+            b
+            for m in second_call_messages
+            if isinstance(m.get("content"), list)
+            for b in m["content"]
+            if b.get("type") == "tool_use"
+        ]
+        assert all(
+            tu["id"] for tu in history_tool_uses
+        ), f"Found tool_use with empty id in request history: {history_tool_uses}"
+        assert any(
+            tu["id"] == "toolu_think123" for tu in history_tool_uses
+        ), f"Original tool_use id missing from request history: {history_tool_uses}"
+
 
 # =============================================================================
 # Approval and OAuth intervention resume
@@ -2547,9 +2645,13 @@ class TestStandaloneEndpoints:
 
         assert any(et == "end_of_stream" for et, _, _ in events)
         message_payloads = [
-            json.loads(data) for event_type, data, _ in events if event_type == "message"
+            json.loads(data)
+            for event_type, data, _ in events
+            if event_type == "message"
         ]
-        assert sum(payload["type"] == "message_start" for payload in message_payloads) == 1
+        assert (
+            sum(payload["type"] == "message_start" for payload in message_payloads) == 1
+        )
         assert len(llm.calls) == 2
         retry_messages = llm.calls[1]["messages"]
         assert retry_messages[-1] == {
@@ -2586,12 +2688,16 @@ class TestMentionExpansion:
     request.  Permission denials are handled gracefully.
     """
 
-    async def _cleanup_extra_rows(self, db_pool, source_id: str, content_id: str | None = None):
+    async def _cleanup_extra_rows(
+        self, db_pool, source_id: str, content_id: str | None = None
+    ):
         """Delete source (cascades to documents) and content_blobs before
         ``seeded_chat`` teardown deletes the user."""
         async with db_pool.acquire() as conn:
             if content_id:
-                await conn.execute("DELETE FROM content_blobs WHERE id = $1", content_id)
+                await conn.execute(
+                    "DELETE FROM content_blobs WHERE id = $1", content_id
+                )
             await conn.execute("DELETE FROM sources WHERE id = $1", source_id)
 
     @pytest.mark.asyncio
@@ -2612,21 +2718,31 @@ class TestMentionExpansion:
             await conn.execute(
                 "INSERT INTO sources (id, name, source_type, created_by) "
                 "VALUES ($1, $2, $3, $4)",
-                source_id, "test-source", "google_drive", user_id,
+                source_id,
+                "test-source",
+                "google_drive",
+                user_id,
             )
             content_bytes = document_text.encode("utf-8")
             await conn.execute(
                 "INSERT INTO content_blobs (id, content, size_bytes, storage_backend) "
                 "VALUES ($1, $2, $3, 'postgres')",
-                content_id, content_bytes, len(content_bytes),
+                content_id,
+                content_bytes,
+                len(content_bytes),
             )
             await conn.execute(
                 "INSERT INTO documents (id, source_id, external_id, title, content, "
                 "permissions, content_type, content_id) "
                 "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
-                doc_id, source_id, f"ext-{doc_id}", "Q3 Report", document_text,
+                doc_id,
+                source_id,
+                f"ext-{doc_id}",
+                "Q3 Report",
+                document_text,
                 json.dumps({"public": True, "users": [], "groups": []}),
-                "text/plain", content_id,
+                "text/plain",
+                content_id,
             )
 
         msgs = await MessagesRepository().get_active_path(chat_id)
@@ -2634,13 +2750,15 @@ class TestMentionExpansion:
         async with db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
-                json.dumps({
-                    "role": "user",
-                    "content": [
-                        _mention_block(doc_id, "Q3 Report"),
-                        {"type": "text", "text": "What were the key results?"},
-                    ],
-                }),
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": [
+                            _mention_block(doc_id, "Q3 Report"),
+                            {"type": "text", "text": "What were the key results?"},
+                        ],
+                    }
+                ),
                 user_msg.id,
             )
 
@@ -2656,10 +2774,14 @@ class TestMentionExpansion:
 
         try:
             terminal = [
-                (e[0], e[1]) for e in events if e[0] in ("end_of_stream", "stream_error")
+                (e[0], e[1])
+                for e in events
+                if e[0] in ("end_of_stream", "stream_error")
             ]
             assert terminal, "Expected a terminal event"
-            assert terminal[-1][0] == "end_of_stream", f"Unexpected terminal: {terminal[-1]}"
+            assert (
+                terminal[-1][0] == "end_of_stream"
+            ), f"Unexpected terminal: {terminal[-1]}"
 
             assert len(llm.calls) >= 1, "Expected at least 1 LLM call"
             provider_messages = llm.calls[0]["messages"]
@@ -2667,28 +2789,32 @@ class TestMentionExpansion:
             assert user_msgs, "Expected at least one user message in provider request"
             last_user = user_msgs[-1]
             content = last_user["content"]
-            assert isinstance(content, list), f"Expected list content, got {type(content)}"
+            assert isinstance(
+                content, list
+            ), f"Expected list content, got {type(content)}"
 
             text_blocks = [
                 b for b in content if isinstance(b, dict) and b.get("type") == "text"
             ]
             label_text = " ".join(b.get("text", "") for b in text_blocks)
-            assert 'Mentioned document: "Q3 Report"' in label_text, (
-                f"Mention label missing. Text blocks: {text_blocks}"
-            )
-            assert f"[_ref:{doc_id}]" in label_text, (
-                f"Document ref missing. Text blocks: {text_blocks}"
-            )
+            assert (
+                'Mentioned document: "Q3 Report"' in label_text
+            ), f"Mention label missing. Text blocks: {text_blocks}"
+            assert (
+                f"[_ref:{doc_id}]" in label_text
+            ), f"Document ref missing. Text blocks: {text_blocks}"
 
             doc_blocks = [
-                b for b in content if isinstance(b, dict) and b.get("type") == "document"
+                b
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "document"
             ]
             if doc_blocks:
                 src = doc_blocks[0].get("source", {})
                 if isinstance(src, dict) and src.get("type") == "text":
-                    assert document_text in src.get("data", ""), (
-                        "Document text not found in expanded document block"
-                    )
+                    assert document_text in src.get(
+                        "data", ""
+                    ), "Document text not found in expanded document block"
         finally:
             await self._cleanup_extra_rows(db_pool, source_id, content_id)
 
@@ -2707,18 +2833,27 @@ class TestMentionExpansion:
             await conn.execute(
                 "INSERT INTO sources (id, name, source_type, created_by) "
                 "VALUES ($1, $2, $3, $4)",
-                source_id, "test-source", "google_drive", user_id,
+                source_id,
+                "test-source",
+                "google_drive",
+                user_id,
             )
             await conn.execute(
                 "INSERT INTO documents (id, source_id, external_id, title, content, "
                 "permissions, content_type) "
                 "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
-                doc_id, source_id, f"ext-{doc_id}", "Confidential", "secret content",
-                json.dumps({
-                    "public": False,
-                    "users": ["someone-else@x.com"],
-                    "groups": [],
-                }),
+                doc_id,
+                source_id,
+                f"ext-{doc_id}",
+                "Confidential",
+                "secret content",
+                json.dumps(
+                    {
+                        "public": False,
+                        "users": ["someone-else@x.com"],
+                        "groups": [],
+                    }
+                ),
                 "text/plain",
             )
 
@@ -2727,13 +2862,15 @@ class TestMentionExpansion:
         async with db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
-                json.dumps({
-                    "role": "user",
-                    "content": [
-                        _mention_block(doc_id, "Confidential"),
-                        {"type": "text", "text": "Read this?"},
-                    ],
-                }),
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": [
+                            _mention_block(doc_id, "Confidential"),
+                            {"type": "text", "text": "Read this?"},
+                        ],
+                    }
+                ),
                 user_msg.id,
             )
 
@@ -2747,10 +2884,14 @@ class TestMentionExpansion:
 
         try:
             terminal = [
-                (e[0], e[1]) for e in events if e[0] in ("end_of_stream", "stream_error")
+                (e[0], e[1])
+                for e in events
+                if e[0] in ("end_of_stream", "stream_error")
             ]
             assert terminal, "Expected a terminal event"
-            assert terminal[-1][0] == "end_of_stream", f"Unexpected terminal: {terminal[-1]}"
+            assert (
+                terminal[-1][0] == "end_of_stream"
+            ), f"Unexpected terminal: {terminal[-1]}"
 
             assert len(llm.calls) >= 1, "Expected at least 1 LLM call"
             provider_messages = llm.calls[0]["messages"]
@@ -2791,21 +2932,31 @@ class TestMentionExpansion:
             await conn.execute(
                 "INSERT INTO sources (id, name, source_type, created_by) "
                 "VALUES ($1, $2, $3, $4)",
-                source_id, "test-source", "google_drive", user_id,
+                source_id,
+                "test-source",
+                "google_drive",
+                user_id,
             )
             content_bytes = document_text.encode("utf-8")
             await conn.execute(
                 "INSERT INTO content_blobs (id, content, size_bytes, storage_backend) "
                 "VALUES ($1, $2, $3, 'postgres')",
-                content_id, content_bytes, len(content_bytes),
+                content_id,
+                content_bytes,
+                len(content_bytes),
             )
             await conn.execute(
                 "INSERT INTO documents (id, source_id, external_id, title, content, "
                 "permissions, content_type, content_id) "
                 "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
-                doc_id, source_id, f"ext-{doc_id}", "Provider Doc", document_text,
+                doc_id,
+                source_id,
+                f"ext-{doc_id}",
+                "Provider Doc",
+                document_text,
                 json.dumps({"public": True, "users": [], "groups": []}),
-                "text/plain", content_id,
+                "text/plain",
+                content_id,
             )
 
         msgs = await MessagesRepository().get_active_path(chat_id)
@@ -2813,13 +2964,15 @@ class TestMentionExpansion:
         async with db_pool.acquire() as conn:
             await conn.execute(
                 "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
-                json.dumps({
-                    "role": "user",
-                    "content": [
-                        _mention_block(doc_id, "Provider Doc"),
-                        {"type": "text", "text": "Summarize."},
-                    ],
-                }),
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": [
+                            _mention_block(doc_id, "Provider Doc"),
+                            {"type": "text", "text": "Summarize."},
+                        ],
+                    }
+                ),
                 user_msg.id,
             )
 
@@ -2856,7 +3009,9 @@ class TestMentionExpansion:
             # content — either as plain text from a document block (which
             # ``extract_text_document`` converts) or directly in a text block.
             doc_blocks = [
-                b for b in content if isinstance(b, dict) and b.get("type") == "document"
+                b
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "document"
             ]
             all_text = label_text
             for db in doc_blocks:
