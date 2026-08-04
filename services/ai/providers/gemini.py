@@ -47,13 +47,63 @@ def _gemini_status_code(e: BaseException) -> int | None:
     return e.code if isinstance(e, APIError) else None
 
 
-def _gemini_context_overflow(e: BaseException) -> bool:
-    return isinstance(e, APIError) and e.code == 400 and "too many tokens" in str(e).lower()
-
-
 logger = logging.getLogger(__name__)
 
 THOUGHT_SIGNATURE_KEY = "_gemini_thought_signature"
+
+# Fields the Gemini Schema proto accepts and whose wire names match what the
+# genai SDK emits. The SDK validates `parameters` dicts into its `Schema` model
+# and serializes the request with model_dump()'s default by_alias=False, so any
+# Schema field whose Python name differs from its wire name (additionalProperties,
+# anyOf, minItems, ...) reaches the API in snake_case and is rejected with
+# "Unknown name \"additional_properties\" ... 400 INVALID_ARGUMENT". Connector
+# action schemas commonly declare `additionalProperties: false`, so we strip
+# every key outside this set before building FunctionDeclarations.
+_GEMINI_SCHEMA_SAFE_FIELDS = frozenset(
+    {
+        "type",
+        "format",
+        "description",
+        "nullable",
+        "enum",
+        "default",
+        "items",
+        "properties",
+        "required",
+        "minimum",
+        "maximum",
+        "example",
+        "pattern",
+        "title",
+        "ref",
+        "defs",
+    }
+)
+
+
+def _sanitize_schema_for_gemini(schema: Any) -> Any:
+    """Restrict a tool input_schema to keys Gemini's Schema proto can round-trip.
+
+    Recurses into ``properties`` (property names are preserved) and ``items``,
+    dropping JSON-Schema keywords the Gemini API does not accept and fields the
+    genai SDK serializes with snake_case names.
+    """
+    if isinstance(schema, dict):
+        sanitized: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key not in _GEMINI_SCHEMA_SAFE_FIELDS:
+                continue
+            if key == "properties" and isinstance(value, dict):
+                sanitized[key] = {
+                    name: _sanitize_schema_for_gemini(prop_schema)
+                    for name, prop_schema in value.items()
+                }
+            else:
+                sanitized[key] = _sanitize_schema_for_gemini(value)
+        return sanitized
+    if isinstance(schema, list):
+        return [_sanitize_schema_for_gemini(item) for item in schema]
+    return schema
 
 
 def _convert_tools_to_gemini(tools: list[dict[str, Any]]) -> list[types.Tool]:
@@ -64,7 +114,7 @@ def _convert_tools_to_gemini(tools: list[dict[str, Any]]) -> list[types.Tool]:
             types.FunctionDeclaration(
                 name=tool["name"],
                 description=tool.get("description", ""),
-                parameters=tool.get("input_schema"),
+                parameters=_sanitize_schema_for_gemini(tool.get("input_schema")),
             )
         )
     return [types.Tool(function_declarations=declarations)]
@@ -237,7 +287,9 @@ class GeminiProvider(LLMProvider):
                 )
                 return self._context_window_info
         except Exception as e:
-            logger.debug("Failed to fetch Gemini model metadata for %s: %s", self.model, e)
+            logger.debug(
+                "Failed to fetch Gemini model metadata for %s: %s", self.model, e
+            )
         self._context_window_info = await super().get_context_window_tokens()
         return self._context_window_info
 
@@ -408,7 +460,6 @@ class GeminiProvider(LLMProvider):
                 model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
-                is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
     async def generate_response(
@@ -453,7 +504,6 @@ class GeminiProvider(LLMProvider):
                 model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
-                is_context_overflow=_gemini_context_overflow(e),
             ) from e
 
     async def health_check(
