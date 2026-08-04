@@ -889,11 +889,28 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
         "id",
         "employee_id",
         "employee_no",
+        "employee_name",
         "leave_id",
         "leave_name",
         "leave_type",
+        "leave_code",
         "balance",
         "available_balance",
+        // Darwinbox's leave-balance envelope uses its own (misspelled) key for
+        // the current balance; without it the sanitizer would drop the actual
+        // balance count and leave only the leave names. Keep the correctly
+        // spelled variant too in case the provider fixes the typo upstream.
+        "currently_availabel_balance",
+        "currently_available_balance",
+        "accrued_so_far_this_year",
+        "previous_balance",
+        "adjustment_balance",
+        "yearly_allotment",
+        "taken",
+        "utilized_leaves_this_year",
+        "already_taken",
+        "applied_unpaid",
+        "system_unpaid",
         "from",
         "to",
         "from_date",
@@ -1490,6 +1507,74 @@ mod tests {
         assert!(!serialized.contains("SECRET"));
         assert!(!serialized.contains("salary"));
         assert!(!serialized.contains("bank_account"));
+    }
+
+    #[test]
+    fn response_projection_keeps_leave_balance_counts() {
+        // Darwinbox's real leavebalance payload: the current balance lives
+        // under `currently_availabel_balance` (provider typo). It must survive
+        // projection so the agent can report actual counts, not "Not specified".
+        let projected = sanitize_action_response(
+            "get_my_leave_balance",
+            json!({
+                "status": 1,
+                "message": "Successfully Loaded All Leaves Balance",
+                "data": [
+                    {
+                        "employee_name": "Dummy1 Test2",
+                        "employee_no": "WWITest2",
+                        "leave_id": "5fb371d07bbb2",
+                        "leave_name": "Bereavement/ Compassionate Leave",
+                        "currently_availabel_balance": 7,
+                        "accrued_so_far_this_year": 10,
+                        "previous_balance": 0,
+                        "adjustment_balance": 0,
+                        "yearly_allotment": 10,
+                        "taken": 3,
+                        "utilized_leaves_this_year": 3,
+                        "is_hidden": 0,
+                        "leave_code": "LPVY_14",
+                        "bank_account": "SECRET-BANK"
+                    },
+                    {
+                        "employee_no": "WWITest2",
+                        "leave_name": "Unpaid",
+                        "leave_code": "UVPY_2",
+                        "already_taken": 0,
+                        "applied_unpaid": 0,
+                        "system_unpaid": 0
+                    }
+                ]
+            }),
+            false,
+        );
+        let item = &projected["data"][0];
+        assert_eq!(item["currently_availabel_balance"], json!(7));
+        assert_eq!(item["accrued_so_far_this_year"], json!(10));
+        assert_eq!(item["yearly_allotment"], json!(10));
+        assert_eq!(item["taken"], json!(3));
+        assert_eq!(item["leave_code"], json!("LPVY_14"));
+        assert_eq!(item["employee_name"], json!("Dummy1 Test2"));
+        assert!(item.get("bank_account").is_none());
+        assert!(item.get("is_hidden").is_none());
+        // Correctly spelled variant survives too, should the provider fix the typo.
+        let spelled = sanitize_action_response(
+            "get_my_leave_balance",
+            json!({
+                "data": [{
+                    "employee_no": "WWITest2",
+                    "leave_name": "Privileged Leave",
+                    "currently_available_balance": 12
+                }]
+            }),
+            false,
+        );
+        assert_eq!(spelled["data"][0]["currently_available_balance"], json!(12));
+        let unpaid = &projected["data"][1];
+        assert_eq!(unpaid["already_taken"], json!(0));
+        assert_eq!(unpaid["applied_unpaid"], json!(0));
+        assert_eq!(unpaid["system_unpaid"], json!(0));
+        assert!(unpaid.get("currently_availabel_balance").is_none());
     }
 
     #[tokio::test]
