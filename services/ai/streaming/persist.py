@@ -138,6 +138,20 @@ def stream_error_sse(exc: Exception) -> str:
     return sse_event("stream_error", _chat_error_payload(exc))
 
 
+def save_error_sse(exc: Exception, partial_message: MessageParam | None = None) -> str:
+    """Build the internal ``save_error`` event that persists a failed turn.
+
+    ``partial_message`` carries any assistant content streamed before the
+    failure; ``persist_and_transform`` writes it together with the error so the
+    failed turn keeps its partial output. The event is consumed server-side and
+    never forwarded to the browser.
+    """
+    payload: dict[str, Any] = {"error": _chat_error_payload(exc)}
+    if partial_message is not None:
+        payload["message"] = partial_message
+    return sse_event("save_error", payload)
+
+
 def end_of_stream(reason: EndOfStreamReason, *, message: str | None = None) -> str:
     """Build a typed ``end_of_stream`` SSE event string."""
     payload: EndOfStreamEvent = {"reason": reason}
@@ -377,6 +391,47 @@ async def persist_and_transform(gen, chat_id, messages_repo, parent_id):
             except Exception as e:
                 logger.error(
                     f"Failed to persist streamed message for chat {chat_id}: {e}",
+                    exc_info=True,
+                )
+            continue
+
+        if event_type == "save_error":
+            try:
+                payload = json.loads(event_data)
+                error = payload.get("error")
+                partial = payload.get("message")
+                if current_assistant_message_id:
+                    # The turn started streaming (message_start) before it
+                    # failed: finalize that same row atomically with any partial
+                    # content plus the error, so it is never deleted by the
+                    # generator-end cleanup below.
+                    if partial is not None:
+                        await messages_repo.finalize_error(
+                            current_assistant_message_id, partial, error
+                        )
+                    else:
+                        await messages_repo.update_error(
+                            current_assistant_message_id, error
+                        )
+                    current_assistant_message_id = None
+                else:
+                    # The run failed before any message_start (e.g. during
+                    # conversation prep): persist the failed turn as a new
+                    # assistant error row under the current parent.
+                    content = (
+                        partial.get("content", []) if partial is not None else []
+                    )
+                    created = await messages_repo.create(
+                        chat_id,
+                        {"role": "assistant", "content": content},
+                        parent_id=parent_id,
+                        error=error,
+                    )
+                    parent_id = created.id
+                    yield f"event: message_id\ndata: {created.id}\n\n"
+            except Exception as e:
+                logger.error(
+                    f"Failed to persist stream error for chat {chat_id}: {e}",
                     exc_info=True,
                 )
             continue
