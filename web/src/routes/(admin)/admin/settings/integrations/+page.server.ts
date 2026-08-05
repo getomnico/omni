@@ -137,6 +137,8 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
     let windshiftRegistered = false
     let windshiftManifestBaseUrl: string | null = null
 
+    let connectors: ConnectorInfo[] = []
+
     try {
         const [connectorsResponse, sourcesResponse] = await Promise.all([
             fetch(`${config.services.connectorManagerUrl}/connectors`),
@@ -155,7 +157,7 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
         }
 
         if (connectorsResponse.ok) {
-            const connectors: ConnectorInfo[] = await connectorsResponse.json()
+            connectors = await connectorsResponse.json()
 
             // Group by connector_id to build integration list
             const integrationMap = new Map<
@@ -270,18 +272,11 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             mcpTab.sources = await sourceResponse.json()
         }
 
-        const connectorsResponse = await fetch(`${config.services.connectorManagerUrl}/connectors`)
-        if (connectorsResponse.ok) {
-            const connectors: {
-                source_type: string
-                manifest?: { integration_type?: string; actions?: unknown[]; resources?: unknown[] }
-            }[] = await connectorsResponse.json()
-            for (const c of connectors) {
-                if (c.manifest?.integration_type === IntegrationType.REMOTE_MCP) {
-                    mcpTab.manifestBySourceType[c.source_type] = {
-                        toolCount: c.manifest.actions?.length ?? 0,
-                        resourceCount: c.manifest.resources?.length ?? 0,
-                    }
+        for (const c of connectors) {
+            if (c.manifest?.integration_type === IntegrationType.REMOTE_MCP) {
+                mcpTab.manifestBySourceType[c.source_type] = {
+                    toolCount: c.manifest.actions?.length ?? 0,
+                    resourceCount: c.manifest.resources?.length ?? 0,
                 }
             }
         }
