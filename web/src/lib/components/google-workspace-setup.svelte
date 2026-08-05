@@ -54,52 +54,11 @@
     let validationAbort: AbortController | null = null
     let validationGeneration = $state(0)
 
-    // Credential-context guard: clear selected folder filters whenever the
-    // credential inputs change after initialization so filters from one set
-    // of credentials cannot be silently submitted with another.
-    let prevCredContext = $state('')
-    let credInitialized = $state(false)
-
-    $effect(() => {
-        const token = JSON.stringify({
-            sa: serviceAccountJson,
-            pe: principalEmail,
-            dm: domain,
-        })
-        if (!credInitialized) {
-            credInitialized = true
-            prevCredContext = token
-            return
-        }
-        if (token !== prevCredContext) {
-            prevCredContext = token
-            driveFolderFilters = []
-        }
-    })
-
-    // SA-direct: when the SA key changes, the selector clears its own
-    // selection (its credential context includes the key). Re-run access
-    // validation whenever the key or selected drives change; if inputs become
-    // empty/invalid, invalidate any in-flight validation so stale results
-    // from a previous key can't land.
-    $effect(() => {
-        if (activeTab !== 'service_account_direct') return
-        if (!saServiceAccountJson.trim() || saDriveFilters.length === 0) {
-            // Invalidate and cancel any in-flight validation so stale results
-            // from a previous key can't land.
-            validationGeneration += 1
-            validationAbort?.abort()
-            validationAbort = null
-            accessValidation = {}
-            isSubmitting = false
-            return
-        }
-        validateAccess(saServiceAccountJson, saDriveFilters)
-    })
-
-    // Switch to SA-direct tab: force Drive-only. activeTab itself is kept in
-    // sync by the Tabs.Root bind:value, so this only applies side effects.
+    // Switch to SA-direct tab: force Drive-only. The tab value itself is
+    // kept in sync by Tabs.Root's bind:value, so this only applies side
+    // effects.
     function selectTab(tab: GoogleAuthMode) {
+        console.log('[google-setup] selectTab', tab)
         if (tab === 'service_account_direct') {
             connectDrive = true
             connectGmail = false
@@ -107,7 +66,31 @@
         }
     }
 
+    // Event-driven SA-direct access validation. The drive selector reports
+    // every selection change (add/remove/credential-context clear) via
+    // onSelectedChange; validation runs only when both a key and drives are
+    // present, and is invalidated otherwise.
+    function handleSaSelectionChange(filters: FolderPathFilter[]) {
+        console.log(
+            '[google-setup] saSelectionChange',
+            filters.map((f) => f.driveId),
+        )
+        if (saServiceAccountJson.trim() && filters.length > 0) {
+            validateAccess(saServiceAccountJson, filters)
+        } else {
+            // Invalidate and cancel any in-flight validation so stale results
+            // from a previous key/selection can't land.
+            validationGeneration += 1
+            validationAbort?.abort()
+            validationAbort = null
+            accessValidation = {}
+            isValidating = false
+            isSubmitting = false
+        }
+    }
+
     async function validateAccess(saJson: string, filters: FolderPathFilter[]) {
+        console.log('[google-setup] validateAccess start', filters.length)
         const generation = ++validationGeneration
         validationAbort?.abort()
         const controller = new AbortController()
@@ -577,21 +560,15 @@
                 {/if}
 
                 <Card.Root class="border-dashed">
-                    <Card.Header>
-                        <Card.Title class="text-sm">Shared Drives to Index</Card.Title>
-                        <Card.Description class="text-xs">
-                            Select one or more shared drives to index in full. At least one is
-                            required.
-                        </Card.Description>
-                    </Card.Header>
-                    <Card.Content class="space-y-3">
+                    <Card.Content class="space-y-3 pt-4">
                         <GoogleDriveFolderSelector
                             bind:selected={saDriveFilters}
                             serviceAccountJson={saServiceAccountJson}
                             authMode="service_account_direct"
                             label="Shared drives to index"
-                            description="Search and select shared drives. Only whole drives are supported in this mode."
-                            disabled={!saServiceAccountJson.trim()} />
+                            description="Search and select shared drives to index in full. Only whole drives are supported in this mode, and at least one is required."
+                            disabled={!saServiceAccountJson.trim()}
+                            onSelectedChange={handleSaSelectionChange} />
                     </Card.Content>
                 </Card.Root>
 

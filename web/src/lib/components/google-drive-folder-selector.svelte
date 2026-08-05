@@ -18,6 +18,7 @@
         disabled = false,
         label = 'Folders to index',
         description = 'Select specific shared drives or top-level folders to index. Leave empty to index everything.',
+        onSelectedChange = undefined as ((selected: FolderPathFilter[]) => void) | undefined,
     }: {
         sourceId?: string
         serviceAccountJson?: string
@@ -28,6 +29,7 @@
         disabled?: boolean
         label?: string
         description?: string
+        onSelectedChange?: (selected: FolderPathFilter[]) => void
     } = $props()
 
     const isSaDirect = $derived(authMode === 'service_account_direct')
@@ -101,6 +103,7 @@
         // after initialization. On initial mount, pre-loaded selected items
         // from persisted config are preserved.
         selected = []
+        onSelectedChange?.(selected)
 
         // Reset discovery state.
         searchQuery = ''
@@ -284,6 +287,7 @@
                 kind: item.kind === 'folder' ? 'folder' : 'shared_drive_root',
             },
         ]
+        onSelectedChange?.(selected)
         searchQuery = ''
         showDropdown = false
         filteredItems = allItems
@@ -292,6 +296,7 @@
 
     function removeItem(id: string) {
         selected = selected.filter((s) => s.id !== id)
+        onSelectedChange?.(selected)
     }
 
     function handleRetry() {
