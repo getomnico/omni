@@ -346,49 +346,34 @@
                     <div class="space-y-4">
                         <Alert.Root variant="default">
                             <Info class="h-4 w-4" />
-                            <Alert.Title>Service account direct — shared drive sync</Alert.Title>
+                            <Alert.Title>Shared drive sync</Alert.Title>
                             <Alert.Description>
                                 This source syncs selected shared drives as the service account
-                                itself. No user impersonation, no domain-wide delegation, no admin
-                                email/domain. ACLs come from each drive's members.
+                                itself. Permissions come from each drive's members.
                             </Alert.Description>
                         </Alert.Root>
 
-                        <div>
-                            <h3 class="text-sm font-medium">Connection Settings</h3>
-                            <p class="text-muted-foreground text-xs">
-                                Service account credentials used to authenticate as the service
-                                account itself (drive.readonly only).
-                            </p>
-                        </div>
                         <GoogleServiceAccountForm
                             bind:serviceAccountJson
                             mode="sa-direct"
-                            hasStoredKey={data.hasStoredKey} />
+                            hasStoredKey={data.hasStoredKey}
+                            showSaDirectInfo={false} />
 
-                        <div class="space-y-4 border-t pt-6">
-                            <GoogleDriveFolderSelector
-                                bind:selected={folderFilters}
-                                sourceId={data.source.id}
-                                {serviceAccountJson}
-                                authMode="service_account_direct"
-                                label="Shared Drives to Index"
-                                description="Select one or more whole shared drives to index. Add the service account to each drive as Content manager or Manager. Only whole shared drives are supported in this mode."
-                                disabled={!enabled} />
-                            <input
-                                type="hidden"
-                                name="folder_path_filters"
-                                value={JSON.stringify(folderFilters)} />
-                        </div>
+                        <GoogleDriveFolderSelector
+                            bind:selected={folderFilters}
+                            sourceId={data.source.id}
+                            {serviceAccountJson}
+                            authMode="service_account_direct"
+                            label="Shared Drives to Index"
+                            description="Select one or more whole shared drives to index."
+                            disabled={!enabled} />
+                        <input
+                            type="hidden"
+                            name="folder_path_filters"
+                            value={JSON.stringify(folderFilters)} />
                     </div>
                 {:else}
                     <div class="space-y-4">
-                        <div>
-                            <h3 class="text-sm font-medium">Connection Settings</h3>
-                            <p class="text-muted-foreground text-xs">
-                                Service account credentials used to impersonate Workspace users.
-                            </p>
-                        </div>
                         <GoogleServiceAccountForm
                             bind:serviceAccountJson
                             bind:principalEmail

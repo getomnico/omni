@@ -560,7 +560,7 @@
                 {/if}
 
                 <Card.Root class="border-dashed">
-                    <Card.Content class="space-y-3 pt-4">
+                    <Card.Content class="space-y-3">
                         <GoogleDriveFolderSelector
                             bind:selected={saDriveFilters}
                             serviceAccountJson={saServiceAccountJson}

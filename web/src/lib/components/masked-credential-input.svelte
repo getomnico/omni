@@ -29,7 +29,7 @@
 
     let replacing = $state(!hasStoredValue)
 
-    const maskedPlaceholder = '•••••••• (leave empty to keep current)'
+    const maskedPlaceholder = '••••••••••••••••'
 
     function startReplace() {
         replacing = true
