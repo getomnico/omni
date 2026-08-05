@@ -8,12 +8,11 @@
     interface Props {
         open: boolean
         baseUrl?: string
-        internalBaseUrl?: string
         onSuccess?: () => void
         onCancel?: () => void
     }
 
-    let { open = false, baseUrl = '', internalBaseUrl = '', onSuccess, onCancel }: Props = $props()
+    let { open = false, baseUrl = '', onSuccess, onCancel }: Props = $props()
 
     let isSubmitting = $state(false)
 
@@ -52,14 +51,6 @@
                 throw new Error(baseUrlError)
             }
 
-            const trimmedInternalBaseUrl = normalizeBaseUrl(internalBaseUrl)
-            if (trimmedInternalBaseUrl) {
-                const internalUrlError = validateBaseUrl(trimmedInternalBaseUrl)
-                if (internalUrlError) {
-                    throw new Error(internalUrlError)
-                }
-            }
-
             const response = await fetch('/api/connector-configs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -67,7 +58,6 @@
                     provider: 'windshift',
                     config: {
                         base_url: trimmedBaseUrl,
-                        internal_base_url: trimmedInternalBaseUrl || null,
                     },
                 }),
             })
@@ -88,7 +78,6 @@
             toast.success('Windshift server configuration saved')
 
             baseUrl = ''
-            internalBaseUrl = ''
 
             if (onSuccess) {
                 onSuccess()
@@ -103,7 +92,6 @@
 
     function handleCancel() {
         baseUrl = ''
-        internalBaseUrl = ''
         if (onCancel) {
             onCancel()
         }
@@ -135,23 +123,12 @@
                 </p>
             </div>
 
-            <div class="space-y-2">
-                <Label for="windshift-internal-url">Internal URL (optional)</Label>
-                <Input
-                    id="windshift-internal-url"
-                    bind:value={internalBaseUrl}
-                    placeholder="http://windshift:8080" />
-                <p class="text-muted-foreground text-sm">
-                    Optional connector-only route to the same Windshift instance, for local or
-                    private networking. OAuth URLs and token audience still use the Windshift URL
-                    above; server-side registration, token exchange, sync, and MCP requests use this
-                    route when set.
-                </p>
-            </div>
-
             <p class="text-muted-foreground text-xs">
-                URLs are validated against SSRF: only publicly routable http(s) addresses are
-                accepted. Loopback and private-network addresses are rejected.
+                The URL is validated against SSRF: only publicly routable http(s) addresses are
+                accepted; loopback and private-network addresses are rejected. To route
+                server-to-server traffic (token exchange, sync, MCP) over a private network instead
+                of through this URL, set the WINDSHIFT_INTERNAL_BASE_URL environment variable on the
+                connector container.
             </p>
         </div>
 

@@ -52,17 +52,18 @@ function normalizedEnvUrl(name: string): string | undefined {
   return url.replace(/\/+$/, "");
 }
 
-// The Windshift server is an admin-managed setting: the base URLs are
+// The Windshift server is an admin-managed setting: the public base URL is
 // configured in the UI and stored in the connector_configs table (served to
-// us by connector-manager). The WINDSHIFT_BASE_URL / WINDSHIFT_INTERNAL_BASE_URL
-// env vars remain as a fallback for deployments that predate the UI setting.
+// us by connector-manager). The WINDSHIFT_BASE_URL env var remains as a
+// fallback for deployments that predate the UI setting. The optional
+// WINDSHIFT_INTERNAL_BASE_URL env var supplies a separate server-to-server
+// route on private networking and is intentionally env-only (not in the UI).
 //
 // The SDK re-registers our manifest every 30s, so once this cache is
 // populated the OAuth config the web layer reads reflects the UI setting
 // without a container restart.
 interface WindshiftServerConfig {
   base_url?: string;
-  internal_base_url?: string;
 }
 
 let windshiftServerConfig: WindshiftServerConfig | null = null;
@@ -76,13 +77,8 @@ function parseWindshiftServerConfig(value: unknown): WindshiftServerConfig {
   const record = value as Record<string, unknown>;
   const baseUrl =
     typeof record.base_url === "string" ? record.base_url.trim() : "";
-  const internalBaseUrl =
-    typeof record.internal_base_url === "string"
-      ? record.internal_base_url.trim()
-      : "";
   return {
     base_url: baseUrl || undefined,
-    internal_base_url: internalBaseUrl || undefined,
   };
 }
 
@@ -129,16 +125,14 @@ function windshiftPublicBaseUrl(): string | undefined {
 }
 
 function windshiftTransportBaseUrl(): string | undefined {
-  const config = windshiftServerConfig;
-  if (config?.internal_base_url) {
-    return config.internal_base_url.replace(/\/+$/, "");
+  // The internal route is env-only: it must win over the UI base URL so a
+  // stored public URL cannot silently defeat an operator-set private route.
+  const envInternal = normalizedEnvUrl("WINDSHIFT_INTERNAL_BASE_URL");
+  if (envInternal) return envInternal;
+  if (windshiftServerConfig?.base_url) {
+    return windshiftServerConfig.base_url.replace(/\/+$/, "");
   }
-  if (config?.base_url) {
-    return config.base_url.replace(/\/+$/, "");
-  }
-  return (
-    normalizedEnvUrl("WINDSHIFT_INTERNAL_BASE_URL") ?? windshiftPublicBaseUrl()
-  );
+  return normalizedEnvUrl("WINDSHIFT_BASE_URL");
 }
 
 function windshiftAccessToken(
@@ -258,6 +252,10 @@ export class WindshiftConnector extends Connector<
       scope_separator: " ",
       token_endpoint_auth_method: "none" as const,
       resource: `${publicBaseUrl}/mcp`,
+      // Explicit marker for the operator-configured private route. Only set
+      // when WINDSHIFT_INTERNAL_BASE_URL exists; when absent the transport
+      // endpoints derive from the public URL and must stay strictly public.
+      internal_base_url: normalizedEnvUrl("WINDSHIFT_INTERNAL_BASE_URL"),
     };
   }
 

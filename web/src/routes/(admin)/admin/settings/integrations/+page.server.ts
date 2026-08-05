@@ -133,7 +133,6 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
     const savedWindshiftConfig = savedOAuthConfigByProvider.get('windshift')
     const windshiftConfig = (savedWindshiftConfig?.config ?? {}) as {
         base_url?: string
-        internal_base_url?: string
     }
     let windshiftRegistered = false
     let windshiftManifestBaseUrl: string | null = null

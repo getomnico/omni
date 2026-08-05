@@ -297,6 +297,12 @@ variable "windshift_base_url" {
   default     = ""
 }
 
+variable "windshift_internal_base_url" {
+  description = "Optional private route to the Windshift server for server-to-server traffic (WINDSHIFT_INTERNAL_BASE_URL)"
+  type        = string
+  default     = ""
+}
+
 variable "sandbox_url" {
   description = "URL of the sandbox service for code execution"
   type        = string

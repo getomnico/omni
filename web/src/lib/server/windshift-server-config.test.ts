@@ -23,7 +23,7 @@ describe('validateWindshiftServerUrl', () => {
         ).resolves.toBeUndefined()
     })
 
-    it('rejects loopback and private addresses for the public URL (SSRF)', async () => {
+    it('rejects loopback and private addresses (SSRF)', async () => {
         await expect(
             validateWindshiftServerUrl('Windshift URL', 'http://127.0.0.1:8080'),
         ).rejects.toThrow('Windshift URL is not allowed')
@@ -33,44 +33,6 @@ describe('validateWindshiftServerUrl', () => {
         await expect(
             validateWindshiftServerUrl('Windshift URL', 'http://192.168.1.10:8080'),
         ).rejects.toThrow('Windshift URL is not allowed')
-    })
-
-    it('allows RFC1918 private addresses for the internal URL (allowPrivate)', async () => {
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', 'http://192.168.1.10:8080', {
-                allowPrivate: true,
-            }),
-        ).resolves.toBeUndefined()
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', 'http://10.0.0.5', {
-                allowPrivate: true,
-            }),
-        ).resolves.toBeUndefined()
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', 'http://172.20.0.5:8080', {
-                allowPrivate: true,
-            }),
-        ).resolves.toBeUndefined()
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', '', { allowPrivate: true }),
-        ).resolves.toBeUndefined()
-    })
-
-    it('still blocks loopback, metadata, and reserved addresses for the internal URL', async () => {
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', 'http://127.0.0.1:8080', {
-                allowPrivate: true,
-            }),
-        ).rejects.toThrow('Windshift internal URL is not allowed')
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', 'http://169.254.169.254/', {
-                allowPrivate: true,
-            }),
-        ).rejects.toThrow('Windshift internal URL is not allowed')
-        // Strict by default: private addresses still rejected without allowPrivate.
-        await expect(
-            validateWindshiftServerUrl('Windshift internal URL', 'http://192.168.1.10:8080'),
-        ).rejects.toThrow('Windshift internal URL is not allowed')
     })
 
     it('rejects credentials, fragments, and non-http schemes', async () => {

@@ -548,15 +548,6 @@
                                             {data.windshiftConfig.base_url}
                                         </code>
                                     </div>
-                                    {#if data.windshiftConfig.internal_base_url}
-                                        <div class="text-sm">
-                                            <span class="text-muted-foreground">Internal URL:</span>
-                                            <code
-                                                class="bg-muted ml-2 rounded px-1.5 py-0.5 text-xs break-all">
-                                                {data.windshiftConfig.internal_base_url}
-                                            </code>
-                                        </div>
-                                    {/if}
                                 {:else if data.windshiftEffectiveBaseUrl}
                                     <div class="text-sm">
                                         <span class="text-muted-foreground"
@@ -842,7 +833,6 @@
 <WindshiftServerSetup
     open={activeSetup === 'windshift'}
     baseUrl={data.windshiftConfig.base_url ?? ''}
-    internalBaseUrl={data.windshiftConfig.internal_base_url ?? ''}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

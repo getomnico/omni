@@ -36,27 +36,22 @@ export const POST: RequestHandler = async ({ locals, request }) => {
         nextConfig.oauth_client_secret = existingConfig.oauth_client_secret
     }
 
-    // Windshift base URLs are admin-entered and fetched by the server (OAuth
+    // Windshift's public URL is admin-entered and fetched by the server (OAuth
     // endpoints, MCP) — enforce the same SSRF policy as remote MCP sources.
+    // The internal route is env-only (WINDSHIFT_INTERNAL_BASE_URL); it is no
+    // longer UI/API-configurable, so reject it here and drop stale values.
     if (provider === 'windshift') {
+        const baseUrl = nextConfig.base_url
+        if (typeof baseUrl !== 'string' || !baseUrl.trim()) {
+            throw error(400, 'Windshift URL is required')
+        }
+        delete nextConfig.internal_base_url
         try {
-            await validateWindshiftServerUrl(
-                'Windshift URL',
-                typeof nextConfig.base_url === 'string' ? nextConfig.base_url : '',
-            )
-            await validateWindshiftServerUrl(
-                'Windshift internal URL',
-                typeof nextConfig.internal_base_url === 'string'
-                    ? nextConfig.internal_base_url
-                    : '',
-                // The internal URL is deliberately hosted on a private network
-                // (e.g. a docker service name) — allow RFC1918 destinations.
-                { allowPrivate: true },
-            )
+            await validateWindshiftServerUrl('Windshift URL', baseUrl)
         } catch (err) {
             throw error(
                 400,
-                err instanceof Error ? err.message : 'Windshift server URLs are not allowed',
+                err instanceof Error ? err.message : 'Windshift server URL is not allowed',
             )
         }
     }

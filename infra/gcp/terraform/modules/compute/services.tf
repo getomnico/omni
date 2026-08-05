@@ -63,7 +63,7 @@ locals {
     filesystem = { port = 4013, image = "omni-filesystem-connector", extra_env = {} }
     nextcloud  = { port = 4014, image = "omni-nextcloud-connector", extra_env = {} }
     paperless  = { port = 4015, image = "omni-paperless-connector", extra_env = {} }
-    windshift  = { port = 4018, image = "omni-windshift-connector", extra_env = { WINDSHIFT_BASE_URL = var.windshift_base_url } }
+    windshift  = { port = 4018, image = "omni-windshift-connector", extra_env = { WINDSHIFT_BASE_URL = var.windshift_base_url, WINDSHIFT_INTERNAL_BASE_URL = var.windshift_internal_base_url } }
   }
 
   simple_connectors = { for k, v in local.all_simple_connectors : k => v if contains(var.enabled_connectors, k) }
