@@ -5,15 +5,32 @@ Windshift's MCP tools as Omni actions.
 
 ## Configuration
 
-Set `WINDSHIFT_BASE_URL` to the externally reachable Windshift base URL. If
-Windshift uses a context path, include it in the URL. Enable Windshift's MCP
-server with `MCP_ENABLED=true`.
+Windshift is configured in the admin UI under **Settings > Integrations >
+Windshift server**: enter the externally reachable Windshift base URL. No env
+vars are required — the setting is stored in the `connector_configs` table and
+the connector reads it from connector-manager, so changes propagate without a
+container restart. Enable Windshift's MCP server with `MCP_ENABLED=true`.
 
-For local or private networking, `WINDSHIFT_INTERNAL_BASE_URL` may point the
-connector container at the same Windshift instance through a different route.
-Browser authorization, resource binding, and document links still use
-`WINDSHIFT_BASE_URL`; server-side client registration, token exchange, user-info,
-sync, and MCP requests use the internal route.
+Deployments that predate the UI setting can still set `WINDSHIFT_BASE_URL` as
+a fallback; the UI setting wins when both are present. If Windshift uses a
+context path, include it in the URL.
+
+The saved URL is validated against SSRF (same policy as remote MCP sources):
+only http(s), no credentials/fragments, and the resolved address must be
+publicly routable.
+
+### Internal route (env-only)
+
+To keep server-to-server traffic (client registration, token exchange,
+user-info, sync, MCP) off the public network, set `WINDSHIFT_INTERNAL_BASE_URL`
+on the connector container to a private route to the same Windshift instance,
+e.g. `http://windshift:8080` on the compose network. This is intentionally
+env-only — it is not configurable in the UI. When set, the connector advertises
+it in its manifest and Omni's OAuth flow allows that exact origin (scheme + host
++ port) to resolve to private (RFC1918) addresses; loopback, link-local/metadata,
+and reserved ranges are still rejected, and every other endpoint must stay
+publicly routable. Browser authorization, resource binding, and document links
+always use the public URL regardless.
 
 No OAuth client ID or secret is configured manually. Omni dynamically registers
 as a public client, uses S256 PKCE, and requests tokens bound to

@@ -30,11 +30,25 @@ const MAX_RESPONSE_BYTES = 1024 * 1024
 const REMOTE_MCP_HTTP_TIMEOUT_MS = 20_000
 const MCP_PROTOCOL_VERSION = '2024-11-05'
 
-export function isRemoteMcpBlockedIp(address: string): boolean {
+export interface RemoteMcpIpPolicy {
+    /// Allow RFC1918 private IPv4 (10/8, 172.16/12, 192.168/16) destinations.
+    /// Used for admin-declared internal endpoints (e.g. the Windshift internal
+    /// URL) that are deliberately hosted on a private network. Loopback,
+    /// link-local/metadata, and every other reserved range stay blocked.
+    allowPrivate?: boolean
+}
+
+function isRfc1918Address(parts: number[]): boolean {
+    const [a, b] = parts
+    return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+}
+
+export function isRemoteMcpBlockedIp(address: string, policy: RemoteMcpIpPolicy = {}): boolean {
     const family = net.isIP(address)
     if (family === 4) {
         const parts = address.split('.').map((p) => Number.parseInt(p, 10))
         const [a, b, c] = parts
+        if (policy.allowPrivate && isRfc1918Address(parts)) return false
         return (
             a === 0 ||
             a === 10 ||
@@ -94,30 +108,40 @@ export function validateRemoteMcpUrl(endpointUrl: string): URL {
 
 type PinnedAddress = { address: string; family: 4 | 6 }
 
-async function resolveAllowedRemoteMcpAddresses(url: URL): Promise<PinnedAddress[]> {
+async function resolveAllowedRemoteMcpAddresses(
+    url: URL,
+    policy: RemoteMcpIpPolicy = {},
+): Promise<PinnedAddress[]> {
     const records = await lookup(url.hostname, { all: true, verbatim: true })
     if (records.length === 0) throw error(400, 'Endpoint host did not resolve')
-    if (records.some((record) => isRemoteMcpBlockedIp(record.address))) {
+    if (records.some((record) => isRemoteMcpBlockedIp(record.address, policy))) {
         throw error(400, 'Endpoint resolves to a disallowed network address')
     }
     return records.map((record) => ({ address: record.address, family: record.family as 4 | 6 }))
 }
 
-export async function assertRemoteMcpDestinationAllowed(url: URL): Promise<void> {
-    await resolveAllowedRemoteMcpAddresses(url)
+export async function assertRemoteMcpDestinationAllowed(
+    url: URL,
+    policy: RemoteMcpIpPolicy = {},
+): Promise<void> {
+    await resolveAllowedRemoteMcpAddresses(url, policy)
 }
 
-export async function validateRemoteMcpUrlForCredentialUse(endpointUrl: string): Promise<string> {
+export async function validateRemoteMcpUrlForCredentialUse(
+    endpointUrl: string,
+    policy: RemoteMcpIpPolicy = {},
+): Promise<string> {
     const url = validateRemoteMcpUrl(endpointUrl)
-    await assertRemoteMcpDestinationAllowed(url)
+    await assertRemoteMcpDestinationAllowed(url, policy)
     return url.toString()
 }
 
 export async function fetchWithPinnedRemoteMcpDns(
     url: URL,
     init: RequestInit = {},
+    policy: RemoteMcpIpPolicy = {},
 ): Promise<Response> {
-    const addresses = await resolveAllowedRemoteMcpAddresses(url)
+    const addresses = await resolveAllowedRemoteMcpAddresses(url, policy)
     let next = 0
     const dispatcher = new Agent({
         connect: {

@@ -1,5 +1,6 @@
 import {
   Connector,
+  SdkClient,
   SyncMode,
   type SyncContext,
   type SearchOperator,
@@ -51,14 +52,87 @@ function normalizedEnvUrl(name: string): string | undefined {
   return url.replace(/\/+$/, "");
 }
 
+// The Windshift server is an admin-managed setting: the public base URL is
+// configured in the UI and stored in the connector_configs table (served to
+// us by connector-manager). The WINDSHIFT_BASE_URL env var remains as a
+// fallback for deployments that predate the UI setting. The optional
+// WINDSHIFT_INTERNAL_BASE_URL env var supplies a separate server-to-server
+// route on private networking and is intentionally env-only (not in the UI).
+//
+// The SDK re-registers our manifest every 30s, so once this cache is
+// populated the OAuth config the web layer reads reflects the UI setting
+// without a container restart.
+interface WindshiftServerConfig {
+  base_url?: string;
+}
+
+let windshiftServerConfig: WindshiftServerConfig | null = null;
+let windshiftServerConfigPromise: Promise<WindshiftServerConfig | null> | null =
+  null;
+
+function parseWindshiftServerConfig(value: unknown): WindshiftServerConfig {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  const baseUrl =
+    typeof record.base_url === "string" ? record.base_url.trim() : "";
+  return {
+    base_url: baseUrl || undefined,
+  };
+}
+
+/// Fetch the Windshift server config from connector-manager's
+/// connector_configs table. Never throws: any failure (connector-manager
+/// unreachable, no config row, malformed payload) just clears the cache and
+/// leaves the env-var fallback in place.
+///
+/// `force` skips the memoized in-flight/previous promise so a periodic caller
+/// can re-read the table and pick up UI changes.
+export async function refreshWindshiftServerConfig(
+  force = false,
+): Promise<WindshiftServerConfig | null> {
+  if (!force && windshiftServerConfigPromise) {
+    return windshiftServerConfigPromise;
+  }
+  windshiftServerConfigPromise = (async () => {
+    try {
+      // 10s cap so an unreachable connector-manager doesn't stall startup.
+      const client = new SdkClient(undefined, 10_000);
+      const config = await client.getConnectorConfig("windshift");
+      windshiftServerConfig = parseWindshiftServerConfig(config);
+      logger.info(
+        { hasBaseUrl: !!windshiftServerConfig.base_url },
+        "Loaded Windshift server config from connector-manager",
+      );
+    } catch (err) {
+      logger.warn(
+        { err },
+        "Failed to load Windshift server config from connector-manager; falling back to env vars",
+      );
+      windshiftServerConfig = null;
+    }
+    return windshiftServerConfig;
+  })();
+  return windshiftServerConfigPromise;
+}
+
 function windshiftPublicBaseUrl(): string | undefined {
+  if (windshiftServerConfig?.base_url) {
+    return windshiftServerConfig.base_url.replace(/\/+$/, "");
+  }
   return normalizedEnvUrl("WINDSHIFT_BASE_URL");
 }
 
 function windshiftTransportBaseUrl(): string | undefined {
-  return (
-    normalizedEnvUrl("WINDSHIFT_INTERNAL_BASE_URL") ?? windshiftPublicBaseUrl()
-  );
+  // The internal route is env-only: it must win over the UI base URL so a
+  // stored public URL cannot silently defeat an operator-set private route.
+  const envInternal = normalizedEnvUrl("WINDSHIFT_INTERNAL_BASE_URL");
+  if (envInternal) return envInternal;
+  if (windshiftServerConfig?.base_url) {
+    return windshiftServerConfig.base_url.replace(/\/+$/, "");
+  }
+  return normalizedEnvUrl("WINDSHIFT_BASE_URL");
 }
 
 function windshiftAccessToken(
@@ -129,8 +203,9 @@ export class WindshiftConnector extends Connector<
   // Wrap Windshift's existing /mcp server (Streamable HTTP, bearer auth)
   // so every Windshift MCP tool — list_items, transition_item, add_comment,
   // etc. — becomes an Omni connector action without per-tool wiring here.
-  // Returns undefined when WINDSHIFT_BASE_URL isn't set; the SDK then
-  // skips MCP discovery and the connector falls back to read-only sync.
+  // Returns undefined when no Windshift base URL is configured (neither the
+  // admin UI setting nor the env fallback); the SDK then skips MCP discovery
+  // and the connector falls back to read-only sync.
   get mcpServer(): McpServer | undefined {
     const url = windshiftTransportBaseUrl();
     if (!url) return undefined;
@@ -177,6 +252,10 @@ export class WindshiftConnector extends Connector<
       scope_separator: " ",
       token_endpoint_auth_method: "none" as const,
       resource: `${publicBaseUrl}/mcp`,
+      // Explicit marker for the operator-configured private route. Only set
+      // when WINDSHIFT_INTERNAL_BASE_URL exists; when absent the transport
+      // endpoints derive from the public URL and must stay strictly public.
+      internal_base_url: normalizedEnvUrl("WINDSHIFT_INTERNAL_BASE_URL"),
     };
   }
 
@@ -186,11 +265,14 @@ export class WindshiftConnector extends Connector<
     state: WindshiftSyncState | null,
     ctx: SyncContext,
   ): Promise<void> {
+    // Ensure we've attempted to load the admin-configured Windshift server
+    // (e.g. when the first sync arrives before the startup fetch finished).
+    await refreshWindshiftServerConfig();
     const publicBaseUrl = windshiftPublicBaseUrl();
     const transportBaseUrl = windshiftTransportBaseUrl();
     if (!publicBaseUrl || !transportBaseUrl) {
       await ctx.fail(
-        "Connector container is missing WINDSHIFT_BASE_URL env var",
+        "Windshift base URL is not configured. Set it in Admin > Integrations > Windshift server.",
       );
       return;
     }

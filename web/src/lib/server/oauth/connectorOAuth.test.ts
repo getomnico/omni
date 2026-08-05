@@ -7,6 +7,7 @@ import {
     oauthServiceBaseUrl,
     scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
+    windshiftInternalOrigin,
     type OAuthManifestConfig,
 } from './connectorOAuth'
 
@@ -32,6 +33,38 @@ const baseManifest: OAuthManifestConfig = {
     scope_separator: ' ',
     token_endpoint_auth_method: 'client_secret_post',
 }
+
+describe('windshiftInternalOrigin', () => {
+    const windshiftManifest: OAuthManifestConfig = {
+        ...baseManifest,
+        provider: 'windshift',
+        auth_endpoint: 'https://windshift.example.com/oauth/authorize',
+        token_endpoint: 'http://windshift:8080/api/oauth/token',
+        userinfo_endpoint: 'http://windshift:8080/api/oauth/userinfo',
+        internal_base_url: 'http://windshift:8080/',
+    }
+
+    it('returns the exact origin of the manifest internal route', () => {
+        expect(windshiftInternalOrigin(windshiftManifest)).toBe('http://windshift:8080')
+    })
+
+    it('returns null when no internal route marker is advertised', () => {
+        const { internal_base_url: _marker, ...publicOnly } = windshiftManifest
+        expect(windshiftInternalOrigin(publicOnly)).toBeNull()
+    })
+
+    it('returns null for non-windshift providers even with a marker', () => {
+        expect(
+            windshiftInternalOrigin({ ...baseManifest, internal_base_url: 'http://x:1' }),
+        ).toBeNull()
+    })
+
+    it('returns null for an invalid internal URL', () => {
+        expect(
+            windshiftInternalOrigin({ ...windshiftManifest, internal_base_url: 'not a url' }),
+        ).toBeNull()
+    })
+})
 
 describe('OAuth connector helpers', () => {
     beforeEach(() => {

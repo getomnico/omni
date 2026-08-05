@@ -33,6 +33,34 @@ test("uses the public issuer for browser OAuth and internal server routes", () =
       "http://host.docker.internal:8080/api/oauth/userinfo",
     );
     assert.equal(connector.oauthConfig?.resource, "http://localhost:8080/mcp");
+    // The manifest advertises the operator-configured private route so the web
+    // layer can allow RFC1918 resolution for that exact origin at use time.
+    assert.equal(
+      connector.oauthConfig?.internal_base_url,
+      "http://host.docker.internal:8080",
+    );
+  } finally {
+    if (previousPublicUrl === undefined) delete process.env.WINDSHIFT_BASE_URL;
+    else process.env.WINDSHIFT_BASE_URL = previousPublicUrl;
+    if (previousInternalUrl === undefined)
+      delete process.env.WINDSHIFT_INTERNAL_BASE_URL;
+    else process.env.WINDSHIFT_INTERNAL_BASE_URL = previousInternalUrl;
+  }
+});
+
+test("omits the internal route marker without WINDSHIFT_INTERNAL_BASE_URL", () => {
+  const previousPublicUrl = process.env.WINDSHIFT_BASE_URL;
+  const previousInternalUrl = process.env.WINDSHIFT_INTERNAL_BASE_URL;
+  process.env.WINDSHIFT_BASE_URL = "https://windshift.example.com/";
+  delete process.env.WINDSHIFT_INTERNAL_BASE_URL;
+
+  try {
+    const connector = new WindshiftConnector();
+    assert.equal(connector.oauthConfig?.internal_base_url, undefined);
+    assert.equal(
+      connector.oauthConfig?.token_endpoint,
+      "https://windshift.example.com/api/oauth/token",
+    );
   } finally {
     if (previousPublicUrl === undefined) delete process.env.WINDSHIFT_BASE_URL;
     else process.env.WINDSHIFT_BASE_URL = previousPublicUrl;
@@ -45,9 +73,12 @@ test("uses the public issuer for browser OAuth and internal server routes", () =
 test("builds MCP authorization from sync and action credential shapes", () => {
   const connector = new WindshiftConnector();
 
-  assert.deepEqual(connector.prepareMcpHeaders({ access_token: "sync-token" }), {
-    Authorization: "Bearer sync-token",
-  });
+  assert.deepEqual(
+    connector.prepareMcpHeaders({ access_token: "sync-token" }),
+    {
+      Authorization: "Bearer sync-token",
+    },
+  );
   assert.deepEqual(
     connector.prepareMcpHeaders({
       credentials: { access_token: "action-token" },
@@ -158,25 +189,20 @@ test("full sync checkpoints only after indexing visible items", async () => {
 
     completed = false;
     let failedMessage = "";
-    await connector.sync(
-      {},
-      { access_token: "token" },
-      null,
-      {
-        ...ctx,
-        contentStorage: {
-          save: async () => {
-            throw new Error("storage unavailable");
-          },
+    await connector.sync({}, { access_token: "token" }, null, {
+      ...ctx,
+      contentStorage: {
+        save: async () => {
+          throw new Error("storage unavailable");
         },
-        complete: async () => {
-          completed = true;
-        },
-        fail: async (message: string) => {
-          failedMessage = message;
-        },
-      } as unknown as SyncContext,
-    );
+      },
+      complete: async () => {
+        completed = true;
+      },
+      fail: async (message: string) => {
+        failedMessage = message;
+      },
+    } as unknown as SyncContext);
     assert.match(failedMessage, /storage unavailable/);
     assert.equal(completed, false);
   } finally {

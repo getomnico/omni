@@ -10,6 +10,7 @@ import {
     validateRemoteMcpUrl,
     validateRemoteMcpUrlForCredentialUse,
 } from '../mcp/client'
+import type { RemoteMcpIpPolicy } from '../mcp/client'
 import { OAuthStateManager } from './state'
 import type { OAuthError, OAuthTokens } from './types'
 import { IntegrationType } from '$lib/types'
@@ -43,6 +44,11 @@ export interface OAuthManifestConfig {
     credential_provider?: string | null
     protected_resource_metadata_url?: string | null
     authorization_server_metadata_url?: string | null
+    /// Operator-configured private route (Windshift only): when present, the
+    /// transport endpoints (token/registration/userinfo) are derived from
+    /// this URL and may resolve to RFC1918 addresses. Absent for every other
+    /// provider and when no internal route is configured.
+    internal_base_url?: string | null
 }
 
 /// What flow we're driving — encoded into the OAuth state so the single
@@ -187,23 +193,56 @@ async function loadClientCreds(
     return null
 }
 
-function isRemoteMcpProvider(provider: string): boolean {
-    return provider.startsWith('remote_mcp:')
+/// Providers whose OAuth endpoints are admin-configured URLs (remote MCP
+/// servers, Windshift). Server-side fetches to these endpoints must go
+/// through SSRF validation and pinned-DNS resolution.
+function isAdminConfiguredEndpointProvider(provider: string): boolean {
+    return provider.startsWith('remote_mcp:') || provider === 'windshift'
+}
+
+/// The exact origin (scheme://host:port) of the operator-configured Windshift
+/// internal route, or null when unset/invalid. The connector advertises it in
+/// the manifest only when WINDSHIFT_INTERNAL_BASE_URL is set, so a manifest
+/// without the marker (public-only deployment) stays strictly public.
+/// Endpoints on this origin may resolve to RFC1918 private addresses — the
+/// internal URL's purpose is private networking; every other endpoint must
+/// stay publicly routable.
+export function windshiftInternalOrigin(config: OAuthManifestConfig): string | null {
+    if (config.provider !== 'windshift') return null
+    const internalBaseUrl = config.internal_base_url
+    if (typeof internalBaseUrl !== 'string' || !internalBaseUrl) return null
+    try {
+        return new URL(internalBaseUrl).origin
+    } catch {
+        return null
+    }
+}
+
+function ssrfPolicyForEndpoint(endpoint: string, internalOrigin: string | null): RemoteMcpIpPolicy {
+    if (!internalOrigin) return {}
+    try {
+        if (new URL(endpoint).origin === internalOrigin) return { allowPrivate: true }
+    } catch {
+        // Not a URL (e.g. a resource identifier): keep strict.
+    }
+    return {}
 }
 
 async function remoteMcpCredentialFetch(
     provider: string,
     endpoint: string,
     init: RequestInit,
+    internalOrigin: string | null,
 ): Promise<Response> {
-    if (!isRemoteMcpProvider(provider)) {
+    if (!isAdminConfiguredEndpointProvider(provider)) {
         return fetch(endpoint, {
             ...init,
             signal: init.signal ?? AbortSignal.timeout(20_000),
         })
     }
-    const validated = await validateRemoteMcpUrlForCredentialUse(endpoint)
-    return fetchWithPinnedRemoteMcpDns(validateRemoteMcpUrl(validated), init)
+    const policy = ssrfPolicyForEndpoint(endpoint, internalOrigin)
+    const validated = await validateRemoteMcpUrlForCredentialUse(endpoint, policy)
+    return fetchWithPinnedRemoteMcpDns(validateRemoteMcpUrl(validated), init, policy)
 }
 
 async function readLimitedResponseText(response: Response): Promise<string> {
@@ -222,7 +261,7 @@ async function readLimitedResponseText(response: Response): Promise<string> {
 }
 
 async function readCredentialJson(provider: string, response: Response): Promise<unknown> {
-    if (isRemoteMcpProvider(provider)) return readRemoteMcpLimitedJson(response)
+    if (isAdminConfiguredEndpointProvider(provider)) return readRemoteMcpLimitedJson(response)
     const text = await readLimitedResponseText(response)
     return text.trim() ? JSON.parse(text) : {}
 }
@@ -232,21 +271,22 @@ async function readCredentialText(_provider: string, response: Response): Promis
 }
 
 async function validateRemoteMcpOAuthConfigUrls(config: OAuthManifestConfig): Promise<void> {
-    if (!isRemoteMcpProvider(config.provider)) return
-    await validateRemoteMcpUrlForCredentialUse(config.auth_endpoint)
-    await validateRemoteMcpUrlForCredentialUse(config.token_endpoint)
-    await validateRemoteMcpUrlForCredentialUse(config.userinfo_endpoint)
-    if (config.registration_endpoint) {
-        await validateRemoteMcpUrlForCredentialUse(config.registration_endpoint)
-    }
-    if (config.resource) {
-        await validateRemoteMcpUrlForCredentialUse(config.resource)
-    }
+    if (!isAdminConfiguredEndpointProvider(config.provider)) return
+    const internalOrigin = windshiftInternalOrigin(config)
+    const endpoints = [config.auth_endpoint, config.token_endpoint, config.userinfo_endpoint]
+    if (config.registration_endpoint) endpoints.push(config.registration_endpoint)
+    if (config.resource) endpoints.push(config.resource)
     if (config.protected_resource_metadata_url) {
-        await validateRemoteMcpUrlForCredentialUse(config.protected_resource_metadata_url)
+        endpoints.push(config.protected_resource_metadata_url)
     }
     if (config.authorization_server_metadata_url) {
-        await validateRemoteMcpUrlForCredentialUse(config.authorization_server_metadata_url)
+        endpoints.push(config.authorization_server_metadata_url)
+    }
+    for (const endpoint of endpoints) {
+        await validateRemoteMcpUrlForCredentialUse(
+            endpoint,
+            ssrfPolicyForEndpoint(endpoint, internalOrigin),
+        )
     }
 }
 
@@ -262,14 +302,19 @@ async function dynamicallyRegisterClient(
     let response: Response
     try {
         await validateRemoteMcpOAuthConfigUrls(config)
-        response = await remoteMcpCredentialFetch(provider, config.registration_endpoint!, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
+        response = await remoteMcpCredentialFetch(
+            provider,
+            config.registration_endpoint!,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify(dynamicRegistrationPayload(provider, redirectUri, scope)),
             },
-            body: JSON.stringify(dynamicRegistrationPayload(provider, redirectUri, scope)),
-        })
+            windshiftInternalOrigin(config),
+        )
     } catch {
         return null
     }
@@ -679,8 +724,11 @@ export async function exchangeCodeAndIdentify(
 
     await validateRemoteMcpOAuthConfigUrls(config)
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
-    if (isRemoteMcpProvider(config.provider)) {
-        await validateRemoteMcpUrlForCredentialUse(tokenEndpoint)
+    if (isAdminConfiguredEndpointProvider(config.provider)) {
+        await validateRemoteMcpUrlForCredentialUse(
+            tokenEndpoint,
+            ssrfPolicyForEndpoint(tokenEndpoint, windshiftInternalOrigin(config)),
+        )
     }
     logger.info('Starting connector OAuth token exchange', {
         provider: config.provider,
@@ -693,11 +741,16 @@ export async function exchangeCodeAndIdentify(
         resource: config.resource ?? null,
         requestedScopes: state.metadata.requiredScopes,
     })
-    const tokenResp = await remoteMcpCredentialFetch(config.provider, tokenEndpoint, {
-        method: 'POST',
-        headers: tokenHeaders,
-        body: tokenParams.toString(),
-    })
+    const tokenResp = await remoteMcpCredentialFetch(
+        config.provider,
+        tokenEndpoint,
+        {
+            method: 'POST',
+            headers: tokenHeaders,
+            body: tokenParams.toString(),
+        },
+        windshiftInternalOrigin(config),
+    )
     const tokenData = (await readCredentialJson(config.provider, tokenResp).catch(() => ({}))) as
         | OAuthTokens
         | OAuthError
@@ -734,12 +787,17 @@ export async function exchangeCodeAndIdentify(
         return { tokens, state, config, principalEmail: principalEmailOverride, clientCreds: creds }
     }
 
-    const userinfoResp = await remoteMcpCredentialFetch(config.provider, config.userinfo_endpoint, {
-        headers: {
-            Authorization: `Bearer ${tokens.access_token}`,
-            Accept: 'application/json',
+    const userinfoResp = await remoteMcpCredentialFetch(
+        config.provider,
+        config.userinfo_endpoint,
+        {
+            headers: {
+                Authorization: `Bearer ${tokens.access_token}`,
+                Accept: 'application/json',
+            },
         },
-    })
+        windshiftInternalOrigin(config),
+    )
     if (!userinfoResp.ok) {
         const body = await readCredentialText(config.provider, userinfoResp).catch(() => '')
         logger.warn('Connector OAuth userinfo fetch failed', {

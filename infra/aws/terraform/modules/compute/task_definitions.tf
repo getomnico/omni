@@ -953,7 +953,8 @@ resource "aws_ecs_task_definition" "windshift_connector" {
     environment = concat(local.connector_base_environment, [
       { name = "PORT", value = "4018" },
       { name = "CONNECTOR_HOST_NAME", value = "windshift-connector" },
-      { name = "WINDSHIFT_BASE_URL", value = var.windshift_base_url }
+      { name = "WINDSHIFT_BASE_URL", value = var.windshift_base_url },
+      { name = "WINDSHIFT_INTERNAL_BASE_URL", value = var.windshift_internal_base_url }
     ])
 
     secrets = []

@@ -297,7 +297,7 @@ services:
       - "${LOCAL_EMBEDDINGS_PORT}"
     command:
       - "--model-id"
-      - "${EMBEDDING_MODEL}"
+      - "${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}"
       - "--port"
       - "${LOCAL_EMBEDDINGS_PORT}"
     networks:
@@ -709,15 +709,17 @@ services:
     profiles:
       - windshift
     expose:
-      - "${WINDSHIFT_CONNECTOR_PORT}"
+      - "${WINDSHIFT_CONNECTOR_PORT:-4018}"
     environment:
       <<: *otel-config
-      PORT: ${WINDSHIFT_CONNECTOR_PORT}
+      PORT: ${WINDSHIFT_CONNECTOR_PORT:-4018}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: windshift-connector
-      # Public OAuth issuer; must be reachable from the user's browser.
-      WINDSHIFT_BASE_URL: ${WINDSHIFT_BASE_URL}
-      # Optional connector-only route to the same Windshift instance.
+      # The public Windshift base URL is configured in the admin UI (stored in
+      # the connector_configs table); WINDSHIFT_BASE_URL is only a fallback for
+      # deployments that predate the UI setting. WINDSHIFT_INTERNAL_BASE_URL is
+      # env-only: an optional private route for server-to-server traffic.
+      WINDSHIFT_BASE_URL: ${WINDSHIFT_BASE_URL:-}
       WINDSHIFT_INTERNAL_BASE_URL: ${WINDSHIFT_INTERNAL_BASE_URL:-}
     networks:
       - omni-network
