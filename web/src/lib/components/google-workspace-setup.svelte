@@ -97,9 +97,9 @@
         validateAccess(saServiceAccountJson, saDriveFilters)
     })
 
-    // Switch to SA-direct tab: force Drive-only.
+    // Switch to SA-direct tab: force Drive-only. activeTab itself is kept in
+    // sync by the Tabs.Root bind:value, so this only applies side effects.
     function selectTab(tab: GoogleAuthMode) {
-        activeTab = tab
         if (tab === 'service_account_direct') {
             connectDrive = true
             connectGmail = false
@@ -492,10 +492,18 @@
             </Dialog.Description>
         </Dialog.Header>
 
-        <Tabs.Root value={activeTab} onValueChange={(v) => selectTab(v as GoogleAuthMode)}>
+        <Tabs.Root bind:value={activeTab} onValueChange={(v) => selectTab(v as GoogleAuthMode)}>
             <Tabs.List class="grid w-full grid-cols-2">
-                <Tabs.Trigger value="domain_wide_delegation">Domain-wide delegation</Tabs.Trigger>
-                <Tabs.Trigger value="service_account_direct">Shared drive (no DWD)</Tabs.Trigger>
+                <Tabs.Trigger
+                    value="domain_wide_delegation"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
+                    Domain-wide delegation
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                    value="service_account_direct"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
+                    Shared drive (no DWD)
+                </Tabs.Trigger>
             </Tabs.List>
 
             <Tabs.Content value="domain_wide_delegation" class="space-y-4 pt-4">
@@ -554,17 +562,19 @@
                     bind:serviceAccountJson={saServiceAccountJson}
                     mode="sa-direct" />
 
-                <Alert.Root>
-                    <AlertCircle class="h-4 w-4" />
-                    <Alert.Title>Shared drive access required</Alert.Title>
-                    <Alert.Description>
-                        Add the service account email to each shared drive as
-                        <span class="font-medium"> Content manager </span> or
-                        <span class="font-medium"> Manager</span>. Viewer/Commenter roles cannot
-                        read ACLs and the sync will fail closed. This setup is Drive-only — Gmail
-                        and Google Chat are not available in this mode.
-                    </Alert.Description>
-                </Alert.Root>
+                {#if saDriveFilters.length > 0 && !allDrivesValidated}
+                    <Alert.Root>
+                        <AlertCircle class="h-4 w-4" />
+                        <Alert.Title>Shared drive access required</Alert.Title>
+                        <Alert.Description>
+                            Add the service account email to each shared drive as
+                            <span class="font-medium"> Content manager </span> or
+                            <span class="font-medium"> Manager</span>. Viewer/Commenter roles cannot
+                            read ACLs and the sync will fail closed. This setup is Drive-only —
+                            Gmail and Google Chat are not available in this mode.
+                        </Alert.Description>
+                    </Alert.Root>
+                {/if}
 
                 <Card.Root class="border-dashed">
                     <Card.Header>
