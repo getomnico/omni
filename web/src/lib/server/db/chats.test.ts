@@ -105,6 +105,35 @@ describe('ChatMessageRepository branching', () => {
 
         expect(path.map((m) => m.id)).toEqual([root.id, a.id, bPrime.id])
     })
+
+    it('getActivePath returns empty-content assistant row with its error column', async () => {
+        // A failed assistant turn is persisted as an empty-content assistant
+        // row with the error payload in the dedicated column; a fresh page
+        // load must fetch it (with the error) so the UI can render the alert.
+        const root = await repo.create(chatId, userMsg('hello'))
+        const errorPayload = {
+            message: 'Rate limited',
+            provider: 'anthropic',
+            model: 'test-model',
+            statusCode: 429,
+        }
+        const errorRowId = ulid()
+        await db.insert(schema.chatMessages).values({
+            id: errorRowId,
+            chatId,
+            parentId: root.id,
+            messageSeqNum: root.messageSeqNum + 1,
+            message: { role: 'assistant', content: [] } as MessageParam,
+            error: errorPayload,
+        })
+
+        const path = await repo.getActivePath(chatId)
+
+        expect(path.map((m) => m.id)).toEqual([root.id, errorRowId])
+        const failed = path[1]
+        expect(failed.message).toEqual({ role: 'assistant', content: [] })
+        expect(failed.error).toEqual(errorPayload)
+    })
 })
 
 describe('ChatRepository history and search', () => {
