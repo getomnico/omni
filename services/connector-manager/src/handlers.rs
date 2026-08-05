@@ -17,6 +17,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
+use futures::future::join_all;
 use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::{Value, json};
@@ -375,22 +376,34 @@ pub async fn list_connectors(
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
     let manifests = get_registered_manifests(&state.redis_client).await;
     let client = ConnectorClient::new();
+
+    // Health checks are independent per connector; run them concurrently
+    // instead of serially so a slow connector doesn't gate the rest.
+    let health_futures: Vec<_> = manifests
+        .iter()
+        .map(|manifest| {
+            let url = manifest.connector_url.clone();
+            let client_ref = &client;
+            let manifest_ref = manifest;
+            async move {
+                if remote_mcp_in_process_manifest_is_healthy(manifest_ref) {
+                    true
+                } else if !url.is_empty() {
+                    client_ref.health_check(&url).await
+                } else {
+                    false
+                }
+            }
+        })
+        .collect();
+    let healths = join_all(health_futures).await;
+
     let mut connectors = Vec::new();
-
-    for manifest in manifests {
-        let url = manifest.connector_url.clone();
-        let healthy = if remote_mcp_in_process_manifest_is_healthy(&manifest) {
-            true
-        } else if !url.is_empty() {
-            client.health_check(&url).await
-        } else {
-            false
-        };
-
+    for (manifest, healthy) in manifests.iter().zip(healths) {
         for source_type in &manifest.source_types {
             connectors.push(ConnectorInfo {
                 source_type: source_type.clone(),
-                url: url.clone(),
+                url: manifest.connector_url.clone(),
                 healthy,
                 manifest: Some(manifest.clone()),
             });
