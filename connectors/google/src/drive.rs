@@ -256,6 +256,85 @@ impl DriveClient {
         .await
     }
 
+    /// List a user's trashed files (`files.list` with `trashed=true`),
+    /// paginated fully. User-wide variant of [`Self::list_trashed_files_in_drive`]
+    /// for the unfiltered DWD full-sync path, which lists per user across all
+    /// drives (My Drive + shared drives the user can access).
+    pub async fn list_trashed_files_for_user(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+    ) -> Result<Vec<GoogleDriveFile>> {
+        execute_with_auth_retry(
+            auth,
+            user_email,
+            self.rate_limiter.clone(),
+            |token| async move {
+                let url = format!("{}/files", drive_api_base().as_str());
+                let query = "trashed=true".to_string();
+
+                let mut all_files: Vec<GoogleDriveFile> = Vec::new();
+                let mut page_token: Option<String> = None;
+
+                loop {
+                    let mut params: Vec<(&str, &str)> = vec![
+                        ("pageSize", "100"),
+                        ("fields", FILES_FIELDS),
+                        ("q", query.as_str()),
+                        ("includeItemsFromAllDrives", "true"),
+                        ("supportsAllDrives", "true"),
+                    ];
+                    if let Some(ref pt) = page_token {
+                        params.push(("pageToken", pt));
+                    }
+
+                    debug!(
+                        "[GOOGLE API CALL] list_trashed_files_for_user user={}, page_token={:?}",
+                        user_email, page_token
+                    );
+                    let response = self
+                        .client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .query(&params)
+                        .send()
+                        .await
+                        .with_context(|| {
+                            format!("Failed to list trashed files for user {}", user_email)
+                        })?;
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        return classify_google_api_error(
+                            response,
+                            "Failed to list trashed files for user",
+                        )
+                        .await;
+                    }
+
+                    let response_text = response.text().await?;
+                    let parsed: FilesListResponse =
+                        serde_json::from_str(&response_text).map_err(|e| {
+                            anyhow!(
+                                "Failed to parse user trashed file list response: {}. Raw: {}",
+                                e,
+                                response_text
+                            )
+                        })?;
+
+                    all_files.extend(parsed.files);
+                    page_token = parsed.next_page_token;
+                    if page_token.is_none() {
+                        break;
+                    }
+                }
+
+                Ok(ApiResult::Success(all_files))
+            },
+        )
+        .await
+    }
+
     pub async fn get_file_content(
         &self,
         auth: &GoogleAuth,

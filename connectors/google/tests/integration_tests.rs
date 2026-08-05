@@ -280,6 +280,8 @@ mod drive_buffer_budget_tests {
         active_declared_bytes: Arc<AtomicUsize>,
         max_active_declared_bytes: Arc<AtomicUsize>,
         budget_breached: Arc<AtomicBool>,
+        /// Count of trashed=true file-list queries (full-traversal trash reconciliation).
+        trashed_query_calls: Arc<AtomicUsize>,
     }
 
     impl MockDriveState {
@@ -323,7 +325,20 @@ mod drive_buffer_budget_tests {
         Ok((format!("http://{}", addr), state))
     }
 
-    async fn list_files() -> Json<JsonValue> {
+    async fn list_files(
+        State(state): State<MockDriveState>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<JsonValue> {
+        // trashed=true queries serve nothing; count them so the unfiltered
+        // DWD full-sync trash reconciliation is observable in tests.
+        if query
+            .get("q")
+            .map(|q| q.contains("trashed=true"))
+            .unwrap_or(false)
+        {
+            state.trashed_query_calls.fetch_add(1, Ordering::SeqCst);
+            return Json(json!({ "files": [] }));
+        }
         let files: Vec<JsonValue> = MOCK_FILES
             .iter()
             .map(|file| {
@@ -506,6 +521,10 @@ mod drive_buffer_budget_tests {
             "max declared in-flight bytes ({}) exceeded budget ({})",
             drive_state.max_active_declared_bytes.load(Ordering::SeqCst),
             BUDGET_BYTES
+        );
+        assert!(
+            drive_state.trashed_query_calls.load(Ordering::SeqCst) >= 1,
+            "expected the unfiltered DWD full sync to reconcile trashed files"
         );
 
         Ok(())

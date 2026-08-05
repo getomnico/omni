@@ -323,8 +323,8 @@ use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
     AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
-    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
-    WebhookNotification, mime_type_to_content_type,
+    GoogleConnectorState, GoogleDriveFile, GoogleSyncCheckpoint, UserFile, WebhookChannel,
+    WebhookChannelResponse, WebhookNotification, mime_type_to_content_type,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -1317,6 +1317,16 @@ impl SyncManager {
             total_scanned += scanned;
             total_updated += updated;
         }
+
+        // Reconcile the user's trashed files on a full traversal (see
+        // [`Self::publish_trashed_deletions`]). This function is only invoked
+        // from the full-sync branch; incremental syncs go through
+        // [`Self::sync_drive_for_user_incremental`] instead.
+        let trashed_files = self
+            .drive_client
+            .list_trashed_files_for_user(&service_auth, user_email)
+            .await?;
+        self.publish_trashed_deletions(ctx, trashed_files).await?;
 
         info!(
             "Completed processing user {}: {} scanned, {} updated",
@@ -2320,6 +2330,18 @@ impl SyncManager {
                 )
                 .await?;
 
+                // Reconcile trashed files in this drive on a full traversal
+                // (see [`Self::publish_trashed_deletions`]).
+                let trashed_files = self
+                    .drive_client
+                    .list_trashed_files_in_drive(
+                        &service_auth,
+                        &principal_email,
+                        &drive_group.drive_id,
+                    )
+                    .await?;
+                self.publish_trashed_deletions(ctx, trashed_files).await?;
+
                 if ctx.is_cancelled() {
                     break;
                 }
@@ -2667,13 +2689,7 @@ impl SyncManager {
                     .drive_client
                     .list_trashed_files_in_drive(&service_auth, &sa_email, drive_id)
                     .await?;
-                for trashed in trashed_files {
-                    info!(
-                        "File {} ({}) is trashed (full traversal), publishing deletion",
-                        trashed.id, trashed.name
-                    );
-                    self.publish_deletion_event(ctx, &trashed.id).await?;
-                }
+                self.publish_trashed_deletions(ctx, trashed_files).await?;
 
                 if ctx.is_cancelled() {
                     break;
@@ -4293,6 +4309,26 @@ impl SyncManager {
             document_id: document_id.to_string(),
         };
         ctx.emit_event(event).await
+    }
+
+    /// Publish a deletion event for every file in `trashed_files`. Shared by
+    /// all full-traversal paths (SA-direct and DWD) to reconcile files that
+    /// were trashed before their trash transition was observed by an
+    /// incremental run — `changes.list` reports a trash only once, so without
+    /// this a pre-trashed file would stay in the index forever.
+    async fn publish_trashed_deletions(
+        &self,
+        ctx: &SyncContext,
+        trashed_files: Vec<GoogleDriveFile>,
+    ) -> Result<()> {
+        for trashed in trashed_files {
+            info!(
+                "File {} ({}) is trashed (full traversal), publishing deletion",
+                trashed.id, trashed.name
+            );
+            self.publish_deletion_event(ctx, &trashed.id).await?;
+        }
+        Ok(())
     }
 
     async fn get_service_credentials(&self, source_id: &str) -> Result<ServiceCredential> {
