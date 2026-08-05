@@ -1380,7 +1380,17 @@ impl SyncManager {
         const BATCH_SIZE: usize = 200;
 
         for change in all_changes {
-            let is_removed = change.removed.unwrap_or(false);
+            // A change reports a file as removed either via `removed: true`
+            // (permanent delete) or via the file's own `trashed: true` flag
+            // (moved to trash, deleted permanently after the retention
+            // window). Both mean the document must leave the index now — a
+            // trashed file is no longer accessible to anyone.
+            let is_removed = change.removed.unwrap_or(false)
+                || change
+                    .file
+                    .as_ref()
+                    .and_then(|f| f.trashed)
+                    .unwrap_or(false);
 
             if is_removed {
                 if let Some(file_id) = &change.file_id {
@@ -2027,7 +2037,14 @@ impl SyncManager {
                     let mut file_batch: Vec<UserFile> = Vec::new();
 
                     for change in &response.changes {
-                        let is_removed = change.removed.unwrap_or(false);
+                        // removed:true (permanent delete) or file.trashed:true
+                        // (in trash) both mean the doc must leave the index.
+                        let is_removed = change.removed.unwrap_or(false)
+                            || change
+                                .file
+                                .as_ref()
+                                .and_then(|f| f.trashed)
+                                .unwrap_or(false);
 
                         if is_removed {
                             if let Some(file_id) = &change.file_id {
@@ -2475,7 +2492,14 @@ impl SyncManager {
 
                     let mut file_batch: Vec<UserFile> = Vec::new();
                     for change in &response.changes {
-                        let is_removed = change.removed.unwrap_or(false);
+                        // removed:true (permanent delete) or file.trashed:true
+                        // (in trash) both mean the doc must leave the index.
+                        let is_removed = change.removed.unwrap_or(false)
+                            || change
+                                .file
+                                .as_ref()
+                                .and_then(|f| f.trashed)
+                                .unwrap_or(false);
                         if is_removed {
                             if let Some(file_id) = &change.file_id {
                                 info!(
@@ -5538,6 +5562,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: None,
             owners: None,
@@ -5563,6 +5588,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: None,
             owners: None,
@@ -5778,6 +5804,7 @@ mod tests {
                 size: None,
                 parents: None,
                 shared: None,
+                trashed: None,
                 drive_id: None,
                 permissions: None,
                 owners: None,

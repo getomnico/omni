@@ -40,7 +40,7 @@ const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 const FILES_FIELDS: &str = "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))";
 
 /// `fields` projection for changes listings — mirrors `FILES_FIELDS`.
-const CHANGES_FIELDS: &str = "nextPageToken,newStartPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress)),fileId,time)";
+const CHANGES_FIELDS: &str = "nextPageToken,newStartPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,trashed,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress)),fileId,time)";
 
 fn build_files_query(activity_after: Option<&str>) -> String {
     let mut query_parts = vec!["trashed=false".to_string()];

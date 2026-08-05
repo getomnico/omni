@@ -388,6 +388,7 @@ pub struct GoogleDriveFile {
     pub size: Option<String>,
     pub parents: Option<Vec<String>>,
     pub shared: Option<bool>,
+    pub trashed: Option<bool>,
     #[serde(rename = "driveId")]
     pub drive_id: Option<String>,
     pub permissions: Option<Vec<GoogleDrivePermission>>,
@@ -1343,6 +1344,7 @@ mod tests {
             size: Some("12345".to_string()),
             parents: Some(vec!["folder456".to_string()]),
             shared: Some(true),
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
@@ -1497,6 +1499,7 @@ mod tests {
             size: None,
             parents: Some(vec!["parent456".to_string()]),
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: None,
             owners: None,
@@ -1548,6 +1551,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: None,
             owners: None,
@@ -1577,6 +1581,7 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![
                 GoogleDrivePermission {
@@ -1645,6 +1650,7 @@ mod tests {
             size: None,
             parents: Some(vec!["folder1".to_string()]),
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: None,
             owners: None,
@@ -1681,6 +1687,7 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![
                 GoogleDrivePermission {
@@ -1723,6 +1730,7 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm_domain".to_string(),
@@ -1754,6 +1762,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![]),
             owners: Some(vec![Owner {
@@ -1787,6 +1796,7 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![]),
             owners: Some(vec![Owner {
@@ -1831,6 +1841,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
             drive_id: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),

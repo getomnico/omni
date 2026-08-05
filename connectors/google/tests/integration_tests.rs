@@ -528,7 +528,9 @@ mod sa_direct_tests {
         AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType,
         SyncContext, SyncType,
     };
-    use omni_google_connector::{admin::AdminClient, sync::SyncManager};
+    use omni_google_connector::{
+        admin::AdminClient, models::GoogleSyncCheckpoint, sync::SyncManager,
+    };
     use serde_json::{Value as JsonValue, json};
     use shared::models::{SourceScope, UserFilterMode};
     use std::collections::HashMap;
@@ -835,6 +837,32 @@ mod sa_direct_tests {
         sync_manager.run_sync(source, Some(creds), None, ctx).await
     }
 
+    /// Like [`run_sa_sync`] but seeds an existing checkpoint so the sync can
+    /// resume incrementally (change tokens / ACL fingerprints present).
+    async fn run_sa_sync_with_checkpoint(
+        mock_base: &str,
+        source: Source,
+        creds: ServiceCredential,
+        sync_type: SyncType,
+        checkpoint: GoogleSyncCheckpoint,
+    ) -> Result<()> {
+        let cm_url = mock_base.to_string();
+        let sdk_client = SdkClient::new(&cm_url);
+        sdk_client.register_sync(SA_SYNC_RUN_ID, sync_type).await;
+        let sync_manager = SyncManager::new(Arc::new(AdminClient::new()), sdk_client.clone(), None);
+        let ctx = SyncContext::new(
+            sdk_client,
+            SA_SYNC_RUN_ID.to_string(),
+            SA_SOURCE_ID.to_string(),
+            SourceType::GoogleDrive,
+            sync_type,
+            Arc::new(AtomicBool::new(false)),
+        );
+        sync_manager
+            .run_sync(source, Some(creds), Some(checkpoint), ctx)
+            .await
+    }
+
     #[tokio::test]
     async fn sa_direct_discovery_uses_self_token_and_returns_roots_only() -> Result<()> {
         let _guard = SA_ENV_LOCK.lock().await;
@@ -1067,6 +1095,123 @@ mod sa_direct_tests {
         assert!(
             state.file_list_calls() >= 1,
             "expected at least one files.list call"
+        );
+
+        Ok(())
+    }
+
+    /// A trashed file in an incremental changes.list response must publish a
+    /// deletion event (trash = inaccessible, so it leaves the index) rather
+    /// than being re-indexed as a normal file.
+    #[tokio::test]
+    async fn sa_direct_incremental_publishes_deletion_for_trashed_file() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        // Drive members: an internal user + the SA. SA excluded from docs.
+        state.set_permissions(json!([
+            {
+                "id": "p1",
+                "type": "user",
+                "emailAddress": SA_CLIENT_EMAIL,
+                "domain": null,
+                "role": "organizer",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            },
+            {
+                "id": "p2",
+                "type": "user",
+                "emailAddress": "alice@example.com",
+                "domain": null,
+                "role": "reader",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            }
+        ]));
+
+        // One incremental change: the file moved to trash (trashed:true,
+        // removed:false). ACL fingerprint unchanged so the run stays
+        // incremental.
+        state.changes.lock().unwrap().replace(json!({
+            "changes": [
+                {
+                    "changeType": "file",
+                    "removed": false,
+                    "fileId": "doc-trash",
+                    "file": {
+                        "id": "doc-trash",
+                        "name": "Old Policy.txt",
+                        "mimeType": "text/plain",
+                        "size": "1024",
+                        "webViewLink": "https://example.test/doc-trash",
+                        "createdTime": "2023-01-01T00:00:00Z",
+                        "modifiedTime": "2023-01-02T00:00:00Z",
+                        "driveId": "drive-1",
+                        "trashed": true,
+                        "permissions": [],
+                        "owners": []
+                    },
+                    "time": "2024-01-03T00:00:00Z"
+                }
+            ],
+            "newStartPageToken": "start-99"
+        }));
+
+        // Seed a checkpoint with an ACL fingerprint and change token so the
+        // sync takes the incremental branch (no scope/ACL change, token known).
+        let checkpoint = GoogleSyncCheckpoint {
+            drive_scope_fingerprint: Some(
+                "sa-direct:drive-1:shared_drive_root:drive-1".to_string(),
+            ),
+            drive_acl_fingerprints: Some(HashMap::from([(
+                "drive-1".to_string(),
+                "user|organizer|sa@test-project.iam.gserviceaccount.com||true;user|reader|alice@example.com||true"
+                    .to_string(),
+            )])),
+            drive_change_tokens: Some(HashMap::from([("drive-1".to_string(), "start-1".to_string())])),
+            ..Default::default()
+        };
+
+        let sync_result = run_sa_sync_with_checkpoint(
+            &mock_base,
+            sa_source(),
+            sa_credentials(&mock_base),
+            SyncType::Incremental,
+            checkpoint,
+        )
+        .await;
+
+        if let Some(value) = previous_drive_base {
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        let bodies = state.event_bodies();
+        assert!(!bodies.is_empty(), "expected emitted event batch bodies");
+        let mut deletions = 0;
+        for body in &bodies {
+            if let Some(events) = body.get("events").and_then(|e| e.as_array()) {
+                for event in events {
+                    let kind = event
+                        .get("type")
+                        .or_else(|| event.get("event"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
+                    if kind == "document_deleted" {
+                        deletions += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            deletions, 1,
+            "expected exactly one document_deleted event for the trashed file"
         );
 
         Ok(())
