@@ -367,20 +367,13 @@
                             hasStoredKey={data.hasStoredKey} />
 
                         <div class="space-y-4 border-t pt-6">
-                            <div>
-                                <h3 class="text-sm font-medium">Shared Drives to Index</h3>
-                                <p class="text-muted-foreground text-xs">
-                                    Select one or more whole shared drives to index. Add the service
-                                    account to each drive as Content manager or Manager.
-                                </p>
-                            </div>
                             <GoogleDriveFolderSelector
                                 bind:selected={folderFilters}
                                 sourceId={data.source.id}
                                 {serviceAccountJson}
                                 authMode="service_account_direct"
-                                label="Shared drives to index"
-                                description="Only whole shared drives are supported in this mode."
+                                label="Shared Drives to Index"
+                                description="Select one or more whole shared drives to index. Add the service account to each drive as Content manager or Manager. Only whole shared drives are supported in this mode."
                                 disabled={!enabled} />
                             <input
                                 type="hidden"
@@ -417,19 +410,14 @@
 
                     <!-- Folder Path Filter (JWT only) -->
                     <div class="space-y-4 border-t pt-6">
-                        <div>
-                            <h3 class="text-sm font-medium">Drive Folder Filters</h3>
-                            <p class="text-muted-foreground text-xs">
-                                Optionally restrict indexing to specific shared drives and top-level
-                                folders. All sub-folders within a selected item are included.
-                            </p>
-                        </div>
                         <GoogleDriveFolderSelector
                             bind:selected={folderFilters}
                             sourceId={data.source.id}
                             {serviceAccountJson}
                             {principalEmail}
                             {domain}
+                            label="Drive Folder Filters"
+                            description="Optionally restrict indexing to specific shared drives and top-level folders. All sub-folders within a selected item are included."
                             disabled={!enabled} />
                         <!-- Hidden form value to submit folder filters (always present for JWT, even when empty) -->
                         <input
