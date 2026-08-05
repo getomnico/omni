@@ -5,7 +5,7 @@ import asyncpg
 from asyncpg import Pool
 import json
 
-from .models import ChatMessage
+from .models import ChatMessage, ChatMessageError
 from .connection import get_db_pool
 
 
@@ -86,8 +86,58 @@ class MessagesRepository:
                 message_id,
             )
 
+    async def update_error(
+        self, message_id: str, error: Optional[ChatMessageError] = None
+    ) -> None:
+        """Set the `error` column for a chat_messages row.
+
+        Used to mark an assistant turn as failed when no partial content was
+        produced (so the row carries the error without a content update).
+        """
+        pool = await self._get_pool()
+        serialized = _sanitize_jsonb_value(error)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET error = $1 WHERE id = $2",
+                json.dumps(serialized) if serialized is not None else None,
+                message_id,
+            )
+
+    async def finalize_error(
+        self,
+        message_id: str,
+        message: Dict[str, Any],
+        error: ChatMessageError,
+    ) -> None:
+        """Finalize an assistant row as a failed turn in one atomic UPDATE.
+
+        Writes `message` (partial content), the derived BM25 `content_text`,
+        and `error` together so an interrupted stream can never leave partial
+        content without its error (or vice versa).
+        """
+        pool = await self._get_pool()
+        message = _sanitize_jsonb_value(message)
+        content_text = _extract_content_text(message)
+        serialized_error = _sanitize_jsonb_value(error)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE chat_messages
+                SET message = $1, content_text = $2, error = $3
+                WHERE id = $4
+                """,
+                json.dumps(message),
+                content_text,
+                json.dumps(serialized_error),
+                message_id,
+            )
+
     async def create(
-        self, chat_id: str, message: Dict[str, Any], parent_id: Optional[str] = None
+        self,
+        chat_id: str,
+        message: Dict[str, Any],
+        parent_id: Optional[str] = None,
+        error: Optional[ChatMessageError] = None,
     ) -> ChatMessage:
         """Create a new message in a chat"""
         pool = await self._get_pool()
@@ -103,14 +153,15 @@ class MessagesRepository:
 
         message = _sanitize_jsonb_value(message)
         content_text = _extract_content_text(message)
+        serialized_error = _sanitize_jsonb_value(error)
 
         async with pool.acquire() as conn:
             next_seq = await conn.fetchval(seq_query, chat_id)
 
             query = """
-                INSERT INTO chat_messages (id, chat_id, message_seq_num, message, parent_id, content_text, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, NOW())
-                RETURNING id, chat_id, message_seq_num, message, parent_id, created_at
+                INSERT INTO chat_messages (id, chat_id, message_seq_num, message, parent_id, content_text, error, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                RETURNING id, chat_id, message_seq_num, message, parent_id, content_text, error, created_at
             """
 
             row = await conn.fetchrow(
@@ -121,6 +172,7 @@ class MessagesRepository:
                 json.dumps(message),
                 parent_id,
                 content_text,
+                json.dumps(serialized_error) if serialized_error is not None else None,
             )
 
         return ChatMessage.from_row(dict(row))
@@ -143,7 +195,7 @@ class MessagesRepository:
         pool = await self._get_pool()
 
         query = """
-            SELECT id, chat_id, message_seq_num, message, parent_id, created_at
+            SELECT id, chat_id, message_seq_num, message, parent_id, error, created_at
             FROM chat_messages
             WHERE chat_id = $1
             ORDER BY message_seq_num
@@ -165,7 +217,7 @@ class MessagesRepository:
         query = """
             WITH RECURSIVE walk_up AS (
                 -- Start from the latest leaf (no children, highest seq num)
-                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.error, cm.created_at
                 FROM (
                     SELECT *
                     FROM chat_messages
@@ -181,7 +233,7 @@ class MessagesRepository:
                 UNION ALL
 
                 -- Walk up to root via parent_id
-                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.created_at
+                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.error, cm.created_at
                 FROM chat_messages cm
                 JOIN walk_up wu ON cm.id = wu.parent_id
             )

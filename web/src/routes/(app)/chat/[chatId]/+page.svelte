@@ -46,6 +46,7 @@
         OAuthRequiredEvent,
         OmniUploadBlock,
         OmniMentionBlock,
+        ChatStreamError,
     } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
     import type { MentionedDocument } from '$lib/types/message'
@@ -224,12 +225,7 @@
         }
     }
 
-    type StreamErrorPayload = {
-        message: string
-        provider?: string | null
-        model?: string | null
-        statusCode?: number | null
-    }
+    type StreamErrorPayload = ChatStreamError
 
     async function resumeActiveStreamIfNeeded() {
         if (isStreaming || eventSource) return
@@ -243,20 +239,24 @@
         }
     }
 
+    function streamErrorDetail(error: ChatStreamError): string | null {
+        const detailParts = [
+            error.provider,
+            error.model,
+            error.statusCode ? `HTTP ${error.statusCode}` : null,
+        ].filter((part): part is string => !!part)
+        return detailParts.length ? detailParts.join(' · ') : null
+    }
+
     function streamErrorMessage(event: MessageEvent<string>): {
         message: string
         detail: string | null
     } {
         try {
             const payload = JSON.parse(event.data) as StreamErrorPayload
-            const detailParts = [
-                payload.provider,
-                payload.model,
-                payload.statusCode ? `HTTP ${payload.statusCode}` : null,
-            ].filter((part): part is string => !!part)
             return {
                 message: payload.message,
-                detail: detailParts.length ? detailParts.join(' · ') : null,
+                detail: streamErrorDetail(payload),
             }
         } catch {
             return {
@@ -817,6 +817,7 @@
             parentId: origMsg?.parentId ?? null,
             message,
             contentText: trimmedContent,
+            error: null,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -863,6 +864,10 @@
                           siblingIndex: message.siblingIndex,
                           createdAt: message.createdAt,
                           content: [...lastMessage.content],
+                          // A later error row that merges into this display
+                          // message (e.g. after a tool-call turn) must not lose
+                          // its persisted error.
+                          error: message.error ?? lastMessage.error,
                       }
                     : {
                           id: result.length,
@@ -875,6 +880,7 @@
                           siblingIds: message.siblingIds,
                           siblingIndex: message.siblingIndex,
                           createdAt: message.createdAt,
+                          error: message.error ?? null,
                       }
 
             result =
@@ -1074,6 +1080,7 @@
                         chatMsg.createdAt instanceof Date
                             ? chatMsg.createdAt
                             : new Date(chatMsg.createdAt),
+                    error: chatMsg.error ?? null,
                 }
 
                 const contentBlocks = Array.isArray(message.content)
@@ -1528,6 +1535,7 @@
                             content: [block],
                         },
                         contentText: null,
+                        error: null,
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
@@ -1675,6 +1683,7 @@
                                 content: data.message.content,
                             },
                             contentText: null,
+                            error: null,
                             messageSeqNum: nextMessageSeqNum(chatMessages),
                             createdAt: new Date(),
                         }
@@ -1966,6 +1975,7 @@
                             content: denialBlocks,
                         },
                         contentText: null,
+                        error: null,
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
@@ -2080,6 +2090,7 @@
                 content: messageContent,
             } as unknown as ChatMessage['message'],
             contentText: userMsg,
+            error: null,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -2574,6 +2585,20 @@
                                         onOAuthComplete={() => streamResponse(data.chat.id)} />
                                 {/key}
                             </div>
+                            {#if message.error}
+                                <div class="flex px-2">
+                                    <Alert.Root variant="destructive" title={message.error.message}>
+                                        <CircleAlert />
+                                        <Alert.Title>{message.error.message}</Alert.Title>
+                                        {#if streamErrorDetail(message.error)}
+                                            <Alert.Description
+                                                >{streamErrorDetail(
+                                                    message.error,
+                                                )}</Alert.Description>
+                                        {/if}
+                                    </Alert.Root>
+                                </div>
+                            {/if}
                             {#if error && i === processedMessages.length - 1}
                                 <div class="flex px-2">
                                     <Alert.Root variant="destructive" title={error}>

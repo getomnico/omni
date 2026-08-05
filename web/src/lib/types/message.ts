@@ -129,6 +129,17 @@ export type MentionMessageContent = {
 export type MessageContent = Array<
     TextMessageContent | ToolMessageContent | UploadMessageContent | MentionMessageContent
 >
+
+// Error payload persisted on the `chat_messages.error` column / delivered as
+// SSE `event: stream_error`. Mirrors the AI service's StreamErrorEvent so
+// persisted and streamed errors stay structurally identical.
+export type ChatStreamError = {
+    message: string
+    provider?: string | null
+    model?: string | null
+    statusCode?: number | null
+}
+
 export type ProcessedMessage = {
     id: number
     // IDs of the raw chat_messages rows represented by this display message.
@@ -144,4 +155,6 @@ export type ProcessedMessage = {
     siblingIds?: string[]
     siblingIndex?: number
     createdAt?: Date
+    // Present when the assistant turn failed; rendered as an inline error alert.
+    error?: ChatStreamError | null
 }

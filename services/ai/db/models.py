@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, cast
+from typing import Any, NotRequired, TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from crypto import decrypt_config
@@ -429,6 +429,20 @@ class Source:
         )
 
 
+class ChatMessageError(TypedDict):
+    """Error payload persisted on the ``chat_messages.error`` column.
+
+    Mirrors the wire shape of the SSE ``stream_error`` event (see
+    ``streaming.persist.StreamErrorEvent``) so persisted and streamed errors
+    stay structurally identical.
+    """
+
+    message: str
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    statusCode: NotRequired[int | None]
+
+
 @dataclass
 class ChatMessage:
     id: str
@@ -437,12 +451,16 @@ class ChatMessage:
     message: dict[str, Any]  # Full JSONB message content
     created_at: datetime
     parent_id: str | None = None
+    error: ChatMessageError | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ChatMessage":
         """Create ChatMessage from database row"""
         if isinstance(row["message"], str):
             row["message"] = json.loads(row["message"])
+        error = row.get("error")
+        if isinstance(error, str):
+            error = json.loads(error) if error else None
         return cls(
             id=row["id"],
             chat_id=row["chat_id"],
@@ -450,6 +468,7 @@ class ChatMessage:
             message=row["message"],
             created_at=row["created_at"],
             parent_id=row.get("parent_id"),
+            error=error,
         )
 
     def to_dict(self) -> dict:
@@ -460,5 +479,6 @@ class ChatMessage:
             "message_seq_num": self.message_seq_num,
             "message": self.message,
             "parent_id": self.parent_id,
+            "error": self.error,
             "created_at": self.created_at.isoformat(),
         }

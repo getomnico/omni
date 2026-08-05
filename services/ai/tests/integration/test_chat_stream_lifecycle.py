@@ -37,6 +37,7 @@ from db.tool_approvals import (
     ToolApprovalType,
 )
 from routers import chat_router
+from services.compaction import ConversationCompactor
 from state import AppState
 from tests.helpers import (
     GatedRecordingLLM,
@@ -922,6 +923,302 @@ class TestLockAndHeartbeat:
             "model": model_id,
             "statusCode": 429,
         }
+
+
+# =============================================================================
+# Stream error persistence
+# =============================================================================
+
+
+class TestStreamErrorPersistence:
+    """A failed turn is persisted as an assistant row with the `error` column
+    set, so a page reload still shows the error."""
+
+    @pytest.mark.asyncio
+    async def test_provider_error_persists_error_column(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """ProviderError before any content → a new assistant error row is
+        persisted with empty content and the error payload matching the
+        stream_error SSE event."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "unused")],
+            model_id,
+            fail_on_call=0,
+            fail_exc=ProviderError(
+                "Rate limited",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=429,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        stream_errors = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "stream_error"
+        ]
+        assert stream_errors, f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        failed = db_msgs[-1]
+        assert failed.message["role"] == "assistant"
+        assert failed.error == stream_errors[-1], (
+            f"Persisted error {failed.error} != stream_error payload "
+            f"{stream_errors[-1]}"
+        )
+        assert failed.message["content"] == []
+        # Only the seeded user message + the failed turn are on the active path.
+        assert len(db_msgs) == 2, f"Expected 2 messages, got {len(db_msgs)}"
+
+    @pytest.mark.asyncio
+    async def test_partial_content_before_error_is_finalized_with_error(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Content streamed before a mid-stream failure is persisted on the
+        SAME row as the error (atomic finalize), and the row survives the
+        generator-end cleanup (no empty duplicate row)."""
+        from anthropic.types import (
+            RawContentBlockDeltaEvent,
+            RawContentBlockStartEvent,
+            TextBlock,
+            TextDelta,
+        )
+
+        from providers.types import ProviderError, ProviderType
+        from tests.helpers import message_start_event
+
+        chat_id, _user_id, model_id = seeded_chat
+
+        class PartialThenFailLLM(GatedRecordingLLM):
+            async def stream_response(self, **kwargs):
+                self.calls.append({"kwargs": kwargs})
+                yield message_start_event()
+                yield RawContentBlockStartEvent(
+                    type="content_block_start",
+                    index=0,
+                    content_block=TextBlock(type="text", text=""),
+                )
+                yield RawContentBlockDeltaEvent(
+                    type="content_block_delta",
+                    index=0,
+                    delta=TextDelta(type="text_delta", text="Partial answer"),
+                )
+                raise ProviderError(
+                    "Connection reset mid-stream",
+                    provider_type=ProviderType.ANTHROPIC,
+                    model=model_id,
+                    status_code=500,
+                )
+
+        llm = PartialThenFailLLM([("text", "unused")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assert len(db_msgs) == 2, (
+            f"Expected user + one finalized error row, got {len(db_msgs)} rows"
+        )
+        failed = db_msgs[-1]
+        assert failed.error is not None, "Error column not persisted"
+        assert failed.error["message"] == (
+            "Failed to generate response: Connection reset mid-stream"
+        )
+        text = " ".join(
+            b.get("text", "")
+            for b in failed.message.get("content", [])
+            if b.get("type") == "text"
+        )
+        assert text == "Partial answer", f"Partial content lost: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_tool_loop_error_uses_last_persisted_parent(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """An error in a later iteration after a completed tool-call turn
+        persists a SEPARATE error row whose parent is the last persisted row,
+        not the request-time parent."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "multi-turn"},
+                        "id": "toolu_mt",
+                    },
+                ),
+                ("text", "unused"),
+            ],
+            model_id,
+            fail_on_call=1,
+            fail_exc=ProviderError(
+                "Upstream timeout",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=504,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        failed = db_msgs[-1]
+        assert failed.error is not None, "Error column not persisted"
+        assert failed.error["statusCode"] == 504
+        # The error row's parent is the tool-result row (last persisted row),
+        # not the seeded user message that was the request-time parent.
+        assert failed.parent_id == db_msgs[-2].id
+        assert db_msgs[-2].message["role"] == "user"
+        assert any(
+            b.get("type") == "tool_result"
+            for b in db_msgs[-2].message.get("content", [])
+        ), "Expected a tool_result row between the tool call and the error"
+
+    @pytest.mark.asyncio
+    async def test_pre_stream_failure_persists_error_row(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        """A failure before any streaming (conversation prep) still persists an
+        assistant error row with empty content."""
+        chat_id, _user_id, model_id = seeded_chat
+
+        monkeypatch.setattr(
+            ConversationCompactor,
+            "prepare_chat_conversation",
+            AsyncMock(side_effect=RuntimeError("compaction failed")),
+        )
+
+        llm = GatedRecordingLLM([("text", "unused")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assert len(db_msgs) == 2, f"Expected user + error row, got {len(db_msgs)}"
+        failed = db_msgs[-1]
+        assert failed.message["role"] == "assistant"
+        assert failed.message["content"] == []
+        assert failed.error is not None
+        assert "compaction failed" in failed.error["message"]
+
+    @pytest.mark.asyncio
+    async def test_tool_execution_error_after_finalized_row_persists_error(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        """An exception during tool execution (after the tool-call assistant
+        row was finalized) still persists a dedicated error row."""
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "boom"},
+                        "id": "toolu_boom",
+                    },
+                ),
+            ],
+            model_id,
+        )
+
+        async def _raising_execute(*args, **kwargs):
+            raise RuntimeError("tool execution crashed")
+
+        monkeypatch.setattr(ToolRegistry, "execute", _raising_execute)
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        failed = db_msgs[-1]
+        assert failed.error is not None, "Error column not persisted"
+        assert "tool execution crashed" in failed.error["message"]
+        # The tool-call assistant row from the finalized turn is still present,
+        # and the error row follows it as the new leaf.
+        assert any(
+            any(
+                isinstance(b, dict) and b.get("type") == "tool_use"
+                for b in (m.message.get("content") if isinstance(m.message.get("content"), list) else [])
+            )
+            for m in db_msgs
+        ), "Expected the tool-call assistant row to remain"
+
+    @pytest.mark.asyncio
+    async def test_resume_after_error_does_not_duplicate_error_row(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Replaying the buffered run after a stream_error does not duplicate
+        the persisted error row."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "unused")],
+            model_id,
+            fail_on_call=0,
+            fail_exc=ProviderError(
+                "boom",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=500,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        # Replay the buffered run from just past its first id-carrying event.
+        replay_from = next((sid for _et, _d, sid in events if sid), None)
+        assert replay_from, "First event should carry an SSE id for resume"
+        async with _client(app) as client:
+            replay_events = await collect_sse_events(
+                client, chat_id, headers={"Last-Event-ID": replay_from}
+            )
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in replay_events
+        ), f"Replay did not deliver terminal, got: {replay_events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        error_rows = [m for m in db_msgs if m.error is not None]
+        assert len(error_rows) == 1, (
+            f"Expected exactly one error row after replay, got {len(error_rows)}"
+        )
 
 
 # =============================================================================

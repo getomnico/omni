@@ -52,6 +52,7 @@ from streaming.persist import (
     oauth_event,
     parse_tool_call_inputs,
     partial_assistant_message,
+    save_error_sse,
     sse_event,
     stream_error_sse,
 )
@@ -524,6 +525,7 @@ async def prepare_and_stream_chat(
             exc,
             exc_info=True,
         )
+        yield save_error_sse(exc)
         yield stream_error_sse(exc)
     finally:
         continue_compaction.set()
@@ -1244,9 +1246,14 @@ async def stream_generator(
         raise
     except Exception as e:
         logger.error(f"Failed to generate AI response with tools: {e}", exc_info=True)
+        partial = None
         if not content_blocks_finalized:
             partial = partial_assistant_message(content_blocks)
             if partial is not None:
                 conversation_messages.append(partial)
-                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
+        # Persist the failed turn even when the assistant row was already
+        # finalized (e.g. an exception raised during tool preflight/execution
+        # after the tool-call content was saved): ``persist_and_transform``
+        # creates a dedicated error row for it under the current parent.
+        yield save_error_sse(e, partial_message=partial)
         yield stream_error_sse(e)
