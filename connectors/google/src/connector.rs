@@ -10,7 +10,8 @@ use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{
     DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse, GoogleAuthMode, GoogleDirectoryUser,
-    GoogleSourceConfig, GoogleSyncCheckpoint, SearchUsersResponse,
+    GoogleSourceConfig, GoogleSyncCheckpoint, SearchUsersResponse, SharedDriveAccessResponse,
+    SharedDriveAccessResult,
 };
 use crate::sync::SyncManager;
 use anyhow::{Context, Result, anyhow};
@@ -129,6 +130,22 @@ pub struct ParsedAttachmentDocId {
     pub rfc822_msgid: String,
     pub filename: String,
     pub size: u64,
+}
+
+/// Params for the `discover_folders` connector action.
+#[derive(Debug, Default, Deserialize)]
+struct DiscoverFoldersParams {
+    #[serde(default)]
+    auth_mode: Option<GoogleAuthMode>,
+}
+
+/// Params for the `validate_shared_drive_access` connector action.
+#[derive(Debug, Default, Deserialize)]
+struct ValidateSharedDriveAccessParams {
+    #[serde(default)]
+    auth_mode: Option<GoogleAuthMode>,
+    #[serde(default)]
+    drive_ids: Vec<String>,
 }
 
 fn parse_attachment_doc_id(composite: &str) -> Result<ParsedAttachmentDocId> {
@@ -825,11 +842,9 @@ impl GoogleConnector {
             .into_response());
         }
 
-        let auth_mode = params
-            .get("auth_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("domain_wide_delegation");
-        let is_sa_direct = auth_mode == "service_account_direct";
+        // Fail loudly on malformed params rather than guessing.
+        let params: DiscoverFoldersParams = serde_json::from_value(params)?;
+        let is_sa_direct = params.auth_mode == Some(GoogleAuthMode::ServiceAccountDirect);
 
         let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
         let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
@@ -917,28 +932,16 @@ impl GoogleConnector {
             .into_response());
         }
 
-        let auth_mode = params
-            .get("auth_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("domain_wide_delegation");
-        if auth_mode != "service_account_direct" {
+        // Fail loudly on malformed params rather than guessing.
+        let params: ValidateSharedDriveAccessParams = serde_json::from_value(params)?;
+        if params.auth_mode != Some(GoogleAuthMode::ServiceAccountDirect) {
             return Ok(ActionResponse::failure(
                 "validate_shared_drive_access requires auth_mode=service_account_direct"
                     .to_string(),
             )
             .into_response());
         }
-
-        let drive_ids: Vec<String> = params
-            .get("drive_ids")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if drive_ids.is_empty() {
+        if params.drive_ids.is_empty() {
             return Ok(ActionResponse::failure(
                 "validate_shared_drive_access requires at least one drive_id".to_string(),
             )
@@ -954,8 +957,8 @@ impl GoogleConnector {
         let access_token = google_auth.get_self_access_token().await?;
 
         let mut results = Vec::new();
-        for drive_id in &drive_ids {
-            let entry = match self
+        for drive_id in &params.drive_ids {
+            let result = match self
                 .sync_manager
                 .drive_client()
                 .list_drive_permissions(&access_token, drive_id)
@@ -964,31 +967,32 @@ impl GoogleConnector {
                 Ok(permissions) => {
                     match crate::models::validate_sa_drive_access(drive_id, &permissions, &sa_email)
                     {
-                        Ok(role) => serde_json::json!({
-                            "drive_id": drive_id,
-                            "ok": true,
-                            "role": role,
-                            "error": null,
-                        }),
-                        Err(e) => serde_json::json!({
-                            "drive_id": drive_id,
-                            "ok": false,
-                            "role": null,
-                            "error": e.to_string(),
-                        }),
+                        Ok(role) => SharedDriveAccessResult {
+                            drive_id: drive_id.clone(),
+                            ok: true,
+                            role: Some(role),
+                            error: None,
+                        },
+                        Err(e) => SharedDriveAccessResult {
+                            drive_id: drive_id.clone(),
+                            ok: false,
+                            role: None,
+                            error: Some(e.to_string()),
+                        },
                     }
                 }
-                Err(e) => serde_json::json!({
-                    "drive_id": drive_id,
-                    "ok": false,
-                    "role": null,
-                    "error": format!("Failed to read drive ACLs: {}", e),
-                }),
+                Err(e) => SharedDriveAccessResult {
+                    drive_id: drive_id.clone(),
+                    ok: false,
+                    role: None,
+                    error: Some(format!("Failed to read drive ACLs: {}", e)),
+                },
             };
-            results.push(entry);
+            results.push(result);
         }
 
-        Ok(ActionResponse::success(serde_json::json!({ "drives": results })).into_response())
+        let response = SharedDriveAccessResponse { drives: results };
+        Ok(ActionResponse::success(serde_json::to_value(response)?).into_response())
     }
 }
 

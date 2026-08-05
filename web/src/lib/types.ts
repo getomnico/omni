@@ -102,6 +102,18 @@ export interface GoogleDriveSourceConfig {
     // Future: shared_drive_filters, mime_type_filters, etc.
 }
 
+/**
+ * Mirrors the connector's `GoogleSourceConfig` (models.rs).
+ * `domain` is used only in domain_wide_delegation mode.
+ */
+export interface GoogleSourceConfig {
+    auth_mode: GoogleAuthMode
+    domain?: string | null
+    folder_path_filters?: FolderPathFilter[]
+    space_allowlist?: string[]
+    include_group_chats?: boolean
+}
+
 export interface SharedDriveAccessResult {
     drive_id: string
     ok: boolean
@@ -111,6 +123,21 @@ export interface SharedDriveAccessResult {
 
 export interface SharedDriveAccessResponse {
     drives: SharedDriveAccessResult[]
+}
+
+/** Per-drive access-validation status shown in the setup UI. */
+export interface DriveAccessStatus {
+    pending: boolean
+    ok: boolean
+    role: string | null
+    error: string | null
+}
+
+/** Envelope returned by the transient connector action route. */
+export interface ConnectorActionResponse<T = unknown> {
+    status: 'success' | 'error'
+    result?: T
+    error?: string
 }
 
 export interface GmailSourceConfig {

@@ -238,6 +238,24 @@ pub struct SearchUsersResponse {
     pub has_more: bool,
 }
 
+/// Per-drive result from the `validate_shared_drive_access` connector action.
+/// Mirrors the web's `SharedDriveAccessResult` type.
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedDriveAccessResult {
+    #[serde(rename = "drive_id")]
+    pub drive_id: String,
+    pub ok: bool,
+    pub role: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Response from the `validate_shared_drive_access` connector action.
+/// Mirrors the web's `SharedDriveAccessResponse` type.
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedDriveAccessResponse {
+    pub drives: Vec<SharedDriveAccessResult>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,
@@ -284,6 +302,8 @@ impl FolderPathFilterKind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleSyncCheckpoint {
     pub gmail_history_ids: Option<HashMap<String, String>>,
+    /// Per-user pagination cursors for the unfiltered (DWD) full Drive sync,
+    /// keyed by impersonated user email. Unused by scoped/SA-direct sync.
     pub drive_page_tokens: Option<HashMap<String, String>>,
     /// Per-drive change tokens used in scoped (filtered) incremental sync.
     /// Keyed by shared-drive ID; absent for unfiltered mode.

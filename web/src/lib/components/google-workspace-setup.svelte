@@ -8,8 +8,14 @@
     import * as Alert from '$lib/components/ui/alert'
     import { Loader2, CheckCircle2, XCircle, AlertCircle } from '@lucide/svelte'
     import { AuthType } from '$lib/types'
-    import type { FolderPathFilter, GoogleAuthMode } from '$lib/types'
-    import type { SharedDriveAccessResponse } from '$lib/types'
+    import type {
+        ConnectorActionResponse,
+        DriveAccessStatus,
+        FolderPathFilter,
+        GoogleAuthMode,
+        GoogleSourceConfig,
+        SharedDriveAccessResponse,
+    } from '$lib/types'
     import { toast } from 'svelte-sonner'
     import { goto } from '$app/navigation'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
@@ -43,9 +49,7 @@
     let saServiceAccountJson = $state('')
     let saDriveFilters = $state<FolderPathFilter[]>([])
     // Per-drive validation: drive_id -> { pending, ok, role, error }
-    let accessValidation = $state<
-        Record<string, { pending: boolean; ok: boolean; role: string | null; error: string | null }>
-    >({})
+    let accessValidation = $state<Record<string, DriveAccessStatus>>({})
     let isValidating = $state(false)
     let validationAbort: AbortController | null = null
     let validationGeneration = $state(0)
@@ -73,23 +77,24 @@
         }
     })
 
-    // SA-direct guard: when the SA key changes, clear discovered drives and
-    // any prior validation state so stale selections can't be submitted.
-    let prevSaKey = $state('')
-    let saInitialized = $state(false)
+    // SA-direct: when the SA key changes, the selector clears its own
+    // selection (its credential context includes the key). Re-run access
+    // validation whenever the key or selected drives change; if inputs become
+    // empty/invalid, invalidate any in-flight validation so stale results
+    // from a previous key can't land.
     $effect(() => {
-        if (!saInitialized) {
-            saInitialized = true
-            prevSaKey = saServiceAccountJson
-            return
-        }
-        if (saServiceAccountJson !== prevSaKey) {
-            prevSaKey = saServiceAccountJson
-            saDriveFilters = []
-            accessValidation = {}
+        if (activeTab !== 'service_account_direct') return
+        if (!saServiceAccountJson.trim() || saDriveFilters.length === 0) {
+            // Invalidate and cancel any in-flight validation so stale results
+            // from a previous key can't land.
+            validationGeneration += 1
             validationAbort?.abort()
             validationAbort = null
+            accessValidation = {}
+            isSubmitting = false
+            return
         }
+        validateAccess(saServiceAccountJson, saDriveFilters)
     })
 
     // Switch to SA-direct tab: force Drive-only.
@@ -102,17 +107,6 @@
         }
     }
 
-    // Re-run access validation whenever the SA key or selected drives change.
-    $effect(() => {
-        if (activeTab !== 'service_account_direct') return
-        if (!saServiceAccountJson.trim() || saDriveFilters.length === 0) {
-            accessValidation = {}
-            isSubmitting = false
-            return
-        }
-        validateAccess(saServiceAccountJson, saDriveFilters)
-    })
-
     async function validateAccess(saJson: string, filters: FolderPathFilter[]) {
         const generation = ++validationGeneration
         validationAbort?.abort()
@@ -121,10 +115,7 @@
         isValidating = true
 
         // Mark all drives pending.
-        const pending: Record<
-            string,
-            { pending: boolean; ok: boolean; role: string | null; error: string | null }
-        > = {}
+        const pending: Record<string, DriveAccessStatus> = {}
         for (const f of filters) {
             pending[f.driveId] = { pending: true, ok: false, role: null, error: null }
         }
@@ -146,8 +137,11 @@
             })
             if (generation !== validationGeneration) return
             if (!response.ok) {
-                const errBody = await response.json().catch(() => ({}))
-                const msg = errBody.error || errBody.message || 'Failed to validate drive access'
+                const errBody = (await response.json().catch(() => null)) as {
+                    error?: string
+                    message?: string
+                } | null
+                const msg = errBody?.error || errBody?.message || 'Failed to validate drive access'
                 for (const f of filters) {
                     pending[f.driveId] = {
                         pending: false,
@@ -159,11 +153,9 @@
                 accessValidation = { ...pending }
                 return
             }
-            const body = (await response.json()) as {
-                status?: string
-                result?: SharedDriveAccessResponse
-            }
-            const statusOk = body?.status === 'ok' || body?.status === 'success'
+            const body =
+                (await response.json()) as ConnectorActionResponse<SharedDriveAccessResponse>
+            const statusOk = body?.status === 'success'
             const drives = body?.result?.drives ?? []
             if (statusOk && drives.length > 0) {
                 const next: typeof pending = {}
@@ -256,7 +248,7 @@
             )
         }
 
-        const driveConfig: Record<string, unknown> = {
+        const driveConfig: GoogleSourceConfig = {
             auth_mode: 'service_account_direct',
             folder_path_filters: saDriveFilters,
         }
@@ -273,8 +265,10 @@
             }),
         })
         if (!driveSourceResponse.ok) {
-            const errBody = await driveSourceResponse.json().catch(() => ({}))
-            throw new Error(errBody.message || 'Failed to create Google Drive source')
+            const errBody = (await driveSourceResponse.json().catch(() => null)) as {
+                message?: string
+            } | null
+            throw new Error(errBody?.message || 'Failed to create Google Drive source')
         }
         const driveSource = await driveSourceResponse.json()
 
@@ -332,13 +326,13 @@
         const credentials = { service_account_key: serviceAccountJson }
 
         // Base config shared by all Google services (domain only).
-        const baseConfig: Record<string, unknown> = {
+        const baseConfig: GoogleSourceConfig = {
             auth_mode: 'domain_wide_delegation',
             domain: domain || null,
         }
 
         // Drive-specific config with optional folder filters.
-        const driveConfig: Record<string, unknown> = {
+        const driveConfig: GoogleSourceConfig = {
             auth_mode: 'domain_wide_delegation',
             domain: domain || null,
         }
@@ -583,7 +577,7 @@
                     <Card.Content class="space-y-3">
                         <GoogleDriveFolderSelector
                             bind:selected={saDriveFilters}
-                            {serviceAccountJson}
+                            serviceAccountJson={saServiceAccountJson}
                             authMode="service_account_direct"
                             label="Shared drives to index"
                             description="Search and select shared drives. Only whole drives are supported in this mode."
