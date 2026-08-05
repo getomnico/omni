@@ -556,6 +556,8 @@ mod sa_direct_tests {
         permissions_forbidden: Arc<AtomicBool>,
         /// Files served by list_files_in_drive (corpora=drive).
         files: Arc<Mutex<Vec<JsonValue>>>,
+        /// Files served by list_trashed_files_in_drive (trashed=true).
+        trashed_files: Arc<Mutex<Vec<JsonValue>>>,
         /// Change-token pagination response for incremental syncs.
         changes: Arc<Mutex<Option<JsonValue>>>,
         /// Captured /sdk/events/batch bodies.
@@ -574,6 +576,9 @@ mod sa_direct_tests {
         }
         fn set_files(&self, files: Vec<JsonValue>) {
             *self.files.lock().unwrap() = files;
+        }
+        fn set_trashed_files(&self, files: Vec<JsonValue>) {
+            *self.trashed_files.lock().unwrap() = files;
         }
         fn file_list_calls(&self) -> usize {
             self.file_list_calls.load(Ordering::SeqCst)
@@ -690,7 +695,17 @@ mod sa_direct_tests {
         Query(query): Query<HashMap<String, String>>,
     ) -> Json<JsonValue> {
         state.file_list_calls.fetch_add(1, Ordering::SeqCst);
-        let files = state.files.lock().unwrap().clone();
+        // trashed=true queries serve the trashed-file set for full-traversal
+        // reconciliation; everything else serves the live file set.
+        let is_trashed_query = query
+            .get("q")
+            .map(|q| q.contains("trashed=true"))
+            .unwrap_or(false);
+        let files = if is_trashed_query {
+            state.trashed_files.lock().unwrap().clone()
+        } else {
+            state.files.lock().unwrap().clone()
+        };
         // If a modifiedTime cutoff is present, filter the mocked files so we
         // can distinguish a cutoff crawl from an uncut full traversal.
         let files: Vec<JsonValue> = if let Some(q) = query.get("q") {
@@ -1212,6 +1227,117 @@ mod sa_direct_tests {
         assert_eq!(
             deletions, 1,
             "expected exactly one document_deleted event for the trashed file"
+        );
+
+        Ok(())
+    }
+
+    /// A full traversal must reconcile pre-existing trashed files: files
+    /// trashed before their trash transition was observed by an incremental
+    /// run never reappear in changes.list, so the full path lists trashed=true
+    /// and publishes deletions for them.
+    #[tokio::test]
+    async fn sa_direct_full_traversal_reconciles_pre_trashed_files() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        // Drive members: an internal user + the SA. SA excluded from docs.
+        state.set_permissions(json!([
+            {
+                "id": "p1",
+                "type": "user",
+                "emailAddress": SA_CLIENT_EMAIL,
+                "domain": null,
+                "role": "organizer",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            },
+            {
+                "id": "p2",
+                "type": "user",
+                "emailAddress": "alice@example.com",
+                "domain": null,
+                "role": "reader",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            }
+        ]));
+
+        // The drive holds one live file plus one file that was trashed before
+        // the last incremental run (its trash transition is already consumed,
+        // so it never reappears in changes.list).
+        state.set_files(vec![json!({
+            "id": "live-1",
+            "name": "Live Doc.txt",
+            "mimeType": "text/plain",
+            "size": "1024",
+            "webViewLink": "https://example.test/live-1",
+            "createdTime": "2024-01-01T00:00:00Z",
+            "modifiedTime": "2024-01-02T00:00:00Z",
+            "driveId": "drive-1",
+            "permissions": [],
+            "owners": []
+        })]);
+        state.set_trashed_files(vec![json!({
+            "id": "pre-trashed",
+            "name": "Old Doc.txt",
+            "mimeType": "text/plain",
+            "size": "512",
+            "webViewLink": "https://example.test/pre-trashed",
+            "createdTime": "2022-01-01T00:00:00Z",
+            "modifiedTime": "2022-06-01T00:00:00Z",
+            "driveId": "drive-1",
+            "trashed": true,
+            "permissions": [],
+            "owners": []
+        })]);
+
+        // Full sync, no prior state.
+        let sync_result = run_sa_sync(
+            &mock_base,
+            sa_source(),
+            sa_credentials(&mock_base),
+            SyncType::Full,
+        )
+        .await;
+
+        if let Some(value) = previous_drive_base {
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        let bodies = state.event_bodies();
+        assert!(!bodies.is_empty(), "expected emitted event batch bodies");
+        let mut deletions = 0;
+        let mut created = 0;
+        for body in &bodies {
+            if let Some(events) = body.get("events").and_then(|e| e.as_array()) {
+                for event in events {
+                    let kind = event
+                        .get("type")
+                        .or_else(|| event.get("event"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
+                    match kind {
+                        "document_deleted" => deletions += 1,
+                        "document_created" => created += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            deletions, 1,
+            "expected one document_deleted event for the pre-trashed file"
+        );
+        assert!(
+            created >= 1,
+            "expected the live file to be re-indexed during full traversal"
         );
 
         Ok(())

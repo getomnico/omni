@@ -2657,6 +2657,24 @@ impl SyncManager {
                 )
                 .await?;
 
+                // Reconcile trashed files: incremental changes.list only
+                // reports a trash transition once, so files trashed before we
+                // observed the event (or trashed while incremental was
+                // unavailable) would otherwise stay in the index forever. A
+                // full traversal is the safe point to list trashed=true and
+                // publish deletions.
+                let trashed_files = self
+                    .drive_client
+                    .list_trashed_files_in_drive(&service_auth, &sa_email, drive_id)
+                    .await?;
+                for trashed in trashed_files {
+                    info!(
+                        "File {} ({}) is trashed (full traversal), publishing deletion",
+                        trashed.id, trashed.name
+                    );
+                    self.publish_deletion_event(ctx, &trashed.id).await?;
+                }
+
                 if ctx.is_cancelled() {
                     break;
                 }

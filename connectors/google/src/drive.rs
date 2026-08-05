@@ -1305,6 +1305,89 @@ impl DriveClient {
         .await
     }
 
+    /// List a drive's trashed files (`files.list` with `trashed=true`),
+    /// paginated fully. Used by the SA-direct full-traversal path to reconcile
+    /// documents that were trashed before their trash event was observed by an
+    /// incremental run — incremental `changes.list` only reports a trash once,
+    /// so a pre-existing trashed file would otherwise stay in the index
+    /// forever.
+    pub async fn list_trashed_files_in_drive(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        drive_id: &str,
+    ) -> Result<Vec<GoogleDriveFile>> {
+        let drive_id_owned = drive_id.to_string();
+        execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
+            let drive_id = drive_id_owned.clone();
+            async move {
+                let url = format!("{}/files", drive_api_base().as_str());
+                let query = "trashed=true".to_string();
+
+                let mut all_files: Vec<GoogleDriveFile> = Vec::new();
+                let mut page_token: Option<String> = None;
+
+                loop {
+                    let mut params: Vec<(&str, &str)> = vec![
+                        ("pageSize", "100"),
+                        ("fields", FILES_FIELDS),
+                        ("q", query.as_str()),
+                        ("supportsAllDrives", "true"),
+                        ("includeItemsFromAllDrives", "true"),
+                        ("corpora", "drive"),
+                        ("driveId", &drive_id),
+                    ];
+                    if let Some(ref pt) = page_token {
+                        params.push(("pageToken", pt));
+                    }
+
+                    debug!(
+                        "[GOOGLE API CALL] list_trashed_files_in_drive drive={}, page_token={:?}",
+                        drive_id, page_token
+                    );
+                    let response = self
+                        .client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .query(&params)
+                        .send()
+                        .await
+                        .with_context(|| {
+                            format!("Failed to list trashed files in drive {}", drive_id)
+                        })?;
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        return classify_google_api_error(
+                            response,
+                            "Failed to list trashed files in drive",
+                        )
+                        .await;
+                    }
+
+                    let response_text = response.text().await?;
+                    let parsed: FilesListResponse =
+                        serde_json::from_str(&response_text).map_err(|e| {
+                            anyhow!(
+                                "Failed to parse drive-scoped trashed file list response: {}. Raw: {}",
+                                e,
+                                response_text
+                            )
+                        })?;
+
+                    all_files.extend(parsed.files);
+                    page_token = parsed.next_page_token;
+                    if page_token.is_none() {
+                        break;
+                    }
+                }
+
+                Ok(ApiResult::Success(all_files))
+            }
+        })
+        .await
+    }
+
     /// List a shared drive's member permissions (`permissions.list` with the
     /// drive ID as the target). This is the effective ACL for every file in the
     /// drive — `File.permissions` is never populated for shared-drive items.
