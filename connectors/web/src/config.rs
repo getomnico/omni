@@ -204,7 +204,8 @@ mod tests {
 
         assert_eq!(budget.get(&CaseInsensitiveString::from("*")), Some(&42));
     }
-  
+    
+    #[test]
     fn test_parse_spider_cloud_mode() {
         assert_eq!(parse_spider_cloud_mode("proxy"), SpiderCloudMode::Proxy);
         assert_eq!(parse_spider_cloud_mode("api"), SpiderCloudMode::Api);
