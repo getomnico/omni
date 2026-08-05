@@ -10,6 +10,7 @@ import {
     validateRemoteMcpUrl,
     validateRemoteMcpUrlForCredentialUse,
 } from '../mcp/client'
+import type { RemoteMcpIpPolicy } from '../mcp/client'
 import { OAuthStateManager } from './state'
 import type { OAuthError, OAuthTokens } from './types'
 import { IntegrationType } from '$lib/types'
@@ -194,6 +195,32 @@ function isAdminConfiguredEndpointProvider(provider: string): boolean {
     return provider.startsWith('remote_mcp:') || provider === 'windshift'
 }
 
+/// The exact origin (scheme://host:port) of the admin-configured Windshift
+/// internal URL, or null when unset/invalid. Endpoints on this origin may
+/// resolve to RFC1918 private addresses — the internal URL's purpose is
+/// private networking; every other endpoint must stay publicly routable.
+async function windshiftInternalOrigin(provider: string): Promise<string | null> {
+    if (provider !== 'windshift') return null
+    const row = await getConnectorConfig('windshift')
+    const internalBaseUrl = (row?.config as Record<string, unknown> | undefined)?.internal_base_url
+    if (typeof internalBaseUrl !== 'string' || !internalBaseUrl) return null
+    try {
+        return new URL(internalBaseUrl).origin
+    } catch {
+        return null
+    }
+}
+
+function ssrfPolicyForEndpoint(endpoint: string, internalOrigin: string | null): RemoteMcpIpPolicy {
+    if (!internalOrigin) return {}
+    try {
+        if (new URL(endpoint).origin === internalOrigin) return { allowPrivate: true }
+    } catch {
+        // Not a URL (e.g. a resource identifier): keep strict.
+    }
+    return {}
+}
+
 async function remoteMcpCredentialFetch(
     provider: string,
     endpoint: string,
@@ -205,8 +232,9 @@ async function remoteMcpCredentialFetch(
             signal: init.signal ?? AbortSignal.timeout(20_000),
         })
     }
-    const validated = await validateRemoteMcpUrlForCredentialUse(endpoint)
-    return fetchWithPinnedRemoteMcpDns(validateRemoteMcpUrl(validated), init)
+    const policy = ssrfPolicyForEndpoint(endpoint, await windshiftInternalOrigin(provider))
+    const validated = await validateRemoteMcpUrlForCredentialUse(endpoint, policy)
+    return fetchWithPinnedRemoteMcpDns(validateRemoteMcpUrl(validated), init, policy)
 }
 
 async function readLimitedResponseText(response: Response): Promise<string> {
@@ -236,20 +264,21 @@ async function readCredentialText(_provider: string, response: Response): Promis
 
 async function validateRemoteMcpOAuthConfigUrls(config: OAuthManifestConfig): Promise<void> {
     if (!isAdminConfiguredEndpointProvider(config.provider)) return
-    await validateRemoteMcpUrlForCredentialUse(config.auth_endpoint)
-    await validateRemoteMcpUrlForCredentialUse(config.token_endpoint)
-    await validateRemoteMcpUrlForCredentialUse(config.userinfo_endpoint)
-    if (config.registration_endpoint) {
-        await validateRemoteMcpUrlForCredentialUse(config.registration_endpoint)
-    }
-    if (config.resource) {
-        await validateRemoteMcpUrlForCredentialUse(config.resource)
-    }
+    const internalOrigin = await windshiftInternalOrigin(config.provider)
+    const endpoints = [config.auth_endpoint, config.token_endpoint, config.userinfo_endpoint]
+    if (config.registration_endpoint) endpoints.push(config.registration_endpoint)
+    if (config.resource) endpoints.push(config.resource)
     if (config.protected_resource_metadata_url) {
-        await validateRemoteMcpUrlForCredentialUse(config.protected_resource_metadata_url)
+        endpoints.push(config.protected_resource_metadata_url)
     }
     if (config.authorization_server_metadata_url) {
-        await validateRemoteMcpUrlForCredentialUse(config.authorization_server_metadata_url)
+        endpoints.push(config.authorization_server_metadata_url)
+    }
+    for (const endpoint of endpoints) {
+        await validateRemoteMcpUrlForCredentialUse(
+            endpoint,
+            ssrfPolicyForEndpoint(endpoint, internalOrigin),
+        )
     }
 }
 
@@ -683,7 +712,10 @@ export async function exchangeCodeAndIdentify(
     await validateRemoteMcpOAuthConfigUrls(config)
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
     if (isAdminConfiguredEndpointProvider(config.provider)) {
-        await validateRemoteMcpUrlForCredentialUse(tokenEndpoint)
+        await validateRemoteMcpUrlForCredentialUse(
+            tokenEndpoint,
+            ssrfPolicyForEndpoint(tokenEndpoint, await windshiftInternalOrigin(config.provider)),
+        )
     }
     logger.info('Starting connector OAuth token exchange', {
         provider: config.provider,

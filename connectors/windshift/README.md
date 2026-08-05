@@ -18,7 +18,12 @@ when both are present. If Windshift uses a context path, include it in the URL.
 
 Saved URLs are validated against SSRF (same policy as remote MCP sources):
 only http(s), no credentials/fragments, and the resolved address must be
-publicly routable — loopback and private-network addresses are rejected.
+publicly routable. The internal URL is the exception — it exists for private
+networking, so its destination may be a private (RFC1918) address such as a
+docker service name; loopback, link-local/metadata, and reserved ranges are
+still rejected. Server-side OAuth fetches are re-checked against SSRF at
+use time: only endpoints on the exact configured internal origin may resolve
+to private addresses, everything else must be publicly routable.
 
 Browser authorization, resource binding, and document links always use the
 public Windshift URL; server-side client registration, token exchange,

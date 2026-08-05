@@ -49,6 +49,9 @@ export const POST: RequestHandler = async ({ locals, request }) => {
                 typeof nextConfig.internal_base_url === 'string'
                     ? nextConfig.internal_base_url
                     : '',
+                // The internal URL is deliberately hosted on a private network
+                // (e.g. a docker service name) — allow RFC1918 destinations.
+                { allowPrivate: true },
             )
         } catch (err) {
             throw error(
