@@ -96,6 +96,8 @@ impl WebSourceConfig {
             .with_respect_robots_txt(self.respect_robots_txt)
             .with_subdomains(self.include_subdomains)
             .with_depth(self.max_depth)
+            // Spider treats a limit of 0 as unlimited, matching `max_pages: 0`.
+            .with_limit(self.max_pages.min(u32::MAX as usize) as u32)
             .with_delay(300);
 
         if let Some(user_agent) = &self.user_agent {
@@ -127,6 +129,7 @@ impl WebSourceConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+    use spider::CaseInsensitiveString;
 
     #[test]
     fn test_parse_minimal_config() {
@@ -180,6 +183,28 @@ mod tests {
         assert!(website.is_ok());
     }
 
+    #[test]
+    fn test_max_pages_is_applied_as_crawl_limit() {
+        let config = WebSourceConfig {
+            root_url: "https://example.com".to_string(),
+            max_depth: 5,
+            max_pages: 42,
+            respect_robots_txt: true,
+            user_agent: None,
+            blacklist_patterns: vec![],
+            include_subdomains: false,
+        };
+
+        let website = config.build_spider_website().unwrap();
+        let budget = website
+            .configuration
+            .budget
+            .as_ref()
+            .expect("max_pages should configure a crawl budget");
+
+        assert_eq!(budget.get(&CaseInsensitiveString::from("*")), Some(&42));
+    }
+    
     #[test]
     fn test_parse_spider_cloud_mode() {
         assert_eq!(parse_spider_cloud_mode("proxy"), SpiderCloudMode::Proxy);
