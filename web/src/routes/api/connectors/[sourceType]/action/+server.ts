@@ -187,6 +187,8 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
         }
 
         // Forward the setup credential through connector-manager's generic transient action mode.
+        // auth_mode travels inside params so the connector's typed action params see it.
+        const forwardedParams = { ...(params || {}), auth_mode: authMode }
         const response = await fetch(`${connectorManagerUrl}/action`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -194,7 +196,7 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
                 source_type: sourceType,
                 user_id: locals.user.id,
                 action,
-                params: params || {},
+                params: forwardedParams,
                 transient_credentials: {
                     provider: 'google',
                     auth_type: 'jwt',

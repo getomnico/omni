@@ -184,6 +184,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
         expect(forwarded).toMatchObject({
             action: 'discover_folders',
+            params: { auth_mode: 'service_account_direct' },
             transient_credentials: {
                 provider: 'google',
                 auth_type: 'jwt',
@@ -223,7 +224,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
         expect(forwarded).toMatchObject({
             action: 'validate_shared_drive_access',
-            params: { drive_ids: ['d1', 'd2'] },
+            params: { drive_ids: ['d1', 'd2'], auth_mode: 'service_account_direct' },
         })
     })
 
