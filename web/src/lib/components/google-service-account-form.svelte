@@ -43,8 +43,8 @@
 
     {#if isSaDirect}
         <p class="text-muted-foreground text-sm">
-            The service account will authenticate as itself — no user impersonation, no domain-wide
-            delegation. Add the service account email to each shared drive as
+            The service account will authenticate as itself without domain-wide delegation. Add the
+            service account email to each shared drive as
             <span class="font-medium">Content manager</span> or
             <span class="font-medium">Manager</span>.
         </p>

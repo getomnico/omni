@@ -242,7 +242,7 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 scope: 'org',
-                name: 'Google Drive — Shared Drive Sync',
+                name: 'Google Drive',
                 sourceType: 'google_drive',
                 config: driveConfig,
             }),
