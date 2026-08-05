@@ -58,8 +58,6 @@ DATABASE_URL = (
 EMBEDDING_MAX_MODEL_LEN = int(get_optional_env("EMBEDDING_MAX_MODEL_LEN", "8192"))
 
 DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
-DEFAULT_TEMPERATURE = float(get_optional_env("DEFAULT_TEMPERATURE", "0.0"))
-DEFAULT_TOP_P = float(get_optional_env("DEFAULT_TOP_P", "1.0"))
 
 # AWS configuration (used by online Bedrock embedding/LLM providers)
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS

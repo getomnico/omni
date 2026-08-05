@@ -26,6 +26,7 @@
     import notionLogo from '$lib/images/icons/notion.svg'
     import linearLogo from '$lib/images/icons/linear.svg'
     import githubLogo from '$lib/images/icons/github.svg'
+    import windshiftLogo from '$lib/images/icons/windshift.png'
     import nextcloudLogo from '$lib/images/icons/nextcloud.svg'
     import paperlessLogo from '$lib/images/icons/paperless.svg'
     import imapLogo from '$lib/images/icons/imap.svg'
@@ -41,9 +42,11 @@
         HardDrive,
         KeyRound,
         Mail,
+        Plus,
     } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
+    import McpTabContent from '$lib/components/mcp-tab-content.svelte'
     import GoogleAdsConnectorSetup from '$lib/components/google-ads-connector-setup.svelte'
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
@@ -60,9 +63,10 @@
     import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
     import NextcloudConnectorSetup from '$lib/components/nextcloud-connector-setup.svelte'
     import DarwinboxConnectorSetup from '$lib/components/darwinbox-connector-setup.svelte'
+    import WindshiftServerSetup from '$lib/components/windshift-server-setup.svelte'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { Badge } from '$lib/components/ui/badge'
-    import { SourceType } from '$lib/types'
+    import { AuthType, SourceType } from '$lib/types'
     import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
     import { invalidateAll } from '$app/navigation'
     import { page } from '$app/state'
@@ -85,7 +89,13 @@
     let sourceHealth = $state<Map<SourceId, 'healthy' | 'unhealthy'>>(data.sourceHealth)
     let documentCounts = $state<Record<SourceId, number>>({})
     let eventSource = $state<EventSource | null>(null)
-    let activeTab = $state(page.url.searchParams.get('tab') === 'oauth' ? 'oauth' : 'sources')
+    let activeTab = $state(
+        page.url.searchParams.get('tab') === 'oauth'
+            ? 'oauth'
+            : page.url.searchParams.get('tab') === 'mcp'
+              ? 'mcp'
+              : 'sources',
+    )
     let activeOAuthProvider = $state<OAuthProvider | null>(null)
     let redirectUriCopied = $state(false)
     const googleAdsOAuthConfigured = $derived(
@@ -248,6 +258,12 @@
         const slug = sourceTypeSlug[sourceType] ?? sourceType
         return `/admin/settings/integrations/${slug}/${sourceId}`
     }
+
+    function remoteMcpAuthLabel(authType: string | null) {
+        if (authType === AuthType.BEARER_TOKEN) return 'Shared bearer'
+        if (authType === AuthType.OAUTH) return 'Per-user OAuth'
+        return 'Public'
+    }
 </script>
 
 <svelte:head>
@@ -276,6 +292,11 @@
                     class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
                     OAuth Apps
                 </Tabs.Trigger>
+                <Tabs.Trigger
+                    value="mcp"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
+                    MCP
+                </Tabs.Trigger>
             </Tabs.List>
 
             <Tabs.Content value="sources" class="space-y-8">
@@ -290,7 +311,7 @@
 
                     {#if data.connectedSources.length > 0}
                         <div class="space-y-2">
-                            {#each data.connectedSources as source}
+                            {#each data.connectedSources as source (source.id)}
                                 {@const noun = getSourceNoun(source.sourceType as SourceType)}
                                 {@const sync = latestSyncRuns.get(source.id)}
                                 {@const health = sourceHealth.get(source.id)}
@@ -488,6 +509,71 @@
                     {/if}
                 </div>
 
+                <!-- Windshift server (personal OAuth source, server-level config) -->
+                {#if data.windshiftRegistered}
+                    <div class="space-y-4">
+                        <div>
+                            <h2 class="text-xl font-semibold">Windshift server</h2>
+                            <p class="text-muted-foreground text-sm">
+                                Windshift is a personal OAuth source: users connect it from My
+                                Integrations. Configure the Windshift server URL here — no env vars
+                                required.
+                            </p>
+                        </div>
+
+                        <Card class="flex flex-col">
+                            <CardHeader>
+                                <CardTitle class="flex items-center gap-3">
+                                    <div
+                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
+                                        <img
+                                            src={windshiftLogo}
+                                            alt="Windshift"
+                                            class="h-6 w-6 object-contain" />
+                                    </div>
+                                    Windshift
+                                </CardTitle>
+                                <CardDescription>
+                                    Base URL of the Windshift instance Omni talks to. OAuth client
+                                    registration is automatic (DCR + PKCE); there is no client
+                                    secret to configure.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent class="flex-1 space-y-2">
+                                {#if data.windshiftConfig.base_url}
+                                    <div class="text-sm">
+                                        <span class="text-muted-foreground">Windshift URL:</span>
+                                        <code
+                                            class="bg-muted ml-2 rounded px-1.5 py-0.5 text-xs break-all">
+                                            {data.windshiftConfig.base_url}
+                                        </code>
+                                    </div>
+                                {:else if data.windshiftEffectiveBaseUrl}
+                                    <div class="text-sm">
+                                        <span class="text-muted-foreground"
+                                            >Serving via env fallback:</span>
+                                        <code
+                                            class="bg-muted ml-2 rounded px-1.5 py-0.5 text-xs break-all">
+                                            {data.windshiftEffectiveBaseUrl}
+                                        </code>
+                                    </div>
+                                {:else}
+                                    <Badge variant="outline">Not configured</Badge>
+                                {/if}
+                            </CardContent>
+                            <CardFooter>
+                                <Button
+                                    size="sm"
+                                    variant={data.windshiftConfig.base_url ? 'outline' : 'default'}
+                                    class="cursor-pointer"
+                                    onclick={() => (activeSetup = 'windshift')}>
+                                    {data.windshiftConfig.base_url ? 'Edit' : 'Configure'}
+                                </Button>
+                            </CardFooter>
+                        </Card>
+                    </div>
+                {/if}
+
                 <!-- Available Integrations Section -->
                 <div class="space-y-4">
                     <div>
@@ -498,7 +584,7 @@
                     </div>
 
                     <div class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                        {#each data.availableIntegrations as integration}
+                        {#each data.availableIntegrations as integration (integration.id)}
                             <Card class="flex flex-col">
                                 <CardHeader>
                                     <CardTitle class="flex items-center gap-3">
@@ -575,7 +661,7 @@
                                 <div>Last updated</div>
                                 <div class="text-right"></div>
                             </div>
-                            {#each data.oauthProviders as provider}
+                            {#each data.oauthProviders as provider (provider.provider)}
                                 <div
                                     class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
                                     <div class="flex items-center gap-2 font-medium">
@@ -648,6 +734,11 @@
                         </div>
                     {/if}
                 </div>
+            </Tabs.Content>
+            <Tabs.Content value="mcp" class="space-y-4">
+                <McpTabContent
+                    sources={data.mcpTab.sources}
+                    manifestBySourceType={data.mcpTab.manifestBySourceType} />
             </Tabs.Content>
         </Tabs.Root>
     </div>
@@ -736,6 +827,12 @@
 
 <DarwinboxConnectorSetup
     open={activeSetup === 'darwinbox'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<WindshiftServerSetup
+    open={activeSetup === 'windshift'}
+    baseUrl={data.windshiftConfig.base_url ?? ''}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

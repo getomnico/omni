@@ -26,8 +26,8 @@ pub use content_chunker::ContentChunker;
 pub use content_storage::{ContentStorage, ContentStorageError};
 pub use db::repositories::{
     ConfigurationRepository, ConnectorConfigRepository, DocumentRepository, EmbeddingRepository,
-    GroupRepository, PersonRepository, PersonSearchResult, PersonUpsert, ServiceCredentialsRepo,
-    SourceRepository, TitleEntry, UserRepository,
+    GroupRepository, PersonRepository, PersonSearchFilter, PersonSearchResult, PersonSyncResult,
+    PersonUpsert, ServiceCredentialsRepo, SourceRepository, TitleEntry, UserRepository,
 };
 pub use db::{DatabaseError, DatabasePool};
 pub use embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};

@@ -7,7 +7,8 @@ use omni_connector_sdk::SdkClient;
 use redis::AsyncCommands;
 use shared::db::repositories::service_credentials::ServiceCredentialsRepo;
 use shared::models::{
-    AuthType, ConnectorManifest, ServiceCredential, ServiceProvider, SourceType, SyncType,
+    AuthType, ConnectorManifest, IntegrationType, ServiceCredential, ServiceProvider, SourceType,
+    SyncType,
 };
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -81,7 +82,11 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         sync_modes: vec![SyncType::Full],
         connector_id: "atlassian".to_string(),
         connector_url: "http://127.0.0.1:1".to_string(),
-        source_types: vec![SourceType::Confluence, SourceType::Jira],
+        integration_type: IntegrationType::Connector,
+        source_types: vec![
+            SourceType::Confluence.to_string(),
+            SourceType::Jira.to_string(),
+        ],
         description: None,
         actions: vec![],
         search_operators: vec![],

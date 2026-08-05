@@ -8,7 +8,10 @@ use crate::auth::{
 };
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
-use crate::models::{GoogleDirectoryUser, GoogleSyncCheckpoint, SearchUsersResponse};
+use crate::models::{
+    DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse, GoogleDirectoryUser,
+    GoogleSyncCheckpoint, SearchUsersResponse,
+};
 use crate::sync::SyncManager;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -808,6 +811,79 @@ impl GoogleConnector {
 
         Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
     }
+
+    async fn execute_discover_folders(
+        &self,
+        _params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<axum::response::Response> {
+        // Only JWT secrets are supported for shared-drive discovery.
+        if creds.auth_type != AuthType::Jwt {
+            return Ok(ActionResponse::failure(
+                "discover_folders requires JWT credentials".to_string(),
+            )
+            .into_response());
+        }
+
+        let principal_email = creds
+            .principal_email
+            .as_deref()
+            .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
+
+        let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
+
+        let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
+
+        // 1. List all shared drives
+        let drives_response = self
+            .sync_manager
+            .drive_client()
+            .list_drives(&google_auth, principal_email)
+            .await?;
+
+        let mut items: Vec<DriveFolderDiscoveryEntry> = Vec::new();
+
+        // 2. Add each shared drive as a selectable root
+        for drive in &drives_response.drives {
+            items.push(DriveFolderDiscoveryEntry {
+                id: drive.id.clone(),
+                name: drive.name.clone(),
+                path: format!("/{} (Shared Drive)", drive.name),
+                drive_id: drive.id.clone(),
+                kind: "shared_drive_root".to_string(),
+            });
+        }
+
+        // 3. For each shared drive, list top-level folder children.
+        // Any failure propagates so the admin gets an actionable error.
+        for drive in &drives_response.drives {
+            let folders = self
+                .sync_manager
+                .drive_client()
+                .list_folder_children(&google_auth, principal_email, &drive.id, &drive.id)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to list folder children for shared drive '{}' ({})",
+                        drive.name, drive.id
+                    )
+                })?;
+
+            for folder in &folders.files {
+                items.push(DriveFolderDiscoveryEntry {
+                    id: folder.id.clone(),
+                    name: folder.name.clone(),
+                    path: format!("/{}/{}", drive.name, folder.name),
+                    drive_id: drive.id.clone(),
+                    kind: "folder".to_string(),
+                });
+            }
+        }
+
+        let result = DriveFolderDiscoveryResponse { items };
+
+        Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
+    }
 }
 
 #[async_trait]
@@ -862,6 +938,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["file_id"]
                 }),
+                required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
@@ -879,6 +956,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": []
                 }),
+                required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
                 hidden: false,
@@ -903,9 +981,26 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["schema"]
                 }),
+                required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
+            },
+            ActionDefinition {
+                name: "discover_folders".to_string(),
+                description:
+                    "List accessible shared drives and their top-level folders for folder-path filter selection."
+                        .to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+                required_scopes: None,
+                source_types: vec![SourceType::GoogleDrive],
+                admin_only: true,
+                hidden: true,
             },
             ActionDefinition {
                 name: "google_workspace_call".to_string(),
@@ -955,6 +1050,7 @@ impl Connector for GoogleConnector {
                     },
                     "required": ["service", "resource", "method"]
                 }),
+                required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
                 hidden: false,
@@ -1106,7 +1202,9 @@ impl Connector for GoogleConnector {
                 }
             }
             _ => {
-                create_service_auth(creds, source.source_type).map_err(|e| {
+                let native_source_type = SourceType::try_from(source.source_type.as_str())
+                    .map_err(SyncRequestValidationError::BadRequest)?;
+                create_service_auth(creds, native_source_type).map_err(|e| {
                     SyncRequestValidationError::BadRequest(format!(
                         "Invalid Google service-account credentials: {}",
                         e
@@ -1156,6 +1254,7 @@ impl Connector for GoogleConnector {
         match action {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
+            "discover_folders" => self.execute_discover_folders(params, &creds).await,
             "google_workspace_schema" => self.execute_gws_schema(params).await,
             "google_workspace_call" => self.execute_gws_call(params, &creds).await,
             _ => {

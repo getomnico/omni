@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use shared::models::{ConnectorEvent, ConnectorManifest, ServiceCredential, Source, SyncType};
 
@@ -360,13 +360,36 @@ impl SdkClient {
             events,
         };
 
-        let response = self
-            .client
-            .post(format!("{}/sdk/events/batch", self.base_url))
-            .json(&request)
-            .send()
-            .await?;
-        ensure_ok(response, "flush_events").await?;
+        let result = async {
+            let response = self
+                .client
+                .post(format!("{}/sdk/events/batch", self.base_url))
+                .json(&request)
+                .send()
+                .await?;
+            ensure_ok(response, "flush_events").await?;
+            SdkResult::Ok(())
+        }
+        .await;
+
+        if let Err(error) = result {
+            error!(
+                sync_run_id,
+                source_id,
+                batch_size,
+                error = %error,
+                "SDK: Failed to flush events; retaining batch for retry"
+            );
+            let mut buffer = self.event_buffer.lock().await;
+            let entry = buffer.entry(key).or_insert_with(|| BufferEntry {
+                events: Vec::new(),
+                oldest_at: Instant::now(),
+            });
+            let mut retained = request.events;
+            retained.append(&mut entry.events);
+            entry.events = retained;
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -386,6 +409,41 @@ impl SdkClient {
             self.flush_events(&sync_run_id, &sid).await?;
         }
         Ok(())
+    }
+
+    /// Flush only the buffers belonging to one sync run.
+    ///
+    /// Completion/failure for one run must never be blocked by another run's
+    /// retained buffer (for example an old failed run whose events connector
+    /// manager now rejects because the run is terminal).
+    pub async fn flush_sync(&self, sync_run_id: &str) -> Result<()> {
+        let keys: Vec<BufferKey> = {
+            let buffer = self.event_buffer.lock().await;
+            buffer
+                .keys()
+                .filter(|(sid, _)| sid == sync_run_id)
+                .cloned()
+                .collect()
+        };
+
+        for (sid, source_id) in keys {
+            self.flush_events(&sid, &source_id).await?;
+        }
+        Ok(())
+    }
+
+    /// Discard any buffered events for a sync run that is now terminal
+    /// (failed or cancelled). Connector manager rejects events belonging to
+    /// non-running runs, so a retained batch can never be admitted; leaving
+    /// it in the buffer would only wedge later runs that used to flush all
+    /// runs before completing.
+    ///
+    /// Callers must only invoke this after connector manager has confirmed
+    /// the run is terminal; discarding first would drop events that could
+    /// still be admitted if the terminalization request failed.
+    pub async fn discard_sync(&self, sync_run_id: &str) {
+        let mut buffer = self.event_buffer.lock().await;
+        buffer.retain(|(sid, _), _| sid != sync_run_id);
     }
 
     /// Flush all buffered events across all (sync_run_id, source_id) pairs.
@@ -543,12 +601,14 @@ impl SdkClient {
         Ok(())
     }
 
-    /// Mark sync as completed. Flushes any buffered events first so the
-    /// completion never races ahead of the final events for this sync.
+    /// Mark sync as completed. Flushes this run's buffered events first so the
+    /// completion never races ahead of the final events for this sync. Only the
+    /// current run's buffers are flushed — another run's retained batch (e.g. a
+    /// terminal run connector manager now rejects) must never block completion.
     pub async fn complete(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Completing sync_run={}", sync_run_id);
 
-        self.flush_all().await?;
+        self.flush_sync(sync_run_id).await?;
 
         let response = self
             .client
@@ -562,13 +622,19 @@ impl SdkClient {
         Ok(())
     }
 
-    /// Mark sync as failed. Best-effort flush of buffered events first — if
-    /// the flush itself fails we log and proceed, because marking the sync as
-    /// failed is more important than preserving partial progress.
+    /// Mark sync as failed. Best-effort flush of this run's buffered events
+    /// first — if the flush itself fails we log and proceed, because marking
+    /// the sync as failed is more important than preserving partial progress.
+    /// Any events that could not be flushed are then discarded: the run is
+    /// terminal and connector manager will reject them anyway, so retaining
+    /// them could only wedge a later run that used to flush all runs.
     pub async fn fail(&self, sync_run_id: &str, error: &str) -> SdkResult<()> {
         debug!("SDK: Failing sync_run={}: {}", sync_run_id, error);
 
-        if let Err(e) = self.flush_all().await {
+        // Best-effort flush of this run's buffered events first — if the
+        // flush itself fails we log and proceed, because marking the sync as
+        // failed is more important than preserving partial progress.
+        if let Err(e) = self.flush_sync(sync_run_id).await {
             warn!(
                 "SDK: flush before fail() failed (continuing): sync_run={}: {}",
                 sync_run_id, e
@@ -586,6 +652,12 @@ impl SdkClient {
             .send()
             .await?;
         ensure_ok(response, "fail").await?;
+
+        // Only after connector manager confirms the failure is the run
+        // terminal. Discard whatever the best-effort flush retained; an
+        // unsuccessful fail request leaves the run running and must keep the
+        // buffer intact.
+        self.discard_sync(sync_run_id).await;
         Ok(())
     }
 
@@ -684,7 +756,9 @@ impl SdkClient {
         Ok(result.sync_run_id)
     }
 
-    /// Cancel a sync run
+    /// Cancel a sync run. Buffered events for the run are discarded: the run
+    /// becomes terminal and connector manager rejects its events, so a retained
+    /// batch could never be admitted and would only wedge later runs.
     pub async fn cancel(&self, sync_run_id: &str) -> SdkResult<()> {
         debug!("SDK: Cancelling sync_run={}", sync_run_id);
 
@@ -699,6 +773,11 @@ impl SdkClient {
             .send()
             .await?;
         ensure_ok(response, "cancel").await?;
+
+        // Only after connector manager confirms the cancellation is the run
+        // terminal; an unsuccessful cancel request leaves the run running and
+        // must keep its buffered events.
+        self.discard_sync(sync_run_id).await;
         Ok(())
     }
 
@@ -851,4 +930,376 @@ pub fn build_connector_url() -> String {
     let port =
         std::env::var("PORT").unwrap_or_else(|_| panic!("PORT environment variable is required."));
     format!("http://{}:{}", hostname, port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Router, http::StatusCode, routing::post};
+    use shared::models::{ConnectorEvent, PersonSyncRecord, SyncType};
+
+    fn person_event() -> ConnectorEvent {
+        ConnectorEvent::PersonSync {
+            sync_run_id: "run-1".into(),
+            source_id: "source-1".into(),
+            person: PersonSyncRecord {
+                external_id: "E1".into(),
+                email: "ada@example.com".into(),
+                display_name: None,
+                given_name: None,
+                middle_name: None,
+                surname: None,
+                job_title: None,
+                department: None,
+                division: None,
+                company_name: None,
+                office_location: None,
+                work_country: None,
+                employee_id: None,
+                employee_type: None,
+                cost_center: None,
+                grade: None,
+                band: None,
+                confirmation_status: None,
+                employment_start_date: None,
+                employment_end_date: None,
+                phone: None,
+                is_active: None,
+                top_department: None,
+                manager_external_id: None,
+                source_updated_at: None,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_person_flush_is_retained_and_propagated() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/sdk/events/batch",
+                    post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let client = SdkClient::new(&format!("http://{address}"));
+        client
+            .sync_types
+            .lock()
+            .await
+            .insert("run-1".into(), SyncType::Full);
+        client
+            .emit_event("run-1", "source-1", person_event())
+            .await
+            .unwrap();
+        let error = client.flush_events("run-1", "source-1").await.unwrap_err();
+        assert!(error.to_string().contains("flush_events"));
+        let buffer = client.event_buffer.lock().await;
+        let retained = &buffer
+            .get(&("run-1".into(), "source-1".into()))
+            .unwrap()
+            .events;
+        assert_eq!(retained.len(), 1);
+        assert!(matches!(
+            retained[0],
+            ConnectorEvent::PersonSync { ref person, .. } if person.email == "ada@example.com"
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_run_retained_batch_does_not_block_later_run_completion() {
+        use axum::body::Body;
+        use axum::http::Request as AxumRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route(
+                        "/sdk/events/batch",
+                        post(|req: AxumRequest<Body>| async move {
+                            let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
+                                .await
+                                .unwrap();
+                            let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                            // Connector manager rejects events for a terminal
+                            // run: run-A is treated as already failed, so its
+                            // retained batch must not be re-flushed.
+                            if value["sync_run_id"] == "run-A" {
+                                StatusCode::SERVICE_UNAVAILABLE
+                            } else {
+                                StatusCode::OK
+                            }
+                        }),
+                    )
+                    .route("/sdk/sync/:id/complete", post(|| async { StatusCode::OK }))
+                    .route("/sdk/sync/:id/fail", post(|| async { StatusCode::OK }))
+                    .route("/sdk/sync/cancel", post(|| async { StatusCode::OK })),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = SdkClient::new(&format!("http://{address}"));
+        for (sync_run_id, _source_id) in [("run-A", "source-A"), ("run-B", "source-B")] {
+            client
+                .sync_types
+                .lock()
+                .await
+                .insert(sync_run_id.into(), SyncType::Full);
+        }
+
+        // Run A: events buffered, flush rejected (run is effectively terminal),
+        // then the run is failed. The retained batch must be discarded.
+        client
+            .emit_event("run-A", "source-A", person_event())
+            .await
+            .unwrap();
+        assert!(client.flush_events("run-A", "source-A").await.is_err());
+        // Failed flush retains the batch for a non-terminal run.
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
+        // Marking the run failed must discard its inadmissible retained batch.
+        client.fail("run-A", "boom").await.unwrap();
+        assert!(client.event_buffer.lock().await.is_empty());
+
+        // Run B: must complete despite run A's earlier retained batch. The
+        // old flush_all() path would have re-flushed run A's events and failed.
+        client
+            .emit_event("run-B", "source-B", person_event())
+            .await
+            .unwrap();
+        client.complete("run-B").await.unwrap();
+        assert!(client.event_buffer.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_discards_buffered_events_for_that_run() {
+        use axum::body::Body;
+        use axum::http::Request as AxumRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/sdk/sync/cancel",
+                    post(|_req: AxumRequest<Body>| async { StatusCode::OK }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = SdkClient::new(&format!("http://{address}"));
+        client
+            .sync_types
+            .lock()
+            .await
+            .insert("run-A".into(), SyncType::Full);
+        client
+            .emit_event("run-A", "source-A", person_event())
+            .await
+            .unwrap();
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
+        client.cancel("run-A").await.unwrap();
+        assert!(client.event_buffer.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_fail_request_retains_buffered_events() {
+        use axum::body::Body;
+        use axum::http::Request as AxumRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route(
+                        "/sdk/events/batch",
+                        post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+                    )
+                    .route(
+                        "/sdk/sync/:id/fail",
+                        post(|_req: AxumRequest<Body>| async { StatusCode::INTERNAL_SERVER_ERROR }),
+                    ),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = SdkClient::new(&format!("http://{address}"));
+        client
+            .sync_types
+            .lock()
+            .await
+            .insert("run-A".into(), SyncType::Full);
+        client
+            .emit_event("run-A", "source-A", person_event())
+            .await
+            .unwrap();
+        assert!(client.flush_events("run-A", "source-A").await.is_err());
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
+
+        // Connector manager rejects the fail request: the run is still
+        // running, so the buffered events must survive.
+        assert!(client.fail("run-A", "boom").await.is_err());
+        assert_eq!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .get(&("run-A".into(), "source-A".into()))
+                .unwrap()
+                .events
+                .len(),
+            1,
+            "an unsuccessful fail request must retain the run's buffer"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_fail_discards_buffered_events() {
+        use axum::body::Body;
+        use axum::http::Request as AxumRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route(
+                        "/sdk/events/batch",
+                        post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+                    )
+                    .route(
+                        "/sdk/sync/:id/fail",
+                        post(|_req: AxumRequest<Body>| async { StatusCode::OK }),
+                    ),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = SdkClient::new(&format!("http://{address}"));
+        client
+            .sync_types
+            .lock()
+            .await
+            .insert("run-A".into(), SyncType::Full);
+        client
+            .emit_event("run-A", "source-A", person_event())
+            .await
+            .unwrap();
+        assert!(client.flush_events("run-A", "source-A").await.is_err());
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
+
+        // Once connector manager confirms the failure, the run is terminal
+        // and its retained batch must be discarded.
+        client.fail("run-A", "boom").await.unwrap();
+        assert!(
+            client.event_buffer.lock().await.is_empty(),
+            "a confirmed fail must discard the run's retained buffer"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_cancel_request_retains_buffered_events() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::body::Body;
+        use axum::http::Request as AxumRequest;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let server_calls = Arc::clone(&calls);
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/sdk/sync/cancel",
+                    post(move |_req: AxumRequest<Body>| {
+                        let calls = Arc::clone(&server_calls);
+                        async move {
+                            // First request fails, the retry succeeds.
+                            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                                StatusCode::INTERNAL_SERVER_ERROR
+                            } else {
+                                StatusCode::OK
+                            }
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+
+        let client = SdkClient::new(&format!("http://{address}"));
+        client
+            .sync_types
+            .lock()
+            .await
+            .insert("run-A".into(), SyncType::Full);
+        client
+            .emit_event("run-A", "source-A", person_event())
+            .await
+            .unwrap();
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
+
+        // Unsuccessful cancel: the run is still running, buffer intact.
+        assert!(client.cancel("run-A").await.is_err());
+        assert!(
+            client
+                .event_buffer
+                .lock()
+                .await
+                .contains_key(&("run-A".into(), "source-A".into()))
+        );
+
+        // Confirmed cancel: terminal, buffer discarded.
+        client.cancel("run-A").await.unwrap();
+        assert!(client.event_buffer.lock().await.is_empty());
+    }
 }

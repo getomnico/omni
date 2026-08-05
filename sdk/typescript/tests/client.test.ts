@@ -334,6 +334,77 @@ describe('SdkClient', () => {
     });
   });
 
+  describe('getUserEmailForSource', () => {
+    it('returns the source owner email', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-123/user-email`, () =>
+          HttpResponse.json({ email: 'owner@example.com' })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getUserEmailForSource('source-123')).resolves.toBe(
+        'owner@example.com'
+      );
+    });
+
+    it('rejects an invalid response', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/source/source-123/user-email`, () =>
+          HttpResponse.json({})
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getUserEmailForSource('source-123')).rejects.toThrow(
+        'invalid response'
+      );
+    });
+  });
+
+  describe('getConnectorConfig', () => {
+    it('returns the stored config for a provider', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/connector-configs/windshift`, () =>
+          HttpResponse.json({
+            base_url: 'https://windshift.example.com',
+            internal_base_url: 'http://windshift:8080',
+          })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getConnectorConfig('windshift')).resolves.toEqual({
+        base_url: 'https://windshift.example.com',
+        internal_base_url: 'http://windshift:8080',
+      });
+    });
+
+    it('returns an empty object when the provider has no config row (404)', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/connector-configs/windshift`, () =>
+          HttpResponse.json({ error: 'Connector config not found for provider: windshift' }, { status: 404 })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getConnectorConfig('windshift')).resolves.toEqual({});
+    });
+
+    it('throws SdkClientError on other failures', async () => {
+      server.use(
+        http.get(`${BASE_URL}/sdk/connector-configs/windshift`, () =>
+          HttpResponse.json({ error: 'boom' }, { status: 500 })
+        )
+      );
+
+      const client = new SdkClient(BASE_URL);
+      await expect(client.getConnectorConfig('windshift')).rejects.toThrow(
+        'Failed to fetch connector config: 500'
+      );
+    });
+  });
+
   describe('error handling', () => {
     it('throws SdkClientError on non-2xx response', async () => {
       server.use(

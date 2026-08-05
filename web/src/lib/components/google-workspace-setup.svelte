@@ -3,13 +3,16 @@
     import { Button } from '$lib/components/ui/button'
     import { Label } from '$lib/components/ui/label'
     import { Checkbox } from '$lib/components/ui/checkbox'
+    import * as Card from '$lib/components/ui/card'
     import { AuthType } from '$lib/types'
+    import type { FolderPathFilter } from '$lib/types'
     import { toast } from 'svelte-sonner'
     import { goto } from '$app/navigation'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
     import gmailLogo from '$lib/images/icons/gmail.svg'
     import googleChatLogo from '$lib/images/icons/google-chat.svg'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
+    import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
 
     interface Props {
         open: boolean
@@ -27,6 +30,30 @@
     let connectGmail = $state(true)
     let connectChat = $state(false)
     let isSubmitting = $state(false)
+    let driveFolderFilters = $state<FolderPathFilter[]>([])
+
+    // Credential-context guard: clear selected folder filters whenever the
+    // credential inputs change after initialization so filters from one set
+    // of credentials cannot be silently submitted with another.
+    let prevCredContext = $state('')
+    let credInitialized = $state(false)
+
+    $effect(() => {
+        const token = JSON.stringify({
+            sa: serviceAccountJson,
+            pe: principalEmail,
+            dm: domain,
+        })
+        if (!credInitialized) {
+            credInitialized = true
+            prevCredContext = token
+            return
+        }
+        if (token !== prevCredContext) {
+            prevCredContext = token
+            driveFolderFilters = []
+        }
+    })
 
     async function handleSubmit() {
         isSubmitting = true
@@ -55,9 +82,20 @@
             }
 
             const credentials = { service_account_key: serviceAccountJson }
-            const config = {
+
+            // Base config shared by all Google services (domain only).
+            const baseConfig: Record<string, unknown> = {
                 domain: domain || null,
             }
+
+            // Drive-specific config with optional folder filters.
+            const driveConfig: Record<string, unknown> = {
+                domain: domain || null,
+            }
+            if (driveFolderFilters.length > 0) {
+                driveConfig.folder_path_filters = driveFolderFilters
+            }
+
             const authType = AuthType.JWT
             const provider = 'google'
 
@@ -69,7 +107,7 @@
                         scope: 'org',
                         name: 'Google Drive',
                         sourceType: 'google_drive',
-                        config,
+                        config: driveConfig,
                     }),
                 })
 
@@ -88,7 +126,7 @@
                         authType: authType,
                         principalEmail: principalEmail || null,
                         credentials,
-                        config,
+                        config: driveConfig,
                     }),
                 })
 
@@ -105,7 +143,7 @@
                         scope: 'org',
                         name: 'Gmail',
                         sourceType: 'gmail',
-                        config,
+                        config: baseConfig,
                     }),
                 })
 
@@ -124,7 +162,7 @@
                         authType: authType,
                         principalEmail: principalEmail || null,
                         credentials: credentials,
-                        config,
+                        config: baseConfig,
                     }),
                 })
 
@@ -141,7 +179,7 @@
                         scope: 'org',
                         name: 'Google Chat',
                         sourceType: 'google_chat',
-                        config,
+                        config: baseConfig,
                     }),
                 })
 
@@ -160,7 +198,7 @@
                         authType: authType,
                         principalEmail: principalEmail || null,
                         credentials: credentials,
-                        config,
+                        config: baseConfig,
                     }),
                 })
 
@@ -240,6 +278,24 @@
             </div>
 
             <GoogleServiceAccountForm bind:serviceAccountJson bind:principalEmail bind:domain />
+
+            {#if connectDrive}
+                <Card.Root class="border-dashed">
+                    <Card.Header>
+                        <Card.Title class="text-sm">Drive Folder Filters</Card.Title>
+                        <Card.Description class="text-xs">
+                            Optionally restrict indexing to specific shared drives and folders.
+                        </Card.Description>
+                    </Card.Header>
+                    <Card.Content>
+                        <GoogleDriveFolderSelector
+                            bind:selected={driveFolderFilters}
+                            {serviceAccountJson}
+                            {principalEmail}
+                            {domain} />
+                    </Card.Content>
+                </Card.Root>
+            {/if}
         </div>
 
         <Dialog.Footer>

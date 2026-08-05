@@ -1,13 +1,24 @@
 import { createHash, randomBytes } from 'crypto'
 import { app, getConfig } from '../config'
 import { getConnectorConfig, upsertConnectorConfig } from '../db/connector-configs'
+import type { Source } from '../db/schema'
 import { createLogger } from '../logger'
+import {
+    discoverRemoteMcpOAuthConfig,
+    fetchWithPinnedRemoteMcpDns,
+    readRemoteMcpLimitedJson,
+    validateRemoteMcpUrl,
+    validateRemoteMcpUrlForCredentialUse,
+} from '../mcp/client'
+import type { RemoteMcpIpPolicy } from '../mcp/client'
 import { OAuthStateManager } from './state'
 import type { OAuthError, OAuthTokens } from './types'
+import { IntegrationType } from '$lib/types'
 
 export type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret_basic' | 'none'
 
 const logger = createLogger('connector-oauth')
+const OAUTH_RESPONSE_MAX_BYTES = 1024 * 1024
 
 function isOAuthTokenEndpointAuthMethod(value: unknown): value is OAuthTokenEndpointAuthMethod {
     return value === 'client_secret_post' || value === 'client_secret_basic' || value === 'none'
@@ -30,6 +41,14 @@ export interface OAuthManifestConfig {
     registration_endpoint?: string | null
     token_endpoint_auth_method?: OAuthTokenEndpointAuthMethod
     resource?: string | null
+    credential_provider?: string | null
+    protected_resource_metadata_url?: string | null
+    authorization_server_metadata_url?: string | null
+    /// Operator-configured private route (Windshift only): when present, the
+    /// transport endpoints (token/registration/userinfo) are derived from
+    /// this URL and may resolve to RFC1918 addresses. Absent for every other
+    /// provider and when no internal route is configured.
+    internal_base_url?: string | null
 }
 
 /// What flow we're driving — encoded into the OAuth state so the single
@@ -71,6 +90,22 @@ export function callbackUrl(): string {
     return `${app.publicUrl}/api/oauth/callback`
 }
 
+/** Return the public service URL represented by an OAuth authorization endpoint. */
+export function oauthServiceBaseUrl(authEndpoint: string): string {
+    const authorizationPath = '/oauth/authorize'
+    try {
+        const url = new URL(authEndpoint)
+        if (url.pathname.endsWith(authorizationPath)) {
+            url.pathname = url.pathname.slice(0, -authorizationPath.length) || '/'
+        }
+        url.search = ''
+        url.hash = ''
+        return url.toString().replace(/\/$/, '')
+    } catch {
+        return authEndpoint.replace(/\/oauth\/authorize\/?$/, '').replace(/\/$/, '')
+    }
+}
+
 /// Fetch a connector manifest from connector-manager by source_type. Returns
 /// the manifest's oauth block, or null if the connector either isn't
 /// registered or doesn't declare an OAuth config.
@@ -86,6 +121,23 @@ export async function getOAuthManifestForSourceType(
     }>
     const entry = body.find((c) => c.source_type === sourceType)
     return entry?.manifest?.oauth ?? null
+}
+
+export async function getOAuthConfigForSource(
+    source: Pick<Source, 'sourceType' | 'integrationType' | 'config'>,
+): Promise<OAuthManifestConfig | null> {
+    if (source.integrationType !== IntegrationType.REMOTE_MCP) {
+        return getOAuthManifestForSourceType(source.sourceType)
+    }
+
+    const provider = `remote_mcp:${source.sourceType}`
+    const manifestConfig = await getOAuthManifestForSourceType(source.sourceType)
+    if (manifestConfig?.provider === provider) return manifestConfig
+
+    return (await discoverRemoteMcpOAuthConfig({
+        endpointUrl: String((source.config as Record<string, unknown>)?.endpoint_url ?? ''),
+        sourceType: source.sourceType,
+    })) as OAuthManifestConfig | null
 }
 
 interface ClientCreds {
@@ -113,7 +165,18 @@ async function loadClientCreds(
     const clientId = storedConfig.oauth_client_id
     const clientSecret = storedConfig.oauth_client_secret
 
-    if (clientId && isClientConfigComplete(storedConfig, tokenEndpointAuthMethod)) {
+    const dynamicRegistrationIsCurrent =
+        !manifestConfig ||
+        !isAutoManagedOAuthProvider(manifestConfig) ||
+        storedConfig.oauth_dynamic_client_registration !== 'true' ||
+        (storedConfig.oauth_registration_endpoint === manifestConfig.registration_endpoint &&
+            storedConfig.oauth_redirect_uri === callbackUrl())
+
+    if (
+        clientId &&
+        isClientConfigComplete(storedConfig, tokenEndpointAuthMethod) &&
+        dynamicRegistrationIsCurrent
+    ) {
         return {
             clientId,
             clientSecret: clientSecret || undefined,
@@ -130,6 +193,103 @@ async function loadClientCreds(
     return null
 }
 
+/// Providers whose OAuth endpoints are admin-configured URLs (remote MCP
+/// servers, Windshift). Server-side fetches to these endpoints must go
+/// through SSRF validation and pinned-DNS resolution.
+function isAdminConfiguredEndpointProvider(provider: string): boolean {
+    return provider.startsWith('remote_mcp:') || provider === 'windshift'
+}
+
+/// The exact origin (scheme://host:port) of the operator-configured Windshift
+/// internal route, or null when unset/invalid. The connector advertises it in
+/// the manifest only when WINDSHIFT_INTERNAL_BASE_URL is set, so a manifest
+/// without the marker (public-only deployment) stays strictly public.
+/// Endpoints on this origin may resolve to RFC1918 private addresses — the
+/// internal URL's purpose is private networking; every other endpoint must
+/// stay publicly routable.
+export function windshiftInternalOrigin(config: OAuthManifestConfig): string | null {
+    if (config.provider !== 'windshift') return null
+    const internalBaseUrl = config.internal_base_url
+    if (typeof internalBaseUrl !== 'string' || !internalBaseUrl) return null
+    try {
+        return new URL(internalBaseUrl).origin
+    } catch {
+        return null
+    }
+}
+
+function ssrfPolicyForEndpoint(endpoint: string, internalOrigin: string | null): RemoteMcpIpPolicy {
+    if (!internalOrigin) return {}
+    try {
+        if (new URL(endpoint).origin === internalOrigin) return { allowPrivate: true }
+    } catch {
+        // Not a URL (e.g. a resource identifier): keep strict.
+    }
+    return {}
+}
+
+async function remoteMcpCredentialFetch(
+    provider: string,
+    endpoint: string,
+    init: RequestInit,
+    internalOrigin: string | null,
+): Promise<Response> {
+    if (!isAdminConfiguredEndpointProvider(provider)) {
+        return fetch(endpoint, {
+            ...init,
+            signal: init.signal ?? AbortSignal.timeout(20_000),
+        })
+    }
+    const policy = ssrfPolicyForEndpoint(endpoint, internalOrigin)
+    const validated = await validateRemoteMcpUrlForCredentialUse(endpoint, policy)
+    return fetchWithPinnedRemoteMcpDns(validateRemoteMcpUrl(validated), init, policy)
+}
+
+async function readLimitedResponseText(response: Response): Promise<string> {
+    const reader = response.body?.getReader()
+    if (!reader) return ''
+    const chunks: Uint8Array[] = []
+    let total = 0
+    while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        total += value.byteLength
+        if (total > OAUTH_RESPONSE_MAX_BYTES) throw new Error('OAuth response too large')
+        chunks.push(value)
+    }
+    return new TextDecoder().decode(Buffer.concat(chunks))
+}
+
+async function readCredentialJson(provider: string, response: Response): Promise<unknown> {
+    if (isAdminConfiguredEndpointProvider(provider)) return readRemoteMcpLimitedJson(response)
+    const text = await readLimitedResponseText(response)
+    return text.trim() ? JSON.parse(text) : {}
+}
+
+async function readCredentialText(_provider: string, response: Response): Promise<string> {
+    return readLimitedResponseText(response)
+}
+
+async function validateRemoteMcpOAuthConfigUrls(config: OAuthManifestConfig): Promise<void> {
+    if (!isAdminConfiguredEndpointProvider(config.provider)) return
+    const internalOrigin = windshiftInternalOrigin(config)
+    const endpoints = [config.auth_endpoint, config.token_endpoint, config.userinfo_endpoint]
+    if (config.registration_endpoint) endpoints.push(config.registration_endpoint)
+    if (config.resource) endpoints.push(config.resource)
+    if (config.protected_resource_metadata_url) {
+        endpoints.push(config.protected_resource_metadata_url)
+    }
+    if (config.authorization_server_metadata_url) {
+        endpoints.push(config.authorization_server_metadata_url)
+    }
+    for (const endpoint of endpoints) {
+        await validateRemoteMcpUrlForCredentialUse(
+            endpoint,
+            ssrfPolicyForEndpoint(endpoint, internalOrigin),
+        )
+    }
+}
+
 async function dynamicallyRegisterClient(
     provider: string,
     config: OAuthManifestConfig,
@@ -141,25 +301,26 @@ async function dynamicallyRegisterClient(
     )
     let response: Response
     try {
-        response = await fetch(config.registration_endpoint!, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
+        await validateRemoteMcpOAuthConfigUrls(config)
+        response = await remoteMcpCredentialFetch(
+            provider,
+            config.registration_endpoint!,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                },
+                body: JSON.stringify(dynamicRegistrationPayload(provider, redirectUri, scope)),
             },
-            body: JSON.stringify({
-                client_name: 'Omni ClickUp MCP',
-                redirect_uris: [redirectUri],
-                grant_types: ['authorization_code'],
-                response_types: ['code'],
-                token_endpoint_auth_method: 'none',
-                scope,
-            }),
-        })
+            windshiftInternalOrigin(config),
+        )
     } catch {
         return null
     }
-    const data = (await response.json().catch(() => ({}))) as { client_id?: string }
+    const data = (await readCredentialJson(provider, response).catch(() => ({}))) as {
+        client_id?: string
+    }
     if (!response.ok || !data.client_id) return null
 
     const stored = {
@@ -167,6 +328,8 @@ async function dynamicallyRegisterClient(
         oauth_client_id: data.client_id,
         oauth_token_endpoint_auth_method: 'none',
         oauth_dynamic_client_registration: 'true',
+        oauth_registration_endpoint: config.registration_endpoint!,
+        oauth_redirect_uri: redirectUri,
     }
     await upsertConnectorConfig(provider, stored, null)
 
@@ -175,6 +338,28 @@ async function dynamicallyRegisterClient(
         tokenEndpointAuthMethod: 'none',
         authEndpoint: existingConfig.oauth_auth_endpoint || undefined,
         tokenEndpoint: existingConfig.oauth_token_endpoint || undefined,
+    }
+}
+
+export function dynamicRegistrationPayload(provider: string, redirectUri: string, scope: string) {
+    const providerName =
+        provider === 'clickup'
+            ? 'ClickUp'
+            : provider
+                  .split(/[-_\s]+/)
+                  .filter(Boolean)
+                  .map((part) => part[0].toUpperCase() + part.slice(1))
+                  .join(' ')
+    return {
+        client_name: `Omni ${providerName} MCP`,
+        redirect_uris: [redirectUri],
+        grant_types:
+            provider === 'windshift'
+                ? ['authorization_code', 'refresh_token']
+                : ['authorization_code'],
+        response_types: ['code'],
+        token_endpoint_auth_method: 'none' as const,
+        scope,
     }
 }
 
@@ -232,6 +417,26 @@ function scopesForFlow(
     return [...out]
 }
 
+export function scopesForExistingSourceUserFlow(
+    config: OAuthManifestConfig,
+    sourceType: string,
+    mode: 'read' | 'write',
+    requiredScopes?: string[],
+): string[] {
+    const readScopes = config.scopes[sourceType]?.read ?? []
+    if (mode === 'read') return readScopes
+
+    const writeScopes = config.scopes[sourceType]?.write ?? []
+    const requestedWriteScopes = requiredScopes?.length ? [...new Set(requiredScopes)] : writeScopes
+    const invalidScopes = requestedWriteScopes.filter((scope) => !writeScopes.includes(scope))
+    if (invalidScopes.length > 0) {
+        throw new Error(
+            `Unsupported write scopes for source_type=${sourceType}: ${invalidScopes.join(', ')}`,
+        )
+    }
+    return [...new Set([...readScopes, ...requestedWriteScopes])]
+}
+
 /// Build the authorization URL for a given flow.
 export async function generateAuthUrl(args: {
     flow: Extract<OAuthFlow, { type: 'connect_source' }>
@@ -281,10 +486,13 @@ export async function generateAuthUrl(args: {
 export async function generateAuthUrlForOrgSource(args: {
     sourceId: string
     sourceType: string
+    source?: Pick<Source, 'sourceType' | 'integrationType' | 'config'>
     userId: string
     returnTo?: string
 }): Promise<{ url: string; requiredScopes: string[] }> {
-    const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
+    const manifestConfig = args.source
+        ? await getOAuthConfigForSource(args.source)
+        : await getOAuthManifestForSourceType(args.sourceType)
     if (!manifestConfig) {
         throw new Error(`No OAuth manifest for source_type=${args.sourceType}`)
     }
@@ -323,13 +531,17 @@ export async function generateAuthUrlForOrgSource(args: {
 async function generateAuthUrlForExistingSourceUserFlow(args: {
     sourceId: string
     sourceType: string
+    source?: Pick<Source, 'sourceType' | 'integrationType' | 'config'>
     userId: string
     returnTo?: string
     approvalId?: string
     approvalChatId?: string
     mode: 'read' | 'write'
+    requiredScopes?: string[]
 }): Promise<{ url: string; requiredScopes: string[] }> {
-    const manifestConfig = await getOAuthManifestForSourceType(args.sourceType)
+    const manifestConfig = args.source
+        ? await getOAuthConfigForSource(args.source)
+        : await getOAuthManifestForSourceType(args.sourceType)
     if (!manifestConfig) {
         throw new Error(`No OAuth manifest for source_type=${args.sourceType}`)
     }
@@ -338,11 +550,13 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
         throw new Error(`OAuth client not configured for provider=${manifestConfig.provider}`)
     }
 
-    const readScopes = manifestConfig.scopes[args.sourceType]?.read ?? []
-    const writeScopes = manifestConfig.scopes[args.sourceType]?.write ?? []
-    const actionScopes =
-        args.mode === 'write' ? [...new Set([...readScopes, ...writeScopes])] : readScopes
-    if (actionScopes.length === 0) {
+    const actionScopes = scopesForExistingSourceUserFlow(
+        manifestConfig,
+        args.sourceType,
+        args.mode,
+        args.requiredScopes,
+    )
+    if (actionScopes.length === 0 && args.source?.integrationType !== IntegrationType.REMOTE_MCP) {
         throw new Error(`No ${args.mode} action scopes declared for source_type=${args.sourceType}`)
     }
 
@@ -388,6 +602,7 @@ async function generateAuthUrlForExistingSourceUserFlow(args: {
 export async function generateAuthUrlForUserRead(args: {
     sourceId: string
     sourceType: string
+    source?: Pick<Source, 'sourceType' | 'integrationType' | 'config'>
     userId: string
     returnTo?: string
 }): Promise<{ url: string; requiredScopes: string[] }> {
@@ -399,10 +614,12 @@ export async function generateAuthUrlForUserRead(args: {
 export async function generateAuthUrlForUserWrite(args: {
     sourceId: string
     sourceType: string
+    source?: Pick<Source, 'sourceType' | 'integrationType' | 'config'>
     userId: string
     returnTo?: string
     approvalId?: string
     approvalChatId?: string
+    requiredScopes?: string[]
 }): Promise<{ url: string; requiredScopes: string[] }> {
     return generateAuthUrlForExistingSourceUserFlow({ ...args, mode: 'write' })
 }
@@ -505,7 +722,14 @@ export async function exchangeCodeAndIdentify(
         tokenParams.set('resource', config.resource)
     }
 
+    await validateRemoteMcpOAuthConfigUrls(config)
     const tokenEndpoint = creds.tokenEndpoint ?? config.token_endpoint
+    if (isAdminConfiguredEndpointProvider(config.provider)) {
+        await validateRemoteMcpUrlForCredentialUse(
+            tokenEndpoint,
+            ssrfPolicyForEndpoint(tokenEndpoint, windshiftInternalOrigin(config)),
+        )
+    }
     logger.info('Starting connector OAuth token exchange', {
         provider: config.provider,
         flow: state.metadata.flow.type,
@@ -517,12 +741,19 @@ export async function exchangeCodeAndIdentify(
         resource: config.resource ?? null,
         requestedScopes: state.metadata.requiredScopes,
     })
-    const tokenResp = await fetch(tokenEndpoint, {
-        method: 'POST',
-        headers: tokenHeaders,
-        body: tokenParams.toString(),
-    })
-    const tokenData = (await tokenResp.json().catch(() => ({}))) as OAuthTokens | OAuthError
+    const tokenResp = await remoteMcpCredentialFetch(
+        config.provider,
+        tokenEndpoint,
+        {
+            method: 'POST',
+            headers: tokenHeaders,
+            body: tokenParams.toString(),
+        },
+        windshiftInternalOrigin(config),
+    )
+    const tokenData = (await readCredentialJson(config.provider, tokenResp).catch(() => ({}))) as
+        | OAuthTokens
+        | OAuthError
     if (!tokenResp.ok) {
         const err = tokenData as OAuthError
         logger.warn('Connector OAuth token exchange failed', {
@@ -556,14 +787,19 @@ export async function exchangeCodeAndIdentify(
         return { tokens, state, config, principalEmail: principalEmailOverride, clientCreds: creds }
     }
 
-    const userinfoResp = await fetch(config.userinfo_endpoint, {
-        headers: {
-            Authorization: `Bearer ${tokens.access_token}`,
-            Accept: 'application/json',
+    const userinfoResp = await remoteMcpCredentialFetch(
+        config.provider,
+        config.userinfo_endpoint,
+        {
+            headers: {
+                Authorization: `Bearer ${tokens.access_token}`,
+                Accept: 'application/json',
+            },
         },
-    })
+        windshiftInternalOrigin(config),
+    )
     if (!userinfoResp.ok) {
-        const body = await userinfoResp.text().catch(() => '')
+        const body = await readCredentialText(config.provider, userinfoResp).catch(() => '')
         logger.warn('Connector OAuth userinfo fetch failed', {
             provider: config.provider,
             flow: state.metadata.flow.type,
@@ -573,7 +809,7 @@ export async function exchangeCodeAndIdentify(
         })
         throw new Error(`Failed to fetch userinfo: ${userinfoResp.status}`)
     }
-    const profile = (await userinfoResp.json()) as unknown
+    const profile = (await readCredentialJson(config.provider, userinfoResp)) as unknown
     const email = extractEmailFromUserinfo(profile, config.userinfo_email_field)
     if (!email) {
         logger.warn('Connector OAuth userinfo response missing email field', {

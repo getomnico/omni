@@ -41,3 +41,4 @@ shared = { path = "../../shared" }
 testcontainers = { workspace = true }
 testcontainers-modules = { workspace = true }
 axum-test = { workspace = true }
+omni-indexer = { path = "../indexer" }

@@ -6,10 +6,12 @@ import {
     callbackUrl,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    oauthServiceBaseUrl,
     tokenEndpointAuthMethodForConfig,
     type OAuthManifestConfig,
 } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
+import { IntegrationType, supportsDataSync } from '$lib/types'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -52,8 +54,12 @@ interface ConnectorInfo {
         connector_id?: string
         display_name?: string
         description?: string
+        integration_type?: string
         source_types?: string[]
+        actions?: unknown[]
+        resources?: unknown[]
         oauth?: OAuthManifestConfig | null
+        extra_schema?: unknown
     }
 }
 
@@ -99,12 +105,14 @@ function mapSyncRun(run: Record<string, string | number | null>): SyncRun {
     }
 }
 
-export const load: PageServerLoad = async ({ locals }) => {
+export const load: PageServerLoad = async ({ locals, fetch }) => {
     requireAdmin(locals)
 
-    const connectedSources = await sourcesRepository.getOrgWide()
-    const sourceIds = connectedSources.map((s) => s.id)
-    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(sourceIds)
+    const orgSources = await sourcesRepository.getOrgWide()
+    const connectedSources = orgSources.filter((source) => supportsDataSync(source.integrationType))
+    const connectedSourceIds = connectedSources.map((source) => source.id)
+    const connectedSourceIdSet = new Set(connectedSourceIds)
+    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(connectedSourceIds)
     const savedOAuthConfigs = await getAllConnectorConfigsPublic()
     const savedOAuthConfigByProvider = new Map(savedOAuthConfigs.map((row) => [row.provider, row]))
 
@@ -119,6 +127,16 @@ export const load: PageServerLoad = async ({ locals }) => {
     let oauthProviders: OAuthIntegrationProvider[] = []
     const sourceHealth = new Map<string, 'healthy' | 'unhealthy'>()
 
+    // Windshift is a personal OAuth source configured at the server level.
+    // The admin sets the base URLs here; the connector picks them up from
+    // connector_configs via connector-manager.
+    const savedWindshiftConfig = savedOAuthConfigByProvider.get('windshift')
+    const windshiftConfig = (savedWindshiftConfig?.config ?? {}) as {
+        base_url?: string
+    }
+    let windshiftRegistered = false
+    let windshiftManifestBaseUrl: string | null = null
+
     try {
         const [connectorsResponse, sourcesResponse] = await Promise.all([
             fetch(`${config.services.connectorManagerUrl}/connectors`),
@@ -128,6 +146,7 @@ export const load: PageServerLoad = async ({ locals }) => {
         if (sourcesResponse.ok) {
             const overviews = (await sourcesResponse.json()) as ConnectorManagerSourceOverview[]
             for (const overview of overviews) {
+                if (!connectedSourceIdSet.has(overview.source.id)) continue
                 sourceHealth.set(overview.source.id, overview.health)
                 if (overview.sync_runs[0]) {
                     latestSyncRuns.set(overview.source.id, mapSyncRun(overview.sync_runs[0]))
@@ -141,12 +160,25 @@ export const load: PageServerLoad = async ({ locals }) => {
             // Group by connector_id to build integration list
             const integrationMap = new Map<
                 string,
-                { id: string; name: string; description: string; connected: boolean }
+                {
+                    id: string
+                    name: string
+                    description: string
+                    connected: boolean
+                }
             >()
             const sourceTypesByOAuthProvider = new Map<string, Set<string>>()
             const oauthManifestByProvider = new Map<string, OAuthManifestConfig>()
 
             for (const connector of connectors) {
+                if (connector.source_type === 'windshift') {
+                    windshiftRegistered = true
+                    const oauth = connector.manifest?.oauth
+                    if (oauth?.auth_endpoint) {
+                        windshiftManifestBaseUrl = oauthServiceBaseUrl(oauth.auth_endpoint)
+                    }
+                }
+                if (connector.manifest?.integration_type === IntegrationType.REMOTE_MCP) continue
                 const connectorId = connector.manifest?.connector_id ?? connector.source_type
                 if (!integrationMap.has(connectorId)) {
                     integrationMap.set(connectorId, {
@@ -184,6 +216,7 @@ export const load: PageServerLoad = async ({ locals }) => {
             oauthProviders = Array.from(sourceTypesByOAuthProvider.keys())
                 .filter(
                     (provider) =>
+                        !provider.startsWith('remote_mcp:') &&
                         !isAutoManagedOAuthProvider(oauthManifestByProvider.get(provider)),
                 )
                 .map((provider) => {
@@ -203,16 +236,57 @@ export const load: PageServerLoad = async ({ locals }) => {
                 })
                 .sort((a, b) => a.displayName.localeCompare(b.displayName))
 
-            availableIntegrations = Array.from(integrationMap.values()).sort((a, b) => {
-                const idxA = CONNECTOR_DISPLAY_ORDER.indexOf(a.id)
-                const idxB = CONNECTOR_DISPLAY_ORDER.indexOf(b.id)
-                const orderA = idxA === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxA
-                const orderB = idxB === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxB
-                return orderA !== orderB ? orderA - orderB : a.id.localeCompare(b.id)
-            })
+            availableIntegrations = Array.from(integrationMap.values())
+                // Windshift is a personal OAuth source. Users connect it under My Integrations.
+                .filter((integration) => integration.id !== 'windshift')
+                .sort((a, b) => {
+                    const idxA = CONNECTOR_DISPLAY_ORDER.indexOf(a.id)
+                    const idxB = CONNECTOR_DISPLAY_ORDER.indexOf(b.id)
+                    const orderA = idxA === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxA
+                    const orderB = idxB === -1 ? CONNECTOR_DISPLAY_ORDER.length : idxB
+                    return orderA !== orderB ? orderA - orderB : a.id.localeCompare(b.id)
+                })
         }
     } catch (error) {
         locals.logger.error('Failed to fetch connector manager data', error)
+    }
+
+    // Load MCP tab data
+    let mcpTab: {
+        sources: {
+            id: string
+            name: string
+            sourceType: string
+            authType: string | null
+            config: Record<string, unknown>
+            isActive: boolean
+        }[]
+        manifestBySourceType: Record<string, { toolCount: number; resourceCount: number }>
+    } = { sources: [], manifestBySourceType: {} }
+
+    try {
+        const sourceResponse = await fetch('/api/remote-mcp')
+        if (sourceResponse.ok) {
+            mcpTab.sources = await sourceResponse.json()
+        }
+
+        const connectorsResponse = await fetch(`${config.services.connectorManagerUrl}/connectors`)
+        if (connectorsResponse.ok) {
+            const connectors: {
+                source_type: string
+                manifest?: { integration_type?: string; actions?: unknown[]; resources?: unknown[] }
+            }[] = await connectorsResponse.json()
+            for (const c of connectors) {
+                if (c.manifest?.integration_type === IntegrationType.REMOTE_MCP) {
+                    mcpTab.manifestBySourceType[c.source_type] = {
+                        toolCount: c.manifest.actions?.length ?? 0,
+                        resourceCount: c.manifest.resources?.length ?? 0,
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        locals.logger.warn('Failed to fetch MCP tab data', error)
     }
 
     return {
@@ -222,5 +296,11 @@ export const load: PageServerLoad = async ({ locals }) => {
         availableIntegrations,
         oauthProviders,
         oauthRedirectUri: callbackUrl(),
+        mcpTab,
+        windshiftConfig,
+        windshiftRegistered,
+        // Effective URL when the connector is serving via env-var fallback
+        // (deployments that predate the UI setting).
+        windshiftEffectiveBaseUrl: windshiftConfig.base_url ?? windshiftManifestBaseUrl,
     }
 }

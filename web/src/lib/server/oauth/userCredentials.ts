@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import type { OAuthTokens, OAuthProfile } from './types'
 import { encrypt, decrypt, type EncryptedData } from '../crypto/encryption'
+import { logger } from '../logger'
 
 export interface UserOAuthCredential {
     id: string
@@ -67,9 +68,11 @@ export class UserOAuthCredentialsService {
 
         const scopes = tokens.scope ? tokens.scope.split(' ') : []
         const accessTokenJson = JSON.stringify(encryptToken(tokens.access_token))
-        const refreshTokenJson = JSON.stringify(encryptToken(tokens.refresh_token))
+        const refreshTokenJson = tokens.refresh_token
+            ? JSON.stringify(encryptToken(tokens.refresh_token))
+            : null
 
-        await db.execute(sql`
+        const insertQuery = sql`
             INSERT INTO user_oauth_credentials (
                 id, user_id, provider, provider_user_id,
                 access_token, refresh_token, token_type,
@@ -88,7 +91,30 @@ export class UserOAuthCredentialsService {
                 scopes = EXCLUDED.scopes,
                 profile_data = EXCLUDED.profile_data,
                 updated_at = NOW()
-        `)
+        `
+
+        try {
+            await db.execute(insertQuery)
+        } catch (error) {
+            const databaseError =
+                error instanceof Error && error.cause instanceof Error
+                    ? (error.cause as Error & {
+                          code?: string
+                          constraint_name?: string
+                          table_name?: string
+                          column_name?: string
+                      })
+                    : undefined
+
+            logger.error('Failed to save OAuth credentials', undefined, {
+                provider,
+                sqlState: databaseError?.code,
+                constraint: databaseError?.constraint_name,
+                table: databaseError?.table_name,
+                column: databaseError?.column_name,
+            })
+            throw error
+        }
 
         return this.getCredentials(userId, provider, profile.id)
     }

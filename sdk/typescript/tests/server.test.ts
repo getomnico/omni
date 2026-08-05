@@ -54,6 +54,9 @@ const mockServer = setupServer(
   http.post(`${MANAGER_URL}/sdk/sync/:id/fail`, () =>
     HttpResponse.json({ success: true }),
   ),
+  http.post(`${MANAGER_URL}/sdk/register`, () =>
+    HttpResponse.json({ success: true }),
+  ),
 );
 
 beforeAll(() => {
@@ -103,8 +106,37 @@ describe("Connector Server", () => {
         actions: [],
         search_operators: [],
         mcp_enabled: false,
+        mcp_catalog_loaded: false,
         resources: [],
         prompts: [],
+      });
+    });
+  });
+
+  describe("POST /oauth/credential-ready", () => {
+    it("refreshes and returns a changed connector manifest", async () => {
+      const connector = new MockConnector();
+      const credentialReady = vi
+        .spyOn(connector, "oauthCredentialReady")
+        .mockResolvedValue(true);
+      const app = createServer(connector);
+
+      const response = await request(app).post("/oauth/credential-ready").send({
+        source_id: "source-456",
+        user_id: "user-123",
+        provider: "windshift",
+        flow: "user_write",
+        credentials: { access_token: "token" },
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body.connector_id).toBe("mock-connector");
+      expect(credentialReady).toHaveBeenCalledWith({
+        source_id: "source-456",
+        user_id: "user-123",
+        provider: "windshift",
+        flow: "user_write",
+        credentials: { access_token: "token" },
       });
     });
   });

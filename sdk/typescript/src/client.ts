@@ -275,6 +275,43 @@ export class SdkClient {
     return SdkSourceSyncDataSchema.parse(raw);
   }
 
+  /// Fetch the admin-managed connector config for a provider (stored in the
+  /// `connector_configs` table). Returns an empty object when the provider
+  /// has no config row yet — that's a valid "not configured" state, not an
+  /// error.
+  async getConnectorConfig(provider: string): Promise<Record<string, unknown>> {
+    const response = await this.get(`/sdk/connector-configs/${provider}`);
+    if (!response.ok) {
+      if (response.status === 404) return {};
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to fetch connector config: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+    const raw = (await response.json()) as unknown;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new SdkClientError(`Invalid connector config response for provider: ${provider}`);
+    }
+    return raw as Record<string, unknown>;
+  }
+
+  async getUserEmailForSource(sourceId: string): Promise<string> {
+    const response = await this.get(`/sdk/source/${sourceId}/user-email`);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new SdkClientError(
+        `Failed to get user email for source: ${response.status} - ${text}`,
+        response.status
+      );
+    }
+    const result = (await response.json()) as { email?: unknown };
+    if (typeof result.email !== 'string' || result.email.length === 0) {
+      throw new SdkClientError('Failed to get user email for source: invalid response');
+    }
+    return result.email;
+  }
+
   private async get(path: string): Promise<Response> {
     const url = `${this.baseUrl}${path}`;
     return fetch(url, {

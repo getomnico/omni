@@ -17,8 +17,10 @@ from anthropic import MessageStreamEvent
 from anthropic.types import (
     ContentBlockParam,
     MessageParam,
+    RedactedThinkingBlockParam,
     TextBlockParam,
     TextCitationParam,
+    ThinkingBlockParam,
     ToolParam,
     ToolResultBlockParam,
     ToolUseBlockParam,
@@ -27,8 +29,6 @@ from anthropic.types import (
 from config import (
     AGENT_MAX_ITERATIONS,
     DEFAULT_MAX_TOKENS,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
 )
 from db.compactions import CompactionsRepository
 from db.models import ChatMessage, UserConfiguration
@@ -52,6 +52,7 @@ from streaming.persist import (
     oauth_event,
     parse_tool_call_inputs,
     partial_assistant_message,
+    save_error_sse,
     sse_event,
     stream_error_sse,
 )
@@ -65,6 +66,12 @@ from tools import (
 from tools.turn_builder import build_turn_tools
 
 logger = logging.getLogger(__name__)
+
+_EMPTY_RESPONSE_RECOVERY_PROMPT = (
+    "Continue the original request. If the last result discovered or loaded a tool, "
+    "call the appropriate available tool now. Do not stop without either making the "
+    "next tool call or giving the user a clear explanation."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +99,8 @@ async def event_stream_with_context_retry(
     compactor: ConversationCompactor,
     latest_compaction_summary: str | None,
     summarizer_context_window_tokens: int,
+    model_record_id: str | None = None,
+    model_name: str | None = None,
 ) -> AsyncIterator[MessageStreamEvent | CompactionStart | CompactionEnd]:
     """Stream events from the LLM provider with one automatic compaction retry
     on context-overflow errors.
@@ -104,8 +113,8 @@ async def event_stream_with_context_retry(
             UsageRepository(),
             UsageContext(
                 user_id=chat_user_id,
-                model_id=llm_provider.model_record_id,
-                model_name=llm_provider.model_name,
+                model_id=model_record_id or llm_provider.model_record_id,
+                model_name=model_name or llm_provider.model_name,
                 provider_type=llm_provider.provider_type,
                 purpose=UsagePurpose.CHAT,
                 chat_id=chat_id,
@@ -127,9 +136,8 @@ async def event_stream_with_context_retry(
             messages=provider_messages,
             tools=turn_tools,
             max_tokens=DEFAULT_MAX_TOKENS,
-            temperature=DEFAULT_TEMPERATURE,
-            top_p=DEFAULT_TOP_P,
             system_prompt=provider_system_prompt,
+            model=model_name or llm_provider.model_name,
         )
         processed_stream = tracker.wrap_stream(raw_stream)
         if citable_index:
@@ -383,9 +391,12 @@ async def prepare_and_stream_chat(
     target_provider: LLMProvider,
     initial_tools: list[ToolParam],
     llm_provider: LLMProvider,
+    model_record_id: str | None = None,
+    model_name: str | None = None,
     chat_user_id: str,
     tool_user_id: str | None = None,
     user_email: str | None = None,
+    user_groups: list[str] | None = None,
     user_configuration: UserConfiguration | None = None,
     tool_skip_perm: bool = False,
     system_prompt: str,
@@ -482,6 +493,7 @@ async def prepare_and_stream_chat(
             chat_user_id,
             tool_user_id=tool_user_id,
             user_email=user_email,
+            user_groups=user_groups,
             user_configuration=user_configuration,
             tool_skip_perm=tool_skip_perm,
             system_prompt=system_prompt,
@@ -500,6 +512,8 @@ async def prepare_and_stream_chat(
             approvals_repo=approvals_repo,
             pending_interventions=pending_interventions,
             original_user_query=original_user_query,
+            model_record_id=model_record_id,
+            model_name=model_name,
         ):
             yield event
     except asyncio.CancelledError:
@@ -511,6 +525,7 @@ async def prepare_and_stream_chat(
             exc,
             exc_info=True,
         )
+        yield save_error_sse(exc)
         yield stream_error_sse(exc)
     finally:
         continue_compaction.set()
@@ -539,6 +554,7 @@ async def stream_generator(
     *,
     tool_user_id: str | None = None,
     user_email: str | None = None,
+    user_groups: list[str] | None = None,
     user_configuration=None,
     tool_skip_perm: bool = False,
     system_prompt: str,
@@ -555,6 +571,8 @@ async def stream_generator(
     approvals_repo=None,
     pending_interventions: list[ToolApproval] | None = None,
     original_user_query: str | None = None,
+    model_record_id: str | None = None,
+    model_name: str | None = None,
 ) -> AsyncIterator[str]:
     """Core agent loop: yields SSE event strings.
 
@@ -661,6 +679,7 @@ async def stream_generator(
             chat_id=chat_id,
             user_id=tool_user_id,
             user_email=user_email,
+            user_groups=user_groups,
             user_configuration=user_configuration,
             original_user_query=original_user_query_final,
             skip_permission_check=tool_skip_perm,
@@ -673,6 +692,7 @@ async def stream_generator(
 
         # ----- Main agent loop -------------------------------------------------
         model_iteration = 0
+        empty_response_retries = 0
         loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
         for _ in range(loop_passes):
             if await is_run_cancelled(redis_client, chat_id):
@@ -714,10 +734,14 @@ async def stream_generator(
                     compactor,
                     latest_compaction_summary,
                     summarizer_context_window_tokens,
+                    model_record_id=model_record_id,
+                    model_name=model_name,
                 )
 
                 event_index = 0
                 message_stop_received = False
+                pending_message_sses: list[str] = []
+                message_stream_started = False
                 cancelled = False
                 last_cancel_check_at = 0.0
                 async for event in stream:
@@ -774,6 +798,40 @@ async def stream_generator(
                                 cast(str, tool_use_block["input"])
                                 + event.delta.partial_json
                             )
+                        elif event.delta.type == "thinking_delta":
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received thinking delta for unknown content block index {event.index}, creating new thinking block"
+                                )
+                                content_blocks.append(
+                                    ThinkingBlockParam(
+                                        type="thinking", thinking="", signature=""
+                                    )
+                                )
+                            thinking_block = cast(
+                                ThinkingBlockParam, content_blocks[event.index]
+                            )
+                            thinking_block["thinking"] = (
+                                cast(str, thinking_block.get("thinking", ""))
+                                + event.delta.thinking
+                            )
+                        elif event.delta.type == "signature_delta":
+                            # Anthropic streams the thinking signature separately
+                            # from the block; it is required for multi-turn
+                            # continuity, so carry it onto the thinking block.
+                            if event.index >= len(content_blocks):
+                                logger.warning(
+                                    f"Received signature delta for unknown content block index {event.index}, creating new thinking block"
+                                )
+                                content_blocks.append(
+                                    ThinkingBlockParam(
+                                        type="thinking", thinking="", signature=""
+                                    )
+                                )
+                            signature_block = cast(
+                                ThinkingBlockParam, content_blocks[event.index]
+                            )
+                            signature_block["signature"] = event.delta.signature
                         elif event.delta.type == "citations_delta":
                             if event.index >= len(content_blocks):
                                 logger.warning(
@@ -821,6 +879,37 @@ async def stream_generator(
                                 event.content_block, tool_block, provider_extras
                             )
                             content_blocks.append(tool_block)
+                        elif event.content_block.type == "thinking":
+                            logger.info("Thinking block start")
+                            content_blocks.append(
+                                ThinkingBlockParam(
+                                    type="thinking",
+                                    thinking=event.content_block.thinking,
+                                    signature=event.content_block.signature,
+                                )
+                            )
+                        elif event.content_block.type == "redacted_thinking":
+                            logger.info("Redacted thinking block start")
+                            content_blocks.append(
+                                RedactedThinkingBlockParam(
+                                    type="redacted_thinking",
+                                    data=event.content_block.data,
+                                )
+                            )
+                        else:
+                            # Keep provider content block indexes aligned for any
+                            # block type we don't model, so later deltas land on
+                            # the correct slot instead of synthesizing a bogus
+                            # tool_use block with an empty id.
+                            logger.info(
+                                f"Content block start for unhandled type: {event.content_block.type}"
+                            )
+                            content_blocks.append(
+                                cast(
+                                    ContentBlockParam,
+                                    dict(event.content_block),
+                                )
+                            )
 
                     elif event.type == "citation":
                         logger.info(f"Citation received: {event.citation}")
@@ -828,10 +917,31 @@ async def stream_generator(
                         logger.info("Message stop received.")
                         message_stop_received = True
 
-                    logger.debug(
-                        f"Yielding event to client: {event.to_json(indent=None)}"
+                    event_json = event.to_json(indent=None)
+                    event_sse = f"event: message\ndata: {event_json}\n\n"
+                    has_substantive_content = any(
+                        block["type"] == "tool_use"
+                        or (
+                            block["type"] == "text"
+                            and str(block.get("text", "")).strip()
+                        )
+                        for block in content_blocks
                     )
-                    yield f"event: message\ndata: {event.to_json(indent=None)}\n\n"
+                    if not message_stream_started:
+                        # Buffer the entire provider envelope until it contains
+                        # a tool call or non-whitespace text. Providers commonly
+                        # emit an empty text block before stopping; exposing that
+                        # envelope would create a duplicate assistant stream when
+                        # the empty-response retry below runs.
+                        pending_message_sses.append(event_sse)
+                        if has_substantive_content:
+                            for pending_sse in pending_message_sses:
+                                yield pending_sse
+                            pending_message_sses.clear()
+                            message_stream_started = True
+                    else:
+                        logger.debug("Yielding event to client: %s", event_json)
+                        yield event_sse
 
                     if message_stop_received:
                         break
@@ -845,6 +955,30 @@ async def stream_generator(
                     break
 
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
+                has_text = any(
+                    b["type"] == "text" and str(b.get("text", "")).strip()
+                    for b in content_blocks
+                )
+                if not tool_calls and not has_text:
+                    if empty_response_retries < 1:
+                        empty_response_retries += 1
+                        logger.warning(
+                            "Provider returned an empty response in iteration %s; "
+                            "retrying once with a continuation prompt",
+                            model_iteration,
+                        )
+                        conversation_messages.append(
+                            MessageParam(
+                                role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT
+                            )
+                        )
+                        continue
+
+                    # Preserve the provider's final empty response after the
+                    # single recovery attempt has already been exhausted.
+                    for pending_sse in pending_message_sses:
+                        yield pending_sse
+                    pending_message_sses.clear()
                 parse_errors = parse_tool_call_inputs(
                     cast(list[ToolUseBlockParam], tool_calls)
                 )
@@ -1112,9 +1246,14 @@ async def stream_generator(
         raise
     except Exception as e:
         logger.error(f"Failed to generate AI response with tools: {e}", exc_info=True)
+        partial = None
         if not content_blocks_finalized:
             partial = partial_assistant_message(content_blocks)
             if partial is not None:
                 conversation_messages.append(partial)
-                yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
+        # Persist the failed turn even when the assistant row was already
+        # finalized (e.g. an exception raised during tool preflight/execution
+        # after the tool-call content was saved): ``persist_and_transform``
+        # creates a dedicated error row for it under the current parent.
+        yield save_error_sse(e, partial_message=partial)
         yield stream_error_sse(e)

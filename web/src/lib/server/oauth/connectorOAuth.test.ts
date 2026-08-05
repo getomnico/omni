@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { OAuthStateManager } from './state'
 import {
+    dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    oauthServiceBaseUrl,
+    scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
+    windshiftInternalOrigin,
     type OAuthManifestConfig,
 } from './connectorOAuth'
 
@@ -29,6 +33,38 @@ const baseManifest: OAuthManifestConfig = {
     scope_separator: ' ',
     token_endpoint_auth_method: 'client_secret_post',
 }
+
+describe('windshiftInternalOrigin', () => {
+    const windshiftManifest: OAuthManifestConfig = {
+        ...baseManifest,
+        provider: 'windshift',
+        auth_endpoint: 'https://windshift.example.com/oauth/authorize',
+        token_endpoint: 'http://windshift:8080/api/oauth/token',
+        userinfo_endpoint: 'http://windshift:8080/api/oauth/userinfo',
+        internal_base_url: 'http://windshift:8080/',
+    }
+
+    it('returns the exact origin of the manifest internal route', () => {
+        expect(windshiftInternalOrigin(windshiftManifest)).toBe('http://windshift:8080')
+    })
+
+    it('returns null when no internal route marker is advertised', () => {
+        const { internal_base_url: _marker, ...publicOnly } = windshiftManifest
+        expect(windshiftInternalOrigin(publicOnly)).toBeNull()
+    })
+
+    it('returns null for non-windshift providers even with a marker', () => {
+        expect(
+            windshiftInternalOrigin({ ...baseManifest, internal_base_url: 'http://x:1' }),
+        ).toBeNull()
+    })
+
+    it('returns null for an invalid internal URL', () => {
+        expect(
+            windshiftInternalOrigin({ ...windshiftManifest, internal_base_url: 'not a url' }),
+        ).toBeNull()
+    })
+})
 
 describe('OAuth connector helpers', () => {
     beforeEach(() => {
@@ -65,6 +101,34 @@ describe('OAuth connector helpers', () => {
         ).toBe(false)
     })
 
+    it('builds provider-specific public-client registration metadata', () => {
+        expect(
+            dynamicRegistrationPayload(
+                'windshift',
+                'https://omni.example/api/oauth/callback',
+                'mcp:access',
+            ),
+        ).toEqual({
+            client_name: 'Omni Windshift MCP',
+            redirect_uris: ['https://omni.example/api/oauth/callback'],
+            grant_types: ['authorization_code', 'refresh_token'],
+            response_types: ['code'],
+            token_endpoint_auth_method: 'none',
+            scope: 'mcp:access',
+        })
+
+        expect(
+            dynamicRegistrationPayload(
+                'clickup',
+                'https://omni.example/api/oauth/callback',
+                'tasks:read',
+            ),
+        ).toMatchObject({
+            client_name: 'Omni ClickUp MCP',
+            grant_types: ['authorization_code'],
+        })
+    })
+
     it('checks configured state based on token endpoint auth method', () => {
         expect(isClientConfigComplete({ oauth_client_id: 'public-client' }, 'none')).toBe(true)
         expect(
@@ -95,5 +159,36 @@ describe('OAuth connector helpers', () => {
             ),
         ).toBe('client_secret_basic')
         expect(tokenEndpointAuthMethodForConfig(undefined, undefined)).toBe('client_secret_post')
+    })
+
+    it('derives a deployment base URL from its OAuth authorization endpoint', () => {
+        expect(oauthServiceBaseUrl('https://windshift.example/oauth/authorize')).toBe(
+            'https://windshift.example',
+        )
+        expect(
+            oauthServiceBaseUrl('https://example.com/windshift/oauth/authorize?prompt=login'),
+        ).toBe('https://example.com/windshift')
+    })
+
+    it('limits write elevation to the requested connector scopes', () => {
+        const config: OAuthManifestConfig = {
+            ...baseManifest,
+            scopes: {
+                windshift: {
+                    read: ['mcp:access', 'items:read'],
+                    write: ['mcp:access', 'items:read', 'items:write', 'items:delete'],
+                },
+            },
+        }
+
+        expect(
+            scopesForExistingSourceUserFlow(config, 'windshift', 'write', ['items:write']),
+        ).toEqual(['mcp:access', 'items:read', 'items:write'])
+    })
+
+    it('rejects requested scopes not declared by the connector', () => {
+        expect(() =>
+            scopesForExistingSourceUserFlow(baseManifest, 'example', 'write', ['unexpected:write']),
+        ).toThrow('Unsupported write scopes')
     })
 })

@@ -1,3 +1,12 @@
+export enum IntegrationType {
+    CONNECTOR = 'connector',
+    REMOTE_MCP = 'remote_mcp',
+}
+
+export function supportsDataSync(integrationType?: string | null): boolean {
+    return (integrationType ?? IntegrationType.CONNECTOR) === IntegrationType.CONNECTOR
+}
+
 export enum SourceType {
     GOOGLE_DRIVE = 'google_drive',
     GMAIL = 'gmail',
@@ -23,6 +32,7 @@ export enum SourceType {
     NEXTCLOUD = 'nextcloud',
     GOOGLE_ADS = 'google_ads',
     DARWINBOX = 'darwinbox',
+    WINDSHIFT = 'windshift',
 }
 
 export enum ServiceProvider {
@@ -41,6 +51,8 @@ export enum ServiceProvider {
     NEXTCLOUD = 'nextcloud',
     GOOGLE_ADS = 'google_ads',
     DARWINBOX = 'darwinbox',
+    REMOTE_MCP = 'remote_mcp',
+    WINDSHIFT = 'windshift',
 }
 
 export enum AuthType {
@@ -74,8 +86,17 @@ export interface ClickUpSourceConfig {
     space_filters?: string[]
 }
 
+export interface FolderPathFilter {
+    id: string
+    name: string
+    path: string
+    driveId: string
+    kind: 'shared_drive_root' | 'folder'
+}
+
 export interface GoogleDriveSourceConfig {
-    // Future: shared_drive_filters, mime_type_filters, folder_path_filters, etc.
+    folder_path_filters?: FolderPathFilter[]
+    // Future: shared_drive_filters, mime_type_filters, etc.
 }
 
 export interface GmailSourceConfig {
@@ -153,63 +174,34 @@ export interface GoogleAdsSourceConfig {
 
 export interface ConnectorListEntry {
     source_type: string
-    manifest: {
-        extra_schema?: {
-            action_groups?: Record<string, { read: string[]; write: string[] }>
-        }
-    }
+    manifest: { extra_schema?: unknown }
 }
 
 export interface DarwinboxSourceConfig {
     base_url: string
     read_only?: boolean
     default_timezone?: string
-    sync_modules?: {
-        employee_directory?: boolean
-        deleted_employees?: boolean
-        departments?: boolean
-        designations?: boolean
-        office_locations?: boolean
-        business_units?: boolean
-        divisions?: boolean
-        cost_centers?: boolean
-        group_companies?: boolean
-        positions?: boolean
-        holidays?: boolean
-        ats_jobs?: boolean
-    }
-    action_modules?: {
-        employee_self_service?: boolean
-        manager_workflows?: boolean
-        hr_operations?: boolean
-        ats?: boolean
-        reports?: boolean
-    }
     authorization?: {
-        actions_enabled?: boolean
-        write_acknowledged?: boolean
+        participant_mode?: 'all' | 'allowlist'
         participant_emails?: string[]
-        allowed_actions?: string[]
+        recruiter_emails?: string[]
         allowed_report_ids?: string[]
         max_batch_size?: number
-        max_requests_per_minute?: number
     }
-    employee_scope?: {
-        mode: 'all' | 'include'
-        employee_ids?: string[]
-        employee_emails?: string[]
-        departments?: string[]
-    } | null
-    employee_fields?: Array<
-        | 'name'
-        | 'employee_id'
-        | 'company_email'
-        | 'department'
-        | 'designation'
-        | 'office_location'
-        | 'manager_employee_id'
-        | 'employee_type'
-    >
+}
+
+export interface ConnectorListEntry {
+    source_type: string
+    manifest: { extra_schema?: unknown }
+}
+
+export interface WindshiftSourceConfig {
+    workspace_keys?: string[]
+}
+
+export interface WindshiftCredentials {
+    access_token: string
+    refresh_token?: string
 }
 
 export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
@@ -237,6 +229,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.NEXTCLOUD]: 3600,
     [SourceType.GOOGLE_ADS]: 3600,
     [SourceType.DARWINBOX]: 3600,
+    [SourceType.WINDSHIFT]: 1800,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

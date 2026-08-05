@@ -130,6 +130,8 @@ export interface TypeaheadResult {
     title: string
     url: string | null
     source_id: string
+    source_type: string
+    content_type: string
 }
 
 export interface TypeaheadResponse {
@@ -154,6 +156,18 @@ export interface SearchUsersResponse {
     users: GoogleDirectoryUser[]
     nextPageToken: string | null
     hasMore: boolean
+}
+
+export interface DriveFolderDiscoveryEntry {
+    id: string
+    name: string
+    path: string
+    driveId: string
+    kind: 'shared_drive_root' | 'folder'
+}
+
+export interface DriveFolderDiscoveryResponse {
+    items: DriveFolderDiscoveryEntry[]
 }
 
 export interface ConnectorActionResponse<T = unknown> {

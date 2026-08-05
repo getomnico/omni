@@ -2,7 +2,7 @@ import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getSourceById } from '$lib/server/db/sources'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
-import { ServiceProvider, AuthType } from '$lib/types'
+import { ServiceProvider, AuthType, supportsDataSync } from '$lib/types'
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
@@ -64,7 +64,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
                       config: config || {},
                   })
 
-        if (triggerSync) {
+        if (triggerSync && supportsDataSync(source.integrationType)) {
             try {
                 const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
                     method: 'POST',
@@ -184,7 +184,7 @@ export const PATCH: RequestHandler = async ({ request, locals, fetch }) => {
             credentials: hasNewCredentials ? credentials : null,
         })
 
-        if (hasNewCredentials) {
+        if (hasNewCredentials && supportsDataSync(source.integrationType)) {
             try {
                 const syncResponse = await fetch(`/api/sources/${sourceId}/sync`, {
                     method: 'POST',

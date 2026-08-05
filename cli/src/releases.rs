@@ -30,6 +30,34 @@ pub struct GitHubAsset {
     pub size: u64,
 }
 
+/// Returns `true` if the version string looks like a valid semver release tag
+/// (e.g. `1.2.3`, `v1.2.3`, `v1.2.3-rc.1`).
+pub fn is_semver_tag(version: &str) -> bool {
+    let stripped = version.strip_prefix('v').unwrap_or(version);
+    stripped.starts_with(|ch: char| ch.is_ascii_digit()) && stripped.contains('.')
+}
+
+/// Compare two semver-like version strings (e.g. "0.1.0" vs "v0.2.0").
+/// Returns `Ordering::Less` when `current` is older than `latest`.
+pub fn compare_versions(current: &str, latest: &str) -> std::cmp::Ordering {
+    let current = current.strip_prefix('v').unwrap_or(current);
+    let latest = latest.strip_prefix('v').unwrap_or(latest);
+
+    let current_parts: Vec<u64> = current.split('.').filter_map(|s| s.parse().ok()).collect();
+    let latest_parts: Vec<u64> = latest.split('.').filter_map(|s| s.parse().ok()).collect();
+
+    let max_len = current_parts.len().max(latest_parts.len());
+    for i in 0..max_len {
+        let c = current_parts.get(i).copied().unwrap_or(0);
+        let l = latest_parts.get(i).copied().unwrap_or(0);
+        match c.cmp(&l) {
+            std::cmp::Ordering::Equal => continue,
+            other => return other,
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 pub fn normalize_tag(version: &str) -> String {
     if version.starts_with('v') {
         version.to_string()

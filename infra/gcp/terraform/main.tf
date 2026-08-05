@@ -163,8 +163,10 @@ module "compute" {
   session_duration_days      = var.session_duration_days
   ai_answer_enabled          = var.ai_answer_enabled
   agents_enabled             = var.agents_enabled
-  enabled_connectors         = var.enabled_connectors
-  sandbox_url                = var.sandbox_url
+  enabled_connectors           = var.enabled_connectors
+  windshift_base_url          = var.windshift_base_url
+  windshift_internal_base_url = var.windshift_internal_base_url
+  sandbox_url                  = var.sandbox_url
   agent_max_iterations       = var.agent_max_iterations
   approval_timeout_seconds   = var.approval_timeout_seconds
   otel_endpoint              = var.otel_endpoint

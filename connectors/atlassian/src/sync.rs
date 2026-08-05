@@ -101,7 +101,8 @@ impl SyncManager {
             return Err(anyhow!("Source is not active: {}", source_id));
         }
 
-        let source_type = source.source_type;
+        let source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Invalid source type for Atlassian connector: {}", e))?;
         if source_type != SourceType::Confluence && source_type != SourceType::Jira {
             return Err(anyhow!(
                 "Invalid source type for Atlassian connector: {:?}",

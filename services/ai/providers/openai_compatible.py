@@ -25,6 +25,7 @@ from openai.types.chat import (
 )
 from openai.types.chat.chat_completion_message_tool_call_param import Function
 from anthropic.types import (
+    DocumentBlockParam,
     Message,
     MessageDeltaUsage,
     MessageParam,
@@ -48,6 +49,7 @@ from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, LLMProviderEmptyResponseError, TokenUsage
+from .anthropic_message_adapter import extract_text_document
 from .types import ProviderError, ProviderType
 
 
@@ -161,7 +163,11 @@ def _convert_messages_to_openai(
                 continue
 
             block = cast(
-                TextBlockParam | ToolUseBlockParam | ToolResultBlockParam, block
+                DocumentBlockParam
+                | TextBlockParam
+                | ToolUseBlockParam
+                | ToolResultBlockParam,
+                block,
             )
             block_reasoning_content = block.get(REASONING_CONTENT_KEY)
             if isinstance(block_reasoning_content, str):
@@ -171,6 +177,10 @@ def _convert_messages_to_openai(
                 block = cast(TextBlockParam, block)
                 if block["text"]:
                     text_parts.append(block["text"])
+            elif block["type"] == "document" and role == "user":
+                document_text = extract_text_document(block)
+                if document_text is not None:
+                    text_parts.append(document_text)
             elif block["type"] == "tool_use":
                 block = cast(ToolUseBlockParam, block)
                 raw_input = block["input"]
@@ -198,7 +208,8 @@ def _convert_messages_to_openai(
                             continue
                         if rb.get("type") == "text":
                             rb = cast(TextBlockParam, rb)
-                            parts.append(rb["text"])
+                            if rb["text"]:
+                                parts.append(rb["text"])
                         elif rb.get("type") == "search_result":
                             title = rb.get("title", "")
                             source = rb.get("source", "")
@@ -255,7 +266,7 @@ class OpenAICompatibleProvider(LLMProvider):
     def __init__(
         self, base_url: str, api_key: str | None = None, model: str = "default"
     ):
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.rstrip("/").removesuffix("/v1")
         self.api_key = api_key
         self.model = model
         self.model_name = model
@@ -270,14 +281,15 @@ class OpenAICompatibleProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[ToolParam] | None = None,
         messages: list[MessageParam] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response, yielding Anthropic-compatible MessageStreamEvents."""
         try:
+            active_model = model or self.model
             openai_messages = _convert_messages_to_openai(
                 messages or [{"role": "user", "content": prompt}]
             )
@@ -289,17 +301,12 @@ class OpenAICompatibleProvider(LLMProvider):
                 openai_messages = [system_msg] + openai_messages
 
             params: dict[str, Any] = {
-                "model": self.model,
+                "model": active_model,
                 "messages": openai_messages,
                 "max_tokens": max_tokens or 4096,
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }
-
-            if temperature is not None:
-                params["temperature"] = temperature
-            if top_p is not None:
-                params["top_p"] = top_p
 
             if tools:
                 params["tools"] = _convert_tools_to_openai(tools)
@@ -317,7 +324,7 @@ class OpenAICompatibleProvider(LLMProvider):
                     type="message",
                     role="assistant",
                     content=[],
-                    model=self.model,
+                    model=active_model,
                     usage=Usage(input_tokens=0, output_tokens=0),
                 ),
             )
@@ -471,7 +478,7 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_openai_compat_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
@@ -481,21 +488,18 @@ class OpenAICompatibleProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response."""
         try:
+            active_model = model or self.model
             params: dict[str, Any] = {
-                "model": self.model,
+                "model": active_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": max_tokens or 4096,
                 "stream": False,
             }
-            if temperature is not None:
-                params["temperature"] = temperature
-            if top_p is not None:
-                params["top_p"] = top_p
 
             response = await self.client.chat.completions.create(**params)
 
@@ -530,13 +534,17 @@ class OpenAICompatibleProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_openai_compat_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
             ) from e
 
-    async def health_check(self) -> bool:
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
         """Liveness is determined by inference calls themselves; no separate probe
         since not every OpenAI-compatible server exposes a common health endpoint."""
         return True

@@ -2,20 +2,47 @@
 
 from __future__ import annotations
 
-import base64
 import logging
-from typing import Union
 from urllib.parse import unquote
 
 import httpx
 from anthropic.types import ToolParam
 
-from db.documents import DocumentsRepository
+from db.documents import Document, DocumentsRepository
 from storage import ContentStorage, PostgresContentStorage
 from tools.registry import ToolContext, ToolResult
 from tools.sandbox import write_binary_to_sandbox, write_text_to_sandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_basename(title: str) -> str:
+    """Sanitize a document title to a safe filesystem basename.
+
+    Keeps only letters, digits, dots, dashes, underscores. Strips control
+    characters and path separators. Truncates to 128 chars to stay safely
+    bounded.
+    """
+    safe = "".join(c for c in title if c.isalnum() or c in ".-_")
+    safe = safe.strip(".-")
+    return safe[:128] or "document"
+
+
+def _workspace_path(
+    doc: Document,
+    document_name: str,
+    start_line: int | None = None,
+    end_line: int | None = None,
+) -> str:
+    """Build a stable sandbox path from the document version and read range."""
+    parts = ["document", _safe_basename(doc.id)]
+    if doc.content_id:
+        parts.append(_safe_basename(doc.content_id))
+    if start_line is not None or end_line is not None:
+        parts.append(f"lines-{start_line or 1}-{end_line or 'end'}")
+    parts.append(_safe_basename(doc.title or document_name))
+    return "_".join(parts)
+
 
 # Content types considered binary (not extracted text).
 # The documents.content_type column stores the standardized content_type
@@ -48,6 +75,29 @@ BINARY_CONTENT_TYPES = {
 
 # Max text size to return directly in LLM context (characters)
 DIRECT_RETURN_THRESHOLD = 32_000
+
+PDF_CONTENT_TYPES = {"pdf", "application/pdf", "application/x-pdf"}
+PDF_EXTRACTION_FAILURE_TEXT = (
+    "[Text extraction failed for this PDF. The document was skipped "
+    "for extracted-text indexing because no text could be extracted.]"
+)
+PDF_EXTRACTION_FAILURE_REASON_PREFIX = (
+    "[Text extraction failed for this PDF. The document was skipped "
+    "for extracted-text indexing. Reason: "
+)
+
+
+def _is_pdf_extraction_failure(content_type: str | None, content: str) -> bool:
+    if content_type not in PDF_CONTENT_TYPES:
+        return False
+    if content == PDF_EXTRACTION_FAILURE_TEXT:
+        return True
+    return (
+        content.startswith(PDF_EXTRACTION_FAILURE_REASON_PREFIX)
+        and len(content) > len(PDF_EXTRACTION_FAILURE_REASON_PREFIX) + 1
+        and content.endswith("]")
+    )
+
 
 DOCUMENT_TOOL = {
     "name": "read_document",
@@ -88,7 +138,7 @@ class DocumentToolHandler:
 
     def __init__(
         self,
-        content_storage: Union[ContentStorage, PostgresContentStorage, None] = None,
+        content_storage: ContentStorage | PostgresContentStorage | None = None,
         documents_repo: DocumentsRepository | None = None,
         sandbox_url: str | None = None,
         connector_manager_url: str | None = None,
@@ -110,7 +160,10 @@ class DocumentToolHandler:
         return False  # read-only operation
 
     async def execute(
-        self, tool_name: str, tool_input: dict, context: ToolContext
+        self,
+        tool_name: str,
+        tool_input: dict,
+        context: ToolContext,
     ) -> ToolResult:
         if tool_name != "read_document":
             return ToolResult(
@@ -119,7 +172,6 @@ class DocumentToolHandler:
             )
 
         document_id = tool_input.get("id", "")
-        # Strip the _ref: prefix if the LLM passes the raw search result reference token.
         if document_id and document_id.startswith("_ref:"):
             document_id = document_id[len("_ref:") :]
         document_name = tool_input.get("name", document_id)
@@ -132,18 +184,23 @@ class DocumentToolHandler:
                 is_error=True,
             )
 
+        if not context.skip_permission_check and context.user_email is None:
+            return ToolResult(
+                content=[
+                    {"type": "text", "text": f"Document not found: {document_id}"}
+                ],
+                is_error=True,
+            )
+
         try:
-            # Look up document metadata, applying permission filter when appropriate.
-            # Accept either a documents.id (ULID) or a connector-native external_id —
-            # the latter is what attachment pointers in email threads carry, since
-            # the indexer-assigned ULID isn't known at the time the thread is emitted.
             user_email = None if context.skip_permission_check else context.user_email
+            user_groups = context.user_groups
             doc = await self._documents_repo.get_by_id(
-                document_id, user_email=user_email
+                document_id, user_email=user_email, user_groups=user_groups
             )
             if doc is None:
                 doc = await self._documents_repo.get_by_external_id(
-                    document_id, user_email=user_email
+                    document_id, user_email=user_email, user_groups=user_groups
                 )
             if doc is None:
                 return ToolResult(
@@ -156,15 +213,8 @@ class DocumentToolHandler:
                     is_error=True,
                 )
 
-            # Determine if this is a binary file
             is_binary = doc.content_type in BINARY_CONTENT_TYPES
 
-            # For binary types, connectors often extract text at index time and
-            # store it in content_blobs (with content_type="text/plain"). When
-            # that happens, prefer the stored text over a round-trip binary fetch.
-            # We use the blob's MIME type to distinguish real extracted text
-            # (text/plain) from metadata-only blobs stored for images, videos,
-            # and unextractable archives (which retain their original MIME type).
             has_extracted_text = False
             if is_binary and doc.content_id and self._content_storage:
                 try:
@@ -174,7 +224,7 @@ class DocumentToolHandler:
                     )
                 except Exception:
                     logger.debug(
-                        "get_metadata failed for content_id %s, falling back to binary fetch",
+                        "get_metadata failed for content_id %s",
                         doc.content_id,
                         exc_info=True,
                     )
@@ -188,7 +238,11 @@ class DocumentToolHandler:
                 return await self._fetch_binary(doc, document_name, context)
             else:
                 return await self._read_text(
-                    doc, document_name, start_line, end_line, context
+                    doc,
+                    document_name,
+                    start_line,
+                    end_line,
+                    context,
                 )
 
         except Exception as e:
@@ -198,10 +252,32 @@ class DocumentToolHandler:
                 is_error=True,
             )
 
+    async def _stat_sandbox_path(self, path: str, chat_id: str) -> dict | None:
+        """Stat a sandbox path, returning metadata dict if it exists, None otherwise."""
+        if not self._sandbox_url:
+            return None
+        base = self._sandbox_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{base}/files/stat",
+                    json={"path": path, "chat_id": chat_id},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("exists"):
+                    return data
+        except Exception:
+            logger.debug("stat failed for sandbox path %s", path, exc_info=True)
+        return None
+
     async def _fetch_binary(
-        self, doc, document_name: str, context: ToolContext
+        self,
+        doc: Document,
+        document_name: str,
+        context: ToolContext,
     ) -> ToolResult:
-        """Fetch binary file from source via connector-manager and write to sandbox."""
+        """Fetch a binary file from its source and write it to the sandbox."""
         logger.info(
             f"Fetching binary file '{document_name}' (id={doc.id}) from source {doc.source_id}"
         )
@@ -221,7 +297,6 @@ class DocumentToolHandler:
             content_type = resp.headers.get("content-type", "")
 
             if "application/json" in content_type:
-                # The connector returned a JSON error
                 result = resp.json()
                 error = result.get("error", "Unknown error")
                 return ToolResult(
@@ -236,7 +311,11 @@ class DocumentToolHandler:
 
             binary_data = resp.content
             header_name = resp.headers.get("x-file-name")
-            file_name = unquote(header_name) if header_name else document_name
+            file_name = (
+                _workspace_path(doc, document_name)
+                if self._sandbox_url
+                else (unquote(header_name) if header_name else document_name)
+            )
 
         return await write_binary_to_sandbox(
             self._sandbox_url, binary_data, file_name, context.chat_id
@@ -244,7 +323,7 @@ class DocumentToolHandler:
 
     async def _read_text(
         self,
-        doc,
+        doc: Document,
         document_name: str,
         start_line: int | None,
         end_line: int | None,
@@ -264,14 +343,28 @@ class DocumentToolHandler:
 
         content = await self._content_storage.get_text(doc.content_id)
 
-        # Apply line range if specified
+        if _is_pdf_extraction_failure(doc.content_type, content):
+            if self._connector_manager_url and self._sandbox_url and doc.source_id:
+                return await self._fetch_binary(doc, document_name, context)
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Document '{document_name}' could not be loaded: PDF text "
+                            "extraction failed and binary staging is unavailable."
+                        ),
+                    }
+                ],
+                is_error=True,
+            )
+
         if start_line is not None or end_line is not None:
             lines = content.split("\n")
-            start = (start_line or 1) - 1  # Convert to 0-indexed
+            start = (start_line or 1) - 1
             end = end_line or len(lines)
             content = "\n".join(lines[start:end])
 
-        # Size check: return directly or write to sandbox
         if len(content) <= DIRECT_RETURN_THRESHOLD:
             return ToolResult(
                 content=[
@@ -288,23 +381,29 @@ class DocumentToolHandler:
                 ],
             )
 
-        # Large text: write to sandbox
         if self._sandbox_url:
-            # Determine a reasonable filename
-            file_name = document_name or doc.title or f"document_{doc.id}.txt"
-            if "." not in file_name:
-                file_name += ".txt"
+            filepath = _workspace_path(doc, document_name, start_line, end_line)
+            if "." not in filepath:
+                filepath += ".txt"
 
             size_kb = len(content.encode("utf-8")) / 1024
+            message = (
+                f"Document saved to workspace: {filepath} ({size_kb:.1f} KB). "
+                "Use read_file or run_python to process it."
+            )
+            if doc.content_id:
+                stat_result = await self._stat_sandbox_path(filepath, context.chat_id)
+                if stat_result:
+                    return ToolResult(content=[{"type": "text", "text": message}])
+
             return await write_text_to_sandbox(
                 self._sandbox_url,
                 content,
-                file_name,
+                filepath,
                 context.chat_id,
-                message=f"Document saved to workspace: {file_name} ({size_kb:.1f} KB). Use read_file or run_python to process it.",
+                message=message,
             )
 
-        # No sandbox available, return truncated content
         truncated = content[:DIRECT_RETURN_THRESHOLD]
         return ToolResult(
             content=[

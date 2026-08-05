@@ -2,8 +2,8 @@ use axum::response::IntoResponse;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
+use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use tracing::warn;
 
@@ -68,7 +68,10 @@ pub enum SourceScope {
 pub struct Source {
     pub id: String,
     pub name: String,
-    pub source_type: SourceType,
+    pub source_type: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub integration_type: IntegrationType,
     pub config: JsonValue,
     pub is_active: bool,
     pub is_deleted: bool,
@@ -88,6 +91,16 @@ pub struct Source {
 }
 
 impl Source {
+    pub fn native_source_type(&self) -> Result<SourceType, String> {
+        if self.integration_type != IntegrationType::Connector {
+            return Err(format!(
+                "source {} has integration_type {:?}, not connector",
+                self.id, self.integration_type
+            ));
+        }
+        SourceType::try_from(self.source_type.as_str())
+    }
+
     pub fn get_user_whitelist(&self) -> Vec<String> {
         self.user_whitelist
             .as_ref()
@@ -192,6 +205,104 @@ pub enum SourceType {
     Nextcloud,
     GoogleAds,
     Darwinbox,
+    Windshift,
+}
+
+impl SourceType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SourceType::GoogleDrive => "google_drive",
+            SourceType::Gmail => "gmail",
+            SourceType::GoogleChat => "google_chat",
+            SourceType::Confluence => "confluence",
+            SourceType::Jira => "jira",
+            SourceType::Slack => "slack",
+            SourceType::Github => "github",
+            SourceType::LocalFiles => "local_files",
+            SourceType::FileSystem => "file_system",
+            SourceType::Web => "web",
+            SourceType::Notion => "notion",
+            SourceType::Hubspot => "hubspot",
+            SourceType::OneDrive => "one_drive",
+            SourceType::SharePoint => "share_point",
+            SourceType::Outlook => "outlook",
+            SourceType::OutlookCalendar => "outlook_calendar",
+            SourceType::MsTeams => "ms_teams",
+            SourceType::Fireflies => "fireflies",
+            SourceType::Imap => "imap",
+            SourceType::Clickup => "clickup",
+            SourceType::Linear => "linear",
+            SourceType::PaperlessNgx => "paperless_ngx",
+            SourceType::Nextcloud => "nextcloud",
+            SourceType::GoogleAds => "google_ads",
+            SourceType::Darwinbox => "darwinbox",
+            SourceType::Windshift => "windshift",
+        }
+    }
+}
+
+impl std::fmt::Display for SourceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for SourceType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        SourceType::try_from(value)
+    }
+}
+
+impl TryFrom<&str> for SourceType {
+    type Error = String;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "google_drive" => Ok(SourceType::GoogleDrive),
+            "gmail" => Ok(SourceType::Gmail),
+            "google_chat" => Ok(SourceType::GoogleChat),
+            "confluence" => Ok(SourceType::Confluence),
+            "jira" => Ok(SourceType::Jira),
+            "slack" => Ok(SourceType::Slack),
+            "github" => Ok(SourceType::Github),
+            "local_files" => Ok(SourceType::LocalFiles),
+            "file_system" => Ok(SourceType::FileSystem),
+            "web" => Ok(SourceType::Web),
+            "notion" => Ok(SourceType::Notion),
+            "hubspot" => Ok(SourceType::Hubspot),
+            "one_drive" => Ok(SourceType::OneDrive),
+            "share_point" => Ok(SourceType::SharePoint),
+            "outlook" => Ok(SourceType::Outlook),
+            "outlook_calendar" => Ok(SourceType::OutlookCalendar),
+            "ms_teams" => Ok(SourceType::MsTeams),
+            "fireflies" => Ok(SourceType::Fireflies),
+            "imap" => Ok(SourceType::Imap),
+            "clickup" => Ok(SourceType::Clickup),
+            "linear" => Ok(SourceType::Linear),
+            "paperless_ngx" => Ok(SourceType::PaperlessNgx),
+            "nextcloud" => Ok(SourceType::Nextcloud),
+            "google_ads" => Ok(SourceType::GoogleAds),
+            "darwinbox" => Ok(SourceType::Darwinbox),
+            "windshift" => Ok(SourceType::Windshift),
+            other => Err(format!("unknown source type: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
+#[sqlx(type_name = "text", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum IntegrationType {
+    Connector,
+    RemoteMcp,
+}
+
+impl Default for IntegrationType {
+    fn default() -> Self {
+        IntegrationType::Connector
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -217,6 +328,10 @@ pub enum ServiceProvider {
     #[serde(rename = "google_ads")]
     GoogleAds,
     Darwinbox,
+    #[sqlx(rename = "remote_mcp")]
+    #[serde(rename = "remote_mcp")]
+    RemoteMcp,
+    Windshift,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -752,6 +867,12 @@ pub struct ActionDefinition {
     pub input_schema: JsonValue,
     #[serde(default)]
     pub mode: ActionMode,
+    /// OAuth scopes required to invoke this action, when declared by the
+    /// connector or its upstream MCP tool metadata.
+    /// `None` means the connector has not declared action-level scopes and
+    /// Omni should fall back to the coarse credential-existence check.
+    #[serde(default)]
+    pub required_scopes: Option<Vec<String>>,
     /// Restrict this action to a subset of the connector's `source_types`.
     /// Empty = applies to all source_types the connector supports.
     #[serde(default)]
@@ -821,7 +942,9 @@ pub struct ConnectorManifest {
     pub connector_id: String,
     pub connector_url: String,
     #[serde(default)]
-    pub source_types: Vec<SourceType>,
+    pub integration_type: IntegrationType,
+    #[serde(default)]
+    pub source_types: Vec<String>,
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
@@ -891,6 +1014,18 @@ pub enum ConnectorEvent {
         group_name: Option<String>,
         member_emails: Vec<String>,
     },
+    /// Idempotently creates or updates one source-provenanced person.
+    PersonSync {
+        sync_run_id: String,
+        source_id: String,
+        person: PersonSyncRecord,
+    },
+    /// Removes one source's current knowledge of a person by canonical email.
+    PersonDeleted {
+        sync_run_id: String,
+        source_id: String,
+        email: String,
+    },
 }
 
 impl ConnectorEvent {
@@ -900,6 +1035,8 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::DocumentDeleted { sync_run_id, .. } => sync_run_id,
             ConnectorEvent::GroupMembershipSync { sync_run_id, .. } => sync_run_id,
+            ConnectorEvent::PersonSync { sync_run_id, .. }
+            | ConnectorEvent::PersonDeleted { sync_run_id, .. } => sync_run_id,
         }
     }
 
@@ -909,6 +1046,8 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { source_id, .. } => source_id,
             ConnectorEvent::DocumentDeleted { source_id, .. } => source_id,
             ConnectorEvent::GroupMembershipSync { source_id, .. } => source_id,
+            ConnectorEvent::PersonSync { source_id, .. }
+            | ConnectorEvent::PersonDeleted { source_id, .. } => source_id,
         }
     }
 
@@ -918,7 +1057,17 @@ impl ConnectorEvent {
             ConnectorEvent::DocumentUpdated { document_id, .. } => document_id,
             ConnectorEvent::DocumentDeleted { document_id, .. } => document_id,
             ConnectorEvent::GroupMembershipSync { group_email, .. } => group_email,
+            ConnectorEvent::PersonSync { person, .. } => &person.email,
+            ConnectorEvent::PersonDeleted { email, .. } => email,
         }
+    }
+
+    /// Returns true for events that mutate source-provenanced person data.
+    pub fn is_person_event(&self) -> bool {
+        matches!(
+            self,
+            ConnectorEvent::PersonSync { .. } | ConnectorEvent::PersonDeleted { .. }
+        )
     }
 }
 
@@ -979,6 +1128,71 @@ pub struct ConnectorEventQueueItem {
     #[serde(with = "time::serde::iso8601::option")]
     pub processed_at: Option<OffsetDateTime>,
     pub error_message: Option<String>,
+}
+
+/// A single source-provenanced person upsert.
+/// Only reviewed, workplace-directory-safe fields are included; personal
+/// HR fields (mobile, DOB, addresses, bank/salary data, raw provider JSON)
+/// are intentionally absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersonSyncRecord {
+    /// Stable, required, unique within the source (e.g. Darwinbox employee ID).
+    pub external_id: String,
+    /// Required business email used as the canonical human identity.
+    pub email: String,
+    /// Full display name (e.g. first + middle + last).
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub given_name: Option<String>,
+    #[serde(default)]
+    pub middle_name: Option<String>,
+    #[serde(default)]
+    pub surname: Option<String>,
+    #[serde(default)]
+    pub job_title: Option<String>,
+    #[serde(default)]
+    pub department: Option<String>,
+    #[serde(default)]
+    pub division: Option<String>,
+    #[serde(default)]
+    pub company_name: Option<String>,
+    #[serde(default)]
+    pub office_location: Option<String>,
+    #[serde(default)]
+    pub work_country: Option<String>,
+    #[serde(default)]
+    pub employee_id: Option<String>,
+    #[serde(default)]
+    pub employee_type: Option<String>,
+    #[serde(default)]
+    pub cost_center: Option<String>,
+    #[serde(default)]
+    pub grade: Option<String>,
+    #[serde(default)]
+    pub band: Option<String>,
+    #[serde(default)]
+    pub confirmation_status: Option<String>,
+    #[serde(default)]
+    pub employment_start_date: Option<String>,
+    #[serde(default)]
+    pub employment_end_date: Option<String>,
+    /// Contact phone number (e.g. Darwinbox `personal_mobile_no`).
+    #[serde(default)]
+    pub phone: Option<String>,
+    /// Source-reported employment activity. `None` means leave the people
+    /// row's current value untouched; only a source-provided value should map.
+    #[serde(default)]
+    pub is_active: Option<bool>,
+    /// Parent org unit (e.g. Darwinbox `top_department`).
+    #[serde(default)]
+    pub top_department: Option<String>,
+    /// Manager's external ID within the same source.
+    #[serde(default)]
+    pub manager_external_id: Option<String>,
+    /// Provider-side modification timestamp (e.g. latest_modified_any_attribute).
+    #[serde(default)]
+    pub source_updated_at: Option<String>,
 }
 
 /// Type/mode of a sync run. Serializes as a lowercase string on the wire
@@ -1318,7 +1532,8 @@ mod tests {
         Source {
             id: "src-1".to_string(),
             name: "Test".to_string(),
-            source_type: SourceType::Web,
+            source_type: SourceType::Web.to_string(),
+            integration_type: IntegrationType::Connector,
             config: json!({}),
             is_active: true,
             is_deleted: false,
@@ -1333,6 +1548,20 @@ mod tests {
             updated_at: OffsetDateTime::now_utc(),
             created_by: "admin".to_string(),
         }
+    }
+
+    #[test]
+    fn integration_type_uses_text_sqlx_type_and_snake_case_json() {
+        use sqlx::{Postgres, Type, TypeInfo};
+
+        assert_eq!(
+            <IntegrationType as Type<Postgres>>::type_info().name(),
+            "text"
+        );
+        assert_eq!(
+            serde_json::to_string(&IntegrationType::RemoteMcp).unwrap(),
+            "\"remote_mcp\""
+        );
     }
 
     #[test]

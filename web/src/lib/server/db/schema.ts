@@ -10,6 +10,7 @@ import {
     index,
 } from 'drizzle-orm/pg-core'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
+import type { ChatStreamError } from '$lib/types/message.js'
 
 export const user = pgTable('users', {
     id: text('id').primaryKey(),
@@ -37,6 +38,7 @@ export const sources = pgTable('sources', {
     id: text('id').primaryKey(),
     name: text('name').notNull(),
     sourceType: text('source_type').notNull(),
+    integrationType: text('integration_type').notNull().default('connector'),
     config: jsonb('config').notNull().default({}),
     isActive: boolean('is_active').notNull().default(true),
     isDeleted: boolean('is_deleted').notNull().default(false),
@@ -204,6 +206,8 @@ export const chatMessages = pgTable('chat_messages', {
     messageSeqNum: integer('message_seq_num').notNull(),
     message: jsonb('message').$type<MessageParam>().notNull(),
     contentText: text('content_text'),
+    // Error payload for a failed assistant turn; null when the turn succeeded.
+    error: jsonb('error').$type<ChatStreamError | null>(),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 

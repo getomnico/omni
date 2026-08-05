@@ -1,7 +1,9 @@
 pub mod config;
 pub mod connector_client;
+pub mod credential_service;
 pub mod handlers;
 pub mod models;
+pub mod remote_mcp;
 pub mod scheduler;
 pub mod source_cleanup;
 pub mod sync_circuit_breaker;
@@ -16,6 +18,7 @@ use axum::{
 };
 use config::ConnectorManagerConfig;
 use redis::Client as RedisClient;
+use remote_mcp::{gateway::RemoteMcpGateway, registry};
 use shared::{
     telemetry::{self, TelemetryConfig},
     DatabasePool, ObjectStorage,
@@ -34,6 +37,7 @@ pub struct AppState {
     pub redis_client: RedisClient,
     pub config: ConnectorManagerConfig,
     pub sync_manager: Arc<SyncManager>,
+    pub remote_mcp_gateway: Arc<RemoteMcpGateway>,
     pub content_storage: Arc<dyn ObjectStorage>,
     pub extraction_semaphore: Arc<Semaphore>,
 }
@@ -48,8 +52,16 @@ pub fn create_app(state: AppState) -> Router {
         .route("/sync/:id/progress", get(handlers::get_sync_progress))
         .route("/schedules", get(handlers::list_schedules))
         .route("/sources", get(handlers::list_sources))
+        .route(
+            "/sources/active",
+            get(handlers::list_active_sources_for_capabilities),
+        )
         .route("/sources/:source_id", get(handlers::get_source))
         .route("/connectors", get(handlers::list_connectors))
+        .route(
+            "/remote-mcp/:source_id/refresh",
+            post(handlers::refresh_remote_mcp_catalog),
+        )
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
         .route("/resource", post(handlers::read_resource))
@@ -155,12 +167,17 @@ pub async fn run_server() -> AnyhowResult<()> {
         config.clone(),
         redis_client.clone(),
     ));
+    let remote_mcp_gateway = Arc::new(RemoteMcpGateway::new(
+        db_pool.clone(),
+        redis_client.clone(),
+    )?);
 
     let app_state = AppState {
         db_pool: db_pool.clone(),
         redis_client: redis_client.clone(),
         config: config.clone(),
         sync_manager: sync_manager.clone(),
+        remote_mcp_gateway: remote_mcp_gateway.clone(),
         content_storage,
         extraction_semaphore: Arc::new(Semaphore::new(config.extraction_concurrency)),
     };
@@ -170,6 +187,14 @@ pub async fn run_server() -> AnyhowResult<()> {
     if let Err(e) = sync_manager.monitor_running_syncs().await {
         warn!("Startup sync reconciliation failed: {}", e);
     }
+
+    registry::startup_register_remote_mcp_sources((*remote_mcp_gateway).clone(), db_pool.clone())
+        .await;
+    tokio::spawn(registry::run_remote_mcp_registry_loop(
+        (*remote_mcp_gateway).clone(),
+        db_pool.clone(),
+    ));
+    info!("Remote MCP registry started");
 
     tokio::spawn(scheduler::Scheduler::run(
         db_pool.pool().clone(),

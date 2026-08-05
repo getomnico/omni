@@ -8,6 +8,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Literal, TypedDict
+from urllib.parse import urlencode
 
 import httpx
 import redis.asyncio as aioredis
@@ -51,6 +52,23 @@ def sources_from_sync_overview_response(payload: object) -> list[Source]:
     return sources
 
 
+async def fetch_active_sources_from_connector_manager(
+    connector_manager_url: str,
+    timeout: float = 10.0,
+) -> list[Source]:
+    """Fetch active source rows, including remote MCP rows.
+
+    Connector-manager's legacy /sources endpoint is sync-overview oriented and
+    excludes remote MCP sources because they never sync. Tool prefetch paths must
+    use /sources/active so action/resource manifests can join active rows by
+    (integration_type, source_type) without re-enabling sync.
+    """
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(f"{connector_manager_url.rstrip('/')}/sources/active")
+        resp.raise_for_status()
+        return sources_from_sync_overview_response(resp.json())
+
+
 class ToolsetSummary(TypedDict):
     source_id: str
     source_type: str
@@ -81,8 +99,14 @@ class ConnectorAction:
     description: str
     input_schema: dict
     mode: SourceMode
+    required_scopes: list[str] | None = None
     admin_only: bool = False
     hidden: bool = False
+    integration_type: str = "connector"
+    # True when the connector declares a per-user OAuth flow (manifest.oauth).
+    # Org-only connectors (e.g. Darwinbox) run actions against the org
+    # credential and must never surface an OAuth prompt.
+    supports_user_oauth: bool = False
 
 
 class ConnectorToolHandler:
@@ -170,28 +194,36 @@ class ConnectorToolHandler:
                 if self._prefetched_sources is not None:
                     sources = self._prefetched_sources
                 else:
-                    sources_resp = await client.get(
-                        f"{self._connector_manager_url}/sources"
+                    sources = await fetch_active_sources_from_connector_manager(
+                        self._connector_manager_url
                     )
-                    sources_resp.raise_for_status()
-                    sources = sources_from_sync_overview_response(sources_resp.json())
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
             return []
 
-        # Build a mapping from source_type to list of active sources
-        source_by_type: dict[str, list[Source]] = {}
+        # Build a mapping from (integration_type, source_type) to active sources.
+        source_by_identity: dict[tuple[str, str], list[Source]] = {}
         for source in sources:
             if source.is_active and not source.is_deleted:
-                source_by_type.setdefault(source.source_type, []).append(source)
+                source_by_identity.setdefault(
+                    (source.integration_type, source.source_type), []
+                ).append(source)
 
         # Extract search operators from connector manifests
         search_operators: list[SearchOperator] = []
         for connector in connectors:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
+            integration_type = (
+                manifest.get("integration_type", "connector")
+                if manifest
+                else "connector"
+            )
             if not manifest or not connector.get("healthy"):
+                continue
+
+            if (integration_type, source_type) not in source_by_identity:
                 continue
 
             display_name = manifest.get("display_name", source_type)
@@ -217,6 +249,11 @@ class ConnectorToolHandler:
         for connector in connectors:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
+            integration_type = (
+                manifest.get("integration_type", "connector")
+                if manifest
+                else "connector"
+            )
             if not manifest or not connector.get("healthy"):
                 continue
 
@@ -224,8 +261,10 @@ class ConnectorToolHandler:
                 action_source_types = action_def.get("source_types") or []
                 if action_source_types and source_type not in action_source_types:
                     continue
-                # Find matching active sources for this connector type
-                for source in source_by_type.get(source_type, []):
+                # Find matching active sources for this integration/source type.
+                for source in source_by_identity.get(
+                    (integration_type, source_type), []
+                ):
                     actions.append(
                         ConnectorAction(
                             source_id=source.id,
@@ -237,8 +276,11 @@ class ConnectorToolHandler:
                                 "input_schema", {"type": "object", "properties": {}}
                             ),
                             mode=action_def.get("mode", "write"),
+                            required_scopes=action_def.get("required_scopes"),
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
+                            integration_type=integration_type,
+                            supports_user_oauth=bool(manifest.get("oauth")),
                         )
                     )
 
@@ -274,9 +316,11 @@ class ConnectorToolHandler:
             base_tool_name = f"{action.source_type}__{action.action_name}"
 
             # Apply action_whitelist: skip actions not in whitelist
-            if self._action_whitelist is not None:
-                if base_tool_name not in self._action_whitelist:
-                    continue
+            if (
+                self._action_whitelist is not None
+                and base_tool_name not in self._action_whitelist
+            ):
+                continue
 
             occurrence = base_name_counts.get(base_tool_name, 0)
             base_name_counts[base_tool_name] = occurrence + 1
@@ -325,7 +369,7 @@ class ConnectorToolHandler:
         sample_tool_names (up to 3 for the LLM to skim).
         """
         by_source: dict[str, list[ConnectorAction]] = {}
-        for tool_name, action in self._actions.items():
+        for _tool_name, action in self._actions.items():
             by_source.setdefault(action.source_id, []).append(action)
 
         toolsets: list[ToolsetSummary] = []
@@ -373,7 +417,7 @@ class ConnectorToolHandler:
         async with pool.acquire() as conn:
             user_credential = await conn.fetchrow(
                 """
-                SELECT id
+                SELECT id, provider, config
                 FROM service_credentials
                 WHERE source_id = $1 AND user_id = $2
                 LIMIT 1
@@ -382,8 +426,52 @@ class ConnectorToolHandler:
                 context.user_id,
             )
             if user_credential is not None:
-                return None
+                # None = connector has not declared action-level scopes.
+                # Fall back to original behavior: credential existence is
+                # sufficient and Omni does not attempt incremental consent.
+                if action.required_scopes is None:
+                    return None
 
+                required_scopes = set(action.required_scopes)
+                config = user_credential["config"] or {}
+                if isinstance(config, str):
+                    try:
+                        config = json.loads(config)
+                    except json.JSONDecodeError:
+                        config = {}
+                if not isinstance(config, Mapping):
+                    config = {}
+                granted_scopes = set(config.get("granted_scopes") or [])
+                missing_scopes = sorted(required_scopes - granted_scopes)
+                if not missing_scopes:
+                    return None
+
+                provider = user_credential["provider"]
+                if not provider:
+                    return None
+                query = urlencode(
+                    {
+                        "source_id": action.source_id,
+                        "flow": "user_write",
+                        "required_scopes": ",".join(missing_scopes),
+                    }
+                )
+                return OAuthRequiredPayload(
+                    source_id=action.source_id,
+                    source_type=action.source_type,
+                    provider=provider,
+                    oauth_start_url=f"/api/oauth/start?{query}",
+                )
+
+            source_row = await conn.fetchrow(
+                """
+                SELECT integration_type, config
+                FROM sources
+                WHERE id = $1
+                LIMIT 1
+                """,
+                action.source_id,
+            )
             org_credential = await conn.fetchrow(
                 """
                 SELECT provider
@@ -394,10 +482,27 @@ class ConnectorToolHandler:
                 action.source_id,
             )
 
-        if org_credential is None:
-            return None
+        if source_row and source_row["integration_type"] == "remote_mcp":
+            config = source_row["config"] or {}
+            if isinstance(config, str):
+                try:
+                    config = json.loads(config)
+                except json.JSONDecodeError:
+                    config = {}
+            if not isinstance(config, dict) or config.get("auth_type") != "oauth":
+                return None
+            provider = "remote_mcp"
+        else:
+            if org_credential is None:
+                return None
+            # Connectors without a per-user OAuth flow (e.g. Darwinbox) run
+            # against the org credential; connector-manager resolves the same
+            # way (`resolve_missing_user_credential`), so an OAuth prompt here
+            # would dead-end an action that would otherwise execute.
+            if not action.supports_user_oauth:
+                return None
+            provider = org_credential["provider"]
 
-        provider = org_credential["provider"]
         if not provider:
             return None
 
@@ -428,8 +533,20 @@ class ConnectorToolHandler:
         document_id = tool_input.get("document_id")
         if document_id and self._documents_repo and not context.skip_permission_check:
             user_email = context.user_email
+            if user_email is None:
+                return ToolResult(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"Document not found: {document_id}",
+                        }
+                    ],
+                    is_error=True,
+                )
             doc = await self._documents_repo.get_by_id(
-                document_id, user_email=user_email
+                document_id,
+                user_email=user_email,
+                user_groups=context.user_groups,
             )
             if doc is None:
                 return ToolResult(

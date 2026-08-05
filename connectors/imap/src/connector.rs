@@ -95,6 +95,7 @@ impl Connector for ImapConnector {
                 // Setup/util action with no chat-facing use: hidden from every
                 // chat/MCP tool surface, admins included, but still in the
                 // manifest (Read mode) and dispatchable by name.
+                required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: true,
@@ -115,6 +116,7 @@ impl Connector for ImapConnector {
                 // Setup/util action with no chat-facing use: hidden from every
                 // chat/MCP tool surface, admins included, but still in the
                 // manifest (Read mode) and dispatchable by name.
+                required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: true,

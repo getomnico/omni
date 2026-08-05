@@ -375,7 +375,7 @@ export class ChatMessageRepository {
     async getActivePath(chatId: string): Promise<ChatMessage[]> {
         const rows = await this.db.execute<ChatMessage>(sql`
             WITH RECURSIVE walk_up AS (
-                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.created_at
+                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.error, cm.created_at
                 FROM (
                     SELECT *
                     FROM chat_messages
@@ -390,7 +390,7 @@ export class ChatMessageRepository {
 
                 UNION ALL
 
-                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.created_at
+                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.error, cm.created_at
                 FROM chat_messages cm
                 JOIN walk_up wu ON cm.id = wu.parent_id
             )
@@ -400,6 +400,7 @@ export class ChatMessageRepository {
                    message_seq_num AS "messageSeqNum",
                    message,
                    content_text AS "contentText",
+                   error,
                    created_at AS "createdAt"
             FROM walk_up
             ORDER BY message_seq_num

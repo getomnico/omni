@@ -4,7 +4,7 @@ use crate::models::{
     CapabilitiesUpsertRequest, CapabilitiesUpsertResponse, CapabilitySearchRequest,
     CapabilitySearchResponse, PeopleSearchResponse, PersonResult, RecentSearchesRequest,
     SearchRequest, SuggestedQuestionsRequest, SuggestedQuestionsResponse, TypeaheadQuery,
-    TypeaheadResponse,
+    TypeaheadResponse, TypeaheadResult,
 };
 use crate::search::SearchEngine;
 use crate::search_repository::SearchDocumentRepository;
@@ -18,10 +18,10 @@ use axum::{
 };
 use futures_util::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::{
-    models::UserConfiguration, ConfigurationRepository, PersonRepository, Repository,
-    UserRepository,
+    ConfigurationRepository, DocumentRepository, GroupRepository, PersonRepository,
+    PersonSearchFilter, Repository, UserRepository, models::UserConfiguration,
 };
 use sqlx::types::time::OffsetDateTime;
 use std::pin::Pin;
@@ -298,9 +298,113 @@ pub async fn typeahead(
     State(state): State<AppState>,
     Query(query): Query<TypeaheadQuery>,
 ) -> SearcherResult<Json<Value>> {
-    let results = state.title_index.search(&query.q, query.limit()).await;
+    let user_id = query.user_id.clone();
+    if user_id.is_empty() {
+        info!("typeahead: empty user_id, returning empty");
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+
+    let user_repo = UserRepository::new(&state.db_pool.pool());
+    let user = match user_repo.find_by_id(user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => {
+            info!("typeahead: unknown user, returning empty");
+            return Ok(Json(serde_json::to_value(TypeaheadResponse {
+                results: vec![],
+                query: query.q,
+            })?));
+        }
+        Err(e) => {
+            error!("typeahead: user lookup failed: {}", e);
+            return Err(SearcherError::Internal(anyhow::anyhow!(
+                "User lookup failed for typeahead"
+            )));
+        }
+    };
+
+    if !user.is_active {
+        info!("typeahead: inactive user, returning empty");
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+    let user_email = user.email;
+
+    // Enforce minimum query length (3 characters after normalization).
+    // This prevents broad 1-2 character scans from direct API calls.
+    if !crate::typeahead::has_minimum_query_length(&query.q) {
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+
+    // Resolve current group memberships. Fail closed on DB error.
+    let group_repo = GroupRepository::new(&state.db_pool.pool());
+    let user_groups = group_repo
+        .find_groups_for_user(&user_email)
+        .await
+        .map_err(|e| {
+            error!("typeahead: group lookup failed: {}", e);
+            SearcherError::Internal(anyhow::anyhow!("Group lookup failed for typeahead"))
+        })?;
+
+    // Fetch the full score-ordered candidate set (no cap).
+    let candidates = state.title_index.search_candidates(&query.q).await;
+
+    if candidates.is_empty() {
+        return Ok(Json(serde_json::to_value(TypeaheadResponse {
+            results: vec![],
+            query: query.q,
+        })?));
+    }
+
+    // Process candidates in bounded batches until the requested limit is
+    // filled or all candidates are exhausted.
+    let doc_repo = DocumentRepository::new(state.db_pool.pool());
+    let batch_size = 100;
+    let mut accessible: Vec<TypeaheadResult> = Vec::new();
+    let limit = query.limit();
+
+    for chunk in candidates.chunks(batch_size) {
+        if accessible.len() >= limit {
+            break;
+        }
+
+        let ids: Vec<String> = chunk.iter().map(|c| c.document_id.clone()).collect();
+        let allowed = doc_repo
+            .filter_accessible_titles(&ids, &user_email, &user_groups)
+            .await
+            .map_err(|e| {
+                error!("typeahead: ACL filter failed: {}", e);
+                SearcherError::Internal(anyhow::anyhow!("Permission check failed for typeahead"))
+            })?;
+
+        // Collect accessible results in ranked order.
+        for c in chunk {
+            if accessible.len() >= limit {
+                break;
+            }
+            if !allowed.contains(&c.document_id) {
+                continue;
+            }
+            accessible.push(TypeaheadResult {
+                document_id: c.document_id.clone(),
+                title: c.title.clone(),
+                url: c.url.clone(),
+                source_id: c.source_id.clone(),
+                source_type: c.source_type.clone(),
+                content_type: c.content_type.clone(),
+            });
+        }
+    }
+
     let response = TypeaheadResponse {
-        results,
+        results: accessible,
         query: query.q,
     };
     Ok(Json(serde_json::to_value(response)?))
@@ -346,9 +450,19 @@ pub async fn suggested_questions(
 }
 
 #[derive(Debug, serde::Deserialize)]
+pub struct AttributeValuesQuery {
+    pub keys: String,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
 pub struct PeopleSearchQuery {
     pub q: String,
     pub limit: Option<i64>,
+    pub department: Option<String>,
+    pub office_location: Option<String>,
+    pub work_country: Option<String>,
+    pub employee_type: Option<String>,
 }
 
 pub async fn people_search(
@@ -358,8 +472,15 @@ pub async fn people_search(
     let person_repo = PersonRepository::new(state.db_pool.pool());
     let limit = query.limit.unwrap_or(10).min(50);
 
+    let filter = PersonSearchFilter {
+        department: non_empty(&query.department),
+        office_location: non_empty(&query.office_location),
+        work_country: non_empty(&query.work_country),
+        employee_type: non_empty(&query.employee_type),
+    };
+
     let results = person_repo
-        .search_people(&query.q, limit)
+        .search_people(&query.q, limit, &filter)
         .await
         .map_err(|e| SearcherError::Internal(anyhow!("People search failed: {}", e)))?;
 
@@ -370,9 +491,22 @@ pub async fn people_search(
             email: p.email,
             display_name: p.display_name,
             given_name: p.given_name,
+            middle_name: p.middle_name,
             surname: p.surname,
             job_title: p.job_title,
             department: p.department,
+            division: p.division,
+            company_name: p.company_name,
+            office_location: p.office_location,
+            work_country: p.work_country,
+            employee_id: p.employee_id,
+            employee_type: p.employee_type,
+            cost_center: p.cost_center,
+            grade: p.grade,
+            band: p.band,
+            confirmation_status: p.confirmation_status,
+            employment_start_date: p.employment_start_date,
+            employment_end_date: p.employment_end_date,
             score: p.score,
         })
         .collect();
@@ -380,10 +514,12 @@ pub async fn people_search(
     Ok(Json(PeopleSearchResponse { people }))
 }
 
-#[derive(Debug, serde::Deserialize)]
-pub struct AttributeValuesQuery {
-    pub keys: String,
-    pub limit: Option<i64>,
+fn non_empty(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 pub async fn attribute_values(

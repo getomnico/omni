@@ -17,11 +17,15 @@
     import * as ButtonGroup from '$lib/components/ui/button-group'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import type { TypeaheadResult } from '$lib/types/search'
+    import type { MentionedDocument } from '$lib/types/message'
+    import { getDocumentIconPath } from '$lib/utils/icons'
     import { formatProviderName } from '$lib/utils/providers.js'
+    import { hasMinimumQueryLength } from '$lib/utils/query'
 
     interface PopoverItem {
         label: string
         icon?: Component
+        iconPath?: string
         onClick: () => void
     }
 
@@ -55,6 +59,8 @@
         onAttachClick?: () => void
         onFilesDropped?: (files: FileList) => void
         attachments?: Snippet
+        mentionedDocs?: MentionedDocument[]
+        canSubmit?: boolean
     }
 
     export type InputMode = 'search' | 'chat'
@@ -86,6 +92,8 @@
         onAttachClick,
         onFilesDropped,
         attachments,
+        mentionedDocs = $bindable([]),
+        canSubmit = undefined,
     }: UserInputProps = $props()
 
     let isDragging = $state(false)
@@ -147,6 +155,11 @@
     let popoverContainer: HTMLDivElement | undefined = $state()
     let placeholder = $derived(placeholders[inputMode])
 
+    let effectiveEligibility = $derived.by(() => {
+        if (canSubmit !== undefined) return canSubmit
+        return value.trim().length > 0 || mentionedDocs.length > 0
+    })
+
     // @-mention state
     let mentionActive = $state(false)
     let mentionQuery = $state('')
@@ -159,32 +172,51 @@
     let mentionAnchorOffset = 0
 
     let effectivePopoverItems: PopoverItem[] = $derived(
-        mentionActive && mentionResults.length > 0
+        inputMode === 'chat' && mentionActive && mentionResults.length > 0
             ? mentionResults.map((result) => ({
                   label: result.title,
                   icon: FileText,
+                  iconPath:
+                      getDocumentIconPath(result.source_type, result.content_type) ?? undefined,
                   onClick: () => insertMentionChip(result),
               }))
             : popoverItems,
     )
 
     let effectiveShowPopover = $derived.by(() => {
-        if (inputMode !== 'search') {
-            return false
-        }
-
-        if (mentionActive) {
+        if (inputMode === 'chat' && mentionActive) {
             return mentionResults.length > 0
         }
-
-        return showPopover
+        return inputMode === 'search' && showPopover
     })
 
+    // Extract text content, stripping mention-chip text for chat mode.
+    // In search mode, chip title text is included (existing behavior).
+    function textWithoutMentionChips(): string {
+        if (!inputRef) return ''
+        if (inputMode === 'search') return inputRef.innerText
+        // Clone to avoid live DOM manipulation
+        const clone = inputRef.cloneNode(true) as HTMLElement
+        const chips = clone.querySelectorAll('[data-document-id]')
+        for (const chip of chips) {
+            chip.remove()
+        }
+        return clone.textContent ?? ''
+    }
+
+    // Sync externally controlled value/mentionedDocs to the live DOM.
+    // When the parent resets both to empty (successful submit), clear all
+    // children including chips. When chips exist but values are nonempty,
+    // leave DOM intact (parent is editing, not resetting).
     $effect(() => {
-        // Use innerText to match what is extracted in handleInputChange.
-        // This prevents the reactivity loop from triggering while the user is actively typing,
-        // which completely avoids disrupting both cursor positions and Korean IME composition.
-        if (inputRef && value !== inputRef.innerText) {
+        if (!inputRef) return
+        if (value === '' && mentionedDocs.length === 0) {
+            // Controlled clear: parent reset after successful submit.
+            inputRef.replaceChildren()
+            return
+        }
+        const hasChips = inputRef.querySelector('[data-document-id]')
+        if (!hasChips && value !== inputRef.innerText) {
             if (value) {
                 inputRef.innerText = value
             } else {
@@ -192,6 +224,23 @@
             }
         }
     })
+
+    function scanMentionedDocs() {
+        if (inputMode !== 'chat' || !inputRef) {
+            mentionedDocs = []
+            return
+        }
+        const chips = inputRef.querySelectorAll('[data-document-id]')
+        mentionedDocs = Array.from(chips).map((chip) => {
+            const element = chip as HTMLElement
+            return {
+                document_id: element.dataset.documentId ?? '',
+                title: element.dataset.title ?? element.textContent ?? '',
+                source_type: element.dataset.sourceType,
+                content_type: element.dataset.contentType,
+            }
+        })
+    }
 
     function closeMention() {
         mentionActive = false
@@ -207,6 +256,11 @@
     }
 
     function detectMention() {
+        if (inputMode !== 'chat') {
+            closeMention()
+            return
+        }
+
         const sel = window.getSelection()
         if (!sel || sel.rangeCount === 0) {
             closeMention()
@@ -223,7 +277,8 @@
         const text = node.textContent || ''
         const cursorPos = range.startOffset
 
-        // Scan backwards from cursor for `@`
+        // Scan backwards from cursor for `@`. Spaces are allowed in document
+        // titles/queries (e.g. "@Asset Risk"), but mentions do not span lines.
         let atIndex = -1
         for (let i = cursorPos - 1; i >= 0; i--) {
             const ch = text[i]
@@ -234,8 +289,7 @@
                 }
                 break
             }
-            // Stop scanning if we hit whitespace before finding `@`
-            if (/\s/.test(ch)) break
+            if (ch === '\n') break
         }
 
         if (atIndex === -1) {
@@ -247,7 +301,8 @@
         mentionAnchorNode = node as Text
         mentionAnchorOffset = atIndex
 
-        if (query.length < 2) {
+        if (!hasMinimumQueryLength(query)) {
+            if (debounceTimer) clearTimeout(debounceTimer)
             mentionActive = true
             mentionQuery = query
             mentionResults = []
@@ -265,6 +320,8 @@
     }
 
     async function fetchTypeahead(query: string) {
+        if (inputMode !== 'chat') return
+
         try {
             const res = await fetch(`/api/typeahead?q=${encodeURIComponent(query)}&limit=5`)
             if (!res.ok) {
@@ -272,7 +329,7 @@
                 return
             }
             const data = await res.json()
-            if (mentionActive && mentionQuery === query) {
+            if (inputMode === 'chat' && mentionActive && mentionQuery === query) {
                 mentionResults = data.results || []
                 mentionHighlightIndex = 0
             }
@@ -282,26 +339,44 @@
     }
 
     function insertMentionChip(result: TypeaheadResult) {
-        if (!mentionAnchorNode || !inputRef) return
+        if (inputMode !== 'chat' || !mentionAnchorNode || !inputRef) return
 
-        const sel = window.getSelection()
-        if (!sel || sel.rangeCount === 0) return
+        const queryEndOffset = Math.min(
+            mentionAnchorOffset + 1 + mentionQuery.length,
+            mentionAnchorNode.textContent?.length ?? mentionAnchorOffset,
+        )
 
-        const cursorOffset = sel.getRangeAt(0).startOffset
-
-        // Create a range from `@` to current cursor position
+        // Create a range from `@` to the end of the current mention query. Do
+        // not rely on window selection here: mouse-selecting a suggestion can
+        // move focus/selection from the composer to the popover button.
         const range = document.createRange()
         range.setStart(mentionAnchorNode, mentionAnchorOffset)
-        range.setEnd(mentionAnchorNode, cursorOffset)
+        range.setEnd(mentionAnchorNode, queryEndOffset)
         range.deleteContents()
 
         // Create the chip element
         const chip = document.createElement('span')
         chip.contentEditable = 'false'
         chip.dataset.documentId = result.document_id
+        chip.dataset.title = result.title
+        chip.dataset.sourceType = result.source_type
+        chip.dataset.contentType = result.content_type
         chip.className =
-            'inline-flex items-center rounded-full bg-blue-100 text-blue-800 px-2 text-sm select-none'
-        chip.textContent = result.title
+            'bg-muted text-foreground inline-flex max-w-64 items-center gap-1.5 rounded-full border px-1.5 py-0.5 align-baseline text-sm select-none'
+
+        const iconPath = getDocumentIconPath(result.source_type, result.content_type)
+        if (iconPath) {
+            const icon = document.createElement('img')
+            icon.src = iconPath
+            icon.alt = ''
+            icon.className = 'h-3.5 w-3.5 shrink-0 object-contain'
+            chip.append(icon)
+        }
+
+        const label = document.createElement('span')
+        label.className = 'truncate'
+        label.textContent = result.title
+        chip.append(label)
 
         // Insert chip + trailing space
         range.insertNode(chip)
@@ -309,19 +384,27 @@
         const space = document.createTextNode('\u00A0')
         chip.after(space)
 
-        // Move cursor after the space
-        const newRange = document.createRange()
-        newRange.setStartAfter(space)
-        newRange.collapse(true)
-        sel.removeAllRanges()
-        sel.addRange(newRange)
-
         closeMention()
-        onInput(inputRef.innerText)
+        scanMentionedDocs()
+        value = textWithoutMentionChips()
+        onInput(value)
+
+        // Closing the popover can update focus. Restore the caret after the
+        // inserted chip once DOM/state updates have settled.
+        requestAnimationFrame(() => {
+            inputRef?.focus({ preventScroll: true })
+            const sel = window.getSelection()
+            if (!sel || !space.isConnected) return
+            const newRange = document.createRange()
+            newRange.setStart(space, space.length)
+            newRange.collapse(true)
+            sel.removeAllRanges()
+            sel.addRange(newRange)
+        })
     }
 
     function handleKeyPress(event: KeyboardEvent) {
-        if (mentionActive && mentionResults.length > 0) {
+        if (inputMode === 'chat' && mentionActive && mentionResults.length > 0) {
             if (event.key === 'ArrowDown') {
                 event.preventDefault()
                 mentionHighlightIndex = (mentionHighlightIndex + 1) % mentionResults.length
@@ -352,7 +435,7 @@
     }
 
     async function handleSubmitClick() {
-        if (value.trim() && !disabled && !isLoading && !isStreaming) {
+        if (effectiveEligibility && !disabled && !isLoading && !isStreaming) {
             await onSubmit()
         }
     }
@@ -365,8 +448,9 @@
 
     function handleInputChange() {
         if (inputRef) {
-            value = inputRef.innerText
+            value = textWithoutMentionChips()
             onInput(value)
+            scanMentionedDocs()
             detectMention()
             if (!mentionActive && onPopoverChange) {
                 onPopoverChange(false)
@@ -395,6 +479,27 @@
             onPopoverChange(false)
         }
     }
+
+    function changeInputMode(newMode: InputMode) {
+        inputMode = newMode
+        if (newMode === 'search') {
+            // Remove mention chips from DOM when switching to search mode;
+            // preserve ordinary text by replacing each chip with its text.
+            if (inputRef) {
+                const chips = inputRef.querySelectorAll('[data-document-id]')
+                for (const chip of chips) {
+                    chip.replaceWith(chip.textContent || '')
+                }
+            }
+            mentionedDocs = []
+        }
+        closeMention()
+        // Recompute controlled value from current DOM for the new mode
+        // (search includes chip titles; chat excludes them).
+        value = textWithoutMentionChips()
+        scanMentionedDocs()
+        onInput(value)
+    }
 </script>
 
 {#snippet modeSelector()}
@@ -412,7 +517,7 @@
                             aria-label="Chat mode"
                             onclick={(e) => {
                                 e.stopPropagation()
-                                inputMode = 'chat'
+                                changeInputMode('chat')
                             }}>
                             <MessageCircle class="size-4" />
                         </Button>
@@ -437,7 +542,7 @@
                             aria-label="Search mode"
                             onclick={(e) => {
                                 e.stopPropagation()
-                                inputMode = 'search'
+                                changeInputMode('search')
                             }}>
                             <Search class="size-4" />
                         </Button>
@@ -491,7 +596,9 @@
             onblur={handleBlur}
             class={cn(
                 'before:text-muted-foreground relative min-h-12 cursor-text overflow-y-auto before:pointer-events-none before:absolute before:inset-0 focus:outline-none',
-                value.trim() ? "before:content-['']" : 'before:content-[attr(data-placeholder)]',
+                value.trim() || mentionedDocs.length > 0
+                    ? "before:content-['']"
+                    : 'before:content-[attr(data-placeholder)]',
             )}
             contenteditable="true"
             role="textbox"
@@ -584,7 +691,9 @@
                         size="icon"
                         class="omni-composer-send size-8 cursor-pointer"
                         onclick={handleSubmitClick}
-                        disabled={!value.trim() || disabled}>
+                        disabled={!effectiveEligibility ||
+                            disabled ||
+                            (canSubmit !== undefined && !canSubmit)}>
                         {#if inputMode === 'search'}
                             <Search class="h-3 w-3" />
                         {:else}
@@ -622,9 +731,17 @@
                                         i === mentionHighlightIndex &&
                                         'bg-accent text-accent-foreground',
                                 )}
+                                onmousedown={(event) => {
+                                    if (mentionActive) event.preventDefault()
+                                }}
                                 onclick={() => handlePopoverItemClick(item)}>
                                 <div class="flex items-center gap-3">
-                                    {#if item.icon}
+                                    {#if item.iconPath}
+                                        <img
+                                            src={item.iconPath}
+                                            alt=""
+                                            class="h-4 w-4 shrink-0 object-contain" />
+                                    {:else if item.icon}
                                         <svelte:component
                                             this={item.icon}
                                             class="text-muted-foreground h-4 w-4 shrink-0" />

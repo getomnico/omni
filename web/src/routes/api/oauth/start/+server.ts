@@ -8,6 +8,7 @@ import {
     generateAuthUrlForUserRead,
     generateAuthUrlForUserWrite,
     isProviderConfigured,
+    getOAuthConfigForSource,
     getOAuthManifestForSourceType,
 } from '$lib/server/oauth/connectorOAuth'
 
@@ -35,6 +36,10 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const returnTo = url.searchParams.get('return_to') ?? undefined
     const approvalId = url.searchParams.get('approval_id') ?? undefined
     const approvalChatId = url.searchParams.get('chat_id') ?? undefined
+    const requiredScopes = (url.searchParams.get('required_scopes') ?? '')
+        .split(',')
+        .map((scope) => scope.trim())
+        .filter(Boolean)
 
     if (sourceId) {
         if (flow !== 'org_source' && flow !== 'user_read' && flow !== 'user_write') {
@@ -54,7 +59,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             throw error(400, `Unsupported source scope: ${source.scope}`)
         }
 
-        const config = await getOAuthManifestForSourceType(source.sourceType)
+        const config = await getOAuthConfigForSource(source)
         if (!config) {
             throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
         }
@@ -88,6 +93,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                 sourceId,
                 sourceType: source.sourceType,
                 userId: locals.user.id,
+                source,
                 returnTo,
             })
             throw redirect(302, authUrl)
@@ -98,10 +104,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         const { url: authUrl } = await generator({
             sourceId,
             sourceType: source.sourceType,
+            source,
             userId: locals.user.id,
             returnTo,
             approvalId,
             approvalChatId,
+            requiredScopes,
         })
         throw redirect(302, authUrl)
     }

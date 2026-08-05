@@ -297,7 +297,7 @@ services:
       - "${LOCAL_EMBEDDINGS_PORT}"
     command:
       - "--model-id"
-      - "${EMBEDDING_MODEL}"
+      - "${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}"
       - "--port"
       - "${LOCAL_EMBEDDINGS_PORT}"
     networks:
@@ -692,6 +692,35 @@ services:
       PORT: ${LINEAR_CONNECTOR_PORT}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: linear-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
+  windshift-connector:
+    image: ghcr.io/getomnico/omni/omni-windshift-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
+    container_name: omni-windshift-connector
+    profiles:
+      - windshift
+    expose:
+      - "${WINDSHIFT_CONNECTOR_PORT:-4018}"
+    environment:
+      <<: *otel-config
+      PORT: ${WINDSHIFT_CONNECTOR_PORT:-4018}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: windshift-connector
+      # The public Windshift base URL is configured in the admin UI (stored in
+      # the connector_configs table); WINDSHIFT_BASE_URL is only a fallback for
+      # deployments that predate the UI setting. WINDSHIFT_INTERNAL_BASE_URL is
+      # env-only: an optional private route for server-to-server traffic.
+      WINDSHIFT_BASE_URL: ${WINDSHIFT_BASE_URL:-}
+      WINDSHIFT_INTERNAL_BASE_URL: ${WINDSHIFT_INTERNAL_BASE_URL:-}
     networks:
       - omni-network
     depends_on:

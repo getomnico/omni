@@ -192,7 +192,17 @@ impl Scheduler {
         let now = OffsetDateTime::now_utc();
 
         for source in active_sources {
-            let modes = get_sync_modes_for_source(&self.redis_client, source.source_type).await;
+            if !is_syncable_source(&source) {
+                debug!(
+                    source_id = %source.id,
+                    source_type = %source.source_type,
+                    integration_type = ?source.integration_type,
+                    "Skipping realtime supervisor for non-syncable source"
+                );
+                continue;
+            }
+
+            let modes = get_sync_modes_for_source(&self.redis_client, &source.source_type).await;
             if !modes.contains(&SyncType::Realtime) {
                 continue;
             }
@@ -336,6 +346,7 @@ impl Scheduler {
             .find_active_sources()
             .await
             .map_err(|e| SchedulerError::DatabaseError(e.to_string()))?;
+        let sources: Vec<Source> = sources.into_iter().filter(is_syncable_source).collect();
         let source_ids: Vec<String> = sources.iter().map(|source| source.id.clone()).collect();
         let recent_run_limit = self
             .config
@@ -385,7 +396,7 @@ impl Scheduler {
             }
 
             let sync_type = pick_scheduled_sync_type(
-                &get_sync_modes_for_source(&self.redis_client, source.source_type).await,
+                &get_sync_modes_for_source(&self.redis_client, &source.source_type).await,
             );
 
             match self
@@ -422,6 +433,10 @@ impl Scheduler {
     }
 }
 
+fn is_syncable_source(source: &Source) -> bool {
+    source.integration_type == shared::models::IntegrationType::Connector
+}
+
 fn sources_due_for_sync(
     sources: Vec<Source>,
     sync_runs: Vec<SyncRun>,
@@ -442,6 +457,14 @@ fn sources_due_for_sync(
     let mut due_sources: Vec<(Source, Option<OffsetDateTime>)> = sources
         .into_iter()
         .filter_map(|source| {
+            if !is_syncable_source(&source) {
+                info!(
+                    "Skipping scheduled sync for source {} ({:?}): integration type {:?} does not support data sync",
+                    source.id, source.source_type, source.integration_type
+                );
+                return None;
+            }
+
             let sync_interval_seconds = match source.sync_interval_seconds {
                 Some(interval) => interval,
                 None => {
@@ -623,14 +646,15 @@ struct SlotHealth {
 mod tests {
     use super::*;
     use serde_json::json;
-    use shared::models::{SourceScope, SourceType, UserFilterMode};
+    use shared::models::{IntegrationType, SourceScope, SourceType, UserFilterMode};
 
     fn source(id: &str, interval_seconds: Option<i32>) -> Source {
         let now = OffsetDateTime::now_utc();
         Source {
             id: id.to_string(),
             name: format!("source-{id}"),
-            source_type: SourceType::LocalFiles,
+            source_type: SourceType::LocalFiles.to_string(),
+            integration_type: IntegrationType::Connector,
             config: json!({}),
             is_active: true,
             is_deleted: false,
@@ -644,6 +668,13 @@ mod tests {
             created_at: now,
             updated_at: now,
             created_by: "01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string(),
+        }
+    }
+
+    fn remote_mcp_source(id: &str, interval_seconds: Option<i32>) -> Source {
+        Source {
+            integration_type: IntegrationType::RemoteMcp,
+            ..source(id, interval_seconds)
         }
     }
 
@@ -738,6 +769,31 @@ mod tests {
         });
 
         assert!(active_backoff(&health, now, 30, 3600).is_none());
+    }
+
+    #[test]
+    fn remote_mcp_sources_are_not_syncable() {
+        assert!(is_syncable_source(&source("native", Some(60))));
+        assert!(!is_syncable_source(&remote_mcp_source("mcp", Some(60))));
+    }
+
+    #[test]
+    fn due_sources_exclude_remote_mcp_sources() {
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![
+                source("native", Some(60)),
+                remote_mcp_source("mcp", Some(60)),
+            ],
+            vec![],
+            now,
+            10,
+            30,
+            3600,
+        );
+
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, "native");
     }
 
     #[test]

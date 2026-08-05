@@ -58,6 +58,7 @@ class CannedSummaryProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         if self.fail_on_generate:
             raise AssertionError("summary provider should not have been called")
@@ -76,6 +77,7 @@ class CannedSummaryProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         raise NotImplementedError
         yield  # pragma: no cover
@@ -110,6 +112,7 @@ class RecordingTargetProvider(LLMProvider):
         max_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         return "target response", TokenUsage(input_tokens=1, output_tokens=1)
 
@@ -122,6 +125,7 @@ class RecordingTargetProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         recorded = list(messages or [])
         self.recorded_messages.append(recorded)
@@ -220,12 +224,20 @@ def _app_state_with_providers(
     summary_provider: CannedSummaryProvider,
 ) -> AppState:
     state = AppState()
-    state.models = {
-        target_model_id: target_provider,
-        summary_model_id: summary_provider,
-    }
-    state.default_model_id = target_model_id
-    state.secondary_model_id = summary_model_id
+    from provider_cache import ResolvedModel
+    async def _resolve_for_model(model_id: str):
+        if model_id == target_model_id:
+            return ResolvedModel(provider=target_provider, model_record_id=model_id, model_name=model_id)
+        if model_id == summary_model_id:
+            return ResolvedModel(provider=summary_provider, model_record_id=model_id, model_name=model_id)
+        return None
+    async def _resolve_default():
+        return ResolvedModel(provider=target_provider, model_record_id=target_model_id, model_name=target_model_id)
+    async def _resolve_secondary_or_default():
+        return ResolvedModel(provider=summary_provider, model_record_id=summary_model_id, model_name=summary_model_id)
+    state.provider_cache.resolve_for_model = _resolve_for_model
+    state.provider_cache.resolve_default = _resolve_default
+    state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
     searcher_tool = AsyncMock()
     searcher_tool.client = _DummySearcherClient()
     state.searcher_tool = searcher_tool
@@ -741,6 +753,79 @@ async def test_chat_stream_api_runs_compaction_before_provider_call(db_pool):
     compaction_rows = await _compaction_rows(db_pool, "chat")
     assert len(compaction_rows) == 1
     assert compaction_rows[0]["anchor_message_id"].strip() in {row.id for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_chat_compaction_includes_expanded_mention_text(db_pool):
+    """A conversation with post-expand_mentions document blocks has the
+    document text preserved in the compaction summary."""
+    user_id, _ = await create_test_user(db_pool)
+    chat_id = await _create_chat(db_pool, user_id)
+    messages_repo = MessagesRepository(pool=db_pool)
+    compactions_repo = CompactionsRepository(pool=db_pool)
+
+    doc_content = (
+        "Q3 revenue grew 14% year-over-year due to strong enterprise adoption "
+        "across North America and Europe."
+    )
+
+    parent_id = None
+    rows = []
+
+    # First user message with post-expand_mentions shape
+    mention_msg = MessageParam(
+        role="user",
+        content=[
+            {"type": "text", "text": '[Mentioned document: "Q3 Report"]\n[_ref:doc_123]'},
+            {
+                "type": "document",
+                "source": {
+                    "type": "text",
+                    "media_type": "text/plain",
+                    "data": doc_content,
+                },
+                "title": "Q3 Report",
+            },
+        ],
+    )
+    row = await messages_repo.create(chat_id, mention_msg, parent_id=parent_id)
+    rows.append(row)
+    parent_id = row.id
+
+    # Fill with enough messages to exceed the low context window
+    for idx in range(2, 12):
+        role = "assistant" if idx % 2 == 0 else "user"
+        msg = _long_message(role, f"filler-{idx:02d}")
+        row = await messages_repo.create(chat_id, msg, parent_id=parent_id)
+        rows.append(row)
+        parent_id = row.id
+
+    summary_provider = CannedSummaryProvider(["mention-compaction-summary"])
+    target_provider = RecordingTargetProvider(context_tokens=400)
+
+    prepared = await _prepare_chat_with_repo(
+        chat_id=chat_id,
+        chat_rows=rows,
+        compactions_repo=compactions_repo,
+        summary_provider=summary_provider,
+        target_provider=target_provider,
+        max_output_tokens=50,
+    )
+
+    # Assert compaction happened
+    compaction_rows = await _compaction_rows(db_pool, "chat")
+    assert len(compaction_rows) >= 1, "Expected at least one compaction row"
+
+    # Assert summary message was created
+    assert "mention-compaction-summary" in _summary_text(prepared.messages[0])
+
+    # Assert the summarizer prompt contained the document text from the
+    # expanded mention block
+    assert len(summary_provider.prompts) >= 1
+    assert doc_content in summary_provider.prompts[0], (
+        f"Document content not found in summarizer prompt.\n"
+        f"Prompt excerpt: {summary_provider.prompts[0][:500]}"
+    )
 
 
 @pytest.mark.asyncio

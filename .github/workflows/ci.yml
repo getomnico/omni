@@ -43,6 +43,7 @@ jobs:
       linear-connector: ${{ steps.filter.outputs.linear-connector }}
       nextcloud-connector: ${{ steps.filter.outputs.nextcloud-connector }}
       paperless-connector: ${{ steps.filter.outputs.paperless-connector }}
+      windshift-connector: ${{ steps.filter.outputs.windshift-connector }}
       docling: ${{ steps.filter.outputs.docling }}
       deployment: ${{ steps.filter.outputs.deployment }}
       cli: ${{ steps.filter.outputs.cli }}
@@ -218,6 +219,11 @@ jobs:
             paperless-connector:
               - 'connectors/paperless/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            windshift-connector:
+              - 'connectors/windshift/**'
+              - 'sdk/typescript/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
             deployment:
@@ -533,6 +539,15 @@ jobs:
       connector-type: typescript
     secrets: inherit
 
+  build-windshift-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.windshift-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: windshift
+      connector-type: typescript
+    secrets: inherit
+
   # ---------------------------------------------------------------------------
   # Release: build all images from scratch on tag push
   # ---------------------------------------------------------------------------
@@ -633,6 +648,8 @@ jobs:
             connector-type: python
           - connector-name: linear
             connector-type: typescript
+          - connector-name: windshift
+            connector-type: typescript
     uses: ./.github/workflows/build-connector.yml
     with:
       connector-name: ${{ matrix.connector-name }}
@@ -656,3 +673,57 @@ jobs:
       (needs.detect-changes.outputs.is-tag == 'true' || needs.detect-changes.outputs.deployment == 'true')
     uses: ./.github/workflows/package-deployment.yml
     secrets: inherit
+
+  # ---------------------------------------------------------------------------
+  # Release publishing (only after all builds succeed)
+  # ---------------------------------------------------------------------------
+  publish-release:
+    needs: [detect-changes, release-services, release-connectors, build-cli, package-deployment]
+    if: needs.detect-changes.outputs.is-tag == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          REPO="${{ github.repository }}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; publishing it"
+            gh release edit "$TAG" --repo "$REPO" --draft=false
+          else
+            gh release create "$TAG" \
+              --repo "$REPO" \
+              --verify-tag \
+              --generate-notes
+          fi
+
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.OMNI_ENTERPRISE_APP_ID }}
+          private-key: ${{ secrets.OMNI_ENTERPRISE_APP_PRIVATE_KEY }}
+          owner: getomnico
+          repositories: omni-enterprise
+
+      - name: Push tag to omni-enterprise
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          REPO="getomnico/omni-enterprise"
+          if gh api "repos/${REPO}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists in ${REPO}; nothing to do"
+          else
+            SHA="$(gh api "repos/${REPO}/commits/master" --jq .sha)"
+            gh api --method POST "repos/${REPO}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${SHA}"
+            echo "Pushed tag ${TAG} to ${REPO}"
+          fi

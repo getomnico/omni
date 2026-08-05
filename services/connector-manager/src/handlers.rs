@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::connector_client::ConnectorClient;
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -7,25 +8,27 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
+use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
-use shared::db::repositories::{ConfigurationRepository, SyncRunRepository};
+use shared::db::repositories::{
+    ConfigurationRepository, SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE,
+};
 use shared::models::{
-    ActionMode, ConnectorManifest, GlobalConfiguration, SearchOperator, ServiceCredential,
-    ServiceProvider, Source, SourceType, SyncRun, SyncType,
+    ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType, SearchOperator,
+    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -183,6 +186,10 @@ pub async fn list_schedules(
         .find_active_sources()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let sources: Vec<Source> = sources
+        .into_iter()
+        .filter(source_supports_data_sync)
+        .collect();
 
     let source_ids: Vec<String> = sources.iter().map(|s| s.id.clone()).collect();
     let latest_runs = sync_run_repo
@@ -210,10 +217,7 @@ pub async fn list_schedules(
             ScheduleInfo {
                 source_id: source.id,
                 source_name: source.name,
-                source_type: serde_json::to_value(&source.source_type)
-                    .ok()
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_default(),
+                source_type: source.source_type,
                 sync_interval_seconds: source.sync_interval_seconds,
                 next_sync_at: next_sync_at.map(|t| t.to_string()),
                 last_sync_at: last_sync_at.map(|t| t.to_string()),
@@ -239,7 +243,28 @@ pub async fn list_sources(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok(Json(build_source_sync_overviews(&state, sources).await?))
+    let syncable_sources = sources
+        .into_iter()
+        .filter(source_supports_data_sync)
+        .collect();
+    Ok(Json(
+        build_source_sync_overviews(&state, syncable_sources).await?,
+    ))
+}
+
+pub async fn list_active_sources_for_capabilities(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SourceSyncOverview>>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_active_sources()
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .into_iter()
+        .filter(|source| !source.is_deleted)
+        .collect();
+
+    Ok(Json(build_source_identity_overviews(sources)))
 }
 
 pub async fn get_source(
@@ -252,6 +277,7 @@ pub async fn get_source(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .filter(|source| !source.is_deleted)
+        .filter(source_supports_data_sync)
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
     let mut overviews = build_source_sync_overviews(&state, vec![source]).await?;
@@ -260,6 +286,25 @@ pub async fn get_source(
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
     Ok(Json(overview))
+}
+
+fn source_supports_data_sync(source: &Source) -> bool {
+    source.integration_type == IntegrationType::Connector
+}
+
+fn build_source_identity_overviews(sources: Vec<Source>) -> Vec<SourceSyncOverview> {
+    sources
+        .into_iter()
+        .map(|source| SourceSyncOverview {
+            sync_runs: Vec::new(),
+            source: Source {
+                connector_state: None,
+                checkpoint: None,
+                ..source
+            },
+            health: SourceHealth::Healthy,
+        })
+        .collect()
 }
 
 async fn build_source_sync_overviews(
@@ -334,7 +379,9 @@ pub async fn list_connectors(
 
     for manifest in manifests {
         let url = manifest.connector_url.clone();
-        let healthy = if !url.is_empty() {
+        let healthy = if remote_mcp_in_process_manifest_is_healthy(&manifest) {
+            true
+        } else if !url.is_empty() {
             client.health_check(&url).await
         } else {
             false
@@ -353,164 +400,325 @@ pub async fn list_connectors(
     Ok(Json(connectors))
 }
 
+fn remote_mcp_in_process_manifest_is_healthy(manifest: &ConnectorManifest) -> bool {
+    manifest.integration_type == IntegrationType::RemoteMcp && manifest.connector_url.is_empty()
+}
+
 pub async fn execute_action(
     State(state): State<AppState>,
     _headers: HeaderMap,
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
-    info!(
-        "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
-        request.action,
-        request.source_id,
-        request.user_id,
-        request
-            .params
-            .as_object()
-            .map(|m| m.keys().cloned().collect::<Vec<_>>())
-            .unwrap_or_default()
-    );
-
-    let source_repo = SourceRepository::new(state.db_pool.pool());
-    let source = source_repo
-        .find_by_id(request.source_id.clone())
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
-
-    // Look up the connector manifest to get connector_url and action metadata
+    let is_transient = request.transient_credentials.is_some();
+    let source_type: SourceType;
+    let source: Option<Source>;
+    let creds: shared::models::ServiceCredential;
+    let mut params = request.params.clone();
+    let mut transient_actor_email = None;
     let manifests = get_registered_manifests(&state.redis_client).await;
-    let manifest = manifests
-        .iter()
-        .find(|m| m.source_types.contains(&source.source_type));
 
-    let connector_url = manifest
-        .as_ref()
-        .map(|m| m.connector_url.clone())
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Connector not registered for type: {:?}",
-                source.source_type
-            ))
+    let (connector_url, action_admin_only) = if is_transient {
+        // ======== TRANSIENT MODE ========
+        // Transient mode: source_type + transient_credentials required, no source/credential DB.
+        let tc = request.transient_credentials.as_ref().unwrap();
+        source_type = request.source_type.ok_or_else(|| {
+            ApiError::BadRequest(
+                "source_type is required when transient_credentials are provided".to_string(),
+            )
         })?;
+        if request.source_id.is_some() {
+            return Err(ApiError::BadRequest(
+                "source_id must not be set when transient_credentials are provided".to_string(),
+            ));
+        }
 
-    let action_def = manifest.and_then(|m| m.actions.iter().find(|a| a.name == request.action));
-    let action_mode = action_def.map(|a| a.mode).unwrap_or_default();
-    // Reject unknown action names — they must exist in the manifest
-    let action_def = action_def.ok_or_else(|| {
-        ApiError::BadRequest(format!(
-            "Unknown action '{}' for source type {:?}",
-            request.action, source.source_type
-        ))
-    })?;
-    let action_admin_only = action_def.admin_only;
+        // Look up the connector manifest by source_type.
+        let manifest = manifests
+            .iter()
+            .find(|m| m.source_types.contains(&source_type.to_string()))
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Connector not registered for type: {:?}",
+                    source_type
+                ))
+            })?;
 
-    // Generic read_only enforcement — the source config is the authority.
-    let source_read_only = source
-        .config
-        .get("read_only")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if let Some(m) = manifest.as_ref() {
-        if (m.read_only || source_read_only) && action_mode == ActionMode::Write {
+        let connector_url = manifest.connector_url.clone();
+        let action_def = manifest
+            .actions
+            .iter()
+            .find(|a| a.name == request.action)
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "Unknown action '{}' for source type {:?}",
+                    request.action, source_type
+                ))
+            })?;
+        if !action_def.source_types.contains(&source_type) {
             return Err(ApiError::BadRequest(format!(
-                "Action '{}' is not allowed: source is read-only",
+                "Action '{}' does not support source type {:?}",
+                request.action, source_type
+            )));
+        }
+        let action_admin_only = action_def.admin_only;
+        let action_mode = action_def.mode;
+
+        if action_mode != ActionMode::Read {
+            return Err(ApiError::BadRequest(format!(
+                "Transient action '{}' must be read-only",
                 request.action
             )));
         }
-    }
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = match resolve_credentials(
-        &creds_repo,
-        &request.source_id,
-        request.user_id.as_deref(),
-        action_admin_only,
-    )
-    .await?
-    {
-        CredentialResolution::Resolved(c) => c,
-        CredentialResolution::NeedsUserAuth { provider } => {
-            return Ok(needs_user_auth_response(
-                &request.source_id,
-                source.source_type,
-                provider,
-            )?);
-        }
-        CredentialResolution::NoCredentials => {
-            return Err(ApiError::NotFound(format!(
-                "Credentials not found for source: {}",
-                request.source_id
-            )));
-        }
-    };
+        // Resolve user/admin from user_id (required in transient mode).
+        let user_id = request.user_id.as_ref().ok_or_else(|| {
+            ApiError::BadRequest("user_id is required in transient mode".to_string())
+        })?;
 
-    // Resolve Omni document ID -> source external_id.
-    // TODO: replace hard-coded param names with a connector-declared resolve_params list.
-    let mut params = request.params.clone();
-    let doc_id = params
-        .get("document_id")
-        .or_else(|| params.get("file_id"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    if let Some(doc_id) = doc_id {
-        let doc_repo = DocumentRepository::new(state.db_pool.pool());
-        if let Ok(Some(doc)) = doc_repo.find_by_id(&doc_id).await {
-            info!(
-                "Resolved document/file ID {} -> external_id {}",
-                doc_id, doc.external_id
-            );
-            if let Some(obj) = params.as_object_mut() {
-                obj.remove("document_id");
-                obj.remove("file_id");
-                obj.insert(
-                    "file_id".to_string(),
-                    serde_json::Value::String(doc.external_id),
-                );
-            }
-        }
-        // If not found, assume the ID is already a source-native ID and pass through
-    }
-
-    // Merge source config into params for legacy connector compatibility.
-    // Connectors that use the typed context (e.g. Darwinbox) ignore these.
-    if params.is_null() {
-        params = serde_json::Value::Object(serde_json::Map::new());
-    }
-    if let (Some(src_obj), Some(params_obj)) = (source.config.as_object(), params.as_object_mut()) {
-        for (k, v) in src_obj {
-            params_obj.entry(k.clone()).or_insert_with(|| v.clone());
-        }
-    }
-
-    // Resolve actor email for the execution context
-    let actor_email = if let Some(uid) = request.user_id.as_ref() {
         let user_repo = UserRepository::new(state.db_pool.pool());
         let user = user_repo
-            .find_by_id(uid.clone())
+            .find_by_id(user_id.clone())
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("User not found: {uid}")))?;
-        // Enforce admin_only action authorization
+            .ok_or_else(|| ApiError::NotFound(format!("User not found: {user_id}")))?;
         if action_admin_only && user.role != shared::models::UserRole::Admin {
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' requires admin privileges",
                 request.action
             )));
         }
-        Some(user.email)
+        transient_actor_email = Some(user.email);
+
+        // Adapt the transient payload to the connector SDK's credential model.
+        let tc = tc.clone();
+        creds = shared::models::ServiceCredential {
+            id: "transient".to_string(),
+            source_id: "transient".to_string(),
+            user_id: Some(user_id.clone()),
+            provider: tc.provider,
+            auth_type: tc.auth_type,
+            principal_email: tc.principal_email,
+            credentials: tc.credentials,
+            config: tc.config,
+            expires_at: None,
+            last_validated_at: None,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+        };
+        source = None;
+
+        info!(
+            "Executing transient action '{}' for source_type {:?} (user {:?})",
+            request.action, source_type, request.user_id
+        );
+
+        (connector_url, action_admin_only)
     } else {
-        None
+        // ======== PERSISTED MODE (unchanged) ========
+        if request.source_type.is_some() {
+            return Err(ApiError::BadRequest(
+                "source_type is only valid with transient_credentials".to_string(),
+            ));
+        }
+        let source_id = request
+            .source_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| ApiError::BadRequest("source_id is required".to_string()))?
+            .to_string();
+
+        let source_repo = SourceRepository::new(state.db_pool.pool());
+        let db_source = source_repo
+            .find_by_id(source_id.clone())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Source not found: {source_id}")))?;
+
+        source_type = SourceType::try_from(db_source.source_type.as_str())
+            .map_err(|e| ApiError::Internal(format!("Invalid source type: {}", e)))?;
+
+        if db_source.integration_type == IntegrationType::RemoteMcp {
+            if !db_source.is_active || db_source.is_deleted {
+                return Err(ApiError::BadRequest(format!(
+                    "Remote MCP source is inactive or deleted: {}",
+                    source_id
+                )));
+            }
+            let result = state
+                .remote_mcp_gateway
+                .execute_action(
+                    &db_source,
+                    &request.action,
+                    request.params.clone(),
+                    request.user_id.as_deref(),
+                )
+                .await
+                .map_err(remote_mcp_gateway_error_to_api_error)?;
+            let body =
+                serde_json::to_vec(&result).map_err(|e| ApiError::Internal(e.to_string()))?;
+            return axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                )
+                .body(axum::body::Body::from(body))
+                .map_err(|e| ApiError::Internal(e.to_string()));
+        }
+
+        let manifest = manifests
+            .iter()
+            .find(|m| m.source_types.contains(&source_type.to_string()))
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Connector not registered for type: {:?}",
+                    source_type
+                ))
+            })?;
+        let connector_url = manifest.connector_url.clone();
+
+        let action_def = manifest
+            .actions
+            .iter()
+            .find(|a| a.name == request.action)
+            .ok_or_else(|| {
+                ApiError::BadRequest(format!(
+                    "Unknown action '{}' for source type {:?}",
+                    request.action, source_type
+                ))
+            })?;
+        if !action_def.source_types.contains(&source_type) {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' does not support source type {:?}",
+                request.action, source_type
+            )));
+        }
+        let action_admin_only = action_def.admin_only;
+        let action_mode = action_def.mode;
+
+        // Generic read_only enforcement — the source config is the authority.
+        let source_read_only = db_source
+            .config
+            .get("read_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if (manifest.read_only || source_read_only) && action_mode == ActionMode::Write {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' is not allowed: source is read-only",
+                request.action
+            )));
+        }
+
+        let cred_service = CredentialService::new(state.db_pool.clone());
+        creds = match resolve_credentials(
+            &cred_service,
+            &source_id,
+            request.user_id.as_deref(),
+            action_admin_only,
+            manifest.oauth.is_some(),
+        )
+        .await?
+        {
+            CredentialResolution::Resolved(c) => c,
+            CredentialResolution::NeedsUserAuth { provider } => {
+                return Ok(needs_user_auth_response(
+                    &source_id,
+                    source_type.to_string(),
+                    provider,
+                )?);
+            }
+            CredentialResolution::NoCredentials => {
+                return Err(ApiError::NotFound(format!(
+                    "Credentials not found for source: {source_id}"
+                )));
+            }
+        };
+
+        // Resolve Omni document ID -> source external_id (persisted mode only).
+        let doc_id = params
+            .get("document_id")
+            .or_else(|| params.get("file_id"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        if let Some(doc_id) = doc_id {
+            let doc_repo = DocumentRepository::new(state.db_pool.pool());
+            if let Ok(Some(doc)) = doc_repo.find_by_id(&doc_id).await {
+                info!(
+                    "Resolved document/file ID {} -> external_id {}",
+                    doc_id, doc.external_id
+                );
+                if let Some(obj) = params.as_object_mut() {
+                    obj.remove("document_id");
+                    obj.remove("file_id");
+                    obj.insert(
+                        "file_id".to_string(),
+                        serde_json::Value::String(doc.external_id),
+                    );
+                }
+            }
+        }
+
+        // Merge source config into params for legacy connector compatibility.
+        if params.is_null() {
+            params = serde_json::Value::Object(serde_json::Map::new());
+        }
+        if let (Some(src_obj), Some(params_obj)) =
+            (db_source.config.as_object(), params.as_object_mut())
+        {
+            for (k, v) in src_obj {
+                params_obj.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+
+        source = Some(db_source);
+
+        info!(
+            "Executing action '{}' for source {} (user {:?}, params keys: {:?})",
+            request.action,
+            source_id,
+            request.user_id,
+            request
+                .params
+                .as_object()
+                .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+
+        (connector_url, action_admin_only)
     };
 
+    // ==== Common path for both modes ====
+    // Resolve the actor email; transient mode already loaded the actor above.
+    let actor_email = if !is_transient {
+        if let Some(uid) = request.user_id.as_ref() {
+            let user_repo = UserRepository::new(state.db_pool.pool());
+            let user = user_repo
+                .find_by_id(uid.clone())
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .ok_or_else(|| ApiError::NotFound(format!("User not found: {uid}")))?;
+            // Enforce admin_only action authorization (user already validated for transient mode above).
+            if action_admin_only && user.role != shared::models::UserRole::Admin {
+                return Err(ApiError::BadRequest(format!(
+                    "Action '{}' requires admin privileges",
+                    request.action
+                )));
+            }
+            Some(user.email)
+        } else {
+            None
+        }
+    } else {
+        transient_actor_email
+    };
+
+    if params.is_null() {
+        params = serde_json::Value::Object(serde_json::Map::new());
+    }
+
     info!(
-        "Dispatching action '{}' to connector {} with credential {} (provider={:?}, auth_type={:?}, principal={:?})",
-        request.action,
-        connector_url,
-        creds.id,
-        creds.provider,
-        creds.auth_type,
-        creds.principal_email,
+        "Dispatching action '{}' to connector {} (provider={:?}, auth_type={:?}, principal={:?})",
+        request.action, connector_url, creds.provider, creds.auth_type, creds.principal_email,
     );
 
     let client = ConnectorClient::new();
@@ -518,7 +726,7 @@ pub async fn execute_action(
         action: request.action,
         params,
         credentials: Some(creds),
-        source: Some(source),
+        source,
         actor_email,
     };
 
@@ -531,7 +739,6 @@ pub async fn execute_action(
     let status = response.status();
     let mut builder = axum::response::Response::builder().status(status);
 
-    // Forward all headers except hop-by-hop connection headers.
     let hop_by_hop = [
         "connection",
         "keep-alive",
@@ -609,24 +816,29 @@ fn merge_org_and_user_credentials(
 /// * `admin_only` action → org row regardless of user_id. These actions
 ///   (e.g. Google Admin directory ops) require the service-account credential
 ///   the admin set up org-wide; per-user OAuth scopes don't cover them.
-/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row required.
-///   No fallback to org credentials — if the user hasn't connected, return
-///   `NeedsUserAuth` so the UI can prompt. When both rows exist, org-level
-///   setup credentials/config are merged under the user's OAuth token. Personal
+/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row when it
+///   exists; when it doesn't, `supports_user_oauth` decides: connectors with
+///   a per-user OAuth flow surface `NeedsUserAuth` so the UI can prompt,
+///   while org-credential-only connectors (no per-user OAuth) fall back to
+///   the org row — the actor identity is still resolved downstream and the
+///   connector's own gates (participant allowlist, allowed_actions, audience)
+///   remain the row-level control. When both rows exist, org-level setup
+///   credentials/config are merged under the user's OAuth token. Personal
 ///   sources satisfy this because their cred row is keyed on the owner's
 ///   user_id (see migration 087).
 /// * `None` (sync, org-level agent) → org row.
 async fn resolve_credentials(
-    creds_repo: &ServiceCredentialsRepo,
+    cred_service: &CredentialService,
     source_id: &str,
     user_id: Option<&str>,
     admin_only: bool,
+    supports_user_oauth: bool,
 ) -> Result<CredentialResolution, ApiError> {
-    let internal = |e: anyhow::Error| ApiError::Internal(e.to_string());
+    let internal = |e: CredentialServiceError| ApiError::Internal(e.to_string());
 
     if admin_only {
-        let resolved = creds_repo
-            .find_org_credential(source_id)
+        let resolved = cred_service
+            .get_org_credential(source_id)
             .await
             .map_err(internal)?;
         match &resolved {
@@ -646,13 +858,13 @@ async fn resolve_credentials(
 
     match user_id {
         Some(uid) => {
-            if let Some(mut user_cred) = creds_repo
-                .find_user_credential(source_id, uid)
+            if let Some(mut user_cred) = cred_service
+                .get_user_credential(source_id, uid)
                 .await
                 .map_err(internal)?
             {
-                if let Some(org_cred) = creds_repo
-                    .find_org_credential(source_id)
+                if let Some(org_cred) = cred_service
+                    .get_org_credential(source_id)
                     .await
                     .map_err(internal)?
                 {
@@ -664,35 +876,35 @@ async fn resolve_credentials(
                 );
                 return Ok(CredentialResolution::Resolved(user_cred));
             }
-            // No per-user row — surface a NeedsUserAuth response so the UI
-            // can prompt. Provider hint comes from the org row when present;
-            // if neither row exists the source is misconfigured.
-            match creds_repo
-                .find_org_credential(source_id)
+            // No per-user row. OAuth connectors surface NeedsUserAuth so the
+            // UI can prompt; org-credential-only connectors fall back to the
+            // org row (same as the user_id=None branch) — the actor identity
+            // still resolves downstream and the connector's own gates
+            // (participant allowlist, allowed_actions, audience) apply.
+            let org_credential = cred_service
+                .get_org_credential(source_id)
                 .await
-                .map_err(internal)?
-            {
-                Some(org) => {
-                    info!(
-                        "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
-                        source_id, uid, org.provider
-                    );
-                    Ok(CredentialResolution::NeedsUserAuth {
-                        provider: org.provider,
-                    })
-                }
-                None => {
-                    warn!(
-                        "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
-                        source_id, uid
-                    );
-                    Ok(CredentialResolution::NoCredentials)
-                }
+                .map_err(internal)?;
+            let resolution = resolve_missing_user_credential(org_credential, supports_user_oauth);
+            match &resolution {
+                CredentialResolution::Resolved(org) => info!(
+                    "resolve_credentials(source={}, user={}): no per-user cred, org row exists → org cred {}",
+                    source_id, uid, org.id
+                ),
+                CredentialResolution::NeedsUserAuth { provider } => info!(
+                    "resolve_credentials(source={}, user={}): no per-user cred, org row exists → NeedsUserAuth({:?})",
+                    source_id, uid, provider
+                ),
+                CredentialResolution::NoCredentials => warn!(
+                    "resolve_credentials(source={}, user={}): no per-user cred and no org cred",
+                    source_id, uid
+                ),
             }
+            Ok(resolution)
         }
         None => {
-            let resolved = creds_repo
-                .find_org_credential(source_id)
+            let resolved = cred_service
+                .get_org_credential(source_id)
                 .await
                 .map_err(internal)?;
             match &resolved {
@@ -712,20 +924,85 @@ async fn resolve_credentials(
     }
 }
 
+/// Decide the credential outcome when no per-user credential row exists.
+///
+/// Pure decision used by `resolve_credentials`: OAuth connectors
+/// (`supports_user_oauth=true`) surface `NeedsUserAuth` so the UI can prompt;
+/// org-credential-only connectors (e.g. Darwinbox, with no per-user OAuth
+/// flow) fall back to the org row — the actor identity still resolves
+/// downstream and the connector's own gates (participant allowlist,
+/// allowed_actions, audience) remain the row-level control.
+fn resolve_missing_user_credential(
+    org_credential: Option<ServiceCredential>,
+    supports_user_oauth: bool,
+) -> CredentialResolution {
+    match org_credential {
+        Some(org) if !supports_user_oauth => CredentialResolution::Resolved(org),
+        Some(org) => CredentialResolution::NeedsUserAuth {
+            provider: org.provider,
+        },
+        None => CredentialResolution::NoCredentials,
+    }
+}
+
 /// Wire shape for the 412 "needs user auth" response. Stable contract used by
 /// the web layer and AI service to drive the "Connect <provider>" CTA.
 #[derive(Debug, serde::Serialize)]
 struct NeedsUserAuthResponse {
     error: &'static str,
     source_id: String,
-    source_type: SourceType,
+    source_type: String,
     provider: ServiceProvider,
     oauth_start_url: String,
 }
 
+fn remote_mcp_gateway_error_to_api_error(
+    err: crate::remote_mcp::gateway::GatewayError,
+) -> ApiError {
+    match err {
+        crate::remote_mcp::gateway::GatewayError::NeedsUserAuth {
+            source_id,
+            source_type,
+            provider,
+        } => ApiError::PreconditionFailedJson(json!({
+            "error": "needs_user_auth",
+            "source_id": source_id,
+            "source_type": source_type,
+            "provider": provider,
+            "oauth_start_url": format!("/api/oauth/start?source_id={}", source_id),
+        })),
+        crate::remote_mcp::gateway::GatewayError::MissingCredentials(source_id) => {
+            ApiError::NotFound(format!("Credentials not found for source: {source_id}"))
+        }
+        crate::remote_mcp::gateway::GatewayError::SourceInactive(source_id) => {
+            ApiError::BadRequest(format!(
+                "Remote MCP source is inactive or deleted: {source_id}"
+            ))
+        }
+        crate::remote_mcp::gateway::GatewayError::SourceNotFound(source_id) => {
+            ApiError::NotFound(format!("Source not found: {source_id}"))
+        }
+        crate::remote_mcp::gateway::GatewayError::NotRemoteMcp(source_id) => {
+            ApiError::BadRequest(format!("Source is not remote MCP: {source_id}"))
+        }
+        crate::remote_mcp::gateway::GatewayError::InvalidConfig { source_id, message } => {
+            ApiError::BadRequest(format!(
+                "Invalid remote MCP config for {source_id}: {message}"
+            ))
+        }
+        crate::remote_mcp::gateway::GatewayError::UnsupportedAuthType {
+            source_id,
+            auth_type,
+        } => ApiError::BadRequest(format!(
+            "Unsupported remote MCP auth type for {source_id}: {auth_type:?}"
+        )),
+        other => ApiError::Internal(other.to_string()),
+    }
+}
+
 fn needs_user_auth_response(
     source_id: &str,
-    source_type: SourceType,
+    source_type: String,
     provider: ServiceProvider,
 ) -> Result<axum::response::Response, ApiError> {
     let body = NeedsUserAuthResponse {
@@ -773,7 +1050,12 @@ pub async fn list_actions(
                 if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
                     continue;
                 }
-                if !action.source_types.is_empty() && !action.source_types.contains(source_type) {
+                if !action.source_types.is_empty()
+                    && !action
+                        .source_types
+                        .iter()
+                        .any(|action_source_type| action_source_type.as_str() == source_type)
+                {
                     continue;
                 }
                 if action.hidden {
@@ -861,7 +1143,43 @@ pub async fn read_resource(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if !source.is_active || source.is_deleted {
+            return Err(ApiError::BadRequest(format!(
+                "Remote MCP source is inactive or deleted: {}",
+                source.id
+            )));
+        }
+        let manifests = get_registered_manifests(&state.redis_client).await;
+        let manifest = manifests.iter().find(|m| {
+            m.integration_type == source.integration_type
+                && m.source_types.contains(&source.source_type)
+        });
+        if !manifest
+            .map(|m| {
+                m.resources.iter().any(|resource| {
+                    request.uri == resource.uri_template
+                        || request
+                            .uri
+                            .starts_with(resource.uri_template.trim_end_matches('*'))
+                })
+            })
+            .unwrap_or(false)
+        {
+            return Err(ApiError::NotFound(format!(
+                "Resource not advertised: {}",
+                request.uri
+            )));
+        }
+        let result = state
+            .remote_mcp_gateway
+            .read_resource(&source, &request.uri, request.user_id.as_deref())
+            .await
+            .map_err(remote_mcp_gateway_error_to_api_error)?;
+        return Ok(Json(result));
+    }
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -870,10 +1188,9 @@ pub async fn read_resource(
             ))
         })?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = cred_service
+        .get_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -913,7 +1230,41 @@ pub async fn get_prompt(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if !source.is_active || source.is_deleted {
+            return Err(ApiError::BadRequest(format!(
+                "Remote MCP source is inactive or deleted: {}",
+                source.id
+            )));
+        }
+        let manifests = get_registered_manifests(&state.redis_client).await;
+        let manifest = manifests.iter().find(|m| {
+            m.integration_type == source.integration_type
+                && m.source_types.contains(&source.source_type)
+        });
+        if !manifest
+            .map(|m| m.prompts.iter().any(|prompt| prompt.name == request.name))
+            .unwrap_or(false)
+        {
+            return Err(ApiError::NotFound(format!(
+                "Prompt not advertised: {}",
+                request.name
+            )));
+        }
+        let result = state
+            .remote_mcp_gateway
+            .get_prompt(
+                &source,
+                &request.name,
+                request.arguments.clone(),
+                request.user_id.as_deref(),
+            )
+            .await
+            .map_err(remote_mcp_gateway_error_to_api_error)?;
+        return Ok(Json(result));
+    }
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -922,10 +1273,9 @@ pub async fn get_prompt(
             ))
         })?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let creds = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = cred_service
+        .get_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| {
@@ -970,7 +1320,29 @@ pub async fn oauth_credential_ready(
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
 
-    let connector_url = get_connector_url_for_source(&state.redis_client, source.source_type)
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if request.user_id.is_none() {
+            match state.remote_mcp_gateway.refresh_catalog(&source.id).await {
+                Ok(manifest) => {
+                    return Ok(Json(json!({
+                        "status": "completed",
+                        "catalog_updated": true,
+                        "connector_id": manifest.connector_id,
+                    })));
+                }
+                Err(err) => {
+                    warn!(source_id = %source.id, error = %err, "remote MCP OAuth credential-ready catalog refresh failed");
+                    return Err(remote_mcp_gateway_error_to_api_error(err));
+                }
+            }
+        }
+        return Ok(Json(json!({
+            "status": "delivered",
+            "catalog_updated": false,
+        })));
+    }
+
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
         .await
         .ok_or_else(|| {
             ApiError::NotFound(format!(
@@ -979,13 +1351,13 @@ pub async fn oauth_credential_ready(
             ))
         })?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let cred_service = CredentialService::new(state.db_pool.clone());
     let creds = match resolve_credentials(
-        &creds_repo,
+        &cred_service,
         &request.source_id,
         request.user_id.as_deref(),
         false,
+        true, // credential-ready only exists for per-user OAuth flows
     )
     .await?
     {
@@ -1067,6 +1439,38 @@ pub async fn oauth_credential_ready(
     }
 }
 
+/// Trigger an immediate catalog refresh for a remote MCP source.
+pub async fn refresh_remote_mcp_catalog(
+    Path(source_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+
+    if source.integration_type != IntegrationType::RemoteMcp {
+        return Err(ApiError::BadRequest("Not a remote MCP source".to_string()));
+    }
+
+    match state.remote_mcp_gateway.refresh_catalog(&source.id).await {
+        Ok(manifest) => {
+            info!(source_id = %source.id, connector_id = %manifest.connector_id, "Remote MCP catalog refreshed");
+            Ok(Json(json!({
+                "status": "ok",
+                "tool_count": manifest.actions.len(),
+                "resource_count": manifest.resources.len(),
+            })))
+        }
+        Err(err) => {
+            warn!(source_id = %source.id, error = %err, "Remote MCP catalog refresh failed");
+            Err(remote_mcp_gateway_error_to_api_error(err))
+        }
+    }
+}
+
 pub async fn list_skills(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -1080,12 +1484,16 @@ pub async fn list_skills(
 
     for manifest in manifests {
         for skill in &manifest.skills {
-            let source_types = if skill.source_types.is_empty() {
-                &manifest.source_types
+            let source_types: Vec<String> = if skill.source_types.is_empty() {
+                manifest.source_types.clone()
             } else {
-                &skill.source_types
+                skill
+                    .source_types
+                    .iter()
+                    .map(|source_type| source_type.to_string())
+                    .collect()
             };
-            for source_type in source_types {
+            for source_type in &source_types {
                 let matching_sources: Vec<_> = sources
                     .iter()
                     .filter(|source| source.source_type == *source_type)
@@ -1157,10 +1565,9 @@ pub async fn get_skill(
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
-        let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
-        let creds = creds_repo
-            .find_owner_credential(&source)
+        let cred_service = CredentialService::new(state.db_pool.clone());
+        let creds = cred_service
+            .get_owner_credential(&source)
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| {
@@ -1206,6 +1613,9 @@ pub enum ApiError {
     #[error("Payload too large: {0}")]
     PayloadTooLarge(String),
 
+    #[error("Precondition failed")]
+    PreconditionFailedJson(Value),
+
     #[error("Too many requests: {message} (retry after {retry_after_secs}s)")]
     TooManyRequests {
         message: String,
@@ -1227,6 +1637,9 @@ impl From<SyncError> for ApiError {
             }
             SyncError::SourceInactive(id) => {
                 ApiError::BadRequest(format!("Source is inactive: {}", id))
+            }
+            SyncError::SourceDoesNotSync(id) => {
+                ApiError::BadRequest(format!("Source does not support data sync: {}", id))
             }
             SyncError::SyncAlreadyRunning(id) => {
                 ApiError::Conflict(format!("Sync already running for source: {}", id))
@@ -1277,6 +1690,9 @@ impl IntoResponse for ApiError {
             ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
             ApiError::PayloadTooLarge(msg) => (StatusCode::PAYLOAD_TOO_LARGE, msg.clone()),
+            ApiError::PreconditionFailedJson(body) => {
+                return (StatusCode::PRECONDITION_FAILED, Json(body.clone())).into_response();
+            }
             ApiError::TooManyRequests { .. } => unreachable!(),
         };
 
@@ -1436,9 +1852,7 @@ pub async fn sdk_register(
         .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
 
     // Aggregate search operators from all registered connectors
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg("connector:manifest:*")
-        .query_async(&mut conn)
+    let keys = scan_redis_keys(&mut conn, "connector:manifest:*")
         .await
         .unwrap_or_default();
 
@@ -1476,8 +1890,7 @@ pub async fn sdk_register(
                 .collect();
             let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
-            let repo = creds_repo;
-            if let Ok(Some((source_id, user_id))) = repo
+            if let Ok(Some((source_id, user_id))) = creds_repo
                 .find_any_user_oauth_for_provider(&source_type_strs, &provider)
                 .await
             {
@@ -1485,7 +1898,16 @@ pub async fn sdk_register(
                     "Recovery: found OAuth credential for {} / {} to refresh missing MCP catalog",
                     source_id, provider
                 );
-                match resolve_credentials(&repo, &source_id, Some(&user_id), false).await {
+                let recovery_cred_service = CredentialService::new(state.db_pool.clone());
+                match resolve_credentials(
+                    &recovery_cred_service,
+                    &source_id,
+                    Some(&user_id),
+                    false,
+                    true, // MCP catalog recovery replays a per-user OAuth flow
+                )
+                .await
+                {
                     Ok(CredentialResolution::Resolved(recovery_creds)) => {
                         match serde_json::to_value(McpCredentials::from_service_credential(
                             &recovery_creds,
@@ -1545,6 +1967,30 @@ pub async fn sdk_register(
     }))
 }
 
+async fn scan_redis_keys(
+    conn: &mut redis::aio::MultiplexedConnection,
+    pattern: &str,
+) -> redis::RedisResult<Vec<String>> {
+    let mut cursor: u64 = 0;
+    let mut keys = Vec::new();
+    loop {
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            .cursor_arg(cursor)
+            .arg("MATCH")
+            .arg(pattern)
+            .arg("COUNT")
+            .arg(100)
+            .query_async(conn)
+            .await?;
+        keys.extend(batch);
+        if next_cursor == 0 {
+            break;
+        }
+        cursor = next_cursor;
+    }
+    Ok(keys)
+}
+
 /// Scan Redis for all registered connector manifests.
 pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<ConnectorManifest> {
     let mut conn = match redis_client.get_multiplexed_async_connection().await {
@@ -1555,9 +2001,7 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
         }
     };
 
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg("connector:manifest:*")
-        .query_async(&mut conn)
+    let keys = scan_redis_keys(&mut conn, "connector:manifest:*")
         .await
         .unwrap_or_default();
 
@@ -1575,11 +2019,15 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
 /// Look up the connector URL for a given source type from the Redis registry.
 pub async fn get_connector_url_for_source(
     redis_client: &redis::Client,
-    source_type: SourceType,
+    source_type: &str,
 ) -> Option<String> {
     let manifests = get_registered_manifests(redis_client).await;
     for manifest in manifests {
-        if manifest.source_types.contains(&source_type) {
+        if manifest
+            .source_types
+            .iter()
+            .any(|manifest_source_type| manifest_source_type == source_type)
+        {
             return Some(manifest.connector_url);
         }
     }
@@ -1590,10 +2038,14 @@ pub async fn get_connector_url_for_source(
 /// Returns an empty vec when no connector is registered for the source_type.
 pub async fn get_sync_modes_for_source(
     redis_client: &redis::Client,
-    source_type: SourceType,
+    source_type: &str,
 ) -> Vec<SyncType> {
     for manifest in get_registered_manifests(redis_client).await {
-        if manifest.source_types.contains(&source_type) {
+        if manifest
+            .source_types
+            .iter()
+            .any(|manifest_source_type| manifest_source_type == source_type)
+        {
             return manifest.sync_modes;
         }
     }
@@ -1805,6 +2257,65 @@ use crate::models::{
     SdkStoreContentResponse, SdkUserEmailResponse, SdkWebhookNotification, SdkWebhookResponse,
 };
 
+async fn lock_and_validate_sdk_event_source(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    source_id: &str,
+) -> Result<(), ApiError> {
+    sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(SOURCE_MUTATION_LOCK_NAMESPACE)
+        .bind(source_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    let is_deleted: Option<bool> =
+        sqlx::query_scalar("SELECT is_deleted FROM sources WHERE id = $1")
+            .bind(source_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|error| {
+                ApiError::Internal(format!("Failed to validate event source: {error}"))
+            })?;
+    match is_deleted {
+        Some(false) => Ok(()),
+        Some(true) => Err(ApiError::BadRequest(
+            "Events may not be emitted for a deleted source".to_string(),
+        )),
+        None => Err(ApiError::BadRequest("Unknown event source".to_string())),
+    }
+}
+
+async fn validate_sdk_event_context(
+    sync_run_repo: &SyncRunRepository,
+    sync_run_id: &str,
+    source_id: &str,
+    events: &[shared::models::ConnectorEvent],
+) -> Result<(), ApiError> {
+    let sync_run = sync_run_repo
+        .find_by_id(sync_run_id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to validate sync run: {e}")))?
+        .ok_or_else(|| ApiError::BadRequest("Unknown sync run".to_string()))?;
+    if sync_run.source_id != source_id {
+        return Err(ApiError::BadRequest(
+            "Sync run does not belong to the supplied source".to_string(),
+        ));
+    }
+    if sync_run.status != SyncStatus::Running {
+        return Err(ApiError::BadRequest(
+            "Events may only be emitted for a running sync run".to_string(),
+        ));
+    }
+    if events
+        .iter()
+        .any(|event| event.sync_run_id() != sync_run_id || event.source_id() != source_id)
+    {
+        return Err(ApiError::BadRequest(
+            "Event source_id/sync_run_id does not match the trusted request context".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn sdk_emit_event(
     State(state): State<AppState>,
     Json(request): Json<SdkEmitEventRequest>,
@@ -1814,20 +2325,34 @@ pub async fn sdk_emit_event(
         request.sync_run_id, request.source_id
     );
 
-    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+    let mut source_guard = state
+        .db_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    lock_and_validate_sdk_event_source(&mut source_guard, &request.source_id).await?;
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    validate_sdk_event_context(
+        &sync_run_repo,
+        &request.sync_run_id,
+        &request.source_id,
+        std::slice::from_ref(&request.event),
+    )
+    .await?;
 
-    // Enqueue the event
-    event_queue
+    EventQueue::new(state.db_pool.pool().clone())
         .enqueue(&request.source_id, &request.event)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {}", e)))?;
-
-    // Update heartbeat
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event: {e}")))?;
     sync_run_repo
         .update_activity(&request.sync_run_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {e}")))?;
+    source_guard
+        .commit()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to unlock event source: {error}")))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -1845,18 +2370,34 @@ pub async fn sdk_emit_batch(
         request.source_id
     );
 
-    let event_queue = EventQueue::new(state.db_pool.pool().clone());
+    let mut source_guard = state
+        .db_pool
+        .pool()
+        .begin()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to lock event source: {error}")))?;
+    lock_and_validate_sdk_event_source(&mut source_guard, &request.source_id).await?;
+    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+    validate_sdk_event_context(
+        &sync_run_repo,
+        &request.sync_run_id,
+        &request.source_id,
+        &request.events,
+    )
+    .await?;
 
-    event_queue
+    EventQueue::new(state.db_pool.pool().clone())
         .enqueue_batch(&request.source_id, &request.events)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {}", e)))?;
-
-    let sync_run_repo = SyncRunRepository::new(state.db_pool.pool());
+        .map_err(|e| ApiError::Internal(format!("Failed to enqueue event batch: {e}")))?;
     sync_run_repo
         .update_activity(&request.sync_run_id)
         .await
-        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {}", e)))?;
+        .map_err(|e| ApiError::Internal(format!("Failed to update activity: {e}")))?;
+    source_guard
+        .commit()
+        .await
+        .map_err(|error| ApiError::Internal(format!("Failed to unlock event source: {error}")))?;
 
     Ok(Json(SdkStatusResponse {
         status: "ok".to_string(),
@@ -2411,11 +2952,9 @@ pub async fn sdk_get_credentials(
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
-
-    let creds = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = cred_service
+        .get_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| {
@@ -2445,22 +2984,27 @@ pub async fn sdk_get_source_sync_config(
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
 
-    let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-        .map_err(|e| ApiError::Internal(format!("Failed to create credentials repo: {}", e)))?;
-
-    let credentials = creds_repo
-        .find_owner_credential(&source)
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let credentials = cred_service
+        .raw_owner_credential(&source)
         .await
         .map_err(|e| ApiError::Internal(format!("Database error: {}", e)))?
         .map(|c| c.credentials)
         .unwrap_or_else(|| serde_json::json!({}));
+
+    let source_type = SourceType::try_from(source.source_type.as_str()).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "Source {} cannot be served to a native connector SDK: {}",
+            source.id, e
+        ))
+    })?;
 
     Ok(Json(SdkSourceSyncConfigResponse {
         config: source.config,
         credentials,
         connector_state: source.connector_state,
         checkpoint: source.checkpoint,
-        source_type: source.source_type,
+        source_type,
         user_filter_mode: source.user_filter_mode,
         user_whitelist: source.user_whitelist,
         user_blacklist: source.user_blacklist,
@@ -2697,13 +3241,15 @@ mod tests {
             sync_modes: vec![SyncType::Full],
             connector_id: "test-connector".to_string(),
             connector_url: "http://test-connector:4000".to_string(),
-            source_types: vec![SourceType::Notion],
+            integration_type: shared::models::IntegrationType::Connector,
+            source_types: vec![SourceType::Notion.to_string()],
             description: None,
             actions: vec![shared::models::ActionDefinition {
                 name: "export_data_source_csv".to_string(),
                 description: "Export a database".to_string(),
                 input_schema,
                 mode: ActionMode::Read,
+                required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: false,
@@ -2719,6 +3265,18 @@ mod tests {
             skills: Vec::new(),
             oauth: None,
         }
+    }
+
+    #[test]
+    fn remote_mcp_in_process_manifest_is_healthy_without_connector_url() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.integration_type = IntegrationType::RemoteMcp;
+        manifest.connector_url = String::new();
+
+        assert!(remote_mcp_in_process_manifest_is_healthy(&manifest));
+
+        manifest.integration_type = IntegrationType::Connector;
+        assert!(!remote_mcp_in_process_manifest_is_healthy(&manifest));
     }
 
     #[test]
@@ -2988,5 +3546,54 @@ mod tests {
             maybe_filter_xlsx_extracted_text("text/plain", Some("notes.txt"), text),
             text
         );
+    }
+
+    fn org_credential(id: &str, provider: ServiceProvider) -> ServiceCredential {
+        ServiceCredential {
+            id: id.to_string(),
+            source_id: "source-1".to_string(),
+            user_id: None,
+            provider,
+            auth_type: shared::models::AuthType::ApiKey,
+            principal_email: Some("org@example.com".to_string()),
+            credentials: json!({}),
+            config: json!({}),
+            expires_at: None,
+            last_validated_at: None,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+        }
+    }
+
+    #[test]
+    fn missing_user_credential_with_org_only_connector_resolves_org_credential() {
+        let org = org_credential("org-cred", ServiceProvider::Darwinbox);
+        match resolve_missing_user_credential(Some(org.clone()), false) {
+            CredentialResolution::Resolved(c) => assert_eq!(c.id, org.id),
+            _ => panic!("expected Resolved(org credential)"),
+        }
+    }
+
+    #[test]
+    fn missing_user_credential_with_oauth_connector_yields_needs_user_auth() {
+        let org = org_credential("org-cred", ServiceProvider::Google);
+        match resolve_missing_user_credential(Some(org), true) {
+            CredentialResolution::NeedsUserAuth { provider } => {
+                assert_eq!(provider, ServiceProvider::Google)
+            }
+            _ => panic!("expected NeedsUserAuth with provider"),
+        }
+    }
+
+    #[test]
+    fn missing_user_credential_with_no_org_credential_yields_no_credentials() {
+        match resolve_missing_user_credential(None, false) {
+            CredentialResolution::NoCredentials => {}
+            _ => panic!("expected NoCredentials"),
+        }
+        match resolve_missing_user_credential(None, true) {
+            CredentialResolution::NoCredentials => {}
+            _ => panic!("expected NoCredentials even with supports_user_oauth=true"),
+        }
     }
 }

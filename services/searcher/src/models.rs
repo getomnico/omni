@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use shared::{
-    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
     SourceType,
+    models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
 };
 use std::collections::HashMap;
 
@@ -141,6 +141,7 @@ pub struct SuggestedQuestionsResponse {
 pub struct TypeaheadQuery {
     pub q: String,
     pub limit: Option<usize>,
+    pub user_id: String,
 }
 
 impl TypeaheadQuery {
@@ -161,6 +162,8 @@ pub struct TypeaheadResult {
     pub title: String,
     pub url: Option<String>,
     pub source_id: String,
+    pub source_type: String,
+    pub content_type: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -172,11 +175,37 @@ pub struct PersonResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub given_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub middle_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub surname: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub department: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub division: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub office_location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employee_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employee_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_center: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grade: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub band: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmation_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employment_start_date: Option<chrono::NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub employment_end_date: Option<chrono::NaiveDate>,
     pub score: f32,
 }
 

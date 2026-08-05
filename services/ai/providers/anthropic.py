@@ -92,14 +92,17 @@ class AnthropicProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         messages: list[dict[str, Any]] | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
+        thinking: dict[str, Any] | None = None,
+        output_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Anthropic Claude API."""
         try:
+            active_model = model or self.model
             # Use provided messages or create from prompt
             msg_list = (
                 self.build_messages_for_api(cast(list[MessageParam], messages))
@@ -111,13 +114,18 @@ class AnthropicProvider(LLMProvider):
             self.add_cache_control(msg_list, cast(list[ToolParam] | None, tools))
 
             # Prepare request parameters
-            request_params = {
-                "model": self.model,
+            request_params: dict[str, Any] = {
+                "model": active_model,
                 "messages": msg_list,
                 "max_tokens": max_tokens or 8192,
-                "temperature": temperature or 0.7,
                 "stream": True,
             }
+
+            if thinking is not None:
+                request_params["thinking"] = thinking
+
+            if output_config is not None:
+                request_params["output_config"] = output_config
 
             # Add tools if provided
             if tools:
@@ -177,7 +185,7 @@ class AnthropicProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_anthropic_status_code(e),
                 cause=e,
                 is_context_overflow=_anthropic_context_overflow(e),
@@ -187,18 +195,20 @@ class AnthropicProvider(LLMProvider):
         self,
         prompt: str,
         max_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
+        *,
+        model: str | None = None,
     ) -> tuple[str, TokenUsage]:
         """Generate non-streaming response from Anthropic Claude API."""
         try:
-            response = await self.client.messages.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens or 4096,
-                temperature=temperature or 0.7,
-                stream=False,
-            )
+            active_model = model or self.model
+            request_params: dict[str, Any] = {
+                "model": active_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens or 4096,
+                "stream": False,
+            }
+
+            response = await self.client.messages.create(**request_params)
 
             usage = TokenUsage(
                 input_tokens=response.usage.input_tokens,
@@ -224,18 +234,22 @@ class AnthropicProvider(LLMProvider):
             raise ProviderError(
                 str(e),
                 provider_type=self.provider_type,
-                model=self.model_name,
+                model=model or self.model_name,
                 status_code=_anthropic_status_code(e),
                 cause=e,
                 is_context_overflow=_anthropic_context_overflow(e),
             ) from e
 
-    async def health_check(self) -> bool:
+    async def health_check(
+        self,
+        *,
+        model: str | None = None,
+    ) -> bool:
         """Check if Anthropic API is accessible."""
         try:
             # Try a minimal request to check API accessibility
             response = await self.client.messages.create(
-                model=self.model,
+                model=model or self.model,
                 messages=[{"role": "user", "content": "Hello"}],
                 max_tokens=1,
                 stream=False,

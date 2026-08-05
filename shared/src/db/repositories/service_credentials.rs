@@ -6,6 +6,9 @@ use crate::encryption::{EncryptedData, EncryptionService};
 use crate::models::{ServiceCredential, Source, SourceScope};
 
 /// Service credentials repository with encryption support.
+///
+/// This is a pure CRUD layer. OAuth token lifecycle management lives in
+/// `CredentialService` (omni-connector-manager).
 pub struct ServiceCredentialsRepo {
     pool: PgPool,
     encryption_service: EncryptionService,
@@ -18,6 +21,22 @@ impl ServiceCredentialsRepo {
             pool,
             encryption_service,
         })
+    }
+
+    /// Fetch a credential row by id.
+    pub async fn find_by_id(&self, id: &str) -> Result<Option<ServiceCredential>> {
+        let mut creds = sqlx::query_as::<_, ServiceCredential>(
+            "SELECT * FROM service_credentials WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(ref mut creds) = creds {
+            self.decrypt_credentials_in_place(creds)?;
+        }
+
+        Ok(creds)
     }
 
     /// Fetch the org-wide credential row for a source (`user_id IS NULL`).
@@ -155,13 +174,16 @@ impl ServiceCredentialsRepo {
     }
 
     /// Update credentials and refresh-related fields on a credential row.
+    /// Persists the refreshed `credentials`, `config`, `expires_at`, and
+    /// `last_validated_at`.
     pub async fn update_credentials(&self, creds: &ServiceCredential) -> Result<()> {
         let encrypted_credentials = self.encrypt_credentials(creds)?;
 
         sqlx::query(
             r#"
             UPDATE service_credentials
-            SET credentials = $2, config = $3, expires_at = $4, updated_at = CURRENT_TIMESTAMP
+            SET credentials = $2, config = $3, expires_at = $4,
+                last_validated_at = $5, updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
             "#,
         )
@@ -169,6 +191,7 @@ impl ServiceCredentialsRepo {
         .bind(&encrypted_credentials)
         .bind(&creds.config)
         .bind(creds.expires_at)
+        .bind(creds.last_validated_at)
         .execute(&self.pool)
         .await?;
 
@@ -183,10 +206,6 @@ impl ServiceCredentialsRepo {
         source_types: &[String],
         provider: &str,
     ) -> Result<Option<(String, String)>> {
-        // Returns (source_id, user_id) for the most recently updated
-        // per-user OAuth credential matching the criteria.
-        // sqlx doesn't support array_agg -> text easily, so we use ANY(..) with
-        // a typed PostgreSQL array.
         let result: Option<(String, String)> = sqlx::query_as(
             r#"
             SELECT sc.source_id, sc.user_id

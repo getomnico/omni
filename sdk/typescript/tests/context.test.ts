@@ -4,6 +4,7 @@ import { setupServer } from 'msw/node';
 import { SdkClient } from '../src/client.js';
 import { SyncContext } from '../src/context.js';
 import {
+  ConnectorEventSchema,
   EventType,
   SyncMode,
   type ConnectorEventPayload,
@@ -39,6 +40,39 @@ function captureEvents(): ConnectorEventPayload[] {
   );
   return captured;
 }
+
+describe('ConnectorEventSchema', () => {
+  it('parses every document, group, and people event variant at runtime', () => {
+    const identity = { sync_run_id: 'run-1', source_id: 'source-1', document_id: 'doc-1' };
+    expect(ConnectorEventSchema.parse({
+      type: 'document_created', ...identity, content_id: 'content-1', metadata: {},
+      permissions: { public: false, users: [], groups: [] },
+    }).type).toBe('document_created');
+    expect(ConnectorEventSchema.parse({
+      type: 'document_updated', ...identity, content_id: 'content-1', metadata: {},
+    }).type).toBe('document_updated');
+    expect(ConnectorEventSchema.parse({ type: 'document_deleted', ...identity }).type)
+      .toBe('document_deleted');
+    expect(() => ConnectorEventSchema.parse({ type: 'document_created', ...identity }))
+      .toThrow();
+    expect(
+      ConnectorEventSchema.parse({
+        type: 'group_membership_sync',
+        sync_run_id: 'run-1',
+        source_id: 'source-1',
+        group_email: 'group@example.com',
+      }).type
+    ).toBe('group_membership_sync');
+    expect(
+      ConnectorEventSchema.parse({
+        type: 'person_sync',
+        sync_run_id: 'run-1',
+        source_id: 'source-1',
+        person: { external_id: 'E1', email: 'ada@example.com' },
+      }).type
+    ).toBe('person_sync');
+  });
+});
 
 describe('SyncContext.emit — title shim', () => {
   it('copies Document.title into metadata.title when metadata.title is missing', async () => {
@@ -209,6 +243,23 @@ describe('SyncContext.shouldIndexUser', () => {
   });
 });
 
+describe('SyncContext.getUserEmailForSource', () => {
+  it('returns the owner email for its source', async () => {
+    server.use(
+      http.get(`${BASE_URL}/sdk/source/source-owner/user-email`, () =>
+        HttpResponse.json({ email: 'owner@example.com' })
+      )
+    );
+    const ctx = new SyncContext(
+      new SdkClient(BASE_URL),
+      'sync-owner',
+      'source-owner'
+    );
+
+    await expect(ctx.getUserEmailForSource()).resolves.toBe('owner@example.com');
+  });
+});
+
 describe('SyncContext.incrementUpdated', () => {
   it('POSTs the count to /sdk/sync/:id/updated', async () => {
     const calls: Array<{ syncRunId: string; count: number }> = [];
@@ -349,5 +400,24 @@ describe('SyncContext.sourceType', () => {
       'source'
     );
     expect(ctx.sourceType).toBeNull();
+  });
+});
+
+describe('PersonSync', () => {
+  it('serializes the canonical event shape', async () => {
+    const captured: ConnectorEventPayload[] = [];
+    server.use(http.post(`${BASE_URL}/sdk/events/batch`, async ({ request }) => {
+      const body = await request.json() as { events: ConnectorEventPayload[] };
+      captured.push(...body.events);
+      return HttpResponse.json({ status: 'ok' });
+    }));
+    const ctx = new SyncContext(new SdkClient(), 'run-1', 'source-1');
+    await ctx.emitPersonSync({ external_id: 'E1', email: 'ada@example.com' });
+    await ctx.emitPersonDeleted('grace@example.com');
+    await ctx.flush();
+    expect(captured).toEqual([
+      { type: EventType.PERSON_SYNC, sync_run_id: 'run-1', source_id: 'source-1', person: { external_id: 'E1', email: 'ada@example.com' } },
+      { type: EventType.PERSON_DELETED, sync_run_id: 'run-1', source_id: 'source-1', email: 'grace@example.com' },
+    ]);
   });
 });

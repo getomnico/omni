@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, NotRequired, TypedDict, cast
 
 from anthropic.types import (
+    ContentBlockParam,
     MessageParam,
     TextBlockParam,
     ToolResultBlockParam,
@@ -137,6 +138,20 @@ def stream_error_sse(exc: Exception) -> str:
     return sse_event("stream_error", _chat_error_payload(exc))
 
 
+def save_error_sse(exc: Exception, partial_message: MessageParam | None = None) -> str:
+    """Build the internal ``save_error`` event that persists a failed turn.
+
+    ``partial_message`` carries any assistant content streamed before the
+    failure; ``persist_and_transform`` writes it together with the error so the
+    failed turn keeps its partial output. The event is consumed server-side and
+    never forwarded to the browser.
+    """
+    payload: dict[str, Any] = {"error": _chat_error_payload(exc)}
+    if partial_message is not None:
+        payload["message"] = partial_message
+    return sse_event("save_error", payload)
+
+
 def end_of_stream(reason: EndOfStreamReason, *, message: str | None = None) -> str:
     """Build a typed ``end_of_stream`` SSE event string."""
     payload: EndOfStreamEvent = {"reason": reason}
@@ -199,7 +214,7 @@ def approval_required_event(
 
 
 def partial_assistant_message(
-    content_blocks: list[TextBlockParam | ToolUseBlockParam],
+    content_blocks: list[ContentBlockParam],
 ) -> MessageParam | None:
     """Build a ``MessageParam`` from partial content blocks.
 
@@ -207,12 +222,18 @@ def partial_assistant_message(
     tool-use blocks), which lets the caller avoid emitting a ``save_message``
     event for a genuinely empty response.
     """
-    persisted_blocks: list[TextBlockParam | ToolUseBlockParam] = []
+    persisted_blocks: list[ContentBlockParam] = []
     for block in content_blocks:
         if block["type"] == "text":
             text_block = cast(TextBlockParam, block)
             if text_block["text"].strip():
                 persisted_blocks.append(cast(TextBlockParam, dict(text_block)))
+            continue
+
+        if block["type"] in ("thinking", "redacted_thinking"):
+            # Extended-thinking blocks carry the signature Anthropic requires
+            # in later turns of a tool-use conversation; keep them.
+            persisted_blocks.append(cast(ContentBlockParam, dict(block)))
             continue
 
         tool_block = cast(ToolUseBlockParam, dict(block))
@@ -240,6 +261,11 @@ def parse_tool_call_inputs(
     parse_errors: list[ToolResultBlockParam] = []
     for tool_call in tool_calls:
         raw_input = cast(str, tool_call["input"])
+        if not raw_input.strip():
+            # Anthropic streams an empty ``input_json_delta`` for no-arg
+            # tool calls; an empty input is a valid ``{}``, not a parse error.
+            tool_call["input"] = {}
+            continue
         try:
             tool_call["input"] = json.loads(raw_input)
         except json.JSONDecodeError as e:
@@ -365,6 +391,47 @@ async def persist_and_transform(gen, chat_id, messages_repo, parent_id):
             except Exception as e:
                 logger.error(
                     f"Failed to persist streamed message for chat {chat_id}: {e}",
+                    exc_info=True,
+                )
+            continue
+
+        if event_type == "save_error":
+            try:
+                payload = json.loads(event_data)
+                error = payload.get("error")
+                partial = payload.get("message")
+                if current_assistant_message_id:
+                    # The turn started streaming (message_start) before it
+                    # failed: finalize that same row atomically with any partial
+                    # content plus the error, so it is never deleted by the
+                    # generator-end cleanup below.
+                    if partial is not None:
+                        await messages_repo.finalize_error(
+                            current_assistant_message_id, partial, error
+                        )
+                    else:
+                        await messages_repo.update_error(
+                            current_assistant_message_id, error
+                        )
+                    current_assistant_message_id = None
+                else:
+                    # The run failed before any message_start (e.g. during
+                    # conversation prep): persist the failed turn as a new
+                    # assistant error row under the current parent.
+                    content = (
+                        partial.get("content", []) if partial is not None else []
+                    )
+                    created = await messages_repo.create(
+                        chat_id,
+                        {"role": "assistant", "content": content},
+                        parent_id=parent_id,
+                        error=error,
+                    )
+                    parent_id = created.id
+                    yield f"event: message_id\ndata: {created.id}\n\n"
+            except Exception as e:
+                logger.error(
+                    f"Failed to persist stream error for chat {chat_id}: {e}",
                     exc_info=True,
                 )
             continue

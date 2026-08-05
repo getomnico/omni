@@ -16,7 +16,7 @@ impl SourceRepository {
     pub async fn find_by_type(&self, source_type: &str) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -34,7 +34,7 @@ impl SourceRepository {
     pub async fn find_all_sources(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -54,7 +54,7 @@ impl SourceRepository {
     pub async fn find_all_sources_without_state(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    NULL::jsonb AS connector_state, NULL::jsonb AS checkpoint,
                    sync_interval_seconds, created_at, updated_at, created_by
@@ -72,7 +72,7 @@ impl SourceRepository {
     pub async fn find_active_sources(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -89,7 +89,7 @@ impl SourceRepository {
     pub async fn find_inactive(&self) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -133,7 +133,7 @@ impl SourceRepository {
     ) -> Result<Vec<Source>, DatabaseError> {
         let mut query_builder = sqlx::QueryBuilder::new(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -145,7 +145,7 @@ impl SourceRepository {
             query_builder.push(" AND source_type IN (");
             let mut separated = query_builder.separated(", ");
             for source_type in source_types {
-                separated.push_bind(source_type);
+                separated.push_bind(source_type.to_string());
             }
             query_builder.push(")");
         }
@@ -214,7 +214,7 @@ impl Repository<Source, String> for SourceRepository {
     async fn find_by_id(&self, id: String) -> Result<Option<Source>, DatabaseError> {
         let source = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -231,7 +231,7 @@ impl Repository<Source, String> for SourceRepository {
     async fn find_all(&self, limit: i64, offset: i64) -> Result<Vec<Source>, DatabaseError> {
         let sources = sqlx::query_as::<_, Source>(
             r#"
-            SELECT id, name, source_type, config, is_active, is_deleted, scope,
+            SELECT id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                    user_filter_mode, user_whitelist, user_blacklist,
                    connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             FROM sources
@@ -253,7 +253,7 @@ impl Repository<Source, String> for SourceRepository {
             r#"
             INSERT INTO sources (id, name, source_type, config, is_active, created_by)
             VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, name, source_type, config, is_active, is_deleted, scope,
+            RETURNING id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                       user_filter_mode, user_whitelist, user_blacklist,
                       connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             "#,
@@ -282,7 +282,7 @@ impl Repository<Source, String> for SourceRepository {
             UPDATE sources
             SET name = $2, source_type = $3, config = $4, is_active = $5, updated_at = CURRENT_TIMESTAMP
             WHERE id = $1
-            RETURNING id, name, source_type, config, is_active, is_deleted, scope,
+            RETURNING id, name, source_type, integration_type, config, is_active, is_deleted, scope,
                       user_filter_mode, user_whitelist, user_blacklist,
                       connector_state, checkpoint, sync_interval_seconds, created_at, updated_at, created_by
             "#,

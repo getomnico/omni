@@ -4,32 +4,9 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import * as Select from '$lib/components/ui/select'
-    import { AuthType, type ConnectorListEntry } from '$lib/types'
+    import { AuthType } from '$lib/types'
+    import { buildDarwinboxConfig, extractApiError } from '$lib/darwinbox-config'
     import { toast } from 'svelte-sonner'
-
-    /** Fetch all Darwinbox action names from the registered connector manifest.
-     * Groups come from extra_schema.action_groups derived from the connector's
-     * internal action policy table. */
-    async function getAllowedActions(readOnly: boolean): Promise<string[]> {
-        const resp = await fetch('/api/connectors')
-        if (!resp.ok) throw new Error('Failed to load connector actions')
-        const connectors: ConnectorListEntry[] = await resp.json()
-        const darwinbox = connectors.find((c) => c.source_type === 'darwinbox')
-        if (!darwinbox?.manifest) throw new Error('Darwinbox connector not registered')
-        const groups = darwinbox.manifest.extra_schema?.action_groups ?? {}
-        const result: string[] = []
-        for (const group of Object.values(groups)) {
-            if (!group) continue
-            for (const action of group.read ?? []) {
-                if (!result.includes(action)) result.push(action)
-            }
-            if (readOnly) continue
-            for (const action of group.write ?? []) {
-                if (!result.includes(action)) result.push(action)
-            }
-        }
-        return result
-    }
 
     interface Props {
         open: boolean
@@ -54,9 +31,7 @@
     let refreshToken = $state('')
     let datasetKey = $state('')
     let readOnly = $state(true)
-    let writeAcknowledged = $state(false)
     let participantEmails = $state('')
-    let targetEmployeeIds = $state('')
     let isSubmitting = $state(false)
 
     async function handleSubmit() {
@@ -90,18 +65,12 @@
                 .split(',')
                 .map((v) => v.trim().toLowerCase())
                 .filter(Boolean)
-            const targets = targetEmployeeIds
-                .split(',')
-                .map((v) => v.trim())
-                .filter(Boolean)
-            if (participants.length === 0) {
-                throw new Error('At least one approved participant email is required')
-            }
-            if (!readOnly && !writeAcknowledged) {
-                throw new Error('Confirm write-mode acknowledgement before continuing')
-            }
-            // Derive allowed actions from registered connector manifest
-            const allowedActions = await getAllowedActions(readOnly)
+            const config = buildDarwinboxConfig({
+                baseUrl,
+                readOnly,
+                participantMode: participants.length > 0 ? 'allowlist' : 'all',
+                participantEmails: participants,
+            })
 
             const sourceResponse = await fetch('/api/sources', {
                 method: 'POST',
@@ -111,55 +80,14 @@
                     name: 'Darwinbox',
                     sourceType: 'darwinbox',
                     isActive: true,
-                    config: {
-                        base_url: baseUrl.trim().replace(/\/$/, ''),
-                        read_only: readOnly,
-                        employee_scope: {
-                            mode: 'include',
-                            employee_ids: targets,
-                        },
-                        employee_fields: [
-                            'name',
-                            'employee_id',
-                            'company_email',
-                            'department',
-                            'designation',
-                            'office_location',
-                        ],
-                        sync_modules: {
-                            employee_directory: true,
-                            deleted_employees: true,
-                            departments: false,
-                            designations: false,
-                            office_locations: false,
-                            business_units: false,
-                            divisions: false,
-                            cost_centers: false,
-                            group_companies: false,
-                            positions: false,
-                            holidays: false,
-                            ats_jobs: false,
-                        },
-                        action_modules: {
-                            employee_self_service: true,
-                            manager_workflows: true,
-                            hr_operations: false,
-                            ats: false,
-                            reports: true,
-                        },
-                        authorization: {
-                            actions_enabled: true,
-                            write_acknowledged: writeAcknowledged,
-                            participant_emails: participants,
-                            allowed_actions: allowedActions,
-                            allowed_report_ids: [],
-                            max_batch_size: 1,
-                        },
-                    },
+                    config,
                 }),
             })
 
-            if (!sourceResponse.ok) throw new Error('Failed to create Darwinbox source')
+            if (!sourceResponse.ok)
+                throw new Error(
+                    await extractApiError(sourceResponse, 'Failed to create Darwinbox source'),
+                )
             const source = await sourceResponse.json()
 
             const credentials =
@@ -202,7 +130,12 @@
             })
 
             if (!credentialsResponse.ok) {
-                throw new Error('Failed to save Darwinbox credentials')
+                throw new Error(
+                    await extractApiError(
+                        credentialsResponse,
+                        'Failed to save Darwinbox credentials',
+                    ),
+                )
             }
 
             toast.success('Darwinbox source created')
@@ -227,8 +160,8 @@
         refreshToken = ''
         datasetKey = ''
         readOnly = true
-        writeAcknowledged = false
         participantEmails = ''
+        isSubmitting = false
     }
 
     function handleCancel() {
@@ -263,7 +196,8 @@
             <Dialog.Title>Connect Darwinbox</Dialog.Title>
             <Dialog.Description>
                 Sync Darwinbox employee directory and organization data, and enable HR workflow
-                actions for agents.
+                actions for agents. The dataset key controls which users and fields the API can
+                access; Omni attempts every available module and skips anything the provider denies.
             </Dialog.Description>
         </Dialog.Header>
 
@@ -384,22 +318,16 @@
                     Read-only mode (prevents all mutations)
                 </label>
                 <div class="space-y-1">
-                    <Label for="darwinbox-participants">Approved participant emails</Label>
+                    <Label for="darwinbox-participants">Approved action participant emails</Label>
                     <Input
                         id="darwinbox-participants"
                         bind:value={participantEmails}
                         placeholder="user1@example.com, user2@example.com" />
+                    <p class="text-muted-foreground text-xs">
+                        Leave empty to let every authenticated organization member invoke Darwinbox
+                        actions.
+                    </p>
                 </div>
-
-                {#if !readOnly}
-                    <label
-                        class="flex cursor-pointer items-start gap-2 rounded border border-amber-300 p-2">
-                        <input type="checkbox" bind:checked={writeAcknowledged} />
-                        <span
-                            >I understand that approved actions can change production Darwinbox data
-                            and require explicit confirmation.</span>
-                    </label>
-                {/if}
             </div>
         </div>
 

@@ -1338,3 +1338,265 @@ async fn test_group_membership_sync_event() {
 
     processor_handle.abort();
 }
+
+fn person_record(
+    external_id: &str,
+    email: &str,
+    manager: Option<&str>,
+) -> shared::models::PersonSyncRecord {
+    shared::models::PersonSyncRecord {
+        external_id: external_id.into(),
+        email: email.into(),
+        display_name: Some(external_id.into()),
+        given_name: None,
+        middle_name: None,
+        surname: None,
+        job_title: None,
+        department: None,
+        division: None,
+        company_name: None,
+        office_location: None,
+        work_country: None,
+        employee_id: Some(external_id.into()),
+        employee_type: None,
+        cost_center: None,
+        grade: None,
+        band: None,
+        confirmation_status: None,
+        employment_start_date: None,
+        employment_end_date: None,
+        phone: None,
+        is_active: None,
+        top_department: None,
+        manager_external_id: manager.map(str::to_string),
+        source_updated_at: None,
+    }
+}
+
+#[tokio::test]
+async fn person_events_merge_sources_delete_source_scoped_and_resolve_managers() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let repo = PersonRepository::new(pool);
+    let source_b = shared::utils::generate_ulid();
+    sqlx::query("INSERT INTO sources (id,name,source_type,config,is_active,created_by) SELECT $1,'People B','darwinbox','{}',true,created_by FROM sources WHERE id=$2")
+        .bind(&source_b).bind(TEST_SOURCE_ID).execute(pool).await.unwrap();
+
+    repo.apply_person_sync(
+        TEST_SOURCE_ID,
+        &person_record("EMP", "shared@example.com", Some("MGR")),
+    )
+    .await
+    .unwrap();
+    repo.apply_person_sync(
+        TEST_SOURCE_ID,
+        &person_record("MGR", "manager@example.com", None),
+    )
+    .await
+    .unwrap();
+    let manager_id: String =
+        sqlx::query_scalar("SELECT id FROM people WHERE email='manager@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let assigned: Option<String> =
+        sqlx::query_scalar("SELECT manager_id FROM people WHERE email='shared@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(assigned.as_deref(), Some(manager_id.as_str()));
+
+    repo.apply_person_sync(
+        &source_b,
+        &person_record("OTHER", "Shared@Example.com", None),
+    )
+    .await
+    .unwrap();
+    let ownership: i64 = sqlx::query_scalar("SELECT count(*) FROM people p CROSS JOIN LATERAL jsonb_object_keys(p.source_data) WHERE p.email='shared@example.com'").fetch_one(pool).await.unwrap();
+    assert_eq!(ownership, 2);
+
+    repo.apply_person_deleted(TEST_SOURCE_ID, "SHARED@example.com")
+        .await
+        .unwrap();
+    let remaining_source: (bool, Option<String>) = sqlx::query_as(
+        "SELECT is_active, display_name FROM people WHERE email='shared@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(remaining_source, (true, Some("OTHER".into())));
+    repo.apply_person_deleted(&source_b, "shared@example.com")
+        .await
+        .unwrap();
+    let inactive: bool =
+        sqlx::query_scalar("SELECT NOT is_active FROM people WHERE email='shared@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(inactive);
+}
+
+#[tokio::test]
+async fn person_sync_persists_contact_status_and_top_department() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let repo = PersonRepository::new(pool);
+
+    let mut contact = person_record("EMP-C", "contact@example.com", None);
+    contact.phone = Some("+91-98765-43210".into());
+    contact.top_department = Some("People".into());
+    contact.is_active = Some(true);
+    repo.apply_person_sync(TEST_SOURCE_ID, &contact)
+        .await
+        .unwrap();
+
+    let row: (Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT phone, top_department, is_active FROM people WHERE email='contact@example.com'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (Some("+91-98765-43210".into()), Some("People".into()), true)
+    );
+
+    // A source-reported inactive employee maps to an inactive people row.
+    let mut resigned = person_record("EMP-D", "resigned@example.com", None);
+    resigned.is_active = Some(false);
+    repo.apply_person_sync(TEST_SOURCE_ID, &resigned)
+        .await
+        .unwrap();
+    let inactive: bool =
+        sqlx::query_scalar("SELECT NOT is_active FROM people WHERE email='resigned@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(inactive);
+
+    // Without an explicit status the row stays active (source reports person).
+    repo.apply_person_sync(
+        TEST_SOURCE_ID,
+        &person_record("EMP-E", "plain@example.com", None),
+    )
+    .await
+    .unwrap();
+    let active: bool =
+        sqlx::query_scalar("SELECT is_active FROM people WHERE email='plain@example.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(active);
+}
+
+#[tokio::test]
+async fn person_events_follow_global_queue_order_across_sync_runs() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let events = vec![
+        ConnectorEvent::PersonSync {
+            sync_run_id: "person-order-run-a".into(),
+            source_id: TEST_SOURCE_ID.into(),
+            person: person_record("ORDER-1", "sync-then-delete@example.com", None),
+        },
+        ConnectorEvent::PersonDeleted {
+            sync_run_id: "person-order-run-b".into(),
+            source_id: TEST_SOURCE_ID.into(),
+            email: "sync-then-delete@example.com".into(),
+        },
+        ConnectorEvent::PersonDeleted {
+            sync_run_id: "person-order-run-c".into(),
+            source_id: TEST_SOURCE_ID.into(),
+            email: "delete-then-sync@example.com".into(),
+        },
+        ConnectorEvent::PersonSync {
+            sync_run_id: "person-order-run-d".into(),
+            source_id: TEST_SOURCE_ID.into(),
+            person: person_record("ORDER-2", "delete-then-sync@example.com", None),
+        },
+    ];
+    EventQueue::new(pool.clone())
+        .enqueue_batch(TEST_SOURCE_ID, &events)
+        .await
+        .unwrap();
+
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(100));
+    let handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    common::wait_for_completed(pool, 4, Duration::from_secs(10)).await;
+
+    let sync_then_delete: (bool, bool) = sqlx::query_as(
+        "SELECT is_active, source_data ? $1 FROM people WHERE email='sync-then-delete@example.com'",
+    )
+    .bind(TEST_SOURCE_ID)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(sync_then_delete, (false, false));
+
+    let delete_then_sync: (bool, bool) = sqlx::query_as(
+        "SELECT is_active, source_data ? $1 FROM people WHERE email='delete-then-sync@example.com'",
+    )
+    .bind(TEST_SOURCE_ID)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(delete_then_sync, (true, true));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn person_sync_queue_creates_no_documents_embeddings_or_document_progress() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let pool = fixture.state.db_pool.pool();
+    let before_docs: i64 = sqlx::query_scalar("SELECT count(*) FROM documents")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let before_embeddings: i64 = sqlx::query_scalar("SELECT count(*) FROM embeddings")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let event = ConnectorEvent::PersonSync {
+        sync_run_id: "people-progress-run".into(),
+        source_id: TEST_SOURCE_ID.into(),
+        person: person_record("P1", "progress@example.com", None),
+    };
+    EventQueue::new(pool.clone())
+        .enqueue(TEST_SOURCE_ID, &event)
+        .await
+        .unwrap();
+    let processor =
+        QueueProcessor::new(fixture.state.clone()).with_poll_interval(Duration::from_millis(100));
+    let handle = tokio::spawn(async move {
+        let _ = processor.start().await;
+    });
+    common::wait_for_completed(pool, 1, Duration::from_secs(10)).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM documents")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        before_docs
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM embeddings")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        before_embeddings
+    );
+    // No sync run exists for this synthetic queue event; if PersonSync were
+    // counted as document progress, processing would attempt and fail that update.
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM connector_events_queue WHERE sync_run_id='people-progress-run'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "completed");
+    handle.abort();
+}

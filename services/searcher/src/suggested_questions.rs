@@ -1,6 +1,6 @@
 use crate::models::{SuggestedQuestion, SuggestedQuestionsResponse};
 use crate::{Result as SearcherResult, SearcherError};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use dashmap::DashSet;
 use futures_util::StreamExt;
 use redis::AsyncCommands;
@@ -318,7 +318,10 @@ impl SuggestedQuestionsGenerator {
                                 );
                             }
                             Err(e) => {
-                                warn!("Failed to generate suggestion for document {}: {}", doc.id, e);
+                                warn!(
+                                    "Failed to generate suggestion for document {}: {}",
+                                    doc.id, e
+                                );
                             }
                         }
 
@@ -414,7 +417,9 @@ impl SuggestedQuestionsGenerator {
                 "Document {} deemed unsuitable for suggestion (model returned SKIP)",
                 document_id
             );
-            return Err(anyhow!("Document unsuitable for suggestion generation (SKIP)"));
+            return Err(anyhow!(
+                "Document unsuitable for suggestion generation (SKIP)"
+            ));
         }
 
         if expect_question_mark && !output.contains('?') {

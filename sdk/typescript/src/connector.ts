@@ -6,6 +6,7 @@ import type {
   SearchOperator,
   OAuthManifestConfig,
   Source,
+  OAuthCredentialReadyRequest,
 } from './models.js';
 import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
@@ -85,21 +86,44 @@ export abstract class Connector<
     return this._mcpAdapter as McpAdapter;
   }
 
+  private async discoverMcpCatalog(credentials: TCredentials): Promise<boolean> {
+    const adapter = await this.getMcpAdapter();
+    if (!adapter) {
+      return false;
+    }
+    const { env, headers } = this.prepareMcpAuth(credentials);
+    await adapter.discover(env, headers);
+    return adapter.hasCachedCatalog();
+  }
+
   /**
    * Discover MCP tools/resources/prompts and cache them. Called when
    * credentials first become available (e.g., during initial sync).
    */
   async bootstrapMcp(credentials: TCredentials): Promise<void> {
-    const adapter = await this.getMcpAdapter();
-    if (!adapter) {
-      return;
-    }
-    const { env, headers } = this.prepareMcpAuth(credentials);
     logger.info('Bootstrapping MCP: discovering tools');
     try {
-      await adapter.discover(env, headers);
+      await this.discoverMcpCatalog(credentials);
     } catch (err) {
       logger.warn({ err }, 'MCP bootstrap failed');
+    }
+  }
+
+  /**
+   * React to a newly stored OAuth credential. MCP-backed connectors use it to
+   * restore their authenticated catalog after OAuth or a connector restart.
+   */
+  async oauthCredentialReady(
+    request: OAuthCredentialReadyRequest
+  ): Promise<boolean> {
+    logger.info('Refreshing MCP catalog after OAuth credential update');
+    try {
+      return await this.discoverMcpCatalog(request.credentials as TCredentials);
+    } catch (err) {
+      const adapter = await this.getMcpAdapter();
+      adapter?.clearCachedCatalog();
+      logger.warn({ err }, 'OAuth credential-ready MCP refresh failed');
+      return false;
     }
   }
 
@@ -141,6 +165,7 @@ export abstract class Connector<
       extra_schema: this.extraSchema,
       attributes_schema: this.attributesSchema,
       mcp_enabled: adapter !== undefined,
+      mcp_catalog_loaded: adapter?.hasCachedCatalog() ?? false,
       resources: adapter ? await adapter.getResourceDefinitions() : [],
       prompts: adapter ? await adapter.getPromptDefinitions() : [],
       oauth: this.oauthConfig,

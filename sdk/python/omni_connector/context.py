@@ -10,6 +10,9 @@ from .models import (
     Document,
     EventType,
     GroupMembershipSyncEvent,
+    PersonDeletedEvent,
+    PersonSyncEvent,
+    PersonSyncRecord,
     SyncMode,
     UserFilterMode,
 )
@@ -161,9 +164,12 @@ class SyncContext:
             )
             self._event_buffer = []
             self._oldest_event_at = None
-        except:
-            logger.error("Failed to flush event batch, will retry on next flush")
+        except Exception:
+            logger.exception("Failed to flush event batch, retained for retry")
             self._event_buffer = batch
+            if self._oldest_event_at is None:
+                self._oldest_event_at = time.monotonic()
+            raise
 
     async def emit(self, doc: Document) -> None:
         """Push document to queue. Implicitly heartbeats (updates last_activity_at)."""
@@ -224,6 +230,26 @@ class SyncContext:
             member_emails=member_emails,
         )
         await self._buffer_event(event)
+
+    async def emit_person_sync(self, person: PersonSyncRecord) -> None:
+        """Emit one idempotent source-provenanced person upsert."""
+        await self._buffer_event(
+            PersonSyncEvent(
+                sync_run_id=self._sync_run_id,
+                source_id=self._source_id,
+                person=person,
+            )
+        )
+
+    async def emit_person_deleted(self, email: str) -> None:
+        """Remove this source's current entry for one canonical email."""
+        await self._buffer_event(
+            PersonDeletedEvent(
+                sync_run_id=self._sync_run_id,
+                source_id=self._source_id,
+                email=email,
+            )
+        )
 
     async def emit_error(self, external_id: str, error: str) -> None:
         """Report non-fatal error for a specific document. Sync continues."""

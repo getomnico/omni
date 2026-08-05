@@ -58,8 +58,23 @@ class TestBuildMem0Config:
     @pytest.fixture
     def state(self):
         s = MagicMock()
-        s.models = {"m1": _stub_provider(), "m2": _stub_provider(model_name="gpt-4o")}
-        s.default_model_id = "m1"
+        from provider_cache import ResolvedModel
+        p1 = _stub_provider()
+        p2 = _stub_provider(model_name="gpt-4o")
+        async def _resolve_for_model(model_id: str):
+            if model_id == "m1":
+                return ResolvedModel(provider=p1, model_record_id="m1", model_name=p1.model_name)
+            if model_id == "m2":
+                return ResolvedModel(provider=p2, model_record_id="m2", model_name=p2.model_name)
+            return None
+        async def _resolve_default():
+            return ResolvedModel(provider=p1, model_record_id="m1", model_name=p1.model_name)
+        async def _resolve_secondary_or_default():
+            return ResolvedModel(provider=p2, model_record_id="m2", model_name=p2.model_name)
+        s.provider_cache = type("cache", (), {})()
+        s.provider_cache.resolve_for_model = _resolve_for_model
+        s.provider_cache.resolve_default = _resolve_default
+        s.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
         s.embedding_provider = MagicMock()
         return s
 

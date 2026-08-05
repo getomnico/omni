@@ -65,7 +65,8 @@ class CompactionBudget:
         max_output_tokens: int | None = None,
     ) -> "CompactionBudget":
         return cls(
-            context_window_tokens=context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS,
+            context_window_tokens=context_window_tokens
+            or DEFAULT_CONTEXT_WINDOW_TOKENS,
             max_output_tokens=max_output_tokens or DEFAULT_OUTPUT_RESERVE_TOKENS,
         )
 
@@ -104,10 +105,14 @@ class ConversationCompactor:
     def __init__(
         self,
         llm_provider: LLMProvider,
+        model_name: str | None = None,
         redis_client: Any | None = None,
         on_usage: Callable[[TokenUsage], None] | None = None,
     ):
         self.llm_provider = llm_provider
+        # Wire model name passed per-call so a cached client shared across model
+        # records still targets the correct model.
+        self.model_name = model_name
         # Kept temporarily for constructor compatibility; Redis is no longer used
         # as compaction source of truth.
         self.redis = redis_client
@@ -129,8 +134,21 @@ class ConversationCompactor:
                     if isinstance(block, dict):
                         if block.get("type") == "text":
                             total_chars += len(block.get("text", ""))
+                        elif block.get("type") == "document":
+                            source = block.get("source")
+                            if (
+                                isinstance(source, dict)
+                                and source.get("type") == "text"
+                            ):
+                                data = source.get("data")
+                                if isinstance(data, str):
+                                    total_chars += len(data)
                         elif block.get("type") == "tool_use":
                             total_chars += len(json.dumps(block.get("input", {})))
+                        elif block.get("type") == "thinking":
+                            total_chars += len(block.get("thinking", ""))
+                        elif block.get("type") == "redacted_thinking":
+                            total_chars += len(block.get("data", ""))
                         elif block.get("type") == "tool_result":
                             result_content = block.get("content", "")
                             if isinstance(result_content, str):
@@ -140,6 +158,15 @@ class ConversationCompactor:
                                     if isinstance(item, dict):
                                         if item.get("type") == "text":
                                             total_chars += len(item.get("text", ""))
+                                        elif item.get("type") == "document":
+                                            source = item.get("source")
+                                            if (
+                                                isinstance(source, dict)
+                                                and source.get("type") == "text"
+                                            ):
+                                                data = source.get("data")
+                                                if isinstance(data, str):
+                                                    total_chars += len(data)
                                         elif item.get("type") == "search_result":
                                             total_chars += len(item.get("title", ""))
                                             total_chars += len(item.get("source", ""))
@@ -191,7 +218,9 @@ class ConversationCompactor:
         if context_window_tokens is None:
             # Preserve env override semantics until provider-specific resolution is
             # wired everywhere. Later calls pass provider context explicitly.
-            context_window_tokens = MAX_CONVERSATION_INPUT_TOKENS or DEFAULT_CONTEXT_WINDOW_TOKENS
+            context_window_tokens = (
+                MAX_CONVERSATION_INPUT_TOKENS or DEFAULT_CONTEXT_WINDOW_TOKENS
+            )
         budget = CompactionBudget.from_context_window(
             context_window_tokens, max_output_tokens
         )
@@ -217,7 +246,9 @@ class ConversationCompactor:
         return list(content)
 
     def _has_content_block_type(self, message: MessageParam, block_type: str) -> bool:
-        return any(block["type"] == block_type for block in self._content_blocks(message))
+        return any(
+            block["type"] == block_type for block in self._content_blocks(message)
+        )
 
     def _counts_toward_recent_user_floor(self, message: MessageParam) -> bool:
         if message["role"] != "user":
@@ -237,8 +268,10 @@ class ConversationCompactor:
                 break
             split_point -= 1
 
-        if split_point > 0 and split_point < len(messages) and self._has_content_block_type(
-            messages[split_point - 1], "tool_use"
+        if (
+            split_point > 0
+            and split_point < len(messages)
+            and self._has_content_block_type(messages[split_point - 1], "tool_use")
         ):
             split_point -= 1
 
@@ -262,7 +295,9 @@ class ConversationCompactor:
         if split_point is None:
             return CompactionSplit([], messages, None)
 
-        split_point = self._adjust_split_point_for_tool_boundaries(messages, split_point)
+        split_point = self._adjust_split_point_for_tool_boundaries(
+            messages, split_point
+        )
         old_messages = list(messages[:split_point])
         recent_messages = list(messages[split_point:])
         anchor_index = split_point - 1 if old_messages else None
@@ -298,7 +333,9 @@ class ConversationCompactor:
         )
 
         budget = (
-            CompactionBudget.from_context_window(context_window_tokens, max_output_tokens)
+            CompactionBudget.from_context_window(
+                context_window_tokens, max_output_tokens
+            )
             if context_window_tokens
             else None
         )
@@ -326,11 +363,26 @@ class ConversationCompactor:
         if isinstance(content, str):
             return content[:500]
         if isinstance(content, list):
-            search_count = sum(
-                1 for item in content if item["type"] == "search_result"
-            )
-            if search_count > 0:
-                return f"[{search_count} search results]"
+            search_count = 0
+            document_texts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "search_result":
+                    search_count += 1
+                elif item.get("type") == "document":
+                    source = item.get("source")
+                    if isinstance(source, dict) and source.get("type") == "text":
+                        data = source.get("data")
+                        if isinstance(data, str):
+                            document_texts.append(data)
+
+            parts: list[str] = []
+            if search_count:
+                parts.append(f"[{search_count} search results]")
+            parts.extend(document_texts)
+            if parts:
+                return "\n".join(parts)
             return f"[{len(content)} content blocks]"
         return "[tool result]"
 
@@ -351,6 +403,21 @@ class ConversationCompactor:
                 block_type = block["type"]
                 if block_type == "text":
                     text_parts.append(block["text"])
+                elif block_type == "document":
+                    source = block.get("source")
+                    data = source.get("data") if isinstance(source, dict) else None
+                    if (
+                        isinstance(source, dict)
+                        and source.get("type") == "text"
+                        and isinstance(data, str)
+                    ):
+                        text_parts.append(data)
+                    elif isinstance(source, dict):
+                        text_parts.append(
+                            f"[Document block ({source.get('type', 'unknown')} source)]"
+                        )
+                    else:
+                        text_parts.append("[Document block (unknown source)]")
                 elif block_type == "tool_use":
                     text_parts.append(
                         f"[Called tool: {block['name']} with {json.dumps(block['input'])[:200]}...]"
@@ -404,7 +471,9 @@ Summary:"""
 
         prompt = self._summary_prompt(messages, previous_summary)
         estimated_input_tokens = self.estimate_text_tokens(prompt)
-        context_window = summarizer_context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS
+        context_window = (
+            summarizer_context_window_tokens or DEFAULT_CONTEXT_WINDOW_TOKENS
+        )
         budget = CompactionBudget.from_context_window(
             context_window, COMPACTION_SUMMARY_MAX_TOKENS
         )
@@ -413,7 +482,7 @@ Summary:"""
             summary, usage = await self.llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
-                temperature=0.3,
+                model=self.model_name,
             )
             if self._on_usage:
                 self._on_usage(usage)
@@ -474,7 +543,7 @@ Summary:"""
             summary, usage = await self.llm_provider.generate_response(
                 prompt=prompt,
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
-                temperature=0.3,
+                model=self.model_name,
             )
             if self._on_usage:
                 self._on_usage(usage)
@@ -490,9 +559,11 @@ Summary:"""
         return SummaryResult(
             summary=final_summary.strip(),
             usage=total_usage,
-            estimated_input_tokens=estimated_input_tokens
-            if (estimated_input_tokens := self.estimate_tokens(messages))
-            else 0,
+            estimated_input_tokens=(
+                estimated_input_tokens
+                if (estimated_input_tokens := self.estimate_tokens(messages))
+                else 0
+            ),
             estimated_summary_tokens=self.estimate_text_tokens(final_summary),
             passes=passes,
         )
@@ -603,7 +674,9 @@ Summary:"""
             chat_id=chat_id,
             anchor_message_id=anchor_row.id,
             compacted_through_seq_num=anchor_row.message_seq_num,
-            previous_compaction_id=(latest_compaction.id if has_prior_summary else None),
+            previous_compaction_id=(
+                latest_compaction.id if has_prior_summary else None
+            ),
             summary=summary_result.summary,
             summary_message=dict(summary_message),
             estimated_input_tokens=summary_result.estimated_input_tokens,
@@ -702,7 +775,9 @@ Summary:"""
             run_id=run_id,
             anchor_log_id=anchor_row.id,
             compacted_through_seq_num=anchor_row.message_seq_num,
-            previous_compaction_id=(latest_compaction.id if has_prior_summary else None),
+            previous_compaction_id=(
+                latest_compaction.id if has_prior_summary else None
+            ),
             summary=summary_result.summary,
             summary_message=dict(summary_message),
             estimated_input_tokens=summary_result.estimated_input_tokens,

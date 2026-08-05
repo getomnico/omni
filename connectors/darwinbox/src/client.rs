@@ -1,13 +1,48 @@
-use anyhow::{anyhow, Context, Result};
-use reqwest::{Client, StatusCode};
+use anyhow::{Context, Result, anyhow};
+use reqwest::{Client, StatusCode, header};
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use url::Url;
 
 use crate::auth::{add_api_key_and_dataset, apply_basic_auth, fetch_token};
 use crate::config::DarwinboxSourceConfig;
 use crate::credentials::DarwinboxCredentials;
-use crate::models::EmployeeDataResponse;
+use crate::models::{EmployeeDataResponse, HolidayListResponse};
+
+/// Darwinbox API call outcome, split so sync/action callers can tolerate
+/// provider-side denials without treating them as transient failures.
+#[derive(Debug, Clone)]
+pub enum DarwinboxApiError {
+    /// Provider denied the request (HTTP 401/403 or other client denial). The
+    /// dataset/API key does not grant this endpoint; retrying will not help.
+    NotPermitted { path: &'static str, status: u16 },
+    /// Rate limited (429) or server-side failure (5xx); safe to retry.
+    Retryable { status: u16 },
+    /// Other non-success HTTP status (e.g. 400, 404).
+    Other { status: u16 },
+    /// Transport-level failure (DNS, connect, timeout).
+    Transport(String),
+}
+
+impl std::fmt::Display for DarwinboxApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotPermitted { path, status } => write!(
+                f,
+                "Darwinbox denied {} access (HTTP {}); grant the endpoint via the dataset/API key configuration",
+                capability_for_endpoint(path),
+                status
+            ),
+            Self::Retryable { status } => {
+                write!(f, "Darwinbox API returned retryable HTTP {status}")
+            }
+            Self::Other { status } => write!(f, "Darwinbox API returned HTTP {status}"),
+            Self::Transport(message) => write!(f, "Darwinbox API request failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for DarwinboxApiError {}
 
 #[derive(Debug, Clone)]
 pub struct ApplyLeaveRequest {
@@ -113,7 +148,7 @@ impl DarwinboxClient {
         &self,
         employee_ids: Option<Vec<String>>,
         last_modified: Option<&str>,
-    ) -> Result<EmployeeDataResponse> {
+    ) -> std::result::Result<EmployeeDataResponse, DarwinboxApiError> {
         let mut body = json!({});
         if let Some(ids) = employee_ids {
             body["employee_ids"] = json!(ids);
@@ -124,7 +159,10 @@ impl DarwinboxClient {
         self.post_json("/masterapi/employee", body, true).await
     }
 
-    pub async fn fetch_deleted_employees(&self, last_modified: Option<&str>) -> Result<JsonValue> {
+    pub async fn fetch_deleted_employees(
+        &self,
+        last_modified: Option<&str>,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         let mut body = json!({});
         if let Some(ts) = last_modified {
             body["last_modified"] = json!(ts);
@@ -133,11 +171,17 @@ impl DarwinboxClient {
             .await
     }
 
-    pub async fn fetch_org_master(&self, path: &str) -> Result<JsonValue> {
+    pub async fn fetch_org_master(
+        &self,
+        path: &str,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(path, json!({}), false).await
     }
 
-    pub async fn fetch_position_master(&self, last_modified: Option<&str>) -> Result<JsonValue> {
+    pub async fn fetch_position_master(
+        &self,
+        last_modified: Option<&str>,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         let mut body = json!({ "status": 0, "need_to_hire": 2 });
         if let Some(ts) = last_modified {
             body["last_modified"] = json!(ts);
@@ -146,7 +190,11 @@ impl DarwinboxClient {
             .await
     }
 
-    pub async fn fetch_holiday_list(&self, employee_no: &str, year: &str) -> Result<JsonValue> {
+    pub async fn fetch_holiday_list(
+        &self,
+        employee_no: &str,
+        year: &str,
+    ) -> std::result::Result<HolidayListResponse, DarwinboxApiError> {
         self.post_json(
             "/leavesactionapi/holidaylist",
             json!({ "employee_no": employee_no, "year": year }),
@@ -155,7 +203,10 @@ impl DarwinboxClient {
         .await
     }
 
-    pub async fn fetch_leave_balance(&self, employee_no: &str) -> Result<JsonValue> {
+    pub async fn fetch_leave_balance(
+        &self,
+        employee_no: &str,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(
             "/leavesactionapi/leavebalance",
             json!({ "employee_nos": [employee_no], "ignore_rounding": "1" }),
@@ -164,7 +215,10 @@ impl DarwinboxClient {
         .await
     }
 
-    pub async fn apply_leave(&self, request: ApplyLeaveRequest) -> Result<JsonValue> {
+    pub async fn apply_leave(
+        &self,
+        request: ApplyLeaveRequest,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(
             "/leavesactionapi/importleave",
             json!({
@@ -184,7 +238,10 @@ impl DarwinboxClient {
         .await
     }
 
-    pub async fn revoke_leave(&self, request: RevokeLeaveRequest) -> Result<JsonValue> {
+    pub async fn revoke_leave(
+        &self,
+        request: RevokeLeaveRequest,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(
             "/leavesactionapi/importleave",
             json!({
@@ -200,7 +257,10 @@ impl DarwinboxClient {
         .await
     }
 
-    pub async fn fetch_leave_requests(&self, request: LeaveRequestsRequest) -> Result<JsonValue> {
+    pub async fn fetch_leave_requests(
+        &self,
+        request: LeaveRequestsRequest,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         let mut body = json!({
             "employee_no": request.employee_nos,
             "action": request.action,
@@ -215,7 +275,10 @@ impl DarwinboxClient {
             .await
     }
 
-    pub async fn take_leave_decision(&self, request: LeaveDecisionRequest) -> Result<JsonValue> {
+    pub async fn take_leave_decision(
+        &self,
+        request: LeaveDecisionRequest,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(
             "/leavesactionapi/leaveaction",
             json!({
@@ -232,7 +295,7 @@ impl DarwinboxClient {
     pub async fn fetch_monthly_attendance(
         &self,
         request: MonthlyAttendanceRequest,
-    ) -> Result<JsonValue> {
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         let mut body = json!({ "emp_number_list": request.employee_nos });
         if let Some(from_date) = request.from_date {
             body["from_date"] = json!(from_date);
@@ -251,10 +314,10 @@ impl DarwinboxClient {
         &self,
         employee_no: &str,
         mut attendance: JsonValue,
-    ) -> Result<JsonValue> {
-        let object = attendance
-            .as_object_mut()
-            .ok_or_else(|| anyhow!("attendance must be an object"))?;
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
+        let object = attendance.as_object_mut().ok_or_else(|| {
+            DarwinboxApiError::Transport("attendance must be an object".to_string())
+        })?;
         object.insert("employee_no".to_string(), json!(employee_no));
         self.post_json("/attendanceDataApi/backdatedattendance", attendance, false)
             .await
@@ -265,7 +328,7 @@ impl DarwinboxClient {
         employee_no: &str,
         from: &str,
         to: &str,
-    ) -> Result<JsonValue> {
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(
             "/attendanceDataApi/timesheetdatewise",
             json!({
@@ -283,7 +346,7 @@ impl DarwinboxClient {
         employee_nos: Vec<String>,
         from_date: &str,
         to_date: &str,
-    ) -> Result<JsonValue> {
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         self.post_json(
             "/attendanceDataApi/DailyAttendanceRoster",
             json!({
@@ -296,7 +359,10 @@ impl DarwinboxClient {
         .await
     }
 
-    pub async fn fetch_jobs(&self, updated_from: Option<&str>) -> Result<JsonValue> {
+    pub async fn fetch_jobs(
+        &self,
+        updated_from: Option<&str>,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
         let mut body = json!({});
         if let Some(ts) = updated_from {
             body["job_updated_timestamp_from"] = json!(ts);
@@ -309,12 +375,13 @@ impl DarwinboxClient {
         path: &str,
         body: JsonValue,
         include_dataset_key: bool,
-    ) -> Result<T> {
+    ) -> std::result::Result<T, DarwinboxApiError> {
         // Use Url::join for safe URL construction
-        let base = Url::parse(&self.base_url).context("invalid base_url")?;
+        let base = Url::parse(&self.base_url)
+            .map_err(|error| DarwinboxApiError::Transport(format!("invalid base_url: {error}")))?;
         let url = base
             .join(path.trim_start_matches('/'))
-            .context("failed to join URL")?
+            .map_err(|error| DarwinboxApiError::Transport(format!("failed to join URL: {error}")))?
             .to_string();
         let body = add_api_key_and_dataset(body, &self.credentials, include_dataset_key);
         let mut request = self
@@ -326,41 +393,75 @@ impl DarwinboxClient {
         request = apply_basic_auth(request, &self.credentials);
         if !matches!(self.credentials, DarwinboxCredentials::Basic { .. }) {
             let token = fetch_token(&self.http, &self.base_url, &self.credentials)
-                .await?
-                .ok_or_else(|| anyhow!("token auth did not return a token"))?;
-            request = request.header("TOKEN", token.access_token);
+                .await
+                .map_err(|error| DarwinboxApiError::Transport(error.to_string()))?
+                .ok_or_else(|| {
+                    DarwinboxApiError::Transport("token auth did not return a token".to_string())
+                })?;
+            // Darwinbox OAuth 2.0 expects the access token as a Bearer token;
+            // sending it in a custom TOKEN header makes every business API
+            // return 401 "Invalid Credentials".
+            request = request.header(
+                header::AUTHORIZATION,
+                format!("Bearer {}", token.access_token),
+            );
         }
 
         let mut last_error = None;
         for attempt in 0..3 {
             let response = request
                 .try_clone()
-                .ok_or_else(|| anyhow!("failed to clone Darwinbox API request"))?
+                .ok_or_else(|| {
+                    DarwinboxApiError::Transport(
+                        "failed to clone Darwinbox API request".to_string(),
+                    )
+                })?
                 .send()
                 .await
-                .with_context(|| format!("failed to call Darwinbox API {path}"))?;
+                .map_err(|error| DarwinboxApiError::Transport(error.to_string()))?;
             let status = response.status();
             if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                // Do not include response body in error to avoid leaking sensitive data
-                return Err(anyhow!(
-                    "Darwinbox authentication/authorization failed (HTTP {status})"
-                ));
+                // Never deserialize or log the denial body: Darwinbox error
+                // envelopes can echo credentials, datasets, or employee data.
+                return Err(DarwinboxApiError::NotPermitted {
+                    path: capability_for_endpoint(path),
+                    status: status.as_u16(),
+                });
             }
             if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                last_error = Some(anyhow!("Darwinbox API returned retryable HTTP {status}"));
+                last_error = Some(DarwinboxApiError::Retryable {
+                    status: status.as_u16(),
+                });
                 tokio::time::sleep(std::time::Duration::from_millis(250 * (attempt + 1))).await;
                 continue;
             }
             if !status.is_success() {
-                return Err(anyhow!("Darwinbox API returned HTTP {status}"));
+                return Err(DarwinboxApiError::Other {
+                    status: status.as_u16(),
+                });
             }
 
             return response
                 .json::<T>()
                 .await
-                .with_context(|| format!("failed to parse Darwinbox API response for {path}"));
+                .map_err(|error| DarwinboxApiError::Transport(error.to_string()));
         }
 
-        Err(last_error.unwrap_or_else(|| anyhow!("Darwinbox API request failed")))
+        Err(last_error.unwrap_or(DarwinboxApiError::Transport(
+            "Darwinbox API request failed".to_string(),
+        )))
+    }
+}
+
+fn capability_for_endpoint(path: &str) -> &'static str {
+    match path {
+        "/masterapi/employee" => "People directory/caller resolution",
+        "/leavesactionapi/leavebalance" => "leave balance",
+        "/leavesactionapi/holidaylist" => "holiday calendar",
+        "/leavesactionapi/leaveActionTakenLeaves" => "leave requests",
+        "/AttendanceDataApi/monthly" => "attendance",
+        "/attendanceDataApi/timesheetdatewise" => "timesheet",
+        "/leavesactionapi/importleave" => "leave changes",
+        _ => "selected Darwinbox endpoint",
     }
 }

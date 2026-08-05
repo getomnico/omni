@@ -41,8 +41,13 @@ async def list_models():
 
 @router.post("/admin/reload-providers")
 async def reload_providers(request: Request):
-    """Reload model instances from the database."""
-    await load_models(request.app.state)
+    """Reload model instances from the database.
+
+    With DB-backed resolution the cache is populated on demand, so this
+    just clears the cache to force a fresh fetch next time.
+    """
+    request.app.state.provider_cache.clear()
+    logger.info("Provider cache cleared via admin reload")
     return {"status": "ok"}
 
 

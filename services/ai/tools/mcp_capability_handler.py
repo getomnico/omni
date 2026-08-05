@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from db.models import Source
 from tools.connector_handler import SourceFilter, sources_from_sync_overview_response
+from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
     CapabilitiesSyncRequest,
@@ -73,6 +74,7 @@ class McpPromptDefinition(BaseModel):
 class McpConnectorManifest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    integration_type: str = "connector"
     mcp_enabled: bool = False
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
@@ -135,6 +137,7 @@ class McpCapabilityHandler:
         self._source_filter = source_filter
         self._resources: dict[str, McpResourceRecord] = {}
         self._prompts: dict[str, McpPromptRecord] = {}
+        self._publisher_source_ids: set[str] = set()
         self._initialized = False
 
     async def refresh(self) -> None:
@@ -155,7 +158,7 @@ class McpCapabilityHandler:
                     sources = self._prefetched_sources
                 else:
                     sources_resp = await client.get(
-                        f"{self._connector_manager_url}/sources"
+                        f"{self._connector_manager_url}/sources/active"
                     )
                     sources_resp.raise_for_status()
                     sources = sources_from_sync_overview_response(sources_resp.json())
@@ -164,16 +167,19 @@ class McpCapabilityHandler:
             self._initialized = True
             return
 
-        active_sources_by_type: dict[str, list[Source]] = {}
+        active_sources_by_identity: dict[tuple[str, str], list[Source]] = {}
         for source in sources:
             if not source.is_active or source.is_deleted:
                 continue
             if not self._source_allows_read(source.id):
                 continue
-            active_sources_by_type.setdefault(source.source_type, []).append(source)
+            active_sources_by_identity.setdefault(
+                (source.integration_type, source.source_type), []
+            ).append(source)
 
         resources: dict[str, McpResourceRecord] = {}
         prompts: dict[str, McpPromptRecord] = {}
+        publisher_source_ids: set[str] = set()
 
         for connector in connectors:
             if not connector.healthy or connector.manifest is None:
@@ -183,7 +189,12 @@ class McpCapabilityHandler:
             if not manifest.mcp_enabled:
                 continue
 
-            matching_sources = active_sources_by_type.get(source_type, [])
+            matching_sources = active_sources_by_identity.get(
+                (manifest.integration_type, source_type), []
+            )
+            for source in matching_sources:
+                publisher_source_ids.add(source.id)
+
             if not matching_sources:
                 continue
 
@@ -203,6 +214,7 @@ class McpCapabilityHandler:
 
         self._resources = resources
         self._prompts = prompts
+        self._publisher_source_ids = publisher_source_ids
         self._initialized = True
 
     def has_capabilities(self) -> bool:
@@ -328,13 +340,15 @@ class McpCapabilityHandler:
         if tool_name == "resource_search":
             return await self._resource_search(tool_input)
         if tool_name == "load_resource":
-            return await self._load_resource(tool_input)
+            return await self._load_resource(tool_input, context)
         if tool_name == "prompt_search":
             return await self._prompt_search(tool_input)
         if tool_name == "load_prompt":
-            return await self._load_prompt(tool_input)
+            return await self._load_prompt(tool_input, context)
         return ToolResult(
-            content=[{"type": "text", "text": f"Unknown MCP capability tool: {tool_name}"}],
+            content=[
+                {"type": "text", "text": f"Unknown MCP capability tool: {tool_name}"}
+            ],
             is_error=True,
         )
 
@@ -344,12 +358,11 @@ class McpCapabilityHandler:
             return
 
         capabilities = self._capabilities()
-        if not capabilities:
-            return
-
         publish_key = (
             id(self._searcher_client),
-            self._capability_fingerprint(capabilities),
+            self._capability_fingerprint(capabilities)
+            + "|publishers="
+            + ",".join(sorted(self._publisher_source_ids)),
         )
         if publish_key in self._published_capability_keys:
             return
@@ -362,17 +375,18 @@ class McpCapabilityHandler:
                 for capability in capabilities:
                     if not capability.source_id:
                         continue
-                    grouped.setdefault((capability.source_id, capability.capability_type), []).append(
-                        capability
-                    )
-                for (publisher_id, capability_type), group in grouped.items():
-                    await self._searcher_client.sync_capabilities(
-                        CapabilitiesSyncRequest(
-                            publisher_id=publisher_id,
-                            capability_type=capability_type,
-                            capabilities=group,
+                    grouped.setdefault(
+                        (capability.source_id, capability.capability_type), []
+                    ).append(capability)
+                for publisher_id in self._publisher_source_ids:
+                    for capability_type in ("resource", "prompt"):
+                        await self._searcher_client.sync_capabilities(
+                            CapabilitiesSyncRequest(
+                                publisher_id=publisher_id,
+                                capability_type=capability_type,
+                                capabilities=grouped.get((publisher_id, capability_type), []),
+                            )
                         )
-                    )
             except Exception as e:
                 logger.warning(f"Failed to publish MCP capabilities: {e}")
                 return
@@ -387,24 +401,39 @@ class McpCapabilityHandler:
             )
         if not _TOKEN_RE.findall(query.lower()):
             return ToolResult(
-                content=[{"type": "text", "text": f"No searchable tokens in query: {query!r}"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"No searchable tokens in query: {query!r}",
+                    }
+                ],
                 is_error=True,
             )
         limit = self._parse_limit(tool_input.get("limit"))
         matches = await self._search_capabilities("resource", query, limit)
         if not matches:
-            return ToolResult(content=[{"type": "text", "text": f"No MCP resources matched {query!r}."}])
+            return ToolResult(
+                content=[
+                    {"type": "text", "text": f"No MCP resources matched {query!r}."}
+                ]
+            )
 
         lines = [f"Found {len(matches)} MCP resource(s) matching {query!r}:"]
         for record in matches:
             assert isinstance(record, McpResourceRecord)
             desc = f" — {record.description}" if record.description else ""
-            uri_note = " (URI template; pass concrete uri to load_resource)" if record.requires_uri else ""
+            uri_note = (
+                " (URI template; pass concrete uri to load_resource)"
+                if record.requires_uri
+                else ""
+            )
             mime = f" · {record.mime_type}" if record.mime_type else ""
             lines.append(
                 f"- {record.id}: {record.name}{desc} [{record.source_name}/{record.source_type}] uri_template={record.uri_template!r}{mime}{uri_note}"
             )
-        lines.append("Call load_resource with the exact resource_id to read a resource.")
+        lines.append(
+            "Call load_resource with the exact resource_id to read a resource."
+        )
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 
     async def _prompt_search(self, tool_input: dict) -> ToolResult:
@@ -416,13 +445,20 @@ class McpCapabilityHandler:
             )
         if not _TOKEN_RE.findall(query.lower()):
             return ToolResult(
-                content=[{"type": "text", "text": f"No searchable tokens in query: {query!r}"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"No searchable tokens in query: {query!r}",
+                    }
+                ],
                 is_error=True,
             )
         limit = self._parse_limit(tool_input.get("limit"))
         matches = await self._search_capabilities("prompt", query, limit)
         if not matches:
-            return ToolResult(content=[{"type": "text", "text": f"No MCP prompts matched {query!r}."}])
+            return ToolResult(
+                content=[{"type": "text", "text": f"No MCP prompts matched {query!r}."}]
+            )
 
         lines = [f"Found {len(matches)} MCP prompt(s) matching {query!r}:"]
         for record in matches:
@@ -433,7 +469,9 @@ class McpCapabilityHandler:
             lines.append(
                 f"- {record.id}: {record.name}{desc} [{record.source_name}/{record.source_type}]{arg_note}"
             )
-        lines.append("Call load_prompt with the exact prompt_id and any required arguments.")
+        lines.append(
+            "Call load_prompt with the exact prompt_id and any required arguments."
+        )
         return ToolResult(content=[{"type": "text", "text": "\n".join(lines)}])
 
     async def _search_capabilities(
@@ -465,17 +503,26 @@ class McpCapabilityHandler:
             matches.append(record)
         return matches
 
-    async def _load_resource(self, tool_input: dict) -> ToolResult:
+    async def _load_resource(
+        self, tool_input: dict, context: ToolContext
+    ) -> ToolResult:
         resource_id = (tool_input.get("resource_id") or "").strip()
         if not resource_id:
             return ToolResult(
-                content=[{"type": "text", "text": "Missing required parameter: resource_id"}],
+                content=[
+                    {"type": "text", "text": "Missing required parameter: resource_id"}
+                ],
                 is_error=True,
             )
         record = self._resources.get(resource_id)
         if record is None:
             return ToolResult(
-                content=[{"type": "text", "text": f"Unknown or inaccessible MCP resource: {resource_id}"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"Unknown or inaccessible MCP resource: {resource_id}",
+                    }
+                ],
                 is_error=True,
             )
 
@@ -499,20 +546,34 @@ class McpCapabilityHandler:
             tool_input.get("start_line"), tool_input.get("end_line")
         )
         if line_error:
-            return ToolResult(content=[{"type": "text", "text": line_error}], is_error=True)
+            return ToolResult(
+                content=[{"type": "text", "text": line_error}], is_error=True
+            )
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     f"{self._connector_manager_url}/resource",
-                    json={"source_id": record.source_id, "uri": read_uri},
+                    json={
+                        "source_id": record.source_id,
+                        "user_id": context.user_id,
+                        "uri": read_uri,
+                    },
                 )
+                oauth_required = self._oauth_required_result(response, record)
+                if oauth_required is not None:
+                    return oauth_required
                 response.raise_for_status()
                 payload = response.json()
         except Exception as e:
             logger.warning(f"Failed to load MCP resource {resource_id}: {e}")
             return ToolResult(
-                content=[{"type": "text", "text": f"Failed to load MCP resource: {resource_id}"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"Failed to load MCP resource: {resource_id}",
+                    }
+                ],
                 is_error=True,
             )
 
@@ -527,17 +588,24 @@ class McpCapabilityHandler:
             ]
         )
 
-    async def _load_prompt(self, tool_input: dict) -> ToolResult:
+    async def _load_prompt(self, tool_input: dict, context: ToolContext) -> ToolResult:
         prompt_id = (tool_input.get("prompt_id") or "").strip()
         if not prompt_id:
             return ToolResult(
-                content=[{"type": "text", "text": "Missing required parameter: prompt_id"}],
+                content=[
+                    {"type": "text", "text": "Missing required parameter: prompt_id"}
+                ],
                 is_error=True,
             )
         record = self._prompts.get(prompt_id)
         if record is None:
             return ToolResult(
-                content=[{"type": "text", "text": f"Unknown or inaccessible MCP prompt: {prompt_id}"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"Unknown or inaccessible MCP prompt: {prompt_id}",
+                    }
+                ],
                 is_error=True,
             )
 
@@ -545,13 +613,20 @@ class McpCapabilityHandler:
         arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
         if raw_arguments is not None and not isinstance(raw_arguments, dict):
             return ToolResult(
-                content=[{"type": "text", "text": "Prompt arguments must be an object."}],
+                content=[
+                    {"type": "text", "text": "Prompt arguments must be an object."}
+                ],
                 is_error=True,
             )
         missing = self._missing_required_arguments(record.arguments, arguments)
         if missing:
             return ToolResult(
-                content=[{"type": "text", "text": f"Missing required prompt argument(s): {', '.join(missing)}"}],
+                content=[
+                    {
+                        "type": "text",
+                        "text": f"Missing required prompt argument(s): {', '.join(missing)}",
+                    }
+                ],
                 is_error=True,
             )
 
@@ -561,16 +636,22 @@ class McpCapabilityHandler:
                     f"{self._connector_manager_url}/prompt",
                     json={
                         "source_id": record.source_id,
+                        "user_id": context.user_id,
                         "name": record.name,
                         "arguments": arguments or None,
                     },
                 )
+                oauth_required = self._oauth_required_result(response, record)
+                if oauth_required is not None:
+                    return oauth_required
                 response.raise_for_status()
                 payload = response.json()
         except Exception as e:
             logger.warning(f"Failed to load MCP prompt {prompt_id}: {e}")
             return ToolResult(
-                content=[{"type": "text", "text": f"Failed to load MCP prompt: {prompt_id}"}],
+                content=[
+                    {"type": "text", "text": f"Failed to load MCP prompt: {prompt_id}"}
+                ],
                 is_error=True,
             )
 
@@ -581,6 +662,43 @@ class McpCapabilityHandler:
                     "text": self._format_prompt_result(record, payload),
                 }
             ]
+        )
+
+    def _oauth_required_result(
+        self, response: httpx.Response, record: McpResourceRecord | McpPromptRecord
+    ) -> ToolResult | None:
+        if response.status_code != 412:
+            return None
+        body = response.json()
+        provider = body.get("provider")
+        oauth_start_url = body.get("oauth_start_url")
+        if not provider or not oauth_start_url:
+            logger.error(
+                "connector-manager 412 missing provider/oauth_start_url for MCP capability; body=%s",
+                body,
+            )
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            "This MCP capability requires authorization, but the OAuth "
+                            "start URL was not provided by connector-manager."
+                        ),
+                    }
+                ],
+                is_error=True,
+            )
+        payload = OAuthRequiredPayload(
+            source_id=record.source_id,
+            source_type=record.source_type,
+            provider=provider,
+            oauth_start_url=oauth_start_url,
+        )
+        return ToolResult(
+            content=[encode_oauth_required(payload)],
+            is_error=False,
+            oauth_required=payload,
         )
 
     def _capabilities(self) -> list[CapabilityUpsert]:
@@ -675,7 +793,10 @@ class McpCapabilityHandler:
     def _source_allows_read(self, source_id: str) -> bool:
         if self._source_filter is None:
             return True
-        return source_id in self._source_filter and "read" in self._source_filter[source_id]
+        return (
+            source_id in self._source_filter
+            and "read" in self._source_filter[source_id]
+        )
 
     @staticmethod
     def _short_hash(value: str) -> str:
@@ -764,8 +885,14 @@ class McpCapabilityHandler:
             header.append(f"description: {record.description}")
 
         sections: list[str] = ["\n".join(header)]
-        text_items = [item for item in contents if isinstance(item, dict) and isinstance(item.get("text"), str)]
-        blob_items = [item for item in contents if isinstance(item, dict) and "blob" in item]
+        text_items = [
+            item
+            for item in contents
+            if isinstance(item, dict) and isinstance(item.get("text"), str)
+        ]
+        blob_items = [
+            item for item in contents if isinstance(item, dict) and "blob" in item
+        ]
 
         if not text_items:
             if blob_items:
@@ -780,7 +907,11 @@ class McpCapabilityHandler:
         for index, item in enumerate(text_items, start=1):
             text = item["text"]
             item_uri = item.get("uri") if isinstance(item.get("uri"), str) else read_uri
-            mime_type = item.get("mime_type") if isinstance(item.get("mime_type"), str) else record.mime_type
+            mime_type = (
+                item.get("mime_type")
+                if isinstance(item.get("mime_type"), str)
+                else record.mime_type
+            )
             total_bytes = len(text.encode("utf-8"))
             lines = text.split("\n")
             total_lines = len(lines)
@@ -840,7 +971,11 @@ class McpCapabilityHandler:
         messages: list[Any] = []
         if isinstance(payload, dict):
             raw_description = payload.get("description")
-            description = raw_description if isinstance(raw_description, str) else record.description
+            description = (
+                raw_description
+                if isinstance(raw_description, str)
+                else record.description
+            )
             raw_messages = payload.get("messages")
             messages = raw_messages if isinstance(raw_messages, list) else []
 

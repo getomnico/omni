@@ -1,34 +1,9 @@
-import { error, redirect } from '@sveltejs/kit'
+import { error, fail, redirect } from '@sveltejs/kit'
 import type { Actions, PageServerLoad } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { SourceType, type DarwinboxSourceConfig } from '$lib/types'
-
-/** All known Darwinbox read action names. */
-const READ_ACTIONS: string[] = [
-    'find_employee',
-    'get_my_profile',
-    'get_my_leave_balance',
-    'get_my_leave_requests',
-    'get_my_attendance',
-    'get_my_timesheet',
-    'get_holiday_calendar',
-    'list_pending_leave_approvals',
-    'get_team_leave_calendar',
-    'get_team_attendance_exceptions',
-    'get_direct_report_profile',
-    'fetch_report_ids',
-    'run_report',
-]
-
-/** All known Darwinbox write action names. */
-const WRITE_ACTIONS: string[] = [
-    'apply_my_leave',
-    'revoke_my_leave',
-    'regularize_my_attendance',
-    'approve_leave_request',
-    'reject_leave_request',
-]
+import { buildDarwinboxConfig, extractApiError } from '$lib/darwinbox-config'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
@@ -38,10 +13,12 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     return { source }
 }
 
-function csv(value: FormDataEntryValue | null): string[] {
-    return String(value ?? '')
-        .split(',')
-        .map((item) => item.trim())
+function list(form: FormData, name: string): string[] {
+    return form
+        .getAll(name)
+        .map(String)
+        .flatMap((value) => value.split(','))
+        .map((value) => value.trim())
         .filter(Boolean)
 }
 
@@ -51,77 +28,52 @@ export const actions: Actions = {
         const source = await getSourceById(params.sourceId)
         if (!source) throw error(404, 'Source not found')
         if (source.sourceType !== SourceType.DARWINBOX) throw error(400, 'Invalid source type')
-
         const form = await request.formData()
-        const readOnly = form.has('read_only')
-        const participants = csv(form.get('participant_emails'))
-        const allowedActions = readOnly ? READ_ACTIONS : [...READ_ACTIONS, ...WRITE_ACTIONS]
-
         const previous = source.config as DarwinboxSourceConfig
-        const candidate: DarwinboxSourceConfig = {
-            ...previous,
-            read_only: readOnly,
-            employee_scope: {
-                mode: 'include',
-                employee_ids: [],
-            },
-            employee_fields: [
-                'name',
-                'employee_id',
-                'company_email',
-                'department',
-                'designation',
-                'office_location',
-            ],
-            sync_modules: {
-                employee_directory: true,
-                deleted_employees: true,
-                departments: false,
-                designations: false,
-                office_locations: false,
-                business_units: false,
-                divisions: false,
-                cost_centers: false,
-                group_companies: false,
-                positions: false,
-                holidays: false,
-                ats_jobs: false,
-            },
-            action_modules: {
-                employee_self_service: true,
-                manager_workflows: true,
-                hr_operations: false,
-                ats: false,
-                reports: true,
-            },
-            authorization: {
-                actions_enabled: true,
-                write_acknowledged: form.has('write_acknowledged'),
-                participant_emails: participants,
+        try {
+            const candidate = buildDarwinboxConfig(
+                {
+                    baseUrl: previous.base_url,
+                    readOnly: form.has('read_only'),
+                    participantMode:
+                        form.get('participant_mode') === 'allowlist' ? 'allowlist' : 'all',
+                    participantEmails: list(form, 'participant_emails').map((email) =>
+                        email.toLowerCase(),
+                    ),
+                },
+                previous,
+            )
 
-                allowed_actions: allowedActions,
-                allowed_report_ids: [],
-                max_batch_size: 1,
-            },
-        }
-
-        const previousPolicy = { ...(source.config as DarwinboxSourceConfig), read_only: undefined }
-        const nextPolicy = { ...candidate, read_only: undefined }
-        const policyChanged = JSON.stringify(previousPolicy) !== JSON.stringify(nextPolicy)
-        await updateSourceById(source.id, { config: candidate })
-
-        if (policyChanged && source.isActive) {
-            const response = await fetch(`/api/sources/${source.id}/sync`, {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ sync_mode: 'full' }),
-            })
-            if (!response.ok && response.status !== 409) {
-                throw error(
-                    response.status,
-                    'Configuration saved, but full reconciliation failed to start',
-                )
+            const needsSync =
+                JSON.stringify(previous.authorization?.participant_emails) !==
+                JSON.stringify(candidate.authorization?.participant_emails)
+            await updateSourceById(source.id, { config: candidate })
+            if (needsSync && source.isActive) {
+                const response = await fetch(`/api/sources/${source.id}/sync`, {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({ sync_mode: 'full' }),
+                })
+                if (response.status === 409)
+                    return fail(409, {
+                        message:
+                            'Configuration saved, but reconciliation did not start because another sync is active. Retry a full sync after it finishes.',
+                    })
+                if (!response.ok)
+                    return fail(response.status, {
+                        message: await extractApiError(
+                            response,
+                            'Configuration saved, but full reconciliation failed to start',
+                        ),
+                    })
             }
+        } catch (cause) {
+            return fail(400, {
+                message:
+                    cause instanceof Error
+                        ? cause.message
+                        : 'Unable to save Darwinbox configuration',
+            })
         }
         throw redirect(303, '/admin/settings/integrations')
     },

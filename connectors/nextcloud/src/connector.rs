@@ -120,6 +120,7 @@ impl Connector for NextcloudConnector {
                 description: "Verify that the provided Nextcloud credentials are valid".into(),
                 input_schema: json!({}),
                 mode: omni_connector_sdk::ActionMode::Read,
+                required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: false,
@@ -138,6 +139,7 @@ impl Connector for NextcloudConnector {
                     "required": ["file_id"]
                 }),
                 mode: omni_connector_sdk::ActionMode::Read,
+                required_scopes: None,
                 source_types: Vec::new(),
                 // Internal action with no chat-facing use: hidden from every
                 // chat/MCP tool surface, admins included, but still in the

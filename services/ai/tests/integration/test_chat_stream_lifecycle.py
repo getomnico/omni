@@ -17,10 +17,12 @@ which defaults to 15 s.  If the LLM never writes events (e.g. it's gated at
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from unittest.mock import AsyncMock
 
 import pytest
+from anthropic.types import MessageParam
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
@@ -28,12 +30,14 @@ from ulid import ULID
 import db.connection
 import routers.chat as chat_module
 from db import ChatsRepository, MessagesRepository, UsersRepository
+from db.documents import DocumentsRepository
 from db.tool_approvals import (
     ToolApprovalsRepository,
     ToolApprovalStatus,
     ToolApprovalType,
 )
 from routers import chat_router
+from services.compaction import ConversationCompactor
 from state import AppState
 from tests.helpers import (
     GatedRecordingLLM,
@@ -42,6 +46,7 @@ from tests.helpers import (
     stream_sse,
 )
 from tools import SearchResponse, SearchResult, ToolRegistry, ToolResult
+from tools.document_handler import DocumentToolHandler
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.searcher_client import Document
 from tools.searcher_tool import SearcherTool
@@ -85,9 +90,26 @@ def _build_chat_app(
     """Build a minimal test FastAPI app wired to the real Redis client."""
     app = FastAPI()
     app.state = AppState()
-    app.state.models = {model_id: llm_provider}
-    app.state.default_model_id = model_id
-    app.state.secondary_model_id = model_id
+    from provider_cache import ResolvedModel
+
+    async def _resolve_for_model(mid: str):
+        return ResolvedModel(provider=llm_provider, model_record_id=mid, model_name=mid)
+
+    async def _resolve_default():
+        return ResolvedModel(
+            provider=llm_provider, model_record_id=model_id, model_name=model_id
+        )
+
+    async def _resolve_secondary_or_default():
+        return ResolvedModel(
+            provider=llm_provider, model_record_id=model_id, model_name=model_id
+        )
+
+    app.state.provider_cache.resolve_for_model = _resolve_for_model
+    app.state.provider_cache.resolve_default = _resolve_default
+    app.state.provider_cache.resolve_secondary_or_default = (
+        _resolve_secondary_or_default
+    )
     app.state.searcher_tool = SearcherTool()
     app.state.content_storage = None
     app.state.redis_client = redis_client
@@ -184,6 +206,18 @@ async def redis_keys(redis_client) -> None:
 
 def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+def _mention_block(document_id: str, title: str = "Test Doc") -> dict:
+    """Build an omni_mention content block referencing a document."""
+    return {
+        "type": "document",
+        "source": {
+            "type": "omni_mention",
+            "document_id": document_id,
+            "title": title,
+        },
+    }
 
 
 class ScriptedActionHandler:
@@ -841,10 +875,8 @@ class TestLockAndHeartbeat:
         # Wait for the producer task to finish its cleanup
         producer_task = chat_module._run_tasks_by_chat.get(chat_id)
         if producer_task is not None:
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(producer_task, timeout=5)
-            except (asyncio.CancelledError, Exception):
-                pass
 
         event_types = [et for et, _d, _sid in events]
         assert (
@@ -894,6 +926,302 @@ class TestLockAndHeartbeat:
 
 
 # =============================================================================
+# Stream error persistence
+# =============================================================================
+
+
+class TestStreamErrorPersistence:
+    """A failed turn is persisted as an assistant row with the `error` column
+    set, so a page reload still shows the error."""
+
+    @pytest.mark.asyncio
+    async def test_provider_error_persists_error_column(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """ProviderError before any content → a new assistant error row is
+        persisted with empty content and the error payload matching the
+        stream_error SSE event."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "unused")],
+            model_id,
+            fail_on_call=0,
+            fail_exc=ProviderError(
+                "Rate limited",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=429,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        stream_errors = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "stream_error"
+        ]
+        assert stream_errors, f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        failed = db_msgs[-1]
+        assert failed.message["role"] == "assistant"
+        assert failed.error == stream_errors[-1], (
+            f"Persisted error {failed.error} != stream_error payload "
+            f"{stream_errors[-1]}"
+        )
+        assert failed.message["content"] == []
+        # Only the seeded user message + the failed turn are on the active path.
+        assert len(db_msgs) == 2, f"Expected 2 messages, got {len(db_msgs)}"
+
+    @pytest.mark.asyncio
+    async def test_partial_content_before_error_is_finalized_with_error(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Content streamed before a mid-stream failure is persisted on the
+        SAME row as the error (atomic finalize), and the row survives the
+        generator-end cleanup (no empty duplicate row)."""
+        from anthropic.types import (
+            RawContentBlockDeltaEvent,
+            RawContentBlockStartEvent,
+            TextBlock,
+            TextDelta,
+        )
+
+        from providers.types import ProviderError, ProviderType
+        from tests.helpers import message_start_event
+
+        chat_id, _user_id, model_id = seeded_chat
+
+        class PartialThenFailLLM(GatedRecordingLLM):
+            async def stream_response(self, **kwargs):
+                self.calls.append({"kwargs": kwargs})
+                yield message_start_event()
+                yield RawContentBlockStartEvent(
+                    type="content_block_start",
+                    index=0,
+                    content_block=TextBlock(type="text", text=""),
+                )
+                yield RawContentBlockDeltaEvent(
+                    type="content_block_delta",
+                    index=0,
+                    delta=TextDelta(type="text_delta", text="Partial answer"),
+                )
+                raise ProviderError(
+                    "Connection reset mid-stream",
+                    provider_type=ProviderType.ANTHROPIC,
+                    model=model_id,
+                    status_code=500,
+                )
+
+        llm = PartialThenFailLLM([("text", "unused")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assert len(db_msgs) == 2, (
+            f"Expected user + one finalized error row, got {len(db_msgs)} rows"
+        )
+        failed = db_msgs[-1]
+        assert failed.error is not None, "Error column not persisted"
+        assert failed.error["message"] == (
+            "Failed to generate response: Connection reset mid-stream"
+        )
+        text = " ".join(
+            b.get("text", "")
+            for b in failed.message.get("content", [])
+            if b.get("type") == "text"
+        )
+        assert text == "Partial answer", f"Partial content lost: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_tool_loop_error_uses_last_persisted_parent(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """An error in a later iteration after a completed tool-call turn
+        persists a SEPARATE error row whose parent is the last persisted row,
+        not the request-time parent."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "multi-turn"},
+                        "id": "toolu_mt",
+                    },
+                ),
+                ("text", "unused"),
+            ],
+            model_id,
+            fail_on_call=1,
+            fail_exc=ProviderError(
+                "Upstream timeout",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=504,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        failed = db_msgs[-1]
+        assert failed.error is not None, "Error column not persisted"
+        assert failed.error["statusCode"] == 504
+        # The error row's parent is the tool-result row (last persisted row),
+        # not the seeded user message that was the request-time parent.
+        assert failed.parent_id == db_msgs[-2].id
+        assert db_msgs[-2].message["role"] == "user"
+        assert any(
+            b.get("type") == "tool_result"
+            for b in db_msgs[-2].message.get("content", [])
+        ), "Expected a tool_result row between the tool call and the error"
+
+    @pytest.mark.asyncio
+    async def test_pre_stream_failure_persists_error_row(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        """A failure before any streaming (conversation prep) still persists an
+        assistant error row with empty content."""
+        chat_id, _user_id, model_id = seeded_chat
+
+        monkeypatch.setattr(
+            ConversationCompactor,
+            "prepare_chat_conversation",
+            AsyncMock(side_effect=RuntimeError("compaction failed")),
+        )
+
+        llm = GatedRecordingLLM([("text", "unused")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assert len(db_msgs) == 2, f"Expected user + error row, got {len(db_msgs)}"
+        failed = db_msgs[-1]
+        assert failed.message["role"] == "assistant"
+        assert failed.message["content"] == []
+        assert failed.error is not None
+        assert "compaction failed" in failed.error["message"]
+
+    @pytest.mark.asyncio
+    async def test_tool_execution_error_after_finalized_row_persists_error(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        """An exception during tool execution (after the tool-call assistant
+        row was finalized) still persists a dedicated error row."""
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "boom"},
+                        "id": "toolu_boom",
+                    },
+                ),
+            ],
+            model_id,
+        )
+
+        async def _raising_execute(*args, **kwargs):
+            raise RuntimeError("tool execution crashed")
+
+        monkeypatch.setattr(ToolRegistry, "execute", _raising_execute)
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        failed = db_msgs[-1]
+        assert failed.error is not None, "Error column not persisted"
+        assert "tool execution crashed" in failed.error["message"]
+        # The tool-call assistant row from the finalized turn is still present,
+        # and the error row follows it as the new leaf.
+        assert any(
+            any(
+                isinstance(b, dict) and b.get("type") == "tool_use"
+                for b in (m.message.get("content") if isinstance(m.message.get("content"), list) else [])
+            )
+            for m in db_msgs
+        ), "Expected the tool-call assistant row to remain"
+
+    @pytest.mark.asyncio
+    async def test_resume_after_error_does_not_duplicate_error_row(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Replaying the buffered run after a stream_error does not duplicate
+        the persisted error row."""
+        from providers.types import ProviderError, ProviderType
+
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("text", "unused")],
+            model_id,
+            fail_on_call=0,
+            fail_exc=ProviderError(
+                "boom",
+                provider_type=ProviderType.ANTHROPIC,
+                model=model_id,
+                status_code=500,
+            ),
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected stream_error, got events: {events}"
+
+        # Replay the buffered run from just past its first id-carrying event.
+        replay_from = next((sid for _et, _d, sid in events if sid), None)
+        assert replay_from, "First event should carry an SSE id for resume"
+        async with _client(app) as client:
+            replay_events = await collect_sse_events(
+                client, chat_id, headers={"Last-Event-ID": replay_from}
+            )
+        assert any(
+            event_type == "stream_error" for event_type, _d, _sid in replay_events
+        ), f"Replay did not deliver terminal, got: {replay_events}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        error_rows = [m for m in db_msgs if m.error is not None]
+        assert len(error_rows) == 1, (
+            f"Expected exactly one error row after replay, got {len(error_rows)}"
+        )
+
+
+# =============================================================================
 # /chat/{id}/stream/status with pending approval
 # =============================================================================
 
@@ -915,7 +1243,7 @@ class TestStreamStatusPending:
         parent_id = active[-1].id
 
         tool_use_id = "toolu_for_approval"
-        assistant_msg = await msgs_repo.create(
+        await msgs_repo.create(
             chat_id,
             {
                 "role": "assistant",
@@ -970,10 +1298,11 @@ class TestPartialAssistant:
     def test_partial_assistant_strips_empty_text_blocks(self):
         """Empty text blocks are removed; non-empty text blocks are kept.
         Tool inputs with string JSON are parsed to dict."""
+        from anthropic.types import TextBlockParam, ToolUseBlockParam
+
         from streaming.persist import (
             partial_assistant_message as _partial_assistant_message,
         )
-        from anthropic.types import TextBlockParam, ToolUseBlockParam
 
         blocks: list[TextBlockParam | ToolUseBlockParam] = [
             TextBlockParam(type="text", text="   "),  # stripped
@@ -996,10 +1325,11 @@ class TestPartialAssistant:
 
     def test_partial_assistant_returns_none_when_all_blocks_empty(self):
         """All-empty blocks → returns None."""
+        from anthropic.types import TextBlockParam
+
         from streaming.persist import (
             partial_assistant_message as _partial_assistant_message,
         )
-        from anthropic.types import TextBlockParam
 
         result = _partial_assistant_message(
             [
@@ -1011,10 +1341,11 @@ class TestPartialAssistant:
 
     def test_partial_assistant_parses_empty_tool_input(self):
         """Empty string tool input becomes empty dict."""
+        from anthropic.types import ToolUseBlockParam
+
         from streaming.persist import (
             partial_assistant_message as _partial_assistant_message,
         )
-        from anthropic.types import ToolUseBlockParam
 
         result = _partial_assistant_message(
             [
@@ -1470,13 +1801,11 @@ class TestEmptyRowDelete:
     empty assistant row is deleted from the DB."""
 
     @pytest.mark.asyncio
-    async def test_early_cancel_deletes_empty_assistant_row(
+    async def test_early_cancel_does_not_persist_empty_assistant(
         self, seeded_chat, redis_client, redis_keys
     ):
-        """LLM yields ``message_start`` (which triggers an early-persisted
-        assistant row), then cancel fires before any content block.  The
-        empty row should be deleted, leaving zero assistant rows in the DB
-        for this chat."""
+        """Cancel after ``message_start`` but before content leaves no empty
+        assistant event or database row."""
         import routers.chat as chat_module
 
         chat_id, _user_id, model_id = seeded_chat
@@ -1504,16 +1833,14 @@ class TestEmptyRowDelete:
         # Wait for the producer task to finish its cleanup
         producer_task = chat_module._run_tasks_by_chat.get(chat_id)
         if producer_task is not None:
-            try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.wait_for(producer_task, timeout=5)
-            except (asyncio.CancelledError, Exception):
-                pass
 
         event_types = [et for et, _d, _sid in events]
-        # Should only have message_start + end_of_stream, no content
+        # The pending message_start is suppressed because no content arrived.
         msg_count = sum(1 for et, _, _ in events if et == "message")
-        assert msg_count == 1, (
-            f"Expected 1 message event (message_start), got {msg_count}. "
+        assert msg_count == 0, (
+            f"Expected no message events, got {msg_count}. "
             f"Event types: {event_types}"
         )
 
@@ -1661,13 +1988,102 @@ class TestMultiTurn:
         user_with_tool_result = None
         for um in user_msgs:
             content = um.message.get("content", [])
-            if isinstance(content, list):
-                if any(b.get("type") == "tool_result" for b in content):
-                    user_with_tool_result = um
-                    break
+            if isinstance(content, list) and any(
+                b.get("type") == "tool_result" for b in content
+            ):
+                user_with_tool_result = um
+                break
         assert user_with_tool_result is not None, (
             "No user message with tool_result found. " "Tool was not executed."
         )
+
+    @pytest.mark.asyncio
+    async def test_thinking_block_keeps_tool_use_index_aligned(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """claude-sonnet-5 streams an extended-thinking block before the
+        tool_use, shifting the tool_use (and its input deltas) to index 1.
+
+        Regression for the Anthropic 400 ``messages.1.content.1.tool_use.id``
+        failure: the stream handler must account for the thinking block, or
+        the tool input deltas land on a synthesized ``tool_use`` with an
+        empty id that gets persisted and replayed to the API.
+        """
+        chat_id, _user_id, model_id = seeded_chat
+
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "thinking_tool_call",
+                    {
+                        "name": "search_documents",
+                        "input": {"query": "leave balance"},
+                        "id": "toolu_think123",
+                    },
+                ),
+                ("text", "Here is your leave balance."),
+            ],
+            model_id,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(
+            et in ("end_of_stream", "stream_error") for et, _, _ in events
+        ), "No terminal event"
+        assert not any(
+            et == "stream_error" for et, _, _ in events
+        ), f"Stream errored: {[e for e in events if e[0] == 'stream_error']}"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert len(assistant_msgs) == 2, (
+            f"Expected 2 assistant msgs (tool turn + text turn), "
+            f"got {len(assistant_msgs)}"
+        )
+
+        # The tool turn must contain exactly one tool_use with the real id
+        # and full input — never a synthesized block with an empty id.
+        tool_turn = assistant_msgs[0]
+        tool_uses = [
+            b
+            for b in tool_turn.message.get("content", [])
+            if b.get("type") == "tool_use"
+        ]
+        assert len(tool_uses) == 1, f"Expected exactly 1 tool_use, got {tool_uses}"
+        assert tool_uses[0]["id"] == "toolu_think123", tool_uses[0]
+        assert tool_uses[0]["input"] == {"query": "leave balance"}, tool_uses[0]
+
+        # The thinking block (with its signature) is preserved so Anthropic
+        # can continue the extended-thinking tool-use turn on replay.
+        thinking_blocks = [
+            b
+            for b in tool_turn.message.get("content", [])
+            if b.get("type") == "thinking"
+        ]
+        assert (
+            len(thinking_blocks) == 1
+        ), f"Expected 1 thinking block, got {thinking_blocks}"
+        assert thinking_blocks[0]["signature"] == "sig_test_abc"
+
+        # The second LLM request's history must not contain an empty-id
+        # tool_use, and must still reference the original tool_use id.
+        second_call_messages = llm.calls[1]["messages"]
+        history_tool_uses = [
+            b
+            for m in second_call_messages
+            if isinstance(m.get("content"), list)
+            for b in m["content"]
+            if b.get("type") == "tool_use"
+        ]
+        assert all(
+            tu["id"] for tu in history_tool_uses
+        ), f"Found tool_use with empty id in request history: {history_tool_uses}"
+        assert any(
+            tu["id"] == "toolu_think123" for tu in history_tool_uses
+        ), f"Original tool_use id missing from request history: {history_tool_uses}"
 
 
 # =============================================================================
@@ -2508,3 +2924,401 @@ class TestStandaloneEndpoints:
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
         assert assistant_msgs, "No assistant message persisted after retry"
+
+    @pytest.mark.asyncio
+    async def test_empty_provider_response_retries_once(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """Retry an empty provider turn without exposing its text envelope."""
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [("empty_text", None), ("text", "Recovered after an empty response.")],
+            model_id,
+        )
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert any(et == "end_of_stream" for et, _, _ in events)
+        message_payloads = [
+            json.loads(data)
+            for event_type, data, _ in events
+            if event_type == "message"
+        ]
+        assert (
+            sum(payload["type"] == "message_start" for payload in message_payloads) == 1
+        )
+        assert len(llm.calls) == 2
+        retry_messages = llm.calls[1]["messages"]
+        assert retry_messages[-1] == {
+            "role": "user",
+            "content": (
+                "Continue the original request. If the last result discovered or "
+                "loaded a tool, call the appropriate available tool now. Do not stop "
+                "without either making the next tool call or giving the user a clear "
+                "explanation."
+            ),
+        }
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assistant_msgs = [m for m in db_msgs if m.message["role"] == "assistant"]
+        assert len(assistant_msgs) == 1
+        text = " ".join(
+            block["text"]
+            for block in assistant_msgs[0].message["content"]
+            if block.get("type") == "text"
+        )
+        assert text == "Recovered after an empty response."
+
+
+# =============================================================================
+# Mention expansion via streaming path
+# =============================================================================
+
+
+class TestMentionExpansion:
+    """End-to-end mention expansion through the real streaming path.
+
+    Verifies ``expand_mentions`` is wired into ``StreamChatHandler`` and that
+    expanded content (mention label + document text) reaches the provider
+    request.  Permission denials are handled gracefully.
+    """
+
+    async def _cleanup_extra_rows(
+        self, db_pool, source_id: str, content_id: str | None = None
+    ):
+        """Delete source (cascades to documents) and content_blobs before
+        ``seeded_chat`` teardown deletes the user."""
+        async with db_pool.acquire() as conn:
+            if content_id:
+                await conn.execute(
+                    "DELETE FROM content_blobs WHERE id = $1", content_id
+                )
+            await conn.execute("DELETE FROM sources WHERE id = $1", source_id)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_expands_mention_into_provider_request(
+        self, seeded_chat, db_pool, redis_client, redis_keys
+    ):
+        """Seed a public doc + content_blobs; leaf user message has an
+        omni_mention block.  Stream terminates cleanly and the provider sees
+        the mention label + document text."""
+        chat_id, user_id, model_id = seeded_chat
+
+        source_id = str(ULID())
+        doc_id = str(ULID())
+        content_id = str(ULID())
+        document_text = "Detailed analysis of Q3 revenue growth across all segments."
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sources (id, name, source_type, created_by) "
+                "VALUES ($1, $2, $3, $4)",
+                source_id,
+                "test-source",
+                "google_drive",
+                user_id,
+            )
+            content_bytes = document_text.encode("utf-8")
+            await conn.execute(
+                "INSERT INTO content_blobs (id, content, size_bytes, storage_backend) "
+                "VALUES ($1, $2, $3, 'postgres')",
+                content_id,
+                content_bytes,
+                len(content_bytes),
+            )
+            await conn.execute(
+                "INSERT INTO documents (id, source_id, external_id, title, content, "
+                "permissions, content_type, content_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+                doc_id,
+                source_id,
+                f"ext-{doc_id}",
+                "Q3 Report",
+                document_text,
+                json.dumps({"public": True, "users": [], "groups": []}),
+                "text/plain",
+                content_id,
+            )
+
+        msgs = await MessagesRepository().get_active_path(chat_id)
+        user_msg = next(m for m in msgs if m.message["role"] == "user")
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": [
+                            _mention_block(doc_id, "Q3 Report"),
+                            {"type": "text", "text": "What were the key results?"},
+                        ],
+                    }
+                ),
+                user_msg.id,
+            )
+
+        mock_storage = AsyncMock()
+        mock_storage.get_text = AsyncMock(return_value=document_text)
+
+        llm = GatedRecordingLLM([("text", "Here are the key results.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        app.state.content_storage = mock_storage
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        try:
+            terminal = [
+                (e[0], e[1])
+                for e in events
+                if e[0] in ("end_of_stream", "stream_error")
+            ]
+            assert terminal, "Expected a terminal event"
+            assert (
+                terminal[-1][0] == "end_of_stream"
+            ), f"Unexpected terminal: {terminal[-1]}"
+
+            assert len(llm.calls) >= 1, "Expected at least 1 LLM call"
+            provider_messages = llm.calls[0]["messages"]
+            user_msgs = [m for m in provider_messages if m["role"] == "user"]
+            assert user_msgs, "Expected at least one user message in provider request"
+            last_user = user_msgs[-1]
+            content = last_user["content"]
+            assert isinstance(
+                content, list
+            ), f"Expected list content, got {type(content)}"
+
+            text_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            label_text = " ".join(b.get("text", "") for b in text_blocks)
+            assert (
+                'Mentioned document: "Q3 Report"' in label_text
+            ), f"Mention label missing. Text blocks: {text_blocks}"
+            assert (
+                f"[_ref:{doc_id}]" in label_text
+            ), f"Document ref missing. Text blocks: {text_blocks}"
+
+            doc_blocks = [
+                b
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "document"
+            ]
+            if doc_blocks:
+                src = doc_blocks[0].get("source", {})
+                if isinstance(src, dict) and src.get("type") == "text":
+                    assert document_text in src.get(
+                        "data", ""
+                    ), "Document text not found in expanded document block"
+        finally:
+            await self._cleanup_extra_rows(db_pool, source_id, content_id)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_mention_permission_denial_does_not_break_stream(
+        self, seeded_chat, db_pool, redis_client, redis_keys
+    ):
+        """Private doc the chat user cannot access → mention resolves to error
+        note.  Stream still terminates cleanly (no 500)."""
+        chat_id, user_id, model_id = seeded_chat
+
+        source_id = str(ULID())
+        doc_id = str(ULID())
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sources (id, name, source_type, created_by) "
+                "VALUES ($1, $2, $3, $4)",
+                source_id,
+                "test-source",
+                "google_drive",
+                user_id,
+            )
+            await conn.execute(
+                "INSERT INTO documents (id, source_id, external_id, title, content, "
+                "permissions, content_type) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)",
+                doc_id,
+                source_id,
+                f"ext-{doc_id}",
+                "Confidential",
+                "secret content",
+                json.dumps(
+                    {
+                        "public": False,
+                        "users": ["someone-else@x.com"],
+                        "groups": [],
+                    }
+                ),
+                "text/plain",
+            )
+
+        msgs = await MessagesRepository().get_active_path(chat_id)
+        user_msg = next(m for m in msgs if m.message["role"] == "user")
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": [
+                            _mention_block(doc_id, "Confidential"),
+                            {"type": "text", "text": "Read this?"},
+                        ],
+                    }
+                ),
+                user_msg.id,
+            )
+
+        llm = GatedRecordingLLM([("text", "I cannot access that document.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        # content_storage stays None — permission failure happens at the
+        # DocumentsRepository layer before storage is touched.
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        try:
+            terminal = [
+                (e[0], e[1])
+                for e in events
+                if e[0] in ("end_of_stream", "stream_error")
+            ]
+            assert terminal, "Expected a terminal event"
+            assert (
+                terminal[-1][0] == "end_of_stream"
+            ), f"Unexpected terminal: {terminal[-1]}"
+
+            assert len(llm.calls) >= 1, "Expected at least 1 LLM call"
+            provider_messages = llm.calls[0]["messages"]
+            user_msgs = [m for m in provider_messages if m["role"] == "user"]
+            assert user_msgs, "Expected at least one user message"
+            last_user = user_msgs[-1]
+            content = last_user["content"]
+            assert isinstance(content, list)
+
+            text_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            label_text = " ".join(b.get("text", "") for b in text_blocks)
+            assert "could not be loaded" in label_text, (
+                f"Expected 'could not be loaded' in provider messages. "
+                f"Text: {label_text}"
+            )
+        finally:
+            await self._cleanup_extra_rows(db_pool, source_id)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_mention_expansion_across_providers(
+        self, seeded_chat, db_pool, redis_client, redis_keys
+    ):
+        """Same setup as #1, verifying the expanded content reaches the
+        provider request.  OpenAI/Bedrock/Gemini all share
+        ``extract_text_document`` (unit-tested separately in
+        ``test_anthropic_message_adapter``); this test proves the streaming
+        path wires mention expansion before the provider adapter."""
+        chat_id, user_id, model_id = seeded_chat
+
+        source_id = str(ULID())
+        doc_id = str(ULID())
+        content_id = str(ULID())
+        document_text = "Cross-provider document content for verification."
+
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO sources (id, name, source_type, created_by) "
+                "VALUES ($1, $2, $3, $4)",
+                source_id,
+                "test-source",
+                "google_drive",
+                user_id,
+            )
+            content_bytes = document_text.encode("utf-8")
+            await conn.execute(
+                "INSERT INTO content_blobs (id, content, size_bytes, storage_backend) "
+                "VALUES ($1, $2, $3, 'postgres')",
+                content_id,
+                content_bytes,
+                len(content_bytes),
+            )
+            await conn.execute(
+                "INSERT INTO documents (id, source_id, external_id, title, content, "
+                "permissions, content_type, content_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+                doc_id,
+                source_id,
+                f"ext-{doc_id}",
+                "Provider Doc",
+                document_text,
+                json.dumps({"public": True, "users": [], "groups": []}),
+                "text/plain",
+                content_id,
+            )
+
+        msgs = await MessagesRepository().get_active_path(chat_id)
+        user_msg = next(m for m in msgs if m.message["role"] == "user")
+        async with db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE chat_messages SET message = $1::jsonb WHERE id = $2",
+                json.dumps(
+                    {
+                        "role": "user",
+                        "content": [
+                            _mention_block(doc_id, "Provider Doc"),
+                            {"type": "text", "text": "Summarize."},
+                        ],
+                    }
+                ),
+                user_msg.id,
+            )
+
+        mock_storage = AsyncMock()
+        mock_storage.get_text = AsyncMock(return_value=document_text)
+
+        llm = GatedRecordingLLM([("text", "Summary.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        app.state.content_storage = mock_storage
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        try:
+            assert any(
+                et in ("end_of_stream", "stream_error") for et, _, _ in events
+            ), "No terminal event"
+
+            assert len(llm.calls) >= 1
+            provider_messages = llm.calls[0]["messages"]
+            user_msgs = [m for m in provider_messages if m["role"] == "user"]
+            last_user = user_msgs[-1]
+            content = last_user["content"]
+            assert isinstance(content, list)
+
+            # Verify mention label is present as a text block
+            text_blocks = [
+                b for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            label_text = " ".join(b.get("text", "") for b in text_blocks)
+            assert "Mentioned document" in label_text, "Mention label not found"
+
+            # Check the document text is present somewhere in the provider-visible
+            # content — either as plain text from a document block (which
+            # ``extract_text_document`` converts) or directly in a text block.
+            doc_blocks = [
+                b
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "document"
+            ]
+            all_text = label_text
+            for db in doc_blocks:
+                src = db.get("source", {})
+                if isinstance(src, dict) and src.get("type") == "text":
+                    all_text += " " + src.get("data", "")
+
+            assert document_text in all_text, (
+                f"Document text not found in provider messages. "
+                f"All text: {all_text[:300]}"
+            )
+        finally:
+            await self._cleanup_extra_rows(db_pool, source_id, content_id)

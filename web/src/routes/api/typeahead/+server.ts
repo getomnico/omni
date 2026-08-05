@@ -14,6 +14,7 @@ export const GET: RequestHandler = async ({ fetch, locals, url }) => {
         const typeaheadUrl = new URL(`${env.SEARCHER_URL}/typeahead`)
         typeaheadUrl.searchParams.set('q', query)
         typeaheadUrl.searchParams.set('limit', limit)
+        typeaheadUrl.searchParams.set('user_id', locals.user.id)
 
         const response = await fetch(typeaheadUrl.toString())
 

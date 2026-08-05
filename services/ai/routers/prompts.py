@@ -7,40 +7,35 @@ from fastapi.responses import StreamingResponse
 
 from schemas import PromptRequest, PromptResponse
 from providers import LLMProvider
+from provider_cache import ResolvedModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["prompts"])
 
 
-def _get_default_llm_provider(request: Request) -> LLMProvider | None:
-    """Return the default LLM provider from app.state.models."""
-    models = getattr(request.app.state, "models", None)
-    if not models:
+async def _get_default_llm_provider(request: Request) -> ResolvedModel | None:
+    """Return the default LLM provider from the database."""
+    cache = getattr(request.app.state, "provider_cache", None)
+    if cache is None:
         return None
-    default_id = getattr(request.app.state, "default_model_id", None)
-    if default_id and default_id in models:
-        return models[default_id]
-    return next(iter(models.values()), None)
+    return await cache.resolve_default()
 
 
-def _get_secondary_llm_provider(request: Request) -> LLMProvider | None:
+async def _get_secondary_llm_provider(request: Request) -> ResolvedModel | None:
     """Return the secondary (lightweight) LLM provider, falling back to default."""
-    models = getattr(request.app.state, "models", None)
-    if not models:
+    cache = getattr(request.app.state, "provider_cache", None)
+    if cache is None:
         return None
-    secondary_id = getattr(request.app.state, "secondary_model_id", None)
-    if secondary_id and secondary_id in models:
-        return models[secondary_id]
-    return _get_default_llm_provider(request)
+    return await cache.resolve_secondary_or_default()
 
 
 @router.post("/prompt")
 async def generate_response(request: Request, body: PromptRequest):
     """Generate a response from the configured LLM provider with streaming support."""
-    llm_provider = _get_default_llm_provider(request)
-    if not llm_provider:
+    resolved = await _get_default_llm_provider(request)
+    if not resolved:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
-
+    llm_provider = resolved.provider
     logger.info(
         f"Generating response for prompt: {body.prompt[:50]}... (stream={body.stream})"
     )
@@ -55,8 +50,7 @@ async def generate_response(request: Request, body: PromptRequest):
             async for event in llm_provider.stream_response(
                 body.prompt,
                 max_tokens=body.max_tokens,
-                temperature=body.temperature,
-                top_p=body.top_p,
+                model=resolved.model_name,
             ):
                 # Extract text content from MessageStreamEvent
                 if event.type == "content_block_delta":
@@ -77,16 +71,15 @@ async def _generate_non_streaming_response(
     request: Request, body: PromptRequest
 ) -> PromptResponse:
     """Generate non-streaming response using the secondary (lightweight) model."""
-    llm_provider = _get_secondary_llm_provider(request)
-    if not llm_provider:
+    resolved = await _get_secondary_llm_provider(request)
+    if not resolved:
         raise HTTPException(status_code=500, detail="LLM provider not initialized")
-
+    llm_provider = resolved.provider
     try:
         generated_text, _ = await llm_provider.generate_response(
             body.prompt,
             max_tokens=body.max_tokens,
-            temperature=body.temperature,
-            top_p=body.top_p,
+            model=resolved.model_name,
         )
 
         logger.info(f"Successfully generated response of length: {len(generated_text)}")

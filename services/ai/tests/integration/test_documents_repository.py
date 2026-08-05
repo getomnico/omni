@@ -7,7 +7,7 @@ document access based on public/users/groups, using a real ParadeDB instance.
 import pytest
 
 from db.documents import DocumentsRepository
-from tests.helpers import create_test_user, create_test_source, create_test_document
+from tests.helpers import create_test_document, create_test_source, create_test_user
 
 pytestmark = pytest.mark.integration
 
@@ -66,11 +66,33 @@ class TestGetByIdPermissionFilter:
         assert await repo.get_by_id(doc_id, user_email="bob@co.com") is None
 
     @pytest.mark.asyncio
-    async def test_user_in_groups_list(self, db_pool, user_id, repo):
+    async def test_user_in_resolved_group(self, db_pool, user_id, repo):
         doc_id = await _doc(
             db_pool, user_id, {"public": False, "users": [], "groups": ["eng@co.com"]}
         )
-        assert await repo.get_by_id(doc_id, user_email="eng@co.com") is not None
+        assert (
+            await repo.get_by_id(
+                doc_id,
+                user_email="alice@co.com",
+                user_groups=["eng@co.com"],
+            )
+            is not None
+        )
+
+    @pytest.mark.asyncio
+    async def test_domain_grant(self, db_pool, user_id, repo):
+        doc_id = await _doc(
+            db_pool, user_id, {"public": False, "users": [], "groups": ["co.com"]}
+        )
+        assert await repo.get_by_id(doc_id, user_email="alice@co.com") is not None
+
+    @pytest.mark.asyncio
+    async def test_permission_value_with_apostrophe(self, db_pool, user_id, repo):
+        email = "o'connor@example.com"
+        doc_id = await _doc(
+            db_pool, user_id, {"public": False, "users": [email], "groups": []}
+        )
+        assert await repo.get_by_id(doc_id, user_email=email) is not None
 
     @pytest.mark.asyncio
     async def test_user_not_in_groups_list(self, db_pool, user_id, repo):
@@ -78,6 +100,38 @@ class TestGetByIdPermissionFilter:
             db_pool, user_id, {"public": False, "users": [], "groups": ["eng@co.com"]}
         )
         assert await repo.get_by_id(doc_id, user_email="sales@co.com") is None
+
+    @pytest.mark.asyncio
+    async def test_soft_deleted_source_is_denied_even_without_acl_filter(
+        self, db_pool, user_id, repo
+    ):
+        doc_id = await _doc(
+            db_pool, user_id, {"public": True, "users": [], "groups": []}
+        )
+        await db_pool.execute(
+            "UPDATE sources SET is_deleted = true WHERE id = (SELECT source_id FROM documents WHERE id = $1)",
+            doc_id,
+        )
+        assert await repo.get_by_id(doc_id, user_email="alice@co.com") is None
+        assert await repo.get_by_id(doc_id) is None
+
+    @pytest.mark.asyncio
+    async def test_external_id_uses_same_permission_filter(self, db_pool, user_id, repo):
+        doc_id = await _doc(
+            db_pool, user_id, {"public": False, "users": [], "groups": ["eng@co.com"]}
+        )
+        external_id = await db_pool.fetchval(
+            "SELECT external_id FROM documents WHERE id = $1", doc_id
+        )
+        assert (
+            await repo.get_by_external_id(
+                external_id,
+                user_email="alice@co.com",
+                user_groups=["eng@co.com"],
+            )
+            is not None
+        )
+        assert await repo.get_by_external_id(external_id, user_email="bob@other.com") is None
 
     @pytest.mark.asyncio
     async def test_nonexistent_doc_returns_none(self, repo):

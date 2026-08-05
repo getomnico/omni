@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use spider::configuration::{SpiderCloudConfig, SpiderCloudMode};
 use spider::website::Website;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +32,58 @@ fn default_respect_robots() -> bool {
     true
 }
 
+/// Parse a `SPIDER_CLOUD_MODE` value.
+///
+/// Defaults to [`SpiderCloudMode::Smart`] for anything unrecognized so a typo
+/// degrades to the most reliable mode instead of failing a sync. `Smart`
+/// proxies every request and automatically escalates to the unblocker API when
+/// bot protection is detected.
+fn parse_spider_cloud_mode(mode: &str) -> SpiderCloudMode {
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "proxy" => SpiderCloudMode::Proxy,
+        "api" => SpiderCloudMode::Api,
+        "unblocker" => SpiderCloudMode::Unblocker,
+        "fallback" => SpiderCloudMode::Fallback,
+        _ => SpiderCloudMode::Smart,
+    }
+}
+
+/// Process-wide Spider Cloud config, resolved from the environment exactly once.
+///
+/// The environment is fixed at startup (`dotenv` runs in `main`), so this is
+/// read on the first crawl and reused afterwards — no per-crawl `env::var`
+/// lock and allocation.
+static SPIDER_CLOUD: std::sync::OnceLock<Option<SpiderCloudConfig>> = std::sync::OnceLock::new();
+
+/// Resolved Spider Cloud config, or `None` when the integration is not enabled.
+fn spider_cloud() -> Option<&'static SpiderCloudConfig> {
+    SPIDER_CLOUD.get_or_init(spider_cloud_from_env).as_ref()
+}
+
+/// Build a [`SpiderCloudConfig`] from the environment.
+///
+/// Returns `None` unless `SPIDER_CLOUD_API_KEY` is set to a non-empty value,
+/// which keeps crawling on the existing direct-fetch path by default.
+fn spider_cloud_from_env() -> Option<SpiderCloudConfig> {
+    let api_key = std::env::var("SPIDER_CLOUD_API_KEY").ok()?;
+    let api_key = api_key.trim();
+
+    if api_key.is_empty() {
+        return None;
+    }
+
+    let mode = std::env::var("SPIDER_CLOUD_MODE").unwrap_or_default();
+    let mut cloud = SpiderCloudConfig::new(api_key).with_mode(parse_spider_cloud_mode(&mode));
+
+    if let Ok(api_url) = std::env::var("SPIDER_CLOUD_API_URL") {
+        if !api_url.trim().is_empty() {
+            cloud = cloud.with_api_url(api_url.trim());
+        }
+    }
+
+    Some(cloud)
+}
+
 impl WebSourceConfig {
     pub fn from_json(config: &serde_json::Value) -> Result<Self> {
         serde_json::from_value(config.clone()).context("Failed to parse web source configuration")
@@ -55,6 +108,17 @@ impl WebSourceConfig {
             for pattern in &self.blacklist_patterns {
                 website.with_blacklist_url(Some(vec![pattern.as_str().into()]));
             }
+        }
+
+        // Opt-in only: without SPIDER_CLOUD_API_KEY this is a no-op and the
+        // crawl uses the same direct-fetch path as before.
+        if let Some(cloud) = spider_cloud() {
+            tracing::info!(
+                "Spider Cloud enabled ({:?}) for {}",
+                cloud.mode,
+                self.root_url
+            );
+            website.with_spider_cloud_config(cloud.clone());
         }
 
         Ok(website)
@@ -139,5 +203,24 @@ mod tests {
             .expect("max_pages should configure a crawl budget");
 
         assert_eq!(budget.get(&CaseInsensitiveString::from("*")), Some(&42));
+    }
+  
+    fn test_parse_spider_cloud_mode() {
+        assert_eq!(parse_spider_cloud_mode("proxy"), SpiderCloudMode::Proxy);
+        assert_eq!(parse_spider_cloud_mode("api"), SpiderCloudMode::Api);
+        assert_eq!(
+            parse_spider_cloud_mode("unblocker"),
+            SpiderCloudMode::Unblocker
+        );
+        assert_eq!(
+            parse_spider_cloud_mode("fallback"),
+            SpiderCloudMode::Fallback
+        );
+        assert_eq!(parse_spider_cloud_mode("smart"), SpiderCloudMode::Smart);
+        assert_eq!(parse_spider_cloud_mode(" SMART "), SpiderCloudMode::Smart);
+
+        // Unrecognized values degrade to the most reliable mode.
+        assert_eq!(parse_spider_cloud_mode(""), SpiderCloudMode::Smart);
+        assert_eq!(parse_spider_cloud_mode("nonsense"), SpiderCloudMode::Smart);
     }
 }

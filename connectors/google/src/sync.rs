@@ -1,11 +1,12 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use dashmap::DashMap;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use omni_connector_sdk::SyncContext;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
-use std::sync::Arc;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
@@ -82,6 +83,14 @@ fn google_drive_max_download_bytes() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|bytes| *bytes > 0)
         .unwrap_or(DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES)
+}
+
+fn drive_scope_requires_full_sync(
+    sync_type: SyncType,
+    stored_fingerprint: Option<&str>,
+    current_fingerprint: &str,
+) -> bool {
+    sync_type != SyncType::Incremental || stored_fingerprint != Some(current_fingerprint)
 }
 
 fn google_webhook_debounce_duration_ms() -> u64 {
@@ -266,7 +275,7 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, GoogleOAuthCredentials, OAuthAuth, google_max_retries};
+use crate::auth::{google_max_retries, GoogleAuth, GoogleOAuthCredentials, OAuthAuth};
 use crate::cache::LruFolderCache;
 use crate::chat::{
     ChatClient, GoogleChatAttachmentSource, GoogleChatMessage, GoogleChatSpace,
@@ -276,9 +285,9 @@ use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
-    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
-    WebhookNotification, mime_type_to_content_type,
+    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint,
+    GoogleChatSpaceCheckpoint, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
+    WebhookChannel, WebhookChannelResponse, WebhookNotification,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -444,12 +453,11 @@ impl GoogleChatSegment {
         extra.insert("message_count".to_string(), json!(self.messages.len()));
         extra.insert(
             "message_names".to_string(),
-            json!(
-                self.messages
-                    .iter()
-                    .map(|m| m.name.clone())
-                    .collect::<Vec<_>>()
-            ),
+            json!(self
+                .messages
+                .iter()
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>()),
         );
         extra.insert("thread_names".to_string(), json!(self.thread_names()));
         extra.insert(
@@ -499,11 +507,10 @@ impl GoogleChatSegment {
         let mut attrs = HashMap::new();
         attrs.insert(
             "space".to_string(),
-            json!(
-                self.space_display_name
-                    .as_deref()
-                    .unwrap_or(&self.space_name)
-            ),
+            json!(self
+                .space_display_name
+                .as_deref()
+                .unwrap_or(&self.space_name)),
         );
         attrs.insert("space_id".to_string(), json!(self.space_name));
         attrs.insert("threads".to_string(), json!(self.thread_names()));
@@ -984,7 +991,10 @@ impl SyncManager {
         // mid-sync.
         let existing_state = existing_state.unwrap_or_default();
 
-        let result = match source.source_type {
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+
+        let result = match native_source_type {
             SourceType::GoogleDrive => {
                 self.sync_drive_source_internal(
                     source,
@@ -1020,7 +1030,7 @@ impl SyncManager {
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
         };
 
-        if result.is_ok() && source.source_type == SourceType::GoogleDrive {
+        if result.is_ok() && native_source_type == SourceType::GoogleDrive {
             self.ensure_webhook_registered(source_id).await;
         }
 
@@ -1059,6 +1069,69 @@ impl SyncManager {
         Ok((drive_format, gmail_format))
     }
 
+    // TODO: When folder-path filters are narrowed or changed, documents that were
+    // previously indexed but are no longer in scope are NOT automatically pruned from
+    // the search index. A future reconciliation step should delete documents whose
+    // parent ancestry no longer intersects the configured filter set.
+
+    /// Check whether a file should be included based on configured folder-path filters.
+    /// Uses `self.folder_cache` (the same LRU cache used by `build_full_path`) for
+    /// folder-metadata lookups during ancestry resolution.
+    ///
+    /// Returns `Ok(true)` if no filters are configured (include-everything mode).
+    /// Returns `Ok(false)` if the file's ancestry is outside the configured scope.
+    /// Returns `Err(...)` if ancestry metadata could not be determined due to a
+    /// transient API error — the caller should fail/retry the sync rather than
+    /// silently including or excluding the file.
+    async fn is_file_in_allowed_folder(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        file: &crate::models::GoogleDriveFile,
+        allowed_folder_ids: &HashSet<String>,
+    ) -> Result<bool> {
+        if allowed_folder_ids.is_empty() {
+            return Ok(true);
+        }
+
+        let folder_cache = self.folder_cache.clone();
+        let drive_client = self.drive_client.clone();
+        let google_auth = auth.clone();
+        let user_email_owned = user_email.to_string();
+
+        let lookup = move |folder_id: String| -> Pin<
+            Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>,
+        > {
+            let folder_cache = folder_cache.clone();
+            let drive_client = drive_client.clone();
+            let google_auth = google_auth.clone();
+            let user_email_owned = user_email_owned.clone();
+            Box::pin(async move {
+                // Try the LRU folder cache first (same cache used by build_full_path).
+                if let Some(cached) = folder_cache.get(&folder_id) {
+                    let parent = cached.parents.as_ref().and_then(|p| p.first()).cloned();
+                    return Ok((cached.name, parent));
+                }
+                // Cache miss: fetch from API and populate cache.
+                let meta = drive_client
+                    .get_folder_metadata(&google_auth, &user_email_owned, &folder_id)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to fetch folder metadata for {} while evaluating folder-path filter",
+                            folder_id
+                        )
+                    })?;
+                let name = meta.name.clone();
+                let parent = meta.parents.as_ref().and_then(|p| p.first()).cloned();
+                folder_cache.insert(folder_id.clone(), meta.into());
+                Ok((name, parent))
+            })
+        };
+
+        check_ancestry_static(&file.parents, allowed_folder_ids, &lookup).await
+    }
+
     async fn sync_drive_for_user(
         &self,
         user_email: &str,
@@ -1068,6 +1141,7 @@ impl SyncManager {
         ctx: &SyncContext,
         created_after: Option<&str>,
         content_cache: Arc<DriveContentCache>,
+        folder_filter_ids: Option<Arc<HashSet<String>>>,
     ) -> Result<(usize, usize)> {
         info!("Processing Drive files for user: {}", user_email);
 
@@ -1109,6 +1183,25 @@ impl SyncManager {
             // we always emit and let the indexer skip unchanged docs.
             for file in response.files {
                 if self.should_index_file(&file) {
+                    // Apply folder-path filter if configured.
+                    // Errors propagate upward so the sync fails and can be retried.
+                    if let Some(ref allowed_ids) = folder_filter_ids {
+                        if !self
+                            .is_file_in_allowed_folder(
+                                &service_auth,
+                                user_email,
+                                &file,
+                                allowed_ids,
+                            )
+                            .await?
+                        {
+                            debug!(
+                                "Skipping file {} ({}) — outside configured folder scope",
+                                file.name, file.id
+                            );
+                            continue;
+                        }
+                    }
                     file_batch.push(UserFile {
                         user_email: Arc::new(user_email.to_string()),
                         file,
@@ -1182,6 +1275,7 @@ impl SyncManager {
         ctx: &SyncContext,
         start_page_token: &str,
         content_cache: Arc<DriveContentCache>,
+        folder_filter_ids: Option<Arc<HashSet<String>>>,
     ) -> Result<(usize, usize)> {
         info!(
             "Processing incremental Drive sync for user {} from pageToken {}",
@@ -1243,6 +1337,21 @@ impl SyncManager {
             if let Some(file) = change.file {
                 if !self.should_index_file(&file) {
                     continue;
+                }
+
+                // Apply folder-path filter if configured.
+                // Errors propagate upward so the sync fails and can be retried.
+                if let Some(ref allowed_ids) = folder_filter_ids {
+                    if !self
+                        .is_file_in_allowed_folder(&service_auth, user_email, &file, allowed_ids)
+                        .await?
+                    {
+                        debug!(
+                            "Skipping change for file {} ({}) — outside configured folder scope",
+                            file.name, file.id
+                        );
+                        continue;
+                    }
                 }
 
                 file_batch.push(UserFile {
@@ -1668,6 +1777,514 @@ impl SyncManager {
         Ok((scanned, updated))
     }
 
+    /// Build a scope-aware Drive checkpoint that preserves Gmail and Chat state.
+    fn build_drive_checkpoint(
+        &self,
+        existing: &GoogleSyncCheckpoint,
+        drive_page_tokens: Option<HashMap<String, String>>,
+        drive_change_tokens: Option<HashMap<String, String>>,
+        drive_scope_fingerprint: Option<String>,
+    ) -> GoogleSyncCheckpoint {
+        GoogleSyncCheckpoint {
+            gmail_history_ids: existing.gmail_history_ids.clone(),
+            drive_page_tokens,
+            drive_change_tokens,
+            drive_scope_fingerprint,
+            chat: existing.chat.clone(),
+        }
+    }
+
+    /// Helper: apply the date cutoff to a single Google Drive file.
+    /// Returns `true` if the file passes the cutoff (or no cutoff is set).
+    /// Folders are never filtered by the cutoff — they must be discovered
+    /// regardless of age so their contents can be indexed.
+    fn pass_cutoff(file: &crate::models::GoogleDriveFile, cutoff: OffsetDateTime) -> bool {
+        if file.mime_type == "application/vnd.google-apps.folder" {
+            return true;
+        }
+        file.modified_time
+            .as_deref()
+            .and_then(|value| parse_google_time(Some(value)))
+            .is_some_and(|modified| modified > cutoff)
+            || file
+                .created_time
+                .as_deref()
+                .and_then(|value| parse_google_time(Some(value)))
+                .is_some_and(|created| created > cutoff)
+    }
+
+    /// Flush a batch of user files through `process_file_batch` and update totals.
+    async fn flush_batch(
+        &self,
+        batch: &mut Vec<UserFile>,
+        source_id: &str,
+        sync_run_id: &str,
+        ctx: &SyncContext,
+        service_auth: Arc<GoogleAuth>,
+        content_cache: Arc<DriveContentCache>,
+        total_scanned: &mut usize,
+        total_updated: &mut usize,
+    ) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let (s, u) = self
+            .process_file_batch(
+                std::mem::take(batch),
+                source_id,
+                sync_run_id,
+                ctx,
+                service_auth,
+                content_cache,
+            )
+            .await?;
+        *total_scanned += s;
+        *total_updated += u;
+        Ok(())
+    }
+
+    /// Scoped full sync: crawl selected shared drives and/or folder subtrees only,
+    /// using the configured DWD principal (no user impersonation/iteration).
+    async fn sync_drive_scoped(
+        &self,
+        source: &Source,
+        service_creds: &ServiceCredential,
+        sync_type: SyncType,
+        existing_state: &GoogleSyncCheckpoint,
+        ctx: &SyncContext,
+    ) -> Result<GoogleSyncCheckpoint> {
+        let sync_run_id = ctx.sync_run_id();
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
+        let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
+        let drive_cutoff = parse_google_time(Some(&drive_cutoff_date))
+            .ok_or_else(|| anyhow!("Invalid Drive cutoff time: {}", drive_cutoff_date))?;
+
+        // Parse filters; will error on malformed config.
+        let filter_entries = match crate::models::parse_folder_path_filters(&source.config) {
+            Ok(Some(f)) => f,
+            Ok(None) => {
+                // Should not happen — caller guards this branch — but be safe.
+                return Err(anyhow!("sync_drive_scoped called without filters"));
+            }
+            Err(e) => {
+                return Err(anyhow!("Invalid folder path filter configuration: {}", e));
+            }
+        };
+
+        let current_fingerprint = crate::models::compute_scope_fingerprint(Some(&filter_entries));
+
+        // Detect scope transition. If the fingerprint differs from the
+        // checkpoint, force a full sync regardless of requested mode.
+        let stored_fingerprint = existing_state.drive_scope_fingerprint.as_deref();
+        let scope_changed = stored_fingerprint != Some(&current_fingerprint);
+
+        if scope_changed {
+            info!(
+                "Drive scope transition detected: {:?} -> {} — forcing full sync",
+                stored_fingerprint, current_fingerprint
+            );
+        }
+        let effective_full =
+            drive_scope_requires_full_sync(sync_type, stored_fingerprint, &current_fingerprint);
+
+        // Build drive groups: driveId → (selected folder IDs, whether entire drive is selected)
+        struct DriveGroup {
+            drive_id: String,
+            entire_drive: bool,
+            folder_ids: Vec<String>,
+        }
+
+        let mut drive_groups: HashMap<String, DriveGroup> = HashMap::new();
+        for entry in &filter_entries {
+            let group = drive_groups
+                .entry(entry.drive_id.clone())
+                .or_insert(DriveGroup {
+                    drive_id: entry.drive_id.clone(),
+                    entire_drive: false,
+                    folder_ids: Vec::new(),
+                });
+            match entry.kind {
+                crate::models::FolderPathFilterKind::SharedDriveRoot => {
+                    group.entire_drive = true;
+                    group.folder_ids.clear(); // entire-drive supersedes per-folder.
+                }
+                crate::models::FolderPathFilterKind::Folder => {
+                    if !group.entire_drive {
+                        group.folder_ids.push(entry.id.clone());
+                    }
+                }
+            }
+        }
+
+        let drives: Vec<DriveGroup> = drive_groups.into_values().collect();
+        if drives.is_empty() {
+            info!("No valid drive scopes found — indexing nothing");
+            return Ok(self.build_drive_checkpoint(
+                existing_state,
+                None,
+                None,
+                Some(current_fingerprint),
+            ));
+        }
+
+        // Resolve the delegated principal email.
+        let principal_email = service_creds
+            .principal_email
+            .as_deref()
+            .ok_or_else(|| anyhow!("Missing principal_email for scoped Drive sync"))?
+            .to_string();
+
+        // Shared-drive operations need a single access token (no impersonation per user).
+        let access_token = service_auth.get_access_token(&principal_email).await?;
+
+        let content_cache = Arc::new(DriveContentCache::default());
+        let mut total_scanned = 0;
+        let mut total_updated = 0;
+
+        let mut new_change_tokens: HashMap<String, String> = HashMap::new();
+        let old_change_tokens = existing_state
+            .drive_change_tokens
+            .clone()
+            .unwrap_or_default();
+        const BATCH_SIZE: usize = 200;
+
+        for drive_group in &drives {
+            if ctx.is_cancelled() {
+                info!("Sync {} cancelled during drive-scoped sync", sync_run_id);
+                break;
+            }
+
+            info!(
+                "Processing drive {} (entire={}, folders={:?})",
+                drive_group.drive_id, drive_group.entire_drive, drive_group.folder_ids
+            );
+
+            let stored_token = old_change_tokens.get(&drive_group.drive_id);
+            let use_incremental = !effective_full && stored_token.is_some();
+
+            if use_incremental {
+                // Incremental per-drive changes path. Use newStartPageToken
+                // from the API response to advance the token.
+                let start_token = stored_token.unwrap();
+                let mut current_token = start_token.clone();
+
+                loop {
+                    let response = self
+                        .drive_client
+                        .list_changes_for_drive(
+                            &access_token,
+                            &current_token,
+                            &drive_group.drive_id,
+                        )
+                        .await?;
+
+                    if ctx.is_cancelled() {
+                        break;
+                    }
+
+                    let mut file_batch: Vec<UserFile> = Vec::new();
+
+                    for change in &response.changes {
+                        let is_removed = change.removed.unwrap_or(false);
+
+                        if is_removed {
+                            if let Some(file_id) = &change.file_id {
+                                info!(
+                                    "File {} was removed (scoped incremental), publishing deletion",
+                                    file_id
+                                );
+                                self.publish_deletion_event(ctx, file_id).await?;
+                            }
+                            continue;
+                        }
+
+                        if let Some(file) = &change.file {
+                            if !self.should_index_file(file) {
+                                continue;
+                            }
+
+                            // For folder-only selections, ancestry-check the change.
+                            if !drive_group.entire_drive {
+                                let allowed: HashSet<String> =
+                                    drive_group.folder_ids.iter().cloned().collect();
+                                if !self
+                                    .is_file_in_allowed_folder(
+                                        &service_auth,
+                                        &principal_email,
+                                        file,
+                                        &allowed,
+                                    )
+                                    .await?
+                                {
+                                    debug!(
+                                        "Skipping changed file {} ({}) — outside folder scope",
+                                        file.name, file.id
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            file_batch.push(UserFile {
+                                user_email: Arc::new(principal_email.clone()),
+                                file: file.clone(),
+                            });
+
+                            if file_batch.len() >= BATCH_SIZE {
+                                self.flush_batch(
+                                    &mut file_batch,
+                                    &source.id,
+                                    &sync_run_id,
+                                    ctx,
+                                    service_auth.clone(),
+                                    content_cache.clone(),
+                                    &mut total_scanned,
+                                    &mut total_updated,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+
+                    // Flush remaining changes for this page.
+                    self.flush_batch(
+                        &mut file_batch,
+                        &source.id,
+                        &sync_run_id,
+                        ctx,
+                        service_auth.clone(),
+                        content_cache.clone(),
+                        &mut total_scanned,
+                        &mut total_updated,
+                    )
+                    .await?;
+
+                    // Use newStartPageToken from response if present.
+                    if let Some(new_token) = &response.new_start_page_token {
+                        new_change_tokens.insert(drive_group.drive_id.clone(), new_token.clone());
+                    }
+
+                    match response.next_page_token {
+                        Some(token) => current_token = token,
+                        None => break,
+                    }
+                }
+
+                // Fallback: if no newStartPageToken was received, fetch one.
+                if !new_change_tokens.contains_key(&drive_group.drive_id) {
+                    match self
+                        .drive_client
+                        .get_start_page_token_for_drive(&access_token, &drive_group.drive_id)
+                        .await
+                    {
+                        Ok(token) => {
+                            new_change_tokens.insert(drive_group.drive_id.clone(), token);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to get start page token for drive {}: {}",
+                                drive_group.drive_id, e
+                            );
+                        }
+                    }
+                }
+            } else {
+                // Capture the drive-scoped token before the full crawl so changes
+                // made while pagination is in progress are replayed next time.
+                let next_change_token = match self
+                    .drive_client
+                    .get_start_page_token_for_drive(&access_token, &drive_group.drive_id)
+                    .await
+                {
+                    Ok(token) => Some(token),
+                    Err(error) => {
+                        warn!(
+                            "Failed to get start page token for drive {}: {}",
+                            drive_group.drive_id, error
+                        );
+                        None
+                    }
+                };
+
+                // Full scoped sync for this drive. Stream directly into batches.
+                let mut file_batch: Vec<UserFile> = Vec::new();
+
+                if drive_group.entire_drive {
+                    // Entire-drive selection: list all files with corpora=drive
+                    let mut page_token: Option<String> = None;
+                    loop {
+                        let response = self
+                            .drive_client
+                            .list_files_in_drive(
+                                &service_auth,
+                                &principal_email,
+                                &drive_group.drive_id,
+                                page_token.as_deref(),
+                                Some(&drive_cutoff_date),
+                            )
+                            .await?;
+
+                        for file in response.files {
+                            if self.should_index_file(&file) {
+                                file_batch.push(UserFile {
+                                    user_email: Arc::new(principal_email.clone()),
+                                    file,
+                                });
+                                if file_batch.len() >= BATCH_SIZE {
+                                    self.flush_batch(
+                                        &mut file_batch,
+                                        &source.id,
+                                        &sync_run_id,
+                                        ctx,
+                                        service_auth.clone(),
+                                        content_cache.clone(),
+                                        &mut total_scanned,
+                                        &mut total_updated,
+                                    )
+                                    .await?;
+                                }
+                            }
+                        }
+
+                        if ctx.is_cancelled() {
+                            break;
+                        }
+
+                        page_token = response.next_page_token;
+                        if page_token.is_none() {
+                            break;
+                        }
+                    }
+                } else {
+                    // Folder-level selection: traverse each selected subtree.
+                    let mut seen_file_ids: HashSet<String> = HashSet::new();
+                    let mut visited_folders: HashSet<String> = HashSet::new();
+
+                    for folder_id in &drive_group.folder_ids {
+                        if ctx.is_cancelled() {
+                            break;
+                        }
+                        if !visited_folders.insert(folder_id.clone()) {
+                            continue; // already traversed via overlapping selection
+                        }
+
+                        let mut queue = VecDeque::from([folder_id.clone()]);
+                        while let Some(current_folder_id) = queue.pop_front() {
+                            if ctx.is_cancelled() {
+                                break;
+                            }
+
+                            // Mark visited to avoid re-traversal via
+                            // overlapping folder selections.
+                            visited_folders.insert(current_folder_id.clone());
+
+                            let mut page_token: Option<String> = None;
+                            loop {
+                                // List ALL children — no date cutoff so old
+                                // folders containing new files are never missed.
+                                let response = self
+                                    .drive_client
+                                    .list_files_in_folder(
+                                        &service_auth,
+                                        &principal_email,
+                                        &current_folder_id,
+                                        &drive_group.drive_id,
+                                        page_token.as_deref(),
+                                    )
+                                    .await?;
+
+                                for file in response.files {
+                                    if seen_file_ids.contains(&file.id) {
+                                        continue;
+                                    }
+                                    seen_file_ids.insert(file.id.clone());
+
+                                    // Folders are enqueued unconditionally.
+                                    if file.mime_type == "application/vnd.google-apps.folder"
+                                        && !visited_folders.contains(&file.id)
+                                    {
+                                        queue.push_back(file.id.clone());
+                                    }
+
+                                    // Non-folder files: apply cutoff locally.
+                                    if !self.should_index_file(&file) {
+                                        continue;
+                                    }
+                                    if !Self::pass_cutoff(&file, drive_cutoff) {
+                                        continue;
+                                    }
+
+                                    file_batch.push(UserFile {
+                                        user_email: Arc::new(principal_email.clone()),
+                                        file,
+                                    });
+                                    if file_batch.len() >= BATCH_SIZE {
+                                        self.flush_batch(
+                                            &mut file_batch,
+                                            &source.id,
+                                            &sync_run_id,
+                                            ctx,
+                                            service_auth.clone(),
+                                            content_cache.clone(),
+                                            &mut total_scanned,
+                                            &mut total_updated,
+                                        )
+                                        .await?;
+                                    }
+                                }
+
+                                if ctx.is_cancelled() {
+                                    break;
+                                }
+
+                                page_token = response.next_page_token;
+                                if page_token.is_none() {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Flush any remaining files for this drive.
+                self.flush_batch(
+                    &mut file_batch,
+                    &source.id,
+                    &sync_run_id,
+                    ctx,
+                    service_auth.clone(),
+                    content_cache.clone(),
+                    &mut total_scanned,
+                    &mut total_updated,
+                )
+                .await?;
+
+                if ctx.is_cancelled() {
+                    break;
+                }
+
+                if let Some(token) = next_change_token {
+                    new_change_tokens.insert(drive_group.drive_id.clone(), token);
+                }
+            }
+        }
+
+        info!(
+            "Scoped Drive sync completed for source {}: {} scanned, {} updated",
+            source.id, total_scanned, total_updated
+        );
+
+        self.folder_cache.clear();
+
+        Ok(self.build_drive_checkpoint(
+            existing_state,
+            None, // No per-user page tokens in scoped mode.
+            Some(new_change_tokens),
+            Some(current_fingerprint),
+        ))
+    }
+
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
@@ -1678,9 +2295,48 @@ impl SyncManager {
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
 
-        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
-        // Calculate cutoff date for filtering
+        // Parse folder-path filters. Malformed config is a sync error.
+        let parsed_filters = match crate::models::parse_folder_path_filters(&source.config) {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(anyhow!("Invalid folder path filter configuration: {}", e));
+            }
+        };
+
+        // Scoped mode (filters present, non-OAuth): delegate to sync_drive_scoped.
+        if parsed_filters.is_some() && !service_auth.is_oauth() {
+            return self
+                .sync_drive_scoped(source, service_creds, sync_type, &existing_state, ctx)
+                .await;
+        }
+
+        // === Unfiltered / OAuth path: existing all-user listing ===
+
+        // Compute fingerprint. For OAuth sources, filters are ignored —
+        // folder filtering is DWD-only — so the fingerprint is always "all".
+        let current_fingerprint = if service_auth.is_oauth() {
+            "all".to_string()
+        } else {
+            match &parsed_filters {
+                Some(f) => crate::models::compute_scope_fingerprint(Some(f)),
+                None => "all".to_string(),
+            }
+        };
+
+        // Detect scope transition and force full sync if needed.
+        let stored_fingerprint = existing_state.drive_scope_fingerprint.as_deref();
+        let scope_changed = stored_fingerprint != Some(&current_fingerprint);
+        if scope_changed {
+            info!(
+                "Drive scope transition detected: {:?} -> {} — forcing full sync",
+                stored_fingerprint, current_fingerprint
+            );
+        }
+
         let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
         info!("Using Drive cutoff date: {}", drive_cutoff_date);
 
@@ -1716,12 +2372,14 @@ impl SyncManager {
             filtered
         };
 
-        let is_incremental = matches!(sync_type, SyncType::Incremental);
+        // Determine effective incremental mode — scope transitions force full sync.
+        let is_incremental =
+            !drive_scope_requires_full_sync(sync_type, stored_fingerprint, &current_fingerprint);
 
         let gmail_history_ids = existing_state.gmail_history_ids.clone();
         let chat_checkpoint = existing_state.chat.clone();
         let old_page_tokens = existing_state.drive_page_tokens.unwrap_or_default();
-        let can_resume_full = sync_type == SyncType::Full && ctx.is_resume();
+        let can_resume_full = sync_type == SyncType::Full && ctx.is_resume() && !scope_changed;
         let mut new_page_tokens: HashMap<String, String> = if can_resume_full {
             old_page_tokens.clone()
         } else {
@@ -1739,6 +2397,13 @@ impl SyncManager {
         let mut successful_users = 0;
         let mut errors = 0;
         let mut last_error: Option<String> = None;
+        let folder_filter_ids: Option<Arc<HashSet<String>>> = if service_auth.is_oauth() {
+            None
+        } else {
+            parsed_filters
+                .as_ref()
+                .map(|filters| Arc::new(filters.iter().map(|filter| filter.id.clone()).collect()))
+        };
         let content_cache = Arc::new(DriveContentCache::default());
         let parallel_users = google_drive_parallel_users();
         info!("Processing Drive users with concurrency {}", parallel_users);
@@ -1751,6 +2416,7 @@ impl SyncManager {
             let ctx = ctx.clone();
             let content_cache = content_cache.clone();
             let stored_page_token = old_page_tokens.get(cur_user_email.as_str()).cloned();
+            let folder_filter_ids = folder_filter_ids.clone();
 
             async move {
                 if can_resume_full && stored_page_token.is_some() {
@@ -1801,6 +2467,7 @@ impl SyncManager {
                             &ctx,
                             start_token,
                             content_cache.clone(),
+                            folder_filter_ids.clone(),
                         )
                         .await
                     {
@@ -1828,6 +2495,7 @@ impl SyncManager {
                         &ctx,
                         Some(&drive_cutoff_date),
                         content_cache.clone(),
+                        folder_filter_ids.clone(),
                     )
                     .await
                 };
@@ -1878,6 +2546,8 @@ impl SyncManager {
                         } else {
                             Some(new_page_tokens.clone())
                         },
+                        drive_change_tokens: None,
+                        drive_scope_fingerprint: Some(current_fingerprint.clone()),
                         chat: chat_checkpoint.clone(),
                     };
                     ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
@@ -1933,6 +2603,8 @@ impl SyncManager {
             } else {
                 Some(new_page_tokens)
             },
+            drive_change_tokens: None,
+            drive_scope_fingerprint: Some(current_fingerprint),
             chat: chat_checkpoint,
         })
     }
@@ -1948,7 +2620,9 @@ impl SyncManager {
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
 
-        let service_auth = Arc::new(self.create_auth(service_creds, source.source_type).await?);
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
         let (_drive_cutoff_date, gmail_cutoff_date) = self.get_cutoff_date()?;
         info!("Using Gmail cutoff date: {}", gmail_cutoff_date);
@@ -2137,6 +2811,8 @@ impl SyncManager {
                                 Some(new_history_ids.clone())
                             },
                             drive_page_tokens: drive_page_tokens.clone(),
+                            drive_change_tokens: existing_state.drive_change_tokens.clone(),
+                            drive_scope_fingerprint: existing_state.drive_scope_fingerprint.clone(),
                             chat: chat_checkpoint.clone(),
                         };
                         ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
@@ -2185,6 +2861,8 @@ impl SyncManager {
                 Some(new_history_ids)
             },
             drive_page_tokens,
+            drive_change_tokens: existing_state.drive_change_tokens.clone(),
+            drive_scope_fingerprint: existing_state.drive_scope_fingerprint.clone(),
             chat: chat_checkpoint,
         })
     }
@@ -2340,6 +3018,8 @@ impl SyncManager {
             let checkpoint_state = GoogleSyncCheckpoint {
                 gmail_history_ids: existing_state.gmail_history_ids.clone(),
                 drive_page_tokens: existing_state.drive_page_tokens.clone(),
+                drive_change_tokens: existing_state.drive_change_tokens.clone(),
+                drive_scope_fingerprint: existing_state.drive_scope_fingerprint.clone(),
                 chat: Some(chat_checkpoint.clone()),
             };
             ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
@@ -2349,6 +3029,8 @@ impl SyncManager {
         Ok(GoogleSyncCheckpoint {
             gmail_history_ids: existing_state.gmail_history_ids,
             drive_page_tokens: existing_state.drive_page_tokens,
+            drive_change_tokens: existing_state.drive_change_tokens,
+            drive_scope_fingerprint: existing_state.drive_scope_fingerprint,
             chat: Some(chat_checkpoint),
         })
     }
@@ -3481,6 +4163,11 @@ impl SyncManager {
         Ok(webhook_response)
     }
 
+    /// Public accessor for the Drive client (used by connector actions).
+    pub fn drive_client(&self) -> &DriveClient {
+        &self.drive_client
+    }
+
     pub async fn stop_webhook_for_source(
         &self,
         source_id: &str,
@@ -3542,20 +4229,26 @@ impl SyncManager {
         let mut path_components = vec![file_name.to_string()];
         let mut current_folder_id = folder_id.to_string();
 
-        // Build path by traversing up the folder hierarchy
-        let mut depth = 0;
+        // Build path by traversing up the folder hierarchy.
+        // Uses cycle detection via visited set; the iteration cap is only a safety net.
+        let mut visited = HashSet::new();
+        let mut _iteration: usize = 0;
+        const MAX_ITERATIONS: usize = 10_000;
         loop {
-            depth += 1;
-            debug!(
-                "Path building depth: {}, current folder: {}",
-                depth, current_folder_id
-            );
-
-            // TODO: Remove this
-            if depth > 50 {
+            _iteration += 1;
+            if _iteration >= MAX_ITERATIONS {
                 warn!(
-                    "Path building depth exceeded 50 levels for file: {}, folder: {}",
+                    "Path building exceeded maximum iterations for file: {}, folder: {}",
                     file_name, folder_id
+                );
+                break;
+            }
+
+            // Check for cycles before processing.
+            if !visited.insert(current_folder_id.clone()) {
+                warn!(
+                    "Cycle detected in folder ancestry for file: {}, folder: {}",
+                    file_name, current_folder_id
                 );
                 break;
             }
@@ -3580,7 +4273,7 @@ impl SyncManager {
                     );
                     let folder_metadata = self
                         .drive_client
-                        .get_folder_metadata(&auth, &user_email, &folder_id)
+                        .get_folder_metadata(&auth, &user_email, &current_folder_id)
                         .await;
 
                     match folder_metadata {
@@ -4228,7 +4921,14 @@ impl SyncManager {
         service_creds: &ServiceCredential,
         ctx: &SyncContext,
     ) -> HashSet<String> {
-        let service_auth = match self.create_auth(service_creds, source.source_type).await {
+        let native_source_type = match SourceType::try_from(source.source_type.as_str()) {
+            Ok(source_type) => source_type,
+            Err(e) => {
+                warn!("Skipping group sync for unsupported source type: {}", e);
+                return HashSet::new();
+            }
+        };
+        let service_auth = match self.create_auth(service_creds, native_source_type).await {
             Ok(auth) => auth,
             Err(e) => {
                 warn!("Failed to create auth for group sync: {}", e);
@@ -4345,6 +5045,60 @@ impl SyncManager {
         );
         Ok(group_emails)
     }
+}
+
+/// Core ancestry-check logic — the production walker used by `is_file_in_allowed_folder`
+/// and tested directly with mock lookups.
+///
+/// Given a file's parent IDs, an allowed set, and a function to fetch folder
+/// metadata by ID, walks up the parent chain and returns true if any ancestor
+/// is in the allowed set.
+///
+/// `lookup` returns `(name, Option<parent_id>)` for a folder ID.
+/// Returns Err on error, Ok(true) if found in allowed set, Ok(false) if outside.
+/// Has a safety cap of 10_000 iterations to prevent infinite loops.
+pub(crate) async fn check_ancestry_static(
+    file_parents: &Option<Vec<String>>,
+    allowed_ids: &HashSet<String>,
+    lookup: &(dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>>
+          + Send
+          + Sync),
+) -> Result<bool> {
+    if allowed_ids.is_empty() {
+        return Ok(true);
+    }
+
+    let mut stack: Vec<String> = Vec::new();
+    if let Some(parents) = file_parents {
+        for p in parents {
+            stack.push(p.clone());
+        }
+    }
+
+    let mut visited = HashSet::new();
+    let mut iterations: usize = 0;
+    const MAX_ITERATIONS: usize = 10_000;
+
+    while let Some(cur) = stack.pop() {
+        iterations += 1;
+        if iterations > MAX_ITERATIONS {
+            // Safety cap — treat as outside rather than infinite loop.
+            return Ok(false);
+        }
+        if !visited.insert(cur.clone()) {
+            // Cycle detected — skip, don't include.
+            continue;
+        }
+        if allowed_ids.contains(&cur) {
+            return Ok(true);
+        }
+        let (_name, parent) = lookup(cur).await?;
+        if let Some(p) = parent {
+            stack.push(p);
+        }
+    }
+
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -4522,5 +5276,140 @@ mod tests {
         drop(permit);
 
         assert!(semaphore.try_acquire_many_owned(2).is_ok());
+    }
+
+    // ========================================================================
+    // Folder path filter logic
+    // ========================================================================
+
+    #[tokio::test]
+    async fn folder_filter_matches_direct_and_nested_ancestors() {
+        let allowed: HashSet<String> = ["allowed".to_string()].into_iter().collect();
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move {
+                    let parent = match id.as_str() {
+                        "child" => Some("allowed".to_string()),
+                        "outside" => Some("root".to_string()),
+                        "cycle-a" => Some("cycle-b".to_string()),
+                        "cycle-b" => Some("cycle-a".to_string()),
+                        _ => None,
+                    };
+                    Ok((id, parent))
+                })
+            };
+
+        assert!(
+            check_ancestry_static(&Some(vec!["allowed".to_string()]), &allowed, &lookup)
+                .await
+                .unwrap()
+        );
+        assert!(
+            check_ancestry_static(&Some(vec!["child".to_string()]), &allowed, &lookup)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !check_ancestry_static(&Some(vec!["outside".to_string()]), &allowed, &lookup)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !check_ancestry_static(&Some(vec!["cycle-a".to_string()]), &allowed, &lookup)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn folder_filter_propagates_lookup_errors() {
+        let allowed: HashSet<String> = ["allowed".to_string()].into_iter().collect();
+        let lookup =
+            |id: String| -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>> {
+                Box::pin(async move { Err(anyhow!("API error for {id}")) })
+            };
+
+        assert!(
+            check_ancestry_static(&Some(vec!["broken".to_string()]), &allowed, &lookup)
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn drive_scope_changes_force_full_sync() {
+        assert!(drive_scope_requires_full_sync(
+            SyncType::Full,
+            Some("all"),
+            "all"
+        ));
+        assert!(drive_scope_requires_full_sync(
+            SyncType::Incremental,
+            None,
+            "all"
+        ));
+        assert!(drive_scope_requires_full_sync(
+            SyncType::Incremental,
+            Some("all"),
+            "drive:folder:id",
+        ));
+        assert!(!drive_scope_requires_full_sync(
+            SyncType::Incremental,
+            Some("drive:folder:id"),
+            "drive:folder:id",
+        ));
+    }
+
+    #[test]
+    fn folder_scope_cutoff_uses_parsed_created_or_modified_times() {
+        let cutoff = parse_google_time(Some("2025-01-01T00:00:00Z")).unwrap();
+        let file = |mime_type: &str, created_time: &str, modified_time: &str| {
+            crate::models::GoogleDriveFile {
+                id: "file".to_string(),
+                name: "File".to_string(),
+                mime_type: mime_type.to_string(),
+                web_view_link: None,
+                created_time: Some(created_time.to_string()),
+                modified_time: Some(modified_time.to_string()),
+                size: None,
+                parents: None,
+                shared: None,
+                permissions: None,
+                owners: None,
+            }
+        };
+
+        assert!(SyncManager::pass_cutoff(
+            &file(
+                "application/pdf",
+                "2024-01-01T00:00:00Z",
+                "2025-01-02T00:00:00Z"
+            ),
+            cutoff,
+        ));
+        assert!(SyncManager::pass_cutoff(
+            &file(
+                "application/pdf",
+                "2025-01-02T01:00:00+01:00",
+                "2024-01-01T00:00:00Z"
+            ),
+            cutoff,
+        ));
+        assert!(!SyncManager::pass_cutoff(
+            &file(
+                "application/pdf",
+                "2024-01-01T00:00:00Z",
+                "2024-12-31T23:59:59Z"
+            ),
+            cutoff,
+        ));
+        assert!(SyncManager::pass_cutoff(
+            &file(
+                "application/vnd.google-apps.folder",
+                "2020-01-01T00:00:00Z",
+                "2020-01-01T00:00:00Z",
+            ),
+            cutoff,
+        ));
     }
 }
