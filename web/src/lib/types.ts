@@ -94,16 +94,32 @@ export interface FolderPathFilter {
     kind: 'shared_drive_root' | 'folder'
 }
 
+export type GoogleAuthMode = 'domain_wide_delegation' | 'service_account_direct'
+
 export interface GoogleDriveSourceConfig {
+    auth_mode?: GoogleAuthMode
     folder_path_filters?: FolderPathFilter[]
     // Future: shared_drive_filters, mime_type_filters, etc.
 }
 
+export interface SharedDriveAccessResult {
+    drive_id: string
+    ok: boolean
+    role: string | null
+    error: string | null
+}
+
+export interface SharedDriveAccessResponse {
+    drives: SharedDriveAccessResult[]
+}
+
 export interface GmailSourceConfig {
+    auth_mode?: GoogleAuthMode
     // Future: label_filters, date_range_filters, etc.
 }
 
 export interface GoogleChatSourceConfig {
+    auth_mode?: GoogleAuthMode
     space_allowlist?: string[]
     include_group_chats?: boolean
 }

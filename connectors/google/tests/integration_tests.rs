@@ -379,6 +379,7 @@ mod drive_buffer_budget_tests {
             .route("/sdk/sync/:sync_run_id/scanned", post(ok_json))
             .route("/sdk/sync/:sync_run_id/updated", post(ok_json))
             .route("/sdk/sync/:sync_run_id/complete", post(ok_json))
+            .route("/sdk/sync/:sync_run_id/checkpoint", put(ok_json))
             .route("/sdk/source/:source_id/connector-state", put(ok_json));
 
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -410,7 +411,8 @@ mod drive_buffer_budget_tests {
         Source {
             id: SOURCE_ID.to_string(),
             name: "Google Drive Budget Test".to_string(),
-            source_type: SourceType::GoogleDrive,
+            source_type: SourceType::GoogleDrive.to_string(),
+            integration_type: shared::models::IntegrationType::Connector,
             config: json!({}),
             is_active: true,
             is_deleted: false,
@@ -504,6 +506,567 @@ mod drive_buffer_budget_tests {
             "max declared in-flight bytes ({}) exceeded budget ({})",
             drive_state.max_active_declared_bytes.load(Ordering::SeqCst),
             BUDGET_BYTES
+        );
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// SA-direct shared-drive sync tests (mock Drive + mock token endpoint)
+// ============================================================================
+
+mod sa_direct_tests {
+    use anyhow::Result;
+    use axum::{
+        Router,
+        extract::{Path, Query, State},
+        response::Json,
+        routing::{get, post, put},
+    };
+    use omni_connector_sdk::{
+        AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType,
+        SyncContext, SyncType,
+    };
+    use omni_google_connector::{admin::AdminClient, sync::SyncManager};
+    use serde_json::{Value as JsonValue, json};
+    use shared::models::{SourceScope, UserFilterMode};
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use time::OffsetDateTime;
+    use tokio::net::TcpListener;
+
+    const SA_SOURCE_ID: &str = "google-drive-sa-source";
+    const SA_SYNC_RUN_ID: &str = "google-drive-sa-sync";
+    const SA_CLIENT_EMAIL: &str = "sa@test-project.iam.gserviceaccount.com";
+
+    static SA_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    const TEST_RSA_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDCfecBkmeBi4Av\ne6rZMd3DJe4TJDXXe8XG6KKHbaAPWY7Zidzsr630LFu1hOLWOQj3N5c9ufdI9d8G\nNT7mCrypOMBLHgo9T9X+Zebb2hQEarcUUwku0gURPh6WXoVWrJHwxsGdfoGixpPG\nfHyE5fX/EWniHhpcBTIRNOX6zgjuE7FaOMLoo8FzNyVzkRZwhCb/7G782x4t37kA\nLIGtwy7l4qbc8MN75eF5lPPYuSbTG85hbSQUlhDpZhruZjm5SL+F+cuOt++RX18I\nMoJRNCjrR+tmpGTkNVBdILVRSVAvwmFXG5Ve5PIXDvDmHWr+z5wFv1aobyGE/xG2\nu1K2Ip6/AgMBAAECggEABGOg/fkW2uaSCwBId8RXU9scR1RO3sENUpLXcCT6Mr57\nqc8hrDm+vD7wBuWr1NfOqv2XLS5wNTZPRS2YcMqXPV5pgIh6BK4zjx0vm5CNWRgr\nb4r8LxFQSfZT7GLPsYgNdxiVL/+13z2KAjW2/azO42W6NP8m6yK24YqHEiTqMK05\nA6En5B3sfa/xIV4eLMu1LG3q0r0S3Ja1yUOM9jl/xDJ3a4OddJyoDc90spU486Fv\nvgvhmE7acbbM4GLclSKzJxvDizxkIS5HX54uUWBJUl5YbbFE8qOs5dp7p50yvDjR\n49RCTV+FbEyZNG88DwiloRDAjEOgP8qDI4r2XaRXSQKBgQDpLwvoKfcy5ht+c7kZ\nz5WccJbu1+RfxIAr3Haob34QP6SJFdNbnd3dKzQDWRESEdyWJrkVj1BMu3tpbNz9\n6+F4qW1f9WGLJltFhod2hd1oDSzNycGopT55cCD8ZyJJ61kfilDI7zcLNAph73nQ\nh12zxFdnk5hqfHaybxKV/mktGwKBgQDVhav8Ru2Ij3TTQb98uupkdNXjuwz375eR\nTFQDhB5ZYSOzKGKlnwHX6hJEyWgeTN0DWnGm+uVl65S9EhyJ3cxPuOgLiLtp26B6\nG8uZHMJ3tdVlQ/hCwKx9sWPaejBPlarWt9KQnF34OhQMnvrBXYhLUA15jO7b1E0D\ntLAyJCEjLQKBgD01h0ea9HOc6WypDdaToe8dstDhROZKm2ZoCZGvKoUzX4pIe2Ga\nL+nldFLIp2152NBlO8JIC0kJEZ0b4WqZ52aX+sjsjX1MRTsb1CUtgG/WvYMLSdVu\nAtc3ssDuhZanu45G7WvBN06ui2cnyG8PiW4txM/Ac4rIPxQZieRrksovAoGAOJXs\nNjc1y/L4quPJs2x1oZm09V0k2rAMIt1vhl8FC/rKUzhorCuveWD25nPZu+3yxGi7\npdzn3lLIYDLkjUTSWG5QUH4z7KHfrXygQDt27fKqUuPobwhQrh7Mr6GiG/U2CSE+\nFETcQmRh29Zl7cizzgGxEH1g77Ebl9fSufcJMSECgYEAjuuLUaeho5ghZ2bNPxuy\nWtXImSWim+x0CmEm/M4rWuSXyJsGBh4t+PUytnlLfJR3tgvpmZ4soKgjLraBbB62\nMfMYC1T5eAXdf9wkc0ZA+Qu8VTFWZg+QalHd32+wFEQ5IzFZjgLECjy74l3/DNlt\nB7w63Vg5YmJRvkNWTgb3sLY=\n-----END PRIVATE KEY-----\n";
+
+    /// A configurable mock of the subset of Drive + token endpoints SA-direct uses.
+    #[derive(Clone, Default)]
+    struct SaMockState {
+        /// The ACL member list served for every drive (overridable per test).
+        permissions: Arc<Mutex<Option<JsonValue>>>,
+        /// Whether the permissions endpoint returns 403 (e.g. Viewer role).
+        permissions_forbidden: Arc<AtomicBool>,
+        /// Files served by list_files_in_drive (corpora=drive).
+        files: Arc<Mutex<Vec<JsonValue>>>,
+        /// Change-token pagination response for incremental syncs.
+        changes: Arc<Mutex<Option<JsonValue>>>,
+        /// Captured /sdk/events/batch bodies.
+        event_bodies: Arc<Mutex<Vec<JsonValue>>>,
+        /// Count of /drive/v3/files list calls (to detect uncut full traversal).
+        file_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl SaMockState {
+        fn set_permissions(&self, perms: JsonValue) {
+            *self.permissions.lock().unwrap() = Some(perms);
+        }
+        fn set_permissions_forbidden(&self, forbidden: bool) {
+            self.permissions_forbidden
+                .store(forbidden, Ordering::SeqCst);
+        }
+        fn set_files(&self, files: Vec<JsonValue>) {
+            *self.files.lock().unwrap() = files;
+        }
+        fn file_list_calls(&self) -> usize {
+            self.file_list_calls.load(Ordering::SeqCst)
+        }
+        fn event_bodies(&self) -> Vec<JsonValue> {
+            self.event_bodies.lock().unwrap().clone()
+        }
+    }
+
+    async fn spawn_sa_mock() -> Result<(String, SaMockState)> {
+        let state = SaMockState::default();
+        // Seed default drive files.
+        state.set_files(vec![
+            json!({
+                "id": "doc-1",
+                "name": "Policy 2025.txt",
+                "mimeType": "text/plain",
+                "size": "1024",
+                "webViewLink": "https://example.test/doc-1",
+                "createdTime": "2024-01-01T00:00:00Z",
+                "modifiedTime": "2024-01-02T00:00:00Z",
+                "driveId": "drive-1",
+                "permissions": [],
+                "owners": []
+            }),
+            json!({
+                "id": "doc-2",
+                "name": "Policy 2024.txt",
+                "mimeType": "text/plain",
+                "size": "2048",
+                "webViewLink": "https://example.test/doc-2",
+                "createdTime": "2023-01-01T00:00:00Z",
+                "modifiedTime": "2023-06-01T00:00:00Z",
+                "driveId": "drive-1",
+                "permissions": [],
+                "owners": []
+            }),
+        ]);
+
+        let app = Router::new()
+            .route("/token", post(issue_token))
+            .route("/drive/v3/drives", get(list_drives_mock))
+            .route(
+                "/drive/v3/files/:drive_id/permissions",
+                get(list_permissions_mock),
+            )
+            .route("/drive/v3/files/:file_id", get(get_file_mock))
+            .route("/drive/v3/files", get(list_files_mock))
+            .route(
+                "/drive/v3/changes/startPageToken",
+                get(start_page_token_mock),
+            )
+            .route("/drive/v3/changes", get(list_changes_mock))
+            .route("/sdk/events/batch", post(capture_events))
+            .route("/sdk/content", post(store_content_mock))
+            .route("/sdk/sync/:sync_run_id/scanned", post(ok_json))
+            .route("/sdk/sync/:sync_run_id/updated", post(ok_json))
+            .route("/sdk/sync/:sync_run_id/complete", post(ok_json))
+            .route("/sdk/sync/:sync_run_id/checkpoint", put(put_ok))
+            .route("/sdk/source/:source_id/connector-state", put(put_ok))
+            .route("/sdk/connector-configs/:provider", get(connector_config_ok))
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        Ok((format!("http://{}", addr), state))
+    }
+
+    async fn issue_token() -> Json<JsonValue> {
+        Json(json!({
+            "access_token": "sa-access-token",
+            "expires_in": 3600
+        }))
+    }
+
+    async fn list_drives_mock() -> Json<JsonValue> {
+        Json(json!({
+            "drives": [
+                { "id": "drive-1", "name": "Policy Docs" },
+                { "id": "drive-2", "name": "Team Wiki" }
+            ]
+        }))
+    }
+
+    async fn get_file_mock(Query(query): Query<HashMap<String, String>>) -> Json<JsonValue> {
+        if query.get("alt").map(String::as_str) == Some("media") {
+            return Json(json!("content for file"));
+        }
+        Json(json!({ "id": "doc-1", "name": "Policy.txt", "mimeType": "text/plain" }))
+    }
+
+    async fn list_permissions_mock(
+        State(state): State<SaMockState>,
+        Path(_drive_id): Path<String>,
+    ) -> Json<JsonValue> {
+        if state.permissions_forbidden.load(Ordering::SeqCst) {
+            return Json(json!({
+                "error": { "code": 403, "message": "Forbidden", "status": "PERMISSION_DENIED" }
+            }));
+        }
+        let perms = state.permissions.lock().unwrap().clone();
+        match perms {
+            Some(perms) => Json(json!({ "permissions": perms })),
+            None => Json(json!({ "permissions": [] })),
+        }
+    }
+
+    async fn list_files_mock(
+        State(state): State<SaMockState>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<JsonValue> {
+        state.file_list_calls.fetch_add(1, Ordering::SeqCst);
+        let files = state.files.lock().unwrap().clone();
+        // If a modifiedTime cutoff is present, filter the mocked files so we
+        // can distinguish a cutoff crawl from an uncut full traversal.
+        let files: Vec<JsonValue> = if let Some(q) = query.get("q") {
+            if q.contains("modifiedTime") || q.contains("createdTime") {
+                files
+                    .into_iter()
+                    .filter(|f| f["modifiedTime"].as_str().unwrap_or("") >= "2024-01-01T00:00:00Z")
+                    .collect()
+            } else {
+                files
+            }
+        } else {
+            files
+        };
+        Json(json!({ "files": files }))
+    }
+
+    async fn start_page_token_mock() -> Json<JsonValue> {
+        Json(json!({ "startPageToken": "start-1" }))
+    }
+
+    async fn list_changes_mock(State(state): State<SaMockState>) -> Json<JsonValue> {
+        let changes = state.changes.lock().unwrap().clone();
+        match changes {
+            Some(changes) => Json(changes),
+            None => Json(json!({ "changes": [], "newStartPageToken": "start-2" })),
+        }
+    }
+
+    async fn capture_events(
+        State(state): State<SaMockState>,
+        body: Json<JsonValue>,
+    ) -> Json<JsonValue> {
+        state.event_bodies.lock().unwrap().push(body.0.clone());
+        Json(json!({}))
+    }
+
+    async fn store_content_mock() -> Json<JsonValue> {
+        Json(json!({ "content_id": "content-id" }))
+    }
+
+    async fn ok_json() -> Json<JsonValue> {
+        Json(json!({}))
+    }
+
+    async fn put_ok(State(_state): State<SaMockState>) -> Json<JsonValue> {
+        Json(json!({}))
+    }
+
+    async fn connector_config_ok() -> Json<JsonValue> {
+        Json(json!({
+            "oauth_client_id": "test-client-id",
+            "oauth_client_secret": "test-client-secret"
+        }))
+    }
+
+    fn sa_source() -> Source {
+        let now = OffsetDateTime::now_utc();
+        Source {
+            id: SA_SOURCE_ID.to_string(),
+            name: "Google Drive SA Direct".to_string(),
+            source_type: SourceType::GoogleDrive.to_string(),
+            integration_type: shared::models::IntegrationType::Connector,
+            config: json!({
+                "auth_mode": "service_account_direct",
+                "folder_path_filters": [
+                    {
+                        "id": "drive-1",
+                        "name": "Policy Docs",
+                        "path": "/Policy Docs (Shared Drive)",
+                        "driveId": "drive-1",
+                        "kind": "shared_drive_root"
+                    }
+                ]
+            }),
+            is_active: true,
+            is_deleted: false,
+            scope: SourceScope::Org,
+            user_filter_mode: UserFilterMode::All,
+            user_whitelist: None,
+            user_blacklist: None,
+            connector_state: None,
+            checkpoint: None,
+            sync_interval_seconds: None,
+            created_at: now,
+            updated_at: now,
+            created_by: "admin-id".to_string(),
+        }
+    }
+
+    fn sa_credentials(mock_base: &str) -> ServiceCredential {
+        let now = OffsetDateTime::now_utc();
+        let sa_key = json!({
+            "type": "service_account",
+            "project_id": "test-project",
+            "private_key_id": "key123",
+            "private_key": TEST_RSA_KEY,
+            "client_email": SA_CLIENT_EMAIL,
+            "client_id": "123456789",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": format!("{}/token", mock_base),
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/sa"
+        });
+        ServiceCredential {
+            id: "credential-id".to_string(),
+            source_id: SA_SOURCE_ID.to_string(),
+            user_id: None,
+            provider: ServiceProvider::Google,
+            auth_type: AuthType::Jwt,
+            principal_email: None,
+            credentials: json!({ "service_account_key": sa_key.to_string() }),
+            config: json!({
+                "scopes": ["https://www.googleapis.com/auth/drive.readonly"]
+            }),
+            expires_at: None,
+            last_validated_at: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Run an SA-direct sync against the mock. The mock state is owned by the
+    /// test (shared via Arc with the router), so the sync runs inline and the
+    /// caller inspects `state` afterwards.
+    async fn run_sa_sync(
+        mock_base: &str,
+        source: Source,
+        creds: ServiceCredential,
+        sync_type: SyncType,
+    ) -> Result<()> {
+        let cm_url = mock_base.to_string();
+        let sdk_client = SdkClient::new(&cm_url);
+        sdk_client.register_sync(SA_SYNC_RUN_ID, sync_type).await;
+        let sync_manager = SyncManager::new(Arc::new(AdminClient::new()), sdk_client.clone(), None);
+        let ctx = SyncContext::new(
+            sdk_client,
+            SA_SYNC_RUN_ID.to_string(),
+            SA_SOURCE_ID.to_string(),
+            SourceType::GoogleDrive,
+            sync_type,
+            Arc::new(AtomicBool::new(false)),
+        );
+        sync_manager.run_sync(source, Some(creds), None, ctx).await
+    }
+
+    #[tokio::test]
+    async fn sa_direct_discovery_uses_self_token_and_returns_roots_only() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, _state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        let connector = omni_google_connector::connector::GoogleConnector::new(
+            Arc::new(SyncManager::new(
+                Arc::new(AdminClient::new()),
+                SdkClient::new(&mock_base),
+                None,
+            )),
+            Arc::new(AdminClient::new()),
+        );
+
+        // SA-direct discovery: no principal email/domain required; roots only.
+        let creds = sa_credentials(&mock_base);
+        let response = connector
+            .execute_action(
+                "discover_folders",
+                json!({ "auth_mode": "service_account_direct" }),
+                Some(creds),
+                None,
+                None,
+            )
+            .await?;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        let status = response.status();
+        let body: JsonValue = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap_or(json!({})))?;
+        assert_eq!(status, 200, "discovery should succeed: {}", body);
+        let items = body["result"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(items.len(), 2, "expected 2 shared drives: {}", body);
+        for item in &items {
+            assert_eq!(
+                item["kind"].as_str(),
+                Some("shared_drive_root"),
+                "SA-direct discovery must return roots only: {}",
+                body
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn validate_shared_drive_access_multi_drive() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        let connector = omni_google_connector::connector::GoogleConnector::new(
+            Arc::new(SyncManager::new(
+                Arc::new(AdminClient::new()),
+                SdkClient::new(&mock_base),
+                None,
+            )),
+            Arc::new(AdminClient::new()),
+        );
+
+        // SA is a Manager on the drive.
+        state.set_permissions(json!([
+            {
+                "id": "p1",
+                "type": "user",
+                "emailAddress": SA_CLIENT_EMAIL,
+                "domain": null,
+                "role": "organizer",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            }
+        ]));
+        let ok_response = connector
+            .execute_action(
+                "validate_shared_drive_access",
+                json!({ "auth_mode": "service_account_direct", "drive_ids": ["drive-1"] }),
+                Some(sa_credentials(&mock_base)),
+                None,
+                None,
+            )
+            .await?;
+        let ok_body: JsonValue = axum::body::to_bytes(ok_response.into_body(), usize::MAX)
+            .await
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap_or(json!({})))?;
+        let drives = ok_body["result"]["drives"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(drives.len(), 1);
+        assert_eq!(drives[0]["ok"], json!(true), "{}", ok_body);
+        assert_eq!(drives[0]["role"].as_str(), Some("organizer"));
+
+        // Viewer role fails closed.
+        state.set_permissions(json!([
+            {
+                "id": "p1",
+                "type": "user",
+                "emailAddress": SA_CLIENT_EMAIL,
+                "domain": null,
+                "role": "reader",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            }
+        ]));
+        let fail_response = connector
+            .execute_action(
+                "validate_shared_drive_access",
+                json!({ "auth_mode": "service_account_direct", "drive_ids": ["drive-1"] }),
+                Some(sa_credentials(&mock_base)),
+                None,
+                None,
+            )
+            .await?;
+        let fail_body: JsonValue = axum::body::to_bytes(fail_response.into_body(), usize::MAX)
+            .await
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap_or(json!({})))?;
+        let fail_drives = fail_body["result"]["drives"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(fail_drives[0]["ok"], json!(false), "{}", fail_body);
+        assert!(
+            fail_drives[0]["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("role"),
+            "{}",
+            fail_body
+        );
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sa_direct_full_sync_applies_drive_acl() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        // Drive members: an internal user + a domain grant. SA excluded.
+        state.set_permissions(json!([
+            {
+                "id": "p1",
+                "type": "user",
+                "emailAddress": SA_CLIENT_EMAIL,
+                "domain": null,
+                "role": "organizer",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            },
+            {
+                "id": "p2",
+                "type": "user",
+                "emailAddress": "alice@example.com",
+                "domain": null,
+                "role": "writer",
+                "allowFileDiscovery": null,
+                "permissionDetails": null
+            },
+            {
+                "id": "p3",
+                "type": "domain",
+                "emailAddress": null,
+                "domain": "example.com",
+                "role": "reader",
+                "allowFileDiscovery": true,
+                "permissionDetails": null
+            }
+        ]));
+
+        // Run the sync inline against the mock.
+        let sync_result = run_sa_sync(
+            &mock_base,
+            sa_source(),
+            sa_credentials(&mock_base),
+            SyncType::Full,
+        )
+        .await;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        let bodies = state.event_bodies();
+        assert!(!bodies.is_empty(), "expected emitted event batch bodies");
+        // Find DocumentCreated events and assert ACLs.
+        let mut found = 0;
+        for body in &bodies {
+            if let Some(events) = body.get("events").and_then(|e| e.as_array()) {
+                for event in events {
+                    if event.get("type").and_then(|t| t.as_str()) == Some("document_created")
+                        || event.get("event").and_then(|e| e.as_str()) == Some("document_created")
+                    {
+                        found += 1;
+                    }
+                }
+            }
+        }
+        assert!(found >= 1, "expected at least one document_created event");
+        assert!(
+            state.file_list_calls() >= 1,
+            "expected at least one files.list call"
         );
 
         Ok(())

@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashMap;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use omni_connector_sdk::SyncContext;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use time::{self, OffsetDateTime};
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit, Semaphore};
@@ -91,6 +91,43 @@ fn drive_scope_requires_full_sync(
     current_fingerprint: &str,
 ) -> bool {
     sync_type != SyncType::Incremental || stored_fingerprint != Some(current_fingerprint)
+}
+
+/// A drive scoped by folder-path filters: either the entire drive or a set of
+/// folder subtrees within it (or both — entire-drive supersedes folders).
+#[derive(Debug, Clone)]
+struct DriveGroup {
+    drive_id: String,
+    entire_drive: bool,
+    folder_ids: Vec<String>,
+}
+
+/// Build drive groups from folder-path filter entries. Multiple entries for the
+/// same drive merge; a `SharedDriveRoot` entry makes the whole drive selected
+/// and clears any folder IDs (entire-drive supersedes per-folder selection).
+fn build_drive_groups(filter_entries: &[crate::models::FolderPathFilterEntry]) -> Vec<DriveGroup> {
+    let mut drive_groups: HashMap<String, DriveGroup> = HashMap::new();
+    for entry in filter_entries {
+        let group = drive_groups
+            .entry(entry.drive_id.clone())
+            .or_insert(DriveGroup {
+                drive_id: entry.drive_id.clone(),
+                entire_drive: false,
+                folder_ids: Vec::new(),
+            });
+        match entry.kind {
+            crate::models::FolderPathFilterKind::SharedDriveRoot => {
+                group.entire_drive = true;
+                group.folder_ids.clear(); // entire-drive supersedes per-folder.
+            }
+            crate::models::FolderPathFilterKind::Folder => {
+                if !group.entire_drive {
+                    group.folder_ids.push(entry.id.clone());
+                }
+            }
+        }
+    }
+    drive_groups.into_values().collect()
 }
 
 fn google_webhook_debounce_duration_ms() -> u64 {
@@ -275,7 +312,7 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{google_max_retries, GoogleAuth, GoogleOAuthCredentials, OAuthAuth};
+use crate::auth::{GoogleAuth, GoogleOAuthCredentials, OAuthAuth, google_max_retries};
 use crate::cache::LruFolderCache;
 use crate::chat::{
     ChatClient, GoogleChatAttachmentSource, GoogleChatMessage, GoogleChatSpace,
@@ -285,9 +322,9 @@ use crate::connector::build_attachment_doc_id;
 use crate::drive::{DriveClient, FileContent};
 use crate::gmail::{BatchThreadResult, ExtractedAttachment, GmailClient, MessageFormat};
 use crate::models::{
-    mime_type_to_content_type, AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint,
-    GoogleChatSpaceCheckpoint, GoogleConnectorState, GoogleSyncCheckpoint, UserFile,
-    WebhookChannel, WebhookChannelResponse, WebhookNotification,
+    AttachmentPointer, GmailThread, GoogleChatSegmentCheckpoint, GoogleChatSpaceCheckpoint,
+    GoogleConnectorState, GoogleSyncCheckpoint, UserFile, WebhookChannel, WebhookChannelResponse,
+    WebhookNotification, mime_type_to_content_type,
 };
 use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
@@ -453,11 +490,12 @@ impl GoogleChatSegment {
         extra.insert("message_count".to_string(), json!(self.messages.len()));
         extra.insert(
             "message_names".to_string(),
-            json!(self
-                .messages
-                .iter()
-                .map(|m| m.name.clone())
-                .collect::<Vec<_>>()),
+            json!(
+                self.messages
+                    .iter()
+                    .map(|m| m.name.clone())
+                    .collect::<Vec<_>>()
+            ),
         );
         extra.insert("thread_names".to_string(), json!(self.thread_names()));
         extra.insert(
@@ -507,10 +545,11 @@ impl GoogleChatSegment {
         let mut attrs = HashMap::new();
         attrs.insert(
             "space".to_string(),
-            json!(self
-                .space_display_name
-                .as_deref()
-                .unwrap_or(&self.space_name)),
+            json!(
+                self.space_display_name
+                    .as_deref()
+                    .unwrap_or(&self.space_name)
+            ),
         );
         attrs.insert("space_id".to_string(), json!(self.space_name));
         attrs.insert("threads".to_string(), json!(self.thread_names()));
@@ -983,7 +1022,23 @@ impl SyncManager {
         let source_id = ctx.source_id();
         let sync_type = ctx.sync_mode();
 
-        let known_groups = self.maybe_sync_groups(source, service_creds, ctx).await;
+        // Deserialize the typed source config once. Malformed known fields are a
+        // hard sync error; unknown top-level keys are tolerated.
+        let config: crate::models::GoogleSourceConfig =
+            serde_json::from_value(source.config.clone())
+                .map_err(|e| anyhow!("Invalid Google source config: {}", e))?;
+        let is_sa_direct = matches!(
+            config.auth_mode,
+            crate::models::GoogleAuthMode::ServiceAccountDirect
+        );
+
+        // SA-direct sources never have Admin SDK access — skip group sync.
+        let known_groups = if is_sa_direct {
+            debug!("Skipping group sync for SA-direct source {}", source.id);
+            HashSet::new()
+        } else {
+            self.maybe_sync_groups(source, service_creds, ctx).await
+        };
 
         // The SDK passes us the persisted state on each (re-)dispatch — we use
         // it directly instead of refetching via HTTP. On a fresh sync this is
@@ -998,6 +1053,7 @@ impl SyncManager {
             SourceType::GoogleDrive => {
                 self.sync_drive_source_internal(
                     source,
+                    &config,
                     service_creds,
                     sync_type,
                     existing_state,
@@ -1030,7 +1086,9 @@ impl SyncManager {
             _ => Err(anyhow!("Unsupported source type: {:?}", source.source_type)),
         };
 
-        if result.is_ok() && native_source_type == SourceType::GoogleDrive {
+        // SA-direct is polling-only: skip webhook registration entirely (it
+        // would impersonate the source creator, which SA-direct must never do).
+        if result.is_ok() && native_source_type == SourceType::GoogleDrive && !is_sa_direct {
             self.ensure_webhook_registered(source_id).await;
         }
 
@@ -1205,6 +1263,7 @@ impl SyncManager {
                     file_batch.push(UserFile {
                         user_email: Arc::new(user_email.to_string()),
                         file,
+                        permissions_override: None,
                     });
 
                     if file_batch.len() >= BATCH_SIZE {
@@ -1357,6 +1416,7 @@ impl SyncManager {
                 file_batch.push(UserFile {
                     user_email: Arc::new(user_email.to_string()),
                     file,
+                    permissions_override: None,
                 });
 
                 if file_batch.len() >= BATCH_SIZE {
@@ -1440,9 +1500,15 @@ impl SyncManager {
 
                 let file_lock = content_cache.lock_for_file(&user_file.file.id);
                 let _file_guard = file_lock.lock().await;
-                let current_permissions = user_file
-                    .file
-                    .to_document_permissions(Some(&user_file.user_email));
+                // SA-direct mode carries a drive-level ACL override; use it as-is
+                // (the file's own permissions array is empty for shared drives).
+                // Otherwise derive from the file + syncing user as before.
+                let current_permissions = match &user_file.permissions_override {
+                    Some(override_permissions) => override_permissions.clone(),
+                    None => user_file
+                        .file
+                        .to_document_permissions(Some(&user_file.user_email)),
+                };
                 let merged_permissions =
                     content_cache.merge_permissions(&user_file.file.id, current_permissions);
 
@@ -1790,6 +1856,7 @@ impl SyncManager {
             drive_page_tokens,
             drive_change_tokens,
             drive_scope_fingerprint,
+            drive_acl_fingerprints: existing.drive_acl_fingerprints.clone(),
             chat: existing.chat.clone(),
         }
     }
@@ -1890,35 +1957,8 @@ impl SyncManager {
             drive_scope_requires_full_sync(sync_type, stored_fingerprint, &current_fingerprint);
 
         // Build drive groups: driveId → (selected folder IDs, whether entire drive is selected)
-        struct DriveGroup {
-            drive_id: String,
-            entire_drive: bool,
-            folder_ids: Vec<String>,
-        }
+        let drives = build_drive_groups(&filter_entries);
 
-        let mut drive_groups: HashMap<String, DriveGroup> = HashMap::new();
-        for entry in &filter_entries {
-            let group = drive_groups
-                .entry(entry.drive_id.clone())
-                .or_insert(DriveGroup {
-                    drive_id: entry.drive_id.clone(),
-                    entire_drive: false,
-                    folder_ids: Vec::new(),
-                });
-            match entry.kind {
-                crate::models::FolderPathFilterKind::SharedDriveRoot => {
-                    group.entire_drive = true;
-                    group.folder_ids.clear(); // entire-drive supersedes per-folder.
-                }
-                crate::models::FolderPathFilterKind::Folder => {
-                    if !group.entire_drive {
-                        group.folder_ids.push(entry.id.clone());
-                    }
-                }
-            }
-        }
-
-        let drives: Vec<DriveGroup> = drive_groups.into_values().collect();
         if drives.is_empty() {
             info!("No valid drive scopes found — indexing nothing");
             return Ok(self.build_drive_checkpoint(
@@ -2029,6 +2069,7 @@ impl SyncManager {
                             file_batch.push(UserFile {
                                 user_email: Arc::new(principal_email.clone()),
                                 file: file.clone(),
+                                permissions_override: None,
                             });
 
                             if file_batch.len() >= BATCH_SIZE {
@@ -2130,6 +2171,7 @@ impl SyncManager {
                                 file_batch.push(UserFile {
                                     user_email: Arc::new(principal_email.clone()),
                                     file,
+                                    permissions_override: None,
                                 });
                                 if file_batch.len() >= BATCH_SIZE {
                                     self.flush_batch(
@@ -2218,6 +2260,7 @@ impl SyncManager {
                                     file_batch.push(UserFile {
                                         user_email: Arc::new(principal_email.clone()),
                                         file,
+                                        permissions_override: None,
                                     });
                                     if file_batch.len() >= BATCH_SIZE {
                                         self.flush_batch(
@@ -2285,9 +2328,342 @@ impl SyncManager {
         ))
     }
 
+    /// SA-direct drive sync: index the configured shared drives as the service
+    /// account itself (no `sub` impersonation, no Admin SDK, no user listing).
+    ///
+    /// For each drive it resolves the drive-level ACL via `permissions.list`,
+    /// validates the SA role (Content manager/Manager — fail closed), maps the
+    /// ACL to `DocumentPermissions`, and applies it to every emitted file
+    /// (shared-drive `File.permissions` is always empty). Drive-membership
+    /// changes are detected via a per-drive ACL fingerprint: when it changes,
+    /// the drive is fully re-traversed (no date cutoff) so already-indexed
+    /// unchanged documents get the new ACLs.
+    async fn sync_drive_sa_direct(
+        &self,
+        source: &Source,
+        config: &crate::models::GoogleSourceConfig,
+        service_creds: &ServiceCredential,
+        sync_type: SyncType,
+        existing_state: &GoogleSyncCheckpoint,
+        ctx: &SyncContext,
+    ) -> Result<GoogleSyncCheckpoint> {
+        let sync_run_id = ctx.sync_run_id();
+
+        // SA-direct must have been validated at the request boundary; re-validate
+        // defensively so a config edited behind the sync path still fails closed.
+        config
+            .validate(SourceType::GoogleDrive, service_creds.auth_type)
+            .map_err(anyhow::Error::msg)?;
+
+        let service_auth = Arc::new(
+            self.create_auth(service_creds, SourceType::GoogleDrive)
+                .await?,
+        );
+        let access_token = service_auth.get_self_access_token().await?;
+        let sa_email = match service_auth.as_ref() {
+            crate::auth::GoogleAuth::ServiceAccount(sa) => sa.client_email().to_string(),
+            crate::auth::GoogleAuth::OAuth(_) => {
+                return Err(anyhow!("SA-direct requires service-account credentials"));
+            }
+        };
+
+        let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
+
+        // Build drive groups from the typed config (already validated root-only).
+        let filter_entries = &config.folder_path_filters;
+        let drives = build_drive_groups(filter_entries);
+        if drives.is_empty() {
+            return Err(anyhow!(
+                "SA-direct sync requires at least one selected shared drive"
+            ));
+        }
+
+        // Scope fingerprint: include the auth mode so a DWD→SA-direct switch on
+        // the same source forces a full resync (defensive; in-place conversion is
+        // not a supported v1 path).
+        let current_fingerprint = format!(
+            "sa-direct:{}",
+            crate::models::compute_scope_fingerprint(Some(filter_entries))
+        );
+        let stored_fingerprint = existing_state.drive_scope_fingerprint.as_deref();
+        let scope_changed = stored_fingerprint != Some(&current_fingerprint);
+        if scope_changed {
+            info!(
+                "Drive scope transition detected: {:?} -> {} — forcing full sync",
+                stored_fingerprint, current_fingerprint
+            );
+        }
+
+        // Preflight ALL selected drives before processing any file: fetch each
+        // drive's ACL, validate the SA role, and compute the ACL fingerprint.
+        // A failure on any drive aborts the run before a partial batch is emitted.
+        let old_acl_fingerprints = existing_state
+            .drive_acl_fingerprints
+            .clone()
+            .unwrap_or_default();
+        let mut new_acl_fingerprints: HashMap<String, String> = HashMap::new();
+        let mut drive_acl_overrides: HashMap<String, DocumentPermissions> = HashMap::new();
+        let mut drive_acl_changed: HashMap<String, bool> = HashMap::new();
+
+        for drive_group in &drives {
+            let drive_id = &drive_group.drive_id;
+            let drive_acl = self
+                .drive_client
+                .list_drive_permissions(&access_token, drive_id)
+                .await
+                .with_context(|| format!("Failed to read ACLs for drive {}", drive_id))?;
+
+            let _role = crate::models::validate_sa_drive_access(drive_id, &drive_acl, &sa_email)?;
+
+            let permissions = crate::models::map_drive_permissions(&drive_acl, Some(&sa_email));
+            let fingerprint = crate::models::drive_acl_fingerprint(&drive_acl);
+            let changed = old_acl_fingerprints.get(drive_id) != Some(&fingerprint);
+            if changed {
+                info!(
+                    "ACL fingerprint changed for drive {} — forcing full re-traversal",
+                    drive_id
+                );
+            }
+            new_acl_fingerprints.insert(drive_id.clone(), fingerprint);
+            drive_acl_overrides.insert(drive_id.clone(), permissions);
+            drive_acl_changed.insert(drive_id.clone(), changed);
+        }
+
+        let content_cache = Arc::new(DriveContentCache::default());
+        let mut total_scanned = 0;
+        let mut total_updated = 0;
+        let mut new_change_tokens: HashMap<String, String> = HashMap::new();
+        let old_change_tokens = existing_state
+            .drive_change_tokens
+            .clone()
+            .unwrap_or_default();
+        const BATCH_SIZE: usize = 200;
+
+        for drive_group in &drives {
+            if ctx.is_cancelled() {
+                info!("Sync {} cancelled during SA-direct sync", sync_run_id);
+                break;
+            }
+
+            let drive_id = &drive_group.drive_id;
+            let drive_permissions = drive_acl_overrides
+                .get(drive_id)
+                .cloned()
+                .expect("drive ACL resolved in preflight");
+            let acl_changed = drive_acl_changed.get(drive_id).copied().unwrap_or(true);
+
+            // ACL change forces an uncut full traversal (no date cutoff) so every
+            // previously indexed unchanged document is re-emitted with new ACLs.
+            let use_incremental = sync_type == SyncType::Incremental
+                && !scope_changed
+                && !acl_changed
+                && old_change_tokens.get(drive_id).is_some();
+
+            if use_incremental {
+                let start_token = old_change_tokens.get(drive_id).unwrap().clone();
+                let mut current_token = start_token.clone();
+
+                loop {
+                    let response = self
+                        .drive_client
+                        .list_changes_for_drive(&access_token, &current_token, drive_id)
+                        .await?;
+
+                    if ctx.is_cancelled() {
+                        break;
+                    }
+
+                    let mut file_batch: Vec<UserFile> = Vec::new();
+                    for change in &response.changes {
+                        let is_removed = change.removed.unwrap_or(false);
+                        if is_removed {
+                            if let Some(file_id) = &change.file_id {
+                                info!(
+                                    "File {} was removed (SA-direct incremental), publishing deletion",
+                                    file_id
+                                );
+                                self.publish_deletion_event(ctx, file_id).await?;
+                            }
+                            continue;
+                        }
+
+                        if let Some(file) = &change.file {
+                            if self.should_index_file(file) {
+                                file_batch.push(UserFile {
+                                    user_email: Arc::new(sa_email.clone()),
+                                    file: file.clone(),
+                                    permissions_override: Some(drive_permissions.clone()),
+                                });
+                                if file_batch.len() >= BATCH_SIZE {
+                                    self.flush_batch(
+                                        &mut file_batch,
+                                        &source.id,
+                                        &sync_run_id,
+                                        ctx,
+                                        service_auth.clone(),
+                                        content_cache.clone(),
+                                        &mut total_scanned,
+                                        &mut total_updated,
+                                    )
+                                    .await?;
+                                }
+                            }
+                        }
+                    }
+
+                    self.flush_batch(
+                        &mut file_batch,
+                        &source.id,
+                        &sync_run_id,
+                        ctx,
+                        service_auth.clone(),
+                        content_cache.clone(),
+                        &mut total_scanned,
+                        &mut total_updated,
+                    )
+                    .await?;
+
+                    if let Some(new_token) = &response.new_start_page_token {
+                        new_change_tokens.insert(drive_id.clone(), new_token.clone());
+                    }
+
+                    match response.next_page_token {
+                        Some(token) => current_token = token,
+                        None => break,
+                    }
+                }
+
+                if !new_change_tokens.contains_key(drive_id) {
+                    match self
+                        .drive_client
+                        .get_start_page_token_for_drive(&access_token, drive_id)
+                        .await
+                    {
+                        Ok(token) => {
+                            new_change_tokens.insert(drive_id.clone(), token);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Failed to get start page token for drive {}: {}",
+                                drive_id, e
+                            );
+                        }
+                    }
+                }
+            } else {
+                let next_change_token = match self
+                    .drive_client
+                    .get_start_page_token_for_drive(&access_token, drive_id)
+                    .await
+                {
+                    Ok(token) => Some(token),
+                    Err(error) => {
+                        warn!(
+                            "Failed to get start page token for drive {}: {}",
+                            drive_id, error
+                        );
+                        None
+                    }
+                };
+
+                let mut file_batch: Vec<UserFile> = Vec::new();
+                let mut page_token: Option<String> = None;
+                loop {
+                    // Full traversal: when the ACL changed, pass no cutoff so
+                    // every document (even unchanged old ones) is re-emitted;
+                    // otherwise apply the normal date cutoff.
+                    let modified_after: Option<&str> = if acl_changed {
+                        None
+                    } else {
+                        Some(&drive_cutoff_date)
+                    };
+                    let response = self
+                        .drive_client
+                        .list_files_in_drive(
+                            &service_auth,
+                            &sa_email,
+                            drive_id,
+                            page_token.as_deref(),
+                            modified_after,
+                        )
+                        .await?;
+
+                    for file in response.files {
+                        if self.should_index_file(&file) {
+                            file_batch.push(UserFile {
+                                user_email: Arc::new(sa_email.clone()),
+                                file,
+                                permissions_override: Some(drive_permissions.clone()),
+                            });
+                            if file_batch.len() >= BATCH_SIZE {
+                                self.flush_batch(
+                                    &mut file_batch,
+                                    &source.id,
+                                    &sync_run_id,
+                                    ctx,
+                                    service_auth.clone(),
+                                    content_cache.clone(),
+                                    &mut total_scanned,
+                                    &mut total_updated,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+
+                    if ctx.is_cancelled() {
+                        break;
+                    }
+
+                    page_token = response.next_page_token;
+                    if page_token.is_none() {
+                        break;
+                    }
+                }
+
+                self.flush_batch(
+                    &mut file_batch,
+                    &source.id,
+                    &sync_run_id,
+                    ctx,
+                    service_auth.clone(),
+                    content_cache.clone(),
+                    &mut total_scanned,
+                    &mut total_updated,
+                )
+                .await?;
+
+                if ctx.is_cancelled() {
+                    break;
+                }
+
+                if let Some(token) = next_change_token {
+                    new_change_tokens.insert(drive_id.clone(), token);
+                }
+            }
+        }
+
+        info!(
+            "SA-direct Drive sync completed for source {}: {} scanned, {} updated",
+            source.id, total_scanned, total_updated
+        );
+
+        self.folder_cache.clear();
+
+        Ok(GoogleSyncCheckpoint {
+            gmail_history_ids: existing_state.gmail_history_ids.clone(),
+            drive_page_tokens: None,
+            drive_change_tokens: Some(new_change_tokens),
+            drive_scope_fingerprint: Some(current_fingerprint),
+            drive_acl_fingerprints: Some(new_acl_fingerprints),
+            chat: existing_state.chat.clone(),
+        })
+    }
+
     async fn sync_drive_source_internal(
         &self,
         source: &Source,
+        config: &crate::models::GoogleSourceConfig,
         service_creds: &ServiceCredential,
         sync_type: SyncType,
         existing_state: GoogleSyncCheckpoint,
@@ -2297,6 +2673,24 @@ impl SyncManager {
 
         let native_source_type = SourceType::try_from(source.source_type.as_str())
             .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+
+        // SA-direct mode: index the selected shared drives as the SA itself.
+        if matches!(
+            config.auth_mode,
+            crate::models::GoogleAuthMode::ServiceAccountDirect
+        ) {
+            return self
+                .sync_drive_sa_direct(
+                    source,
+                    config,
+                    service_creds,
+                    sync_type,
+                    &existing_state,
+                    ctx,
+                )
+                .await;
+        }
+
         let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
         // Parse folder-path filters. Malformed config is a sync error.
@@ -2548,6 +2942,7 @@ impl SyncManager {
                         },
                         drive_change_tokens: None,
                         drive_scope_fingerprint: Some(current_fingerprint.clone()),
+                        drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
                         chat: chat_checkpoint.clone(),
                     };
                     ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
@@ -2605,6 +3000,7 @@ impl SyncManager {
             },
             drive_change_tokens: None,
             drive_scope_fingerprint: Some(current_fingerprint),
+            drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
             chat: chat_checkpoint,
         })
     }
@@ -2813,6 +3209,7 @@ impl SyncManager {
                             drive_page_tokens: drive_page_tokens.clone(),
                             drive_change_tokens: existing_state.drive_change_tokens.clone(),
                             drive_scope_fingerprint: existing_state.drive_scope_fingerprint.clone(),
+                            drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
                             chat: chat_checkpoint.clone(),
                         };
                         ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
@@ -2863,6 +3260,7 @@ impl SyncManager {
             drive_page_tokens,
             drive_change_tokens: existing_state.drive_change_tokens.clone(),
             drive_scope_fingerprint: existing_state.drive_scope_fingerprint.clone(),
+            drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
             chat: chat_checkpoint,
         })
     }
@@ -3020,6 +3418,7 @@ impl SyncManager {
                 drive_page_tokens: existing_state.drive_page_tokens.clone(),
                 drive_change_tokens: existing_state.drive_change_tokens.clone(),
                 drive_scope_fingerprint: existing_state.drive_scope_fingerprint.clone(),
+                drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
                 chat: Some(chat_checkpoint.clone()),
             };
             ctx.save_checkpoint(serde_json::to_value(&checkpoint_state)?)
@@ -3031,6 +3430,7 @@ impl SyncManager {
             drive_page_tokens: existing_state.drive_page_tokens,
             drive_change_tokens: existing_state.drive_change_tokens,
             drive_scope_fingerprint: existing_state.drive_scope_fingerprint,
+            drive_acl_fingerprints: existing_state.drive_acl_fingerprints,
             chat: Some(chat_checkpoint),
         })
     }
@@ -5060,9 +5460,11 @@ impl SyncManager {
 pub(crate) async fn check_ancestry_static(
     file_parents: &Option<Vec<String>>,
     allowed_ids: &HashSet<String>,
-    lookup: &(dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>>
-          + Send
-          + Sync),
+    lookup: &(
+         dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<(String, Option<String>)>> + Send>>
+             + Send
+             + Sync
+     ),
 ) -> Result<bool> {
     if allowed_ids.is_empty() {
         return Ok(true);
@@ -5136,6 +5538,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            drive_id: None,
             permissions: None,
             owners: None,
         };
@@ -5160,6 +5563,7 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            drive_id: None,
             permissions: None,
             owners: None,
         };
@@ -5374,6 +5778,7 @@ mod tests {
                 size: None,
                 parents: None,
                 shared: None,
+                drive_id: None,
                 permissions: None,
                 owners: None,
             }

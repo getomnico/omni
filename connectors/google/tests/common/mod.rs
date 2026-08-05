@@ -76,12 +76,20 @@ impl GoogleConnectorTestFixture {
             redis_client.clone(),
         ));
 
+        let remote_mcp_gateway = Arc::new(
+            omni_connector_manager::remote_mcp::gateway::RemoteMcpGateway::new(
+                test_env.db_pool.clone(),
+                redis_client.clone(),
+            )?,
+        );
+
         let extraction_semaphore = Arc::new(Semaphore::new(config.extraction_concurrency));
         let app_state = AppState {
             db_pool: test_env.db_pool.clone(),
             redis_client,
             config,
             sync_manager: cm_sync_manager,
+            remote_mcp_gateway,
             content_storage,
             extraction_semaphore,
         };

@@ -93,6 +93,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         throw error(400, 'Name and sourceType are required')
     }
 
+    // SA-direct is Drive-only: reject crafted Gmail/Chat source creation.
+    const configAuthMode =
+        config && typeof config === 'object' && !Array.isArray(config)
+            ? (config as Record<string, unknown>).auth_mode
+            : undefined
+    if (configAuthMode === 'service_account_direct' && sourceType !== SourceType.GOOGLE_DRIVE) {
+        throw error(400, 'service_account_direct is supported only for Google Drive sources')
+    }
+
     if (
         body.integrationType === IntegrationType.REMOTE_MCP ||
         body.integration_type === IntegrationType.REMOTE_MCP

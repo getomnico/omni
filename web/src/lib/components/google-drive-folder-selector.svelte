@@ -13,6 +13,7 @@
         serviceAccountJson = '',
         principalEmail = '',
         domain = '',
+        authMode = 'domain_wide_delegation' as 'domain_wide_delegation' | 'service_account_direct',
         selected = $bindable([] as FolderPathFilter[]),
         disabled = false,
         label = 'Folders to index',
@@ -22,11 +23,14 @@
         serviceAccountJson?: string
         principalEmail?: string
         domain?: string
+        authMode?: 'domain_wide_delegation' | 'service_account_direct'
         selected?: FolderPathFilter[]
         disabled?: boolean
         label?: string
         description?: string
     } = $props()
+
+    const isSaDirect = $derived(authMode === 'service_account_direct')
 
     // Internal state
     let searchQuery = $state('')
@@ -65,6 +69,7 @@
             sa: serviceAccountJson,
             pe: principalEmail,
             dm: domain,
+            am: authMode,
             sid: sourceId,
         }),
     )
@@ -124,12 +129,18 @@
             rv = currentRequestVersion
         }
 
-        if (!serviceAccountJson || !principalEmail || !domain) {
+        if (!serviceAccountJson) {
             if (!sourceId) {
                 isLoading = false
                 return
             }
             // Stored-credential path: use sourceId even without transient creds.
+        }
+
+        // SA-direct needs only the SA key (no principal/domain); DWD needs all.
+        if (!isSaDirect && serviceAccountJson && (!principalEmail || !domain)) {
+            isLoading = false
+            return
         }
 
         // Abort any prior in-flight request.
@@ -148,17 +159,18 @@
         try {
             let response: Response
 
-            if (serviceAccountJson && principalEmail && domain) {
+            if (serviceAccountJson && (isSaDirect || (principalEmail && domain))) {
                 // Invoke the connector directly with transient credentials.
                 response = await fetch('/api/connectors/google_drive/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'discover_folders',
-                        params: {},
+                        params: isSaDirect ? { auth_mode: 'service_account_direct' } : {},
                         serviceAccountJson,
                         principalEmail,
                         domain,
+                        authMode,
                     }),
                     signal,
                 })
@@ -169,7 +181,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'discover_folders',
-                        params: {},
+                        params: isSaDirect ? { auth_mode: 'service_account_direct' } : {},
                     }),
                     signal,
                 })
@@ -232,11 +244,15 @@
 
     function filterItems(query: string) {
         if (!query.trim()) {
-            filteredItems = allItems
+            filteredItems = isSaDirect
+                ? allItems.filter((item) => item.kind === 'shared_drive_root')
+                : allItems
             return
         }
         const q = query.trim().toLowerCase()
-        filteredItems = allItems.filter(
+        filteredItems = (
+            isSaDirect ? allItems.filter((item) => item.kind === 'shared_drive_root') : allItems
+        ).filter(
             (item) =>
                 !selected.some((s) => s.id === item.id) &&
                 (item.name.toLowerCase().includes(q) ||
@@ -256,6 +272,8 @@
 
     function selectItem(item: DriveFolderDiscoveryEntry) {
         if (selected.some((s) => s.id === item.id)) return
+        // SA-direct v1 is whole-drives only — never select folder-kind items.
+        if (isSaDirect && item.kind !== 'shared_drive_root') return
         selected = [
             ...selected,
             {
