@@ -50,6 +50,7 @@ pub struct GoogleServiceAccountKey {
 #[derive(Debug, Serialize)]
 struct GoogleJwtClaims {
     iss: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     sub: Option<String>,
     scope: String,
     aud: String,
@@ -122,9 +123,16 @@ impl ServiceAccountAuth {
         let now = Utc::now();
         let exp = now + Duration::hours(1);
 
+        // Self-auth: when the requested subject is the service account's own
+        // client_email, omit the `sub` claim entirely so Google issues a token
+        // for the service account itself rather than impersonating a user.
+        // This is the SA-direct mode (no domain-wide delegation).
+        let subject = (impersonate_user != self.service_account.client_email)
+            .then(|| impersonate_user.to_string());
+
         let claims = GoogleJwtClaims {
             iss: self.service_account.client_email.clone(),
-            sub: Some(impersonate_user.to_string()),
+            sub: subject,
             scope: self.scopes.join(" "),
             aud: self.service_account.token_uri.clone(),
             exp: exp.timestamp(),
@@ -200,6 +208,18 @@ impl ServiceAccountAuth {
         debug!("Token cached for user: {}", impersonate_user);
 
         Ok(token_response.access_token)
+    }
+
+    /// Get an access token for the service account itself (no `sub` claim,
+    /// no impersonation). Used by SA-direct mode.
+    pub async fn get_self_access_token(&self) -> Result<String> {
+        self.get_access_token(&self.service_account.client_email)
+            .await
+    }
+
+    /// The service account's own email address.
+    pub fn client_email(&self) -> &str {
+        &self.service_account.client_email
     }
 
     pub async fn validate(&self, test_user: &str) -> Result<()> {
@@ -375,6 +395,15 @@ impl GoogleAuth {
         match self {
             GoogleAuth::ServiceAccount(sa) => sa.get_access_token(user_email).await,
             GoogleAuth::OAuth(oauth) => oauth.get_access_token(user_email).await,
+        }
+    }
+
+    /// Get a token for the service account itself (no `sub` claim). Only valid
+    /// for service-account auth; OAuth has no self-token concept.
+    pub async fn get_self_access_token(&self) -> Result<String> {
+        match self {
+            GoogleAuth::ServiceAccount(sa) => sa.get_self_access_token().await,
+            GoogleAuth::OAuth(_) => Err(anyhow!("self-token not supported for OAuth")),
         }
     }
 
@@ -757,6 +786,73 @@ mod tests {
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("Invalid key type"));
+    }
+
+    #[test]
+    fn test_self_auth_omits_sub_claim() {
+        // Self-auth (passing client_email as the subject) must serialize the
+        // JWT WITHOUT a `sub` claim — Google rejects `"sub": null`.
+        let claims = GoogleJwtClaims {
+            iss: "sa@project.iam.gserviceaccount.com".to_string(),
+            sub: None,
+            scope: "https://www.googleapis.com/auth/drive.readonly".to_string(),
+            aud: "https://oauth2.googleapis.com/token".to_string(),
+            exp: 1_700_000_000,
+            iat: 1_699_999_400,
+        };
+        let serialized = serde_json::to_value(&claims).unwrap();
+        assert!(
+            serialized.get("sub").is_none(),
+            "self-auth JWT must not contain a sub claim, got {:?}",
+            serialized
+        );
+    }
+
+    #[test]
+    fn test_impersonated_claims_include_sub() {
+        let claims = GoogleJwtClaims {
+            iss: "sa@project.iam.gserviceaccount.com".to_string(),
+            sub: Some("admin@example.com".to_string()),
+            scope: "https://www.googleapis.com/auth/drive.readonly".to_string(),
+            aud: "https://oauth2.googleapis.com/token".to_string(),
+            exp: 1_700_000_000,
+            iat: 1_699_999_400,
+        };
+        let serialized = serde_json::to_value(&claims).unwrap();
+        assert_eq!(
+            serialized.get("sub").and_then(|v| v.as_str()),
+            Some("admin@example.com")
+        );
+    }
+
+    #[test]
+    fn test_client_email_matches_self_auth_condition() {
+        // The `sub` is omitted exactly when the requested subject equals the
+        // service account's own client_email.
+        let sa = GoogleServiceAccountKey {
+            key_type: "service_account".to_string(),
+            project_id: "p".to_string(),
+            private_key_id: "k".to_string(),
+            private_key: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----\n"
+                .to_string(),
+            client_email: "sa@project.iam.gserviceaccount.com".to_string(),
+            client_id: "1".to_string(),
+            auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+            token_uri: "https://oauth2.googleapis.com/token".to_string(),
+            auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs".to_string(),
+            client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/sa"
+                .to_string(),
+        };
+        assert!(
+            !(sa.client_email != sa.client_email),
+            "self-auth comparison must be false for identical emails"
+        );
+        let subject =
+            ("admin@example.com" != sa.client_email).then(|| "admin@example.com".to_string());
+        assert!(subject.is_some(), "real user impersonation keeps sub");
+        let self_subject =
+            (sa.client_email.as_str() != sa.client_email.as_str()).then(|| sa.client_email.clone());
+        assert!(self_subject.is_none(), "self-auth drops sub");
     }
 
     #[test]

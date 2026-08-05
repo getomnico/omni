@@ -9,6 +9,12 @@
         domain?: string
         hasStoredKey?: boolean
         disabled?: boolean
+        // 'sa-direct' hides the admin-email/domain fields and shows
+        // non-impersonation guidance. Defaults to DWD behavior.
+        mode?: 'dwd' | 'sa-direct'
+        // Hide the SA-direct explanation paragraph when the surrounding page
+        // already explains the mode (e.g. a banner on the settings page).
+        showSaDirectInfo?: boolean
     }
 
     let {
@@ -17,7 +23,11 @@
         domain = $bindable(''),
         hasStoredKey = false,
         disabled = false,
+        mode = 'dwd',
+        showSaDirectInfo = true,
     }: Props = $props()
+
+    const isSaDirect = $derived(mode === 'sa-direct')
 </script>
 
 <div class="space-y-4">
@@ -35,35 +45,44 @@
         </p>
     </div>
 
-    <div class="space-y-2">
-        <Label for="principal-email">Admin Email</Label>
-        <Input
-            id="principal-email"
-            name="principalEmail"
-            bind:value={principalEmail}
-            placeholder="admin@yourdomain.com"
-            type="email"
-            {disabled}
-            required />
-        <p class="text-muted-foreground text-sm">
-            The admin user email that the service account will impersonate to access Google
-            Workspace APIs.
-        </p>
-    </div>
+    {#if isSaDirect}
+        {#if showSaDirectInfo}
+            <p class="text-muted-foreground text-sm">
+                The service account will authenticate as itself without domain-wide delegation. Add
+                the service account email to each shared drive as
+                <span class="font-medium">Content manager</span> or
+                <span class="font-medium">Manager</span>.
+            </p>
+        {/if}
+    {:else}
+        <div class="space-y-2">
+            <Label for="principal-email">Admin Email</Label>
+            <Input
+                id="principal-email"
+                name="principalEmail"
+                bind:value={principalEmail}
+                placeholder="admin@yourdomain.com"
+                type="email"
+                {disabled}
+                required />
+            <p class="text-muted-foreground text-sm">
+                The admin user the service account impersonates to access Google Workspace APIs.
+            </p>
+        </div>
 
-    <div class="space-y-2">
-        <Label for="domain">Organization Domain</Label>
-        <Input
-            id="domain"
-            name="domain"
-            bind:value={domain}
-            placeholder="yourdomain.com"
-            type="text"
-            {disabled}
-            required />
-        <p class="text-muted-foreground text-sm">
-            Your Google Workspace domain (e.g., company.com). The service account will impersonate
-            all users in this domain.
-        </p>
-    </div>
+        <div class="space-y-2">
+            <Label for="domain">Organization Domain</Label>
+            <Input
+                id="domain"
+                name="domain"
+                bind:value={domain}
+                placeholder="yourdomain.com"
+                type="text"
+                {disabled}
+                required />
+            <p class="text-muted-foreground text-sm">
+                Your Google Workspace domain (e.g., company.com).
+            </p>
+        </div>
+    {/if}
 </div>

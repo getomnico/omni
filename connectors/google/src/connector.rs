@@ -3,17 +3,18 @@ use std::time::{Duration, Instant};
 
 use crate::admin::AdminClient;
 use crate::auth::{
-    create_service_auth, get_domain_from_credentials, GoogleCredentialPayload,
-    GoogleOAuthCredentials,
+    GoogleCredentialPayload, GoogleOAuthCredentials, create_service_auth,
+    get_domain_from_credentials,
 };
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{
-    DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse, GoogleDirectoryUser,
-    GoogleSyncCheckpoint, SearchUsersResponse,
+    DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse, GoogleAuthMode, GoogleDirectoryUser,
+    GoogleSourceConfig, GoogleSyncCheckpoint, SearchUsersResponse, SharedDriveAccessResponse,
+    SharedDriveAccessResult,
 };
 use crate::sync::SyncManager;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
@@ -23,7 +24,7 @@ use omni_connector_sdk::{
     SyncRequestValidationError, SyncType,
 };
 use serde::Deserialize;
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::collections::HashMap;
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -129,6 +130,22 @@ pub struct ParsedAttachmentDocId {
     pub rfc822_msgid: String,
     pub filename: String,
     pub size: u64,
+}
+
+/// Params for the `discover_folders` connector action.
+#[derive(Debug, Default, Deserialize)]
+struct DiscoverFoldersParams {
+    #[serde(default)]
+    auth_mode: Option<GoogleAuthMode>,
+}
+
+/// Params for the `validate_shared_drive_access` connector action.
+#[derive(Debug, Default, Deserialize)]
+struct ValidateSharedDriveAccessParams {
+    #[serde(default)]
+    auth_mode: Option<GoogleAuthMode>,
+    #[serde(default)]
+    drive_ids: Vec<String>,
 }
 
 fn parse_attachment_doc_id(composite: &str) -> Result<ParsedAttachmentDocId> {
@@ -814,7 +831,7 @@ impl GoogleConnector {
 
     async fn execute_discover_folders(
         &self,
-        _params: JsonValue,
+        params: JsonValue,
         creds: &ServiceCredential,
     ) -> Result<axum::response::Response> {
         // Only JWT secrets are supported for shared-drive discovery.
@@ -825,20 +842,33 @@ impl GoogleConnector {
             .into_response());
         }
 
-        let principal_email = creds
-            .principal_email
-            .as_deref()
-            .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
+        // Fail loudly on malformed params rather than guessing.
+        let params: DiscoverFoldersParams = serde_json::from_value(params)?;
+        let is_sa_direct = params.auth_mode == Some(GoogleAuthMode::ServiceAccountDirect);
 
         let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
-
         let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
+
+        // SA-direct discovery uses the SA self-token (no impersonation); DWD
+        // discovery impersonates the configured principal email.
+        let user_email = if is_sa_direct {
+            match &google_auth {
+                crate::auth::GoogleAuth::ServiceAccount(sa) => sa.client_email().to_string(),
+                crate::auth::GoogleAuth::OAuth(_) => unreachable!(),
+            }
+        } else {
+            creds
+                .principal_email
+                .as_deref()
+                .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?
+                .to_string()
+        };
 
         // 1. List all shared drives
         let drives_response = self
             .sync_manager
             .drive_client()
-            .list_drives(&google_auth, principal_email)
+            .list_drives(&google_auth, &user_email)
             .await?;
 
         let mut items: Vec<DriveFolderDiscoveryEntry> = Vec::new();
@@ -854,29 +884,31 @@ impl GoogleConnector {
             });
         }
 
-        // 3. For each shared drive, list top-level folder children.
-        // Any failure propagates so the admin gets an actionable error.
-        for drive in &drives_response.drives {
-            let folders = self
-                .sync_manager
-                .drive_client()
-                .list_folder_children(&google_auth, principal_email, &drive.id, &drive.id)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to list folder children for shared drive '{}' ({})",
-                        drive.name, drive.id
-                    )
-                })?;
+        // 3. For each shared drive, list top-level folder children (DWD only).
+        // SA-direct v1 selects whole drives only — no top-level folder listing.
+        if !is_sa_direct {
+            for drive in &drives_response.drives {
+                let folders = self
+                    .sync_manager
+                    .drive_client()
+                    .list_folder_children(&google_auth, &user_email, &drive.id, &drive.id)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to list folder children for shared drive '{}' ({})",
+                            drive.name, drive.id
+                        )
+                    })?;
 
-            for folder in &folders.files {
-                items.push(DriveFolderDiscoveryEntry {
-                    id: folder.id.clone(),
-                    name: folder.name.clone(),
-                    path: format!("/{}/{}", drive.name, folder.name),
-                    drive_id: drive.id.clone(),
-                    kind: "folder".to_string(),
-                });
+                for folder in &folders.files {
+                    items.push(DriveFolderDiscoveryEntry {
+                        id: folder.id.clone(),
+                        name: folder.name.clone(),
+                        path: format!("/{}/{}", drive.name, folder.name),
+                        drive_id: drive.id.clone(),
+                        kind: "folder".to_string(),
+                    });
+                }
             }
         }
 
@@ -884,11 +916,89 @@ impl GoogleConnector {
 
         Ok(ActionResponse::success(serde_json::to_value(result)?).into_response())
     }
+
+    /// Validate that a service account can read ACLs (Content manager/Manager)
+    /// for every selected shared drive. Used by the setup UI before source
+    /// creation and re-checked at sync start.
+    async fn execute_validate_shared_drive_access(
+        &self,
+        params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<axum::response::Response> {
+        if creds.auth_type != AuthType::Jwt {
+            return Ok(ActionResponse::failure(
+                "validate_shared_drive_access requires JWT credentials".to_string(),
+            )
+            .into_response());
+        }
+
+        // Fail loudly on malformed params rather than guessing.
+        let params: ValidateSharedDriveAccessParams = serde_json::from_value(params)?;
+        if params.auth_mode != Some(GoogleAuthMode::ServiceAccountDirect) {
+            return Ok(ActionResponse::failure(
+                "validate_shared_drive_access requires auth_mode=service_account_direct"
+                    .to_string(),
+            )
+            .into_response());
+        }
+        if params.drive_ids.is_empty() {
+            return Ok(ActionResponse::failure(
+                "validate_shared_drive_access requires at least one drive_id".to_string(),
+            )
+            .into_response());
+        }
+
+        let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
+        let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
+        let sa_email = match &google_auth {
+            crate::auth::GoogleAuth::ServiceAccount(sa) => sa.client_email().to_string(),
+            crate::auth::GoogleAuth::OAuth(_) => unreachable!(),
+        };
+        let access_token = google_auth.get_self_access_token().await?;
+
+        let mut results = Vec::new();
+        for drive_id in &params.drive_ids {
+            let result = match self
+                .sync_manager
+                .drive_client()
+                .list_drive_permissions(&access_token, drive_id)
+                .await
+            {
+                Ok(permissions) => {
+                    match crate::models::validate_sa_drive_access(drive_id, &permissions, &sa_email)
+                    {
+                        Ok(role) => SharedDriveAccessResult {
+                            drive_id: drive_id.clone(),
+                            ok: true,
+                            role: Some(role),
+                            error: None,
+                        },
+                        Err(e) => SharedDriveAccessResult {
+                            drive_id: drive_id.clone(),
+                            ok: false,
+                            role: None,
+                            error: Some(e.to_string()),
+                        },
+                    }
+                }
+                Err(e) => SharedDriveAccessResult {
+                    drive_id: drive_id.clone(),
+                    ok: false,
+                    role: None,
+                    error: Some(format!("Failed to read drive ACLs: {}", e)),
+                },
+            };
+            results.push(result);
+        }
+
+        let response = SharedDriveAccessResponse { drives: results };
+        Ok(ActionResponse::success(serde_json::to_value(response)?).into_response())
+    }
 }
 
 #[async_trait]
 impl Connector for GoogleConnector {
-    type Config = JsonValue;
+    type Config = GoogleSourceConfig;
     type Credentials = GoogleCredentialPayload;
     type State = GoogleSyncCheckpoint;
 
@@ -994,8 +1104,39 @@ impl Connector for GoogleConnector {
                 mode: omni_connector_sdk::ActionMode::Read,
                 input_schema: json!({
                     "type": "object",
-                    "properties": {},
+                    "properties": {
+                        "auth_mode": {
+                            "type": "string",
+                            "enum": ["domain_wide_delegation", "service_account_direct"],
+                            "description": "Auth mode. SA-direct returns shared-drive roots only."
+                        }
+                    },
                     "required": []
+                }),
+                required_scopes: None,
+                source_types: vec![SourceType::GoogleDrive],
+                admin_only: true,
+                hidden: true,
+            },
+            ActionDefinition {
+                name: "validate_shared_drive_access".to_string(),
+                description:
+                    "Validate that the service account can read ACLs (Content manager/Manager) for every selected shared drive."
+                        .to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "auth_mode": {
+                            "type": "string",
+                            "enum": ["service_account_direct"]
+                        },
+                        "drive_ids": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "required": ["auth_mode", "drive_ids"]
                 }),
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
@@ -1180,8 +1321,26 @@ impl Connector for GoogleConnector {
             )));
         }
 
+        // Deserialize the typed source config once. Unknown keys are tolerated;
+        // malformed known fields and cross-field violations fail fast.
+        let config: GoogleSourceConfig =
+            serde_json::from_value(source.config.clone()).map_err(|e| {
+                SyncRequestValidationError::BadRequest(format!(
+                    "Invalid Google source config: {}",
+                    e
+                ))
+            })?;
+        let native_source_type = SourceType::try_from(source.source_type.as_str())
+            .map_err(SyncRequestValidationError::BadRequest)?;
+
         match creds.auth_type {
             omni_connector_sdk::AuthType::OAuth => {
+                if config.auth_mode == GoogleAuthMode::ServiceAccountDirect {
+                    return Err(SyncRequestValidationError::BadRequest(
+                        "service_account_direct requires JWT service-account credentials, not OAuth"
+                            .to_string(),
+                    ));
+                }
                 let oauth_credentials: GoogleOAuthCredentials =
                     serde_json::from_value(creds.credentials.clone()).map_err(|e| {
                         SyncRequestValidationError::BadRequest(format!(
@@ -1202,20 +1361,27 @@ impl Connector for GoogleConnector {
                 }
             }
             _ => {
-                let native_source_type = SourceType::try_from(source.source_type.as_str())
+                // Cross-field validation (SA-direct rules, Drive-only, root-only
+                // filters, JWT requirement).
+                config
+                    .validate(native_source_type, creds.auth_type)
                     .map_err(SyncRequestValidationError::BadRequest)?;
-                create_service_auth(creds, native_source_type).map_err(|e| {
-                    SyncRequestValidationError::BadRequest(format!(
-                        "Invalid Google service-account credentials: {}",
-                        e
-                    ))
-                })?;
-                get_domain_from_credentials(creds).map_err(|e| {
-                    SyncRequestValidationError::BadRequest(format!(
-                        "Invalid Google service-account config: {}",
-                        e
-                    ))
-                })?;
+
+                if config.auth_mode == GoogleAuthMode::DomainWideDelegation {
+                    // DWD still requires domain + valid service-account creds.
+                    create_service_auth(creds, native_source_type).map_err(|e| {
+                        SyncRequestValidationError::BadRequest(format!(
+                            "Invalid Google service-account credentials: {}",
+                            e
+                        ))
+                    })?;
+                    get_domain_from_credentials(creds).map_err(|e| {
+                        SyncRequestValidationError::BadRequest(format!(
+                            "Invalid Google service-account config: {}",
+                            e
+                        ))
+                    })?;
+                }
             }
         }
 
@@ -1255,6 +1421,10 @@ impl Connector for GoogleConnector {
             "fetch_file" => self.execute_fetch_file(params, &creds).await,
             "search_users" => self.execute_search_users(params, &creds).await,
             "discover_folders" => self.execute_discover_folders(params, &creds).await,
+            "validate_shared_drive_access" => {
+                self.execute_validate_shared_drive_access(params, &creds)
+                    .await
+            }
             "google_workspace_schema" => self.execute_gws_schema(params).await,
             "google_workspace_call" => self.execute_gws_call(params, &creds).await,
             _ => {
@@ -1283,12 +1453,12 @@ mod tests {
     use crate::sync::SyncManager;
 
     use super::{
+        GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE, GOOGLE_DOCS_SCOPE,
+        GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE, GOOGLE_SHEETS_SCOPE,
+        GOOGLE_SLIDES_SCOPE, GoogleConnector, GwsCallRequest, GwsSchemaRequest,
         build_attachment_doc_id, build_gws_call_args, build_gws_schema_args,
         file_name_with_extension, gws_action_response, gws_required_action_scopes,
-        missing_gws_call_scopes, parse_attachment_doc_id, GoogleConnector, GwsCallRequest,
-        GwsSchemaRequest, GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE,
-        GOOGLE_DOCS_SCOPE, GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE, GOOGLE_SHEETS_SCOPE,
-        GOOGLE_SLIDES_SCOPE,
+        missing_gws_call_scopes, parse_attachment_doc_id,
     };
 
     fn test_connector() -> GoogleConnector {
@@ -1364,12 +1534,16 @@ mod tests {
 
         assert_eq!(creds.auth_type, AuthType::Jwt);
         let scopes = creds.config["scopes"].as_array().expect("scopes");
-        assert!(scopes
-            .iter()
-            .any(|s| s == "https://www.googleapis.com/auth/drive.readonly"));
-        assert!(scopes
-            .iter()
-            .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly"));
+        assert!(
+            scopes
+                .iter()
+                .any(|s| s == "https://www.googleapis.com/auth/drive.readonly")
+        );
+        assert!(
+            scopes
+                .iter()
+                .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly")
+        );
         assert!(scopes.iter().any(|s| s == GOOGLE_DOCS_SCOPE));
         assert!(scopes.iter().any(|s| s == GOOGLE_SHEETS_SCOPE));
         assert!(scopes.iter().any(|s| s == GOOGLE_SLIDES_SCOPE));
@@ -1493,9 +1667,10 @@ mod tests {
     fn gws_required_action_scopes_rejects_unsupported_services() {
         let err = gws_required_action_scopes("calendar").unwrap_err();
 
-        assert!(err
-            .to_string()
-            .contains("Unsupported Google Workspace service"));
+        assert!(
+            err.to_string()
+                .contains("Unsupported Google Workspace service")
+        );
     }
 
     #[test]

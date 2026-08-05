@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use omni_connector_sdk::{
-    ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions,
+    AuthType, ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions, SourceType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -25,7 +25,7 @@ pub struct GoogleDirectoryUser {
 
 /// A single entry in the persisted folder-path filter list in source config.
 /// Stored under `sources.config.folder_path_filters`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FolderPathFilterEntry {
     pub id: String,
@@ -36,11 +36,102 @@ pub struct FolderPathFilterEntry {
     pub kind: FolderPathFilterKind,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FolderPathFilterKind {
     SharedDriveRoot,
     Folder,
+}
+
+/// Auth strategy for a Google source's service-account credentials.
+///
+/// - `DomainWideDelegation`: the service account impersonates Workspace users
+///   (`sub` claim) — the existing org-wide Drive/Gmail/Chat behavior. Missing
+///   `auth_mode` in legacy source configs defaults here.
+/// - `ServiceAccountDirect`: the service account authenticates as itself (no
+///   `sub` claim) and indexes only explicitly selected shared drives.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoogleAuthMode {
+    #[default]
+    DomainWideDelegation,
+    ServiceAccountDirect,
+}
+
+/// Typed view of a Google source's `sources.config` blob.
+///
+/// Deserialized once at the sync/action boundary and validated via
+/// [`Self::validate`]. Unknown top-level keys are tolerated so legacy sources
+/// are never rejected at dispatch time; the fields we consume are typed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoogleSourceConfig {
+    #[serde(default)]
+    pub auth_mode: GoogleAuthMode,
+    /// Retained for existing source-config compatibility (DWD).
+    #[serde(default)]
+    pub domain: Option<String>,
+    /// Selected shared drives (kind `shared_drive_root`) and optional folder
+    /// subtrees (kind `folder`). Empty/missing => index everything (DWD).
+    #[serde(default)]
+    pub folder_path_filters: Vec<FolderPathFilterEntry>,
+    #[serde(default)]
+    pub space_allowlist: Vec<String>,
+    #[serde(default)]
+    pub include_group_chats: bool,
+}
+
+impl GoogleSourceConfig {
+    /// Cross-field validation for the typed config.
+    ///
+    /// `source_type` is the native connector source type; `credential_auth_type`
+    /// is the stored credential's auth type (OAuth vs service-account JWT).
+    ///
+    /// Rules:
+    /// - `ServiceAccountDirect` requires JWT/service-account credentials and is
+    ///   valid only for Google Drive.
+    /// - `ServiceAccountDirect` requires a non-empty `folder_path_filters` list
+    ///   whose entries are all `SharedDriveRoot` (whole drives only in v1).
+    /// - `DomainWideDelegation` keeps the existing permissive behavior.
+    pub fn validate(
+        &self,
+        source_type: SourceType,
+        credential_auth_type: AuthType,
+    ) -> Result<(), String> {
+        match self.auth_mode {
+            GoogleAuthMode::DomainWideDelegation => Ok(()),
+            GoogleAuthMode::ServiceAccountDirect => {
+                if credential_auth_type == AuthType::OAuth {
+                    return Err(
+                        "service_account_direct requires JWT service-account credentials, not OAuth"
+                            .to_string(),
+                    );
+                }
+                if source_type != SourceType::GoogleDrive {
+                    return Err(format!(
+                        "service_account_direct is supported only for Google Drive, not {}",
+                        source_type.as_str()
+                    ));
+                }
+                if self.folder_path_filters.is_empty() {
+                    return Err(
+                        "service_account_direct requires at least one shared drive in folder_path_filters"
+                            .to_string(),
+                    );
+                }
+                if let Some(entry) = self
+                    .folder_path_filters
+                    .iter()
+                    .find(|entry| !matches!(entry.kind, FolderPathFilterKind::SharedDriveRoot))
+                {
+                    return Err(format!(
+                        "service_account_direct only supports whole shared drives (folder_path_filters entry '{}' is a folder; folder-level restrictions are not supported in v1)",
+                        entry.name
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Result entry returned by the `discover_folders` connector action.
@@ -147,6 +238,24 @@ pub struct SearchUsersResponse {
     pub has_more: bool,
 }
 
+/// Per-drive result from the `validate_shared_drive_access` connector action.
+/// Mirrors the web's `SharedDriveAccessResult` type.
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedDriveAccessResult {
+    #[serde(rename = "drive_id")]
+    pub drive_id: String,
+    pub ok: bool,
+    pub role: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Response from the `validate_shared_drive_access` connector action.
+/// Mirrors the web's `SharedDriveAccessResponse` type.
+#[derive(Debug, Clone, Serialize)]
+pub struct SharedDriveAccessResponse {
+    pub drives: Vec<SharedDriveAccessResult>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,
@@ -193,6 +302,8 @@ impl FolderPathFilterKind {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleSyncCheckpoint {
     pub gmail_history_ids: Option<HashMap<String, String>>,
+    /// Per-user pagination cursors for the unfiltered (DWD) full Drive sync,
+    /// keyed by impersonated user email. Unused by scoped/SA-direct sync.
     pub drive_page_tokens: Option<HashMap<String, String>>,
     /// Per-drive change tokens used in scoped (filtered) incremental sync.
     /// Keyed by shared-drive ID; absent for unfiltered mode.
@@ -202,6 +313,12 @@ pub struct GoogleSyncCheckpoint {
     /// `"all"` or a sorted `;`-joined list of selected drive/kind/ID tuples.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive_scope_fingerprint: Option<String>,
+    /// Per-drive ACL fingerprints (keyed by shared-drive ID) used to detect
+    /// drive-membership changes that `changes.list` does not deliver. When a
+    /// fingerprint differs from the checkpoint, the drive is fully re-traversed
+    /// so previously indexed unchanged documents get the new ACLs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_acl_fingerprints: Option<HashMap<String, String>>,
     pub chat: Option<GoogleChatCheckpoint>,
 }
 
@@ -250,6 +367,10 @@ pub struct GoogleChatSegmentCheckpoint {
 pub struct UserFile {
     pub user_email: Arc<String>,
     pub file: GoogleDriveFile,
+    /// Optional drive-level ACL override (SA-direct mode). When set, this is
+    /// used as the event's permissions instead of the file's own (empty for
+    /// shared-drive items) permission array.
+    pub permissions_override: Option<DocumentPermissions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,6 +388,9 @@ pub struct GoogleDriveFile {
     pub size: Option<String>,
     pub parents: Option<Vec<String>>,
     pub shared: Option<bool>,
+    pub trashed: Option<bool>,
+    #[serde(rename = "driveId")]
+    pub drive_id: Option<String>,
     pub permissions: Option<Vec<GoogleDrivePermission>>,
     pub owners: Option<Vec<Owner>>,
 }
@@ -366,50 +490,148 @@ impl GmailThreadAttributes {
     }
 }
 
-impl GoogleDriveFile {
-    pub fn to_document_permissions(&self, oauth_user_email: Option<&str>) -> DocumentPermissions {
-        let mut is_public = false;
-        let mut users = Vec::new();
-        let mut groups = Vec::new();
+/// Map a list of Drive API permission entries into the Omni `DocumentPermissions`
+/// model. Shared by per-file permission arrays (existing path) and drive-level
+/// ACLs (SA-direct mode).
+///
+/// - `anyone` → `public` (only when `allow_file_discovery != Some(false)`)
+/// - `user` → `users`
+/// - `group` → `groups`
+/// - `domain` → `groups` (domain string, only when discoverable)
+/// - `exclude_email` (if provided) is skipped from `users` — used to keep the
+///   service account's own email out of the indexed ACL.
+pub fn map_drive_permissions(
+    permissions: &[GoogleDrivePermission],
+    exclude_email: Option<&str>,
+) -> DocumentPermissions {
+    let mut is_public = false;
+    let mut users = Vec::new();
+    let mut groups = Vec::new();
 
-        if let Some(file_permissions) = &self.permissions {
-            for perm in file_permissions {
-                match perm.permission_type.as_str() {
-                    "anyone" => {
-                        if perm.allow_file_discovery.unwrap_or(true) {
-                            is_public = true;
-                        }
-                    }
-                    "group" => {
-                        if let Some(email) = &perm.email_address {
-                            groups.push(email.clone());
-                        }
-                    }
-                    "user" => {
-                        if let Some(email) = &perm.email_address {
-                            users.push(email.clone());
-                        }
-                    }
-                    "domain" => {
-                        if perm.allow_file_discovery.unwrap_or(true) {
-                            if let Some(domain) =
-                                perm.domain.as_ref().or(perm.email_address.as_ref())
-                            {
-                                groups.push(domain.clone());
-                            }
-                        }
-                    }
-                    _ => {}
+    for perm in permissions {
+        match perm.permission_type.as_str() {
+            "anyone" => {
+                if perm.allow_file_discovery.unwrap_or(true) {
+                    is_public = true;
                 }
             }
+            "group" => {
+                if let Some(email) = &perm.email_address {
+                    groups.push(email.clone());
+                }
+            }
+            "user" => {
+                if let Some(email) = &perm.email_address {
+                    if exclude_email != Some(email.as_str()) && !users.contains(email) {
+                        users.push(email.clone());
+                    }
+                }
+            }
+            "domain" => {
+                if perm.allow_file_discovery.unwrap_or(true) {
+                    if let Some(domain) = perm.domain.as_ref().or(perm.email_address.as_ref()) {
+                        groups.push(domain.clone());
+                    }
+                }
+            }
+            _ => {}
         }
+    }
+
+    DocumentPermissions {
+        public: is_public,
+        users,
+        groups,
+    }
+}
+
+/// The Drive API roles that are allowed to read a shared drive's ACLs and
+/// therefore supported for SA-direct mode. `fileOrganizer` == Content manager,
+/// `organizer` == Manager.
+pub fn is_sa_role_acl_capable(role: &str) -> bool {
+    matches!(role, "fileOrganizer" | "organizer")
+}
+
+/// Compute a stable fingerprint for a shared drive's ACL (its member list).
+/// Used to detect drive-membership changes that `changes.list` does not
+/// deliver. Identical member sets produce identical fingerprints regardless of
+/// ordering; any membership/role change produces a different one.
+pub fn drive_acl_fingerprint(permissions: &[GoogleDrivePermission]) -> String {
+    use std::collections::BTreeSet;
+    let mut entries: BTreeSet<String> = BTreeSet::new();
+    for perm in permissions {
+        let email = perm.email_address.as_deref().unwrap_or("");
+        let domain = perm.domain.as_deref().unwrap_or("");
+        entries.insert(format!(
+            "{}|{}|{}|{}|{}",
+            perm.permission_type,
+            perm.role,
+            email,
+            domain,
+            perm.allow_file_discovery.unwrap_or(true)
+        ));
+    }
+    entries.into_iter().collect::<Vec<_>>().join(";")
+}
+
+/// Validate that a service account can read ACLs for a shared drive.
+///
+/// Fails if the ACL list is empty, the SA's own permission entry is missing,
+/// or the SA's role is not Content manager (`fileOrganizer`) / Manager
+/// (`organizer`). The error carries the drive ID, observed role, required roles,
+/// and remediation so it can be surfaced directly to an operator.
+pub fn validate_sa_drive_access(
+    drive_id: &str,
+    permissions: &[GoogleDrivePermission],
+    sa_email: &str,
+) -> Result<String, anyhow::Error> {
+    if permissions.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Drive {} returned an empty permission list. The service account ({}) role in this shared drive is too low to read ACLs (needs Content manager or Manager), or the drive has no members. Documents would be indexed with no ACL.",
+            drive_id,
+            sa_email
+        ));
+    }
+
+    let sa_permission = permissions.iter().find(|perm| {
+        perm.permission_type == "user"
+            && perm
+                .email_address
+                .as_deref()
+                .is_some_and(|email| email.eq_ignore_ascii_case(sa_email))
+    });
+
+    let Some(sa_permission) = sa_permission else {
+        return Err(anyhow::anyhow!(
+            "The service account ({}) is not a member of drive {}. Add it as a Content manager or Manager member of the shared drive.",
+            sa_email,
+            drive_id
+        ));
+    };
+
+    if !is_sa_role_acl_capable(&sa_permission.role) {
+        return Err(anyhow::anyhow!(
+            "The service account ({}) has role '{}' in drive {}. SA-direct sync needs Content manager (fileOrganizer) or Manager (organizer) to read drive ACLs. Documents would be indexed with no ACL.",
+            sa_email,
+            sa_permission.role,
+            drive_id
+        ));
+    }
+
+    Ok(sa_permission.role.clone())
+}
+
+impl GoogleDriveFile {
+    pub fn to_document_permissions(&self, oauth_user_email: Option<&str>) -> DocumentPermissions {
+        let permissions = self.permissions.as_deref().unwrap_or_default();
+        let mut mapped = map_drive_permissions(permissions, None);
 
         // Owner access is implicit in personal Drive and not listed in permissions
         if let Some(owners) = &self.owners {
             for owner in owners {
                 if let Some(email) = &owner.email_address {
-                    if !users.contains(email) {
-                        users.push(email.clone());
+                    if !mapped.users.contains(email) {
+                        mapped.users.push(email.clone());
                     }
                 }
             }
@@ -418,16 +640,12 @@ impl GoogleDriveFile {
         // Viewers can't see the permissions array, but presence in Drive listing implies access
         if let Some(email) = oauth_user_email {
             let email = email.to_string();
-            if !users.contains(&email) {
-                users.push(email);
+            if !mapped.users.contains(&email) {
+                mapped.users.push(email);
             }
         }
 
-        DocumentPermissions {
-            public: is_public,
-            users,
-            groups,
-        }
+        mapped
     }
 
     pub fn to_connector_event(
@@ -441,9 +659,15 @@ impl GoogleDriveFile {
         let mut extra = HashMap::new();
         extra.insert("file_id".to_string(), json!(self.id));
         extra.insert("shared".to_string(), json!(self.shared.unwrap_or(false)));
+        if let Some(drive_id) = &self.drive_id {
+            extra.insert("drive_id".to_string(), json!(drive_id));
+        }
 
         // Store Google Drive specific hierarchical data
         let mut google_drive_metadata = HashMap::new();
+        if let Some(drive_id) = &self.drive_id {
+            google_drive_metadata.insert("drive_id".to_string(), json!(drive_id));
+        }
         if let Some(parents) = &self.parents {
             google_drive_metadata.insert("parents".to_string(), json!(parents));
             if let Some(parent) = parents.first() {
@@ -1120,6 +1344,8 @@ mod tests {
             size: Some("12345".to_string()),
             parents: Some(vec!["folder456".to_string()]),
             shared: Some(true),
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
                 permission_type: "user".to_string(),
@@ -1273,6 +1499,8 @@ mod tests {
             size: None,
             parents: Some(vec!["parent456".to_string()]),
             shared: None,
+            trashed: None,
+            drive_id: None,
             permissions: None,
             owners: None,
         };
@@ -1323,6 +1551,8 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
+            drive_id: None,
             permissions: None,
             owners: None,
         };
@@ -1351,6 +1581,8 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![
                 GoogleDrivePermission {
                     id: "perm1".to_string(),
@@ -1418,6 +1650,8 @@ mod tests {
             size: None,
             parents: Some(vec!["folder1".to_string()]),
             shared: None,
+            trashed: None,
+            drive_id: None,
             permissions: None,
             owners: None,
         };
@@ -1453,6 +1687,8 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![
                 GoogleDrivePermission {
                     id: "perm_anyone_link".to_string(),
@@ -1494,6 +1730,8 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm_domain".to_string(),
                 permission_type: "domain".to_string(),
@@ -1524,6 +1762,8 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![]),
             owners: Some(vec![Owner {
                 id: None,
@@ -1556,6 +1796,8 @@ mod tests {
             size: None,
             parents: None,
             shared: Some(true),
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![]),
             owners: Some(vec![Owner {
                 id: None,
@@ -1574,9 +1816,11 @@ mod tests {
         match event {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
                 assert!(permissions.users.contains(&"owner@example.com".to_string()));
-                assert!(permissions
-                    .users
-                    .contains(&"viewer@example.com".to_string()));
+                assert!(
+                    permissions
+                        .users
+                        .contains(&"viewer@example.com".to_string())
+                );
                 assert_eq!(permissions.users.len(), 2);
             }
             _ => panic!("Expected DocumentCreated event"),
@@ -1597,6 +1841,8 @@ mod tests {
             size: None,
             parents: None,
             shared: None,
+            trashed: None,
+            drive_id: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
                 permission_type: "user".to_string(),
@@ -1749,9 +1995,11 @@ mod tests {
             ConnectorEvent::DocumentCreated { permissions, .. } => {
                 assert!(permissions.users.contains(&"alice@example.com".to_string()));
                 assert!(permissions.users.contains(&"owner@example.com".to_string()));
-                assert!(permissions
-                    .users
-                    .contains(&"sender@example.com".to_string()));
+                assert!(
+                    permissions
+                        .users
+                        .contains(&"sender@example.com".to_string())
+                );
             }
             _ => panic!("Expected DocumentCreated event"),
         }
@@ -1985,5 +2233,240 @@ mod tests {
         // Reverse input order should produce same result.
         let filters_rev: Vec<FolderPathFilterEntry> = filters.into_iter().rev().collect();
         assert_eq!(compute_scope_fingerprint(Some(&filters_rev)), fp);
+    }
+
+    #[test]
+    fn test_auth_mode_deserialization_and_default() {
+        // Missing auth_mode defaults to DWD.
+        let config: GoogleSourceConfig = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(config.auth_mode, GoogleAuthMode::DomainWideDelegation);
+
+        // Explicit values.
+        let dwd: GoogleSourceConfig =
+            serde_json::from_value(json!({ "auth_mode": "domain_wide_delegation" })).unwrap();
+        assert_eq!(dwd.auth_mode, GoogleAuthMode::DomainWideDelegation);
+
+        let sa: GoogleSourceConfig =
+            serde_json::from_value(json!({ "auth_mode": "service_account_direct" })).unwrap();
+        assert_eq!(sa.auth_mode, GoogleAuthMode::ServiceAccountDirect);
+
+        // Invalid mode fails closed.
+        assert!(
+            serde_json::from_value::<GoogleSourceConfig>(json!({ "auth_mode": "bogus" })).is_err()
+        );
+    }
+
+    #[test]
+    fn test_google_source_config_tolerates_unknown_top_level_keys() {
+        // Legacy/unknown top-level config keys must not reject deserialization
+        // (they could break every existing source at dispatch time).
+        let config: GoogleSourceConfig = serde_json::from_value(json!({
+            "domain": "company.com",
+            "some_legacy_key": "value",
+        }))
+        .unwrap();
+        assert_eq!(config.domain.as_deref(), Some("company.com"));
+    }
+
+    #[test]
+    fn test_sa_direct_validation_rules() {
+        let root = FolderPathFilterEntry {
+            id: "drive-1".to_string(),
+            name: "Policy Docs".to_string(),
+            path: "/Policy Docs (Shared Drive)".to_string(),
+            drive_id: "drive-1".to_string(),
+            kind: FolderPathFilterKind::SharedDriveRoot,
+        };
+
+        // Valid SA-direct: JWT creds + Drive + root filter.
+        let valid = GoogleSourceConfig {
+            auth_mode: GoogleAuthMode::ServiceAccountDirect,
+            folder_path_filters: vec![root.clone()],
+            ..Default::default()
+        };
+        assert!(
+            valid
+                .validate(SourceType::GoogleDrive, AuthType::Jwt)
+                .is_ok()
+        );
+
+        // Reject OAuth creds.
+        assert!(
+            valid
+                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_err()
+        );
+
+        // Reject non-Drive source types.
+        assert!(valid.validate(SourceType::Gmail, AuthType::Jwt).is_err());
+        assert!(
+            valid
+                .validate(SourceType::GoogleChat, AuthType::Jwt)
+                .is_err()
+        );
+
+        // Reject empty filters.
+        let empty = GoogleSourceConfig {
+            auth_mode: GoogleAuthMode::ServiceAccountDirect,
+            folder_path_filters: vec![],
+            ..Default::default()
+        };
+        assert!(
+            empty
+                .validate(SourceType::GoogleDrive, AuthType::Jwt)
+                .is_err()
+        );
+
+        // Reject folder-kind entries in v1 (whole drives only).
+        let folder = FolderPathFilterEntry {
+            id: "folder-1".to_string(),
+            name: "Subfolder".to_string(),
+            path: "/Policy Docs/Sub".to_string(),
+            drive_id: "drive-1".to_string(),
+            kind: FolderPathFilterKind::Folder,
+        };
+        let mixed = GoogleSourceConfig {
+            auth_mode: GoogleAuthMode::ServiceAccountDirect,
+            folder_path_filters: vec![root, folder],
+            ..Default::default()
+        };
+        assert!(
+            mixed
+                .validate(SourceType::GoogleDrive, AuthType::Jwt)
+                .is_err()
+        );
+
+        // DWD remains permissive regardless of filters.
+        let dwd = GoogleSourceConfig {
+            auth_mode: GoogleAuthMode::DomainWideDelegation,
+            folder_path_filters: vec![],
+            ..Default::default()
+        };
+        assert!(dwd.validate(SourceType::Gmail, AuthType::Jwt).is_ok());
+    }
+
+    #[test]
+    fn test_map_drive_permissions_cases() {
+        use crate::models::GoogleDrivePermission;
+        let perm =
+            |p_type: &str, email: Option<&str>, domain: Option<&str>, discover: Option<bool>| {
+                GoogleDrivePermission {
+                    id: format!("{}-{}", p_type, email.unwrap_or("")),
+                    permission_type: p_type.to_string(),
+                    email_address: email.map(String::from),
+                    domain: domain.map(String::from),
+                    role: "reader".to_string(),
+                    allow_file_discovery: discover,
+                    permission_details: None,
+                }
+            };
+
+        let perms = vec![
+            perm("anyone", None, None, Some(true)),
+            perm("user", Some("alice@example.com"), None, None),
+            perm(
+                "user",
+                Some("sa@project.iam.gserviceaccount.com"),
+                None,
+                None,
+            ),
+            perm("group", Some("eng@example.com"), None, None),
+            perm("domain", None, Some("example.com"), Some(true)),
+            perm("domain", None, Some("hidden.com"), Some(false)),
+        ];
+
+        let mapped = map_drive_permissions(&perms, Some("sa@project.iam.gserviceaccount.com"));
+        assert!(mapped.public, "anyone + discoverable should be public");
+        assert!(mapped.users.contains(&"alice@example.com".to_string()));
+        assert!(
+            !mapped
+                .users
+                .contains(&"sa@project.iam.gserviceaccount.com".to_string()),
+            "exclude_email must remove the SA"
+        );
+        assert!(mapped.groups.contains(&"eng@example.com".to_string()));
+        assert!(mapped.groups.contains(&"example.com".to_string()));
+        assert!(
+            !mapped.groups.contains(&"hidden.com".to_string()),
+            "non-discoverable domain must not overgrant"
+        );
+
+        // exclude_email not provided -> SA stays in users.
+        let mapped_no_exclude = map_drive_permissions(&perms, None);
+        assert!(
+            mapped_no_exclude
+                .users
+                .contains(&"sa@project.iam.gserviceaccount.com".to_string())
+        );
+
+        // Empty input.
+        let empty = map_drive_permissions(&[], None);
+        assert!(!empty.public);
+        assert!(empty.users.is_empty());
+        assert!(empty.groups.is_empty());
+    }
+
+    #[test]
+    fn test_validate_sa_drive_access_roles() {
+        use crate::models::GoogleDrivePermission;
+        let sa_email = "sa@project.iam.gserviceaccount.com";
+        let member = |role: &str| GoogleDrivePermission {
+            id: "p".to_string(),
+            permission_type: "user".to_string(),
+            email_address: Some(sa_email.to_string()),
+            domain: None,
+            role: role.to_string(),
+            allow_file_discovery: None,
+            permission_details: None,
+        };
+
+        // Content manager / Manager roles pass.
+        assert!(validate_sa_drive_access("d1", &[member("fileOrganizer")], sa_email).is_ok());
+        assert!(validate_sa_drive_access("d1", &[member("organizer")], sa_email).is_ok());
+
+        // Viewer / Commenter / Contributor fail closed.
+        assert!(validate_sa_drive_access("d1", &[member("reader")], sa_email).is_err());
+        assert!(validate_sa_drive_access("d1", &[member("commenter")], sa_email).is_err());
+        assert!(validate_sa_drive_access("d1", &[member("writer")], sa_email).is_err());
+
+        // Empty ACL fails.
+        assert!(validate_sa_drive_access("d1", &[], sa_email).is_err());
+
+        // SA not a member fails.
+        let other = GoogleDrivePermission {
+            id: "p2".to_string(),
+            permission_type: "user".to_string(),
+            email_address: Some("bob@example.com".to_string()),
+            domain: None,
+            role: "organizer".to_string(),
+            allow_file_discovery: None,
+            permission_details: None,
+        };
+        assert!(validate_sa_drive_access("d1", &[other], sa_email).is_err());
+    }
+
+    #[test]
+    fn test_drive_acl_fingerprint_helpers() {
+        use crate::models::GoogleDrivePermission;
+        let sa_email = "sa@project.iam.gserviceaccount.com";
+        let member = |role: &str| GoogleDrivePermission {
+            id: "p".to_string(),
+            permission_type: "user".to_string(),
+            email_address: Some(sa_email.to_string()),
+            domain: None,
+            role: role.to_string(),
+            allow_file_discovery: None,
+            permission_details: None,
+        };
+
+        let fp1 = drive_acl_fingerprint(&[member("organizer")]);
+        let fp2 = drive_acl_fingerprint(&[member("fileOrganizer")]);
+        assert_ne!(fp1, fp2, "role changes must change the fingerprint");
+
+        let fp3 = drive_acl_fingerprint(&[member("organizer")]);
+        assert_eq!(
+            fp1, fp3,
+            "identical ACLs must produce identical fingerprints"
+        );
     }
 }

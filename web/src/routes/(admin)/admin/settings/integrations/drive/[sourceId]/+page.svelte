@@ -26,6 +26,13 @@
     let { data }: PageProps = $props()
     const isJwt = data.authType === AuthType.JWT
     const isOAuth = data.authType === AuthType.OAUTH
+    const isSaDirect = data.isSaDirect === true
+
+    // SA-direct access validation state (re-run before Save).
+    let saAccessValidation = $state<
+        Record<string, { ok: boolean; role: string | null; error: string | null }>
+    >({})
+    let saValidating = $state(false)
 
     let enabled = $state(data.source.isActive)
     let userFilterMode = $state(data.source.userFilterMode || 'all')
@@ -123,6 +130,24 @@
             return true
         }
 
+        if (isSaDirect) {
+            // SA-direct: no admin email/domain; at least one whole shared drive.
+            if (folderFilters.length === 0) {
+                formErrors = [...formErrors, 'At least one shared drive is required']
+            }
+            if (folderFilters.some((f) => f.kind !== 'shared_drive_root')) {
+                formErrors = [...formErrors, 'SA-direct supports whole shared drives only']
+            }
+            if (serviceAccountJson.trim()) {
+                try {
+                    JSON.parse(serviceAccountJson)
+                } catch {
+                    formErrors = [...formErrors, 'Service account JSON is not valid JSON']
+                }
+            }
+            return formErrors.length === 0
+        }
+
         if (enabled && userFilterMode === 'whitelist' && selectedUsers.length === 0) {
             formErrors = [...formErrors, 'Whitelist mode requires at least one user']
         }
@@ -206,6 +231,14 @@
         const foldersChanged =
             JSON.stringify(folderFilters.map((f) => f.id).sort()) !==
             JSON.stringify(originalFolderFilters.map((f) => f.id).sort())
+
+        if (isSaDirect) {
+            hasUnsavedChanges =
+                enabled !== originalEnabled ||
+                foldersChanged ||
+                serviceAccountJson.trim().length > 0
+            return
+        }
 
         hasUnsavedChanges =
             enabled !== originalEnabled ||
@@ -309,181 +342,202 @@
                     </Alert.Root>
                 </div>
             {:else if isJwt}
-                <div class="space-y-4">
-                    <div>
-                        <h3 class="text-sm font-medium">Connection Settings</h3>
-                        <p class="text-muted-foreground text-xs">
-                            Service account credentials used to impersonate Workspace users.
-                        </p>
-                    </div>
-                    <GoogleServiceAccountForm
-                        bind:serviceAccountJson
-                        bind:principalEmail
-                        bind:domain
-                        hasStoredKey={data.hasStoredKey} />
-
-                    {#if data.gmailSiblingId}
-                        <Alert.Root>
+                {#if isSaDirect}
+                    <div class="space-y-4">
+                        <Alert.Root variant="default">
                             <Info class="h-4 w-4" />
-                            <Alert.Title>Gmail uses a separate credential copy</Alert.Title>
+                            <Alert.Title>Shared drive sync</Alert.Title>
                             <Alert.Description>
-                                Updating the service account key here only rotates it for Google
-                                Drive. If you want to rotate the key for Gmail too, open the Gmail
-                                source settings and replace it there as well.
+                                This source syncs selected shared drives as the service account
+                                itself. Permissions come from each drive's members.
                             </Alert.Description>
                         </Alert.Root>
-                    {/if}
-                </div>
 
-                <!-- Folder Path Filter (JWT only) -->
-                <div class="space-y-4 border-t pt-6">
-                    <div>
-                        <h3 class="text-sm font-medium">Drive Folder Filters</h3>
-                        <p class="text-muted-foreground text-xs">
-                            Optionally restrict indexing to specific shared drives and top-level
-                            folders. All sub-folders within a selected item are included.
-                        </p>
-                    </div>
-                    <GoogleDriveFolderSelector
-                        bind:selected={folderFilters}
-                        sourceId={data.source.id}
-                        {serviceAccountJson}
-                        {principalEmail}
-                        {domain}
-                        disabled={!enabled} />
-                    <!-- Hidden form value to submit folder filters (always present for JWT, even when empty) -->
-                    <input
-                        type="hidden"
-                        name="folder_path_filters"
-                        value={JSON.stringify(folderFilters)} />
-                </div>
+                        <GoogleServiceAccountForm
+                            bind:serviceAccountJson
+                            mode="sa-direct"
+                            hasStoredKey={data.hasStoredKey}
+                            showSaDirectInfo={false} />
 
-                <div class="space-y-4 border-t pt-6">
-                    <div>
-                        <h3 class="text-sm font-medium">User Access Control</h3>
-                        <p class="text-muted-foreground text-xs">
-                            Control which Workspace users get their Drive files indexed.
-                        </p>
-                    </div>
-                    <RadioGroup.Root
-                        bind:value={userFilterMode}
-                        name="userFilterMode"
-                        disabled={!enabled}>
-                        <div class="flex items-start space-x-3">
-                            <RadioGroup.Item value="all" id="all" />
-                            <Label for="all" class="cursor-pointer">
-                                <div>
-                                    <div class="text-sm font-medium">All Users</div>
-                                    <div class="text-muted-foreground text-xs">
-                                        Index Drive files for all Google Workspace users
-                                    </div>
-                                </div>
-                            </Label>
-                        </div>
-
-                        <div class="flex items-start space-x-3">
-                            <RadioGroup.Item value="whitelist" id="whitelist" />
-                            <Label for="whitelist" class="cursor-pointer">
-                                <div>
-                                    <div class="text-sm font-medium">Specific Users</div>
-                                    <div class="text-muted-foreground text-xs">
-                                        Only index Drive files from selected users
-                                    </div>
-                                </div>
-                            </Label>
-                        </div>
-
-                        <div class="flex items-start space-x-3">
-                            <RadioGroup.Item value="blacklist" id="blacklist" />
-                            <Label for="blacklist" class="cursor-pointer">
-                                <div>
-                                    <div class="text-sm font-medium">Exclude Users</div>
-                                    <div class="text-muted-foreground text-xs">
-                                        Index all users except selected ones
-                                    </div>
-                                </div>
-                            </Label>
-                        </div>
-                    </RadioGroup.Root>
-
-                    {#if enabled && userFilterMode !== 'all'}
-                        <div class="space-y-3 border-t pt-4">
-                            <div class="space-y-2">
-                                <div class="relative">
-                                    <Search
-                                        class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-                                    <Input
-                                        bind:value={searchQuery}
-                                        oninput={handleSearchInput}
-                                        placeholder="Search users..."
-                                        class="px-10 py-1" />
-                                    {#if isSearching}
-                                        <Loader2
-                                            class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
-                                    {/if}
-                                </div>
-
-                                {#if searchResults.length > 0}
-                                    <div class="max-h-32 overflow-y-auto rounded-md border p-1">
-                                        {#each searchResults.filter((user) => !selectedUsers.includes(user.email)) as user}
-                                            <button
-                                                type="button"
-                                                onclick={() => addUser(user.email)}
-                                                class="hover:bg-muted flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs">
-                                                <div>
-                                                    <div class="font-medium">
-                                                        {user.name}
-                                                    </div>
-                                                    <div class="text-muted-foreground">
-                                                        {user.email}
-                                                    </div>
-                                                </div>
-                                                {#if user.isAdmin}
-                                                    <Badge variant="secondary" class="text-xs"
-                                                        >Admin</Badge>
-                                                {/if}
-                                            </button>
-                                        {/each}
-                                    </div>
-                                {/if}
-
-                                {#if selectedUsers.length > 0}
-                                    <div class="space-y-2">
-                                        <Label class="text-xs font-medium">
-                                            {userFilterMode === 'whitelist'
-                                                ? 'Included Users'
-                                                : 'Excluded Users'}
-                                        </Label>
-                                        <div class="flex flex-wrap gap-2">
-                                            {#each selectedUsers as email}
-                                                <div
-                                                    class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
-                                                    <span>{email}</span>
-                                                    <button
-                                                        type="button"
-                                                        onclick={() => removeUser(email)}
-                                                        class="hover:bg-secondary-foreground/20 ml-1 rounded-full p-0.5 transition-colors"
-                                                        aria-label="Remove {email}">
-                                                        <X class="h-3 w-3" />
-                                                    </button>
-                                                </div>
-                                            {/each}
-                                        </div>
-                                    </div>
-                                {/if}
-                            </div>
-                        </div>
-                    {/if}
-
-                    {#each selectedUsers as email}
+                        <GoogleDriveFolderSelector
+                            bind:selected={folderFilters}
+                            sourceId={data.source.id}
+                            {serviceAccountJson}
+                            authMode="service_account_direct"
+                            label="Shared Drives to Index"
+                            description="Select one or more whole shared drives to index."
+                            disabled={!enabled} />
                         <input
                             type="hidden"
-                            name={userFilterMode === 'whitelist'
-                                ? 'userWhitelist'
-                                : 'userBlacklist'}
-                            value={email} />
-                    {/each}
-                </div>
+                            name="folder_path_filters"
+                            value={JSON.stringify(folderFilters)} />
+                    </div>
+                {:else}
+                    <div class="space-y-4">
+                        <GoogleServiceAccountForm
+                            bind:serviceAccountJson
+                            bind:principalEmail
+                            bind:domain
+                            hasStoredKey={data.hasStoredKey} />
+
+                        {#if data.gmailSiblingId}
+                            <Alert.Root>
+                                <Info class="h-4 w-4" />
+                                <Alert.Title>Gmail uses a separate credential copy</Alert.Title>
+                                <Alert.Description>
+                                    Updating the service account key here only rotates it for Google
+                                    Drive. If you want to rotate the key for Gmail too, open the
+                                    Gmail source settings and replace it there as well.
+                                </Alert.Description>
+                            </Alert.Root>
+                        {/if}
+                    </div>
+
+                    <!-- Folder Path Filter (JWT only) -->
+                    <div class="space-y-4 border-t pt-6">
+                        <GoogleDriveFolderSelector
+                            bind:selected={folderFilters}
+                            sourceId={data.source.id}
+                            {serviceAccountJson}
+                            {principalEmail}
+                            {domain}
+                            label="Drive Folder Filters"
+                            description="Optionally restrict indexing to specific shared drives and top-level folders. All sub-folders within a selected item are included."
+                            disabled={!enabled} />
+                        <!-- Hidden form value to submit folder filters (always present for JWT, even when empty) -->
+                        <input
+                            type="hidden"
+                            name="folder_path_filters"
+                            value={JSON.stringify(folderFilters)} />
+                    </div>
+
+                    <div class="space-y-4 border-t pt-6">
+                        <div>
+                            <h3 class="text-sm font-medium">User Access Control</h3>
+                            <p class="text-muted-foreground text-xs">
+                                Control which Workspace users get their Drive files indexed.
+                            </p>
+                        </div>
+                        <RadioGroup.Root
+                            bind:value={userFilterMode}
+                            name="userFilterMode"
+                            disabled={!enabled}>
+                            <div class="flex items-start space-x-3">
+                                <RadioGroup.Item value="all" id="all" />
+                                <Label for="all" class="cursor-pointer">
+                                    <div>
+                                        <div class="text-sm font-medium">All Users</div>
+                                        <div class="text-muted-foreground text-xs">
+                                            Index Drive files for all Google Workspace users
+                                        </div>
+                                    </div>
+                                </Label>
+                            </div>
+
+                            <div class="flex items-start space-x-3">
+                                <RadioGroup.Item value="whitelist" id="whitelist" />
+                                <Label for="whitelist" class="cursor-pointer">
+                                    <div>
+                                        <div class="text-sm font-medium">Specific Users</div>
+                                        <div class="text-muted-foreground text-xs">
+                                            Only index Drive files from selected users
+                                        </div>
+                                    </div>
+                                </Label>
+                            </div>
+
+                            <div class="flex items-start space-x-3">
+                                <RadioGroup.Item value="blacklist" id="blacklist" />
+                                <Label for="blacklist" class="cursor-pointer">
+                                    <div>
+                                        <div class="text-sm font-medium">Exclude Users</div>
+                                        <div class="text-muted-foreground text-xs">
+                                            Index all users except selected ones
+                                        </div>
+                                    </div>
+                                </Label>
+                            </div>
+                        </RadioGroup.Root>
+
+                        {#if enabled && userFilterMode !== 'all'}
+                            <div class="space-y-3 border-t pt-4">
+                                <div class="space-y-2">
+                                    <div class="relative">
+                                        <Search
+                                            class="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
+                                        <Input
+                                            bind:value={searchQuery}
+                                            oninput={handleSearchInput}
+                                            placeholder="Search users..."
+                                            class="px-10 py-1" />
+                                        {#if isSearching}
+                                            <Loader2
+                                                class="absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 animate-spin" />
+                                        {/if}
+                                    </div>
+
+                                    {#if searchResults.length > 0}
+                                        <div class="max-h-32 overflow-y-auto rounded-md border p-1">
+                                            {#each searchResults.filter((user) => !selectedUsers.includes(user.email)) as user}
+                                                <button
+                                                    type="button"
+                                                    onclick={() => addUser(user.email)}
+                                                    class="hover:bg-muted flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs">
+                                                    <div>
+                                                        <div class="font-medium">
+                                                            {user.name}
+                                                        </div>
+                                                        <div class="text-muted-foreground">
+                                                            {user.email}
+                                                        </div>
+                                                    </div>
+                                                    {#if user.isAdmin}
+                                                        <Badge variant="secondary" class="text-xs"
+                                                            >Admin</Badge>
+                                                    {/if}
+                                                </button>
+                                            {/each}
+                                        </div>
+                                    {/if}
+
+                                    {#if selectedUsers.length > 0}
+                                        <div class="space-y-2">
+                                            <Label class="text-xs font-medium">
+                                                {userFilterMode === 'whitelist'
+                                                    ? 'Included Users'
+                                                    : 'Excluded Users'}
+                                            </Label>
+                                            <div class="flex flex-wrap gap-2">
+                                                {#each selectedUsers as email}
+                                                    <div
+                                                        class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
+                                                        <span>{email}</span>
+                                                        <button
+                                                            type="button"
+                                                            onclick={() => removeUser(email)}
+                                                            class="hover:bg-secondary-foreground/20 ml-1 rounded-full p-0.5 transition-colors"
+                                                            aria-label="Remove {email}">
+                                                            <X class="h-3 w-3" />
+                                                        </button>
+                                                    </div>
+                                                {/each}
+                                            </div>
+                                        </div>
+                                    {/if}
+                                </div>
+                            </div>
+                        {/if}
+
+                        {#each selectedUsers as email}
+                            <input
+                                type="hidden"
+                                name={userFilterMode === 'whitelist'
+                                    ? 'userWhitelist'
+                                    : 'userBlacklist'}
+                                value={email} />
+                        {/each}
+                    </div>
+                {/if}
             {/if}
         </Card.Content>
         <Card.Footer class="flex justify-end">

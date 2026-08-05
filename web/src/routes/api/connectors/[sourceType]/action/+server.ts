@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 import { SourceType } from '$lib/types'
+import type { GoogleAuthMode } from '$lib/types'
 
 /**
  * Invokes an action directly on a connector before a source exists.
@@ -11,8 +12,14 @@ import { SourceType } from '$lib/types'
  * endpoint and is never stored or returned.
  *
  * SECURITY: Strictly allowlisted — currently only google_drive's
- * discover_folders action with JWT credentials is accepted.
+ * discover_folders and validate_shared_drive_access actions with JWT
+ * credentials are accepted. Unknown actions, fields, or auth modes fail
+ * closed.
  */
+
+const ALLOWED_ACTIONS = new Set(['discover_folders', 'validate_shared_drive_access'])
+const ALLOWED_AUTH_MODES: GoogleAuthMode[] = ['domain_wide_delegation', 'service_account_direct']
+
 export const POST: RequestHandler = async ({ params: routeParams, request, locals }) => {
     // Admin-only
     if (!locals.user) {
@@ -73,7 +80,14 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
 
     // ======== STRICT ALLOWLIST ========
     // Reject unknown top-level fields.
-    const allowedFields = ['action', 'params', 'serviceAccountJson', 'principalEmail', 'domain']
+    const allowedFields = [
+        'action',
+        'params',
+        'serviceAccountJson',
+        'principalEmail',
+        'domain',
+        'authMode',
+    ]
     for (const key of Object.keys(body)) {
         if (!allowedFields.includes(key)) {
             throw error(400, `Unknown field: '${key}'`)
@@ -86,32 +100,58 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
     const serviceAccountJson = body.serviceAccountJson as string | undefined
     const principalEmail = body.principalEmail as string | undefined
     const domain = body.domain as string | undefined
+    const authMode = (body.authMode as GoogleAuthMode | undefined) ?? 'domain_wide_delegation'
 
     if (!action) {
         throw error(400, 'Action is required')
     }
-    if (action !== 'discover_folders') {
+    if (!ALLOWED_ACTIONS.has(action)) {
         throw error(400, `Connector action '${action}' is not supported`)
     }
     if (sourceType !== SourceType.GOOGLE_DRIVE) {
         throw error(400, `Connector actions are not supported for source type '${sourceType}'`)
     }
+    if (!ALLOWED_AUTH_MODES.includes(authMode)) {
+        throw error(400, `Unknown auth mode '${authMode}'`)
+    }
 
-    // Only allow empty params object for discover_folders.
+    // Validate params by action.
     if (params !== undefined) {
         if (typeof params !== 'object' || params === null || Array.isArray(params)) {
             throw error(400, 'params must be a JSON object')
         }
-        if (Object.keys(params).length > 0) {
-            throw error(400, 'discover_folders does not accept any params')
+    }
+    if (action === 'discover_folders') {
+        // params is optional; when present it may carry auth_mode.
+        if (params && Object.keys(params).length > 0 && !('auth_mode' in params)) {
+            throw error(400, 'discover_folders accepts only an optional auth_mode param')
+        }
+    }
+    if (action === 'validate_shared_drive_access') {
+        if (!params || typeof params !== 'object' || Array.isArray(params)) {
+            throw error(400, 'validate_shared_drive_access requires params')
+        }
+        const driveIds = params.drive_ids
+        if (!Array.isArray(driveIds) || driveIds.length === 0) {
+            throw error(400, 'validate_shared_drive_access requires a non-empty drive_ids array')
+        }
+        if (authMode !== 'service_account_direct') {
+            throw error(
+                400,
+                'validate_shared_drive_access requires authMode=service_account_direct',
+            )
         }
     }
 
     // Transient credentials must be provided for preview (not optional).
-    if (!serviceAccountJson || !principalEmail || !domain) {
+    if (!serviceAccountJson) {
+        throw error(400, 'serviceAccountJson is required for connector actions')
+    }
+    // SA-direct requires no principal email or domain (no impersonation).
+    if (authMode !== 'service_account_direct' && (!principalEmail || !domain)) {
         throw error(
             400,
-            'serviceAccountJson, principalEmail, and domain are required for connector actions',
+            'principalEmail and domain are required for connector actions in domain_wide_delegation mode',
         )
     }
 
@@ -119,10 +159,10 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
     if (typeof serviceAccountJson !== 'string') {
         throw error(400, 'serviceAccountJson must be a string')
     }
-    if (typeof principalEmail !== 'string') {
+    if (principalEmail !== undefined && typeof principalEmail !== 'string') {
         throw error(400, 'principalEmail must be a string')
     }
-    if (typeof domain !== 'string') {
+    if (domain !== undefined && typeof domain !== 'string') {
         throw error(400, 'domain must be a string')
     }
 
@@ -137,32 +177,41 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
         const config = getConfig()
         const connectorManagerUrl = config.services.connectorManagerUrl
 
+        // Build the transient credential config: SA-direct carries only the
+        // drive.readonly scope; DWD carries the domain for impersonation.
+        const transientConfig: Record<string, unknown> = {}
+        if (authMode === 'service_account_direct') {
+            transientConfig.scopes = ['https://www.googleapis.com/auth/drive.readonly']
+        } else {
+            transientConfig.domain = domain
+        }
+
         // Forward the setup credential through connector-manager's generic transient action mode.
+        // auth_mode travels inside params so the connector's typed action params see it.
+        const forwardedParams = { ...(params || {}), auth_mode: authMode }
         const response = await fetch(`${connectorManagerUrl}/action`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 source_type: sourceType,
                 user_id: locals.user.id,
-                action: 'discover_folders',
-                params: params || {},
+                action,
+                params: forwardedParams,
                 transient_credentials: {
                     provider: 'google',
                     auth_type: 'jwt',
-                    principal_email: principalEmail,
+                    principal_email: principalEmail ?? null,
                     credentials: {
                         service_account_key: serviceAccountJson,
                     },
-                    config: {
-                        domain: domain,
-                    },
+                    config: transientConfig,
                 },
             }),
             signal: AbortSignal.timeout(30_000),
         })
 
         if (!response.ok) {
-            let errorMessage = 'Failed to discover folders'
+            let errorMessage = `Failed to execute ${action}`
             const contentType = response.headers.get('content-type') || ''
             if (contentType.includes('application/json')) {
                 try {

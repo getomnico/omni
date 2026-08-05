@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::Deserialize;
 use std::env;
@@ -9,11 +9,11 @@ use tracing::{debug, warn};
 use std::collections::HashMap;
 
 use crate::auth::{
-    classify_google_api_error, execute_with_auth_retry, google_max_retries, ApiResult, GoogleAuth,
+    ApiResult, GoogleAuth, classify_google_api_error, execute_with_auth_retry, google_max_retries,
 };
 use crate::models::{
-    DriveChangesResponse, GoogleDriveFile, GooglePresentation, WebhookChannel,
-    WebhookChannelResponse,
+    DriveChangesResponse, GoogleDriveFile, GoogleDrivePermission, GooglePresentation,
+    WebhookChannel, WebhookChannelResponse,
 };
 use omni_connector_sdk::{RateLimiter, RetryableError};
 
@@ -34,6 +34,13 @@ const SHEETS_API_BASE: &str = "https://sheets.googleapis.com/v4";
 const SLIDES_API_BASE: &str = "https://slides.googleapis.com/v1";
 const DEFAULT_GOOGLE_SHEETS_MAX_INDEXED_ROWS: usize = 1000;
 const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
+
+/// `fields` projection for file listings — includes `driveId` so shared-drive
+/// files can be attributed to their drive (observability + SA-direct metadata).
+const FILES_FIELDS: &str = "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))";
+
+/// `fields` projection for changes listings — mirrors `FILES_FIELDS`.
+const CHANGES_FIELDS: &str = "nextPageToken,newStartPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,trashed,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress)),fileId,time)";
 
 fn build_files_query(activity_after: Option<&str>) -> String {
     let mut query_parts = vec!["trashed=false".to_string()];
@@ -190,57 +197,142 @@ impl DriveClient {
             let page_token = page_token.clone();
             let modified_after = modified_after.clone();
             async move {
-            let url = format!("{}/files", drive_api_base().as_str());
+                let url = format!("{}/files", drive_api_base().as_str());
 
-            let query = build_files_query(modified_after.as_deref());
+                let query = build_files_query(modified_after.as_deref());
 
-            let mut params = vec![
-                ("pageSize", "100"),
-                ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))"),
-                ("q", query.as_str()),
-                ("orderBy", "modifiedTime desc"),
-                ("includeItemsFromAllDrives", "true"),
-                ("supportsAllDrives", "true"),
-            ];
+                let mut params = vec![
+                    ("pageSize", "100"),
+                    ("fields", FILES_FIELDS),
+                    ("q", query.as_str()),
+                    ("orderBy", "modifiedTime desc"),
+                    ("includeItemsFromAllDrives", "true"),
+                    ("supportsAllDrives", "true"),
+                ];
 
-            if let Some(ref page_token) = page_token {
-                params.push(("pageToken", page_token));
-            }
-
-            debug!("[GOOGLE API CALL] list_files for user {}, page_token {:?}", user_email, page_token);
-            let response = self
-                .client
-                .get(&url)
-                .bearer_auth(&token)
-                .query(&params)
-                .send()
-                .await
-                .with_context(|| format!("Failed to send list_files request for user {}", user_email))?;
-
-            let status = response.status();
-            debug!("Drive list_files response status: {}", status);
-
-            if !status.is_success() {
-                return classify_google_api_error(response, "Failed to list files").await;
-            }
-
-            let response_text = response.text().await?;
-            debug!("Drive API raw response: {}", response_text);
-
-            let parsed_response = match serde_json::from_str(&response_text) {
-                Ok(parsed_response) => parsed_response,
-                Err(e) => {
-                    return Ok(ApiResult::OtherError(anyhow!(
-                        "Failed to parse Drive API response: {}. Raw response: {}",
-                        e,
-                        response_text
-                    )));
+                if let Some(ref page_token) = page_token {
+                    params.push(("pageToken", page_token));
                 }
-            };
 
-            Ok(ApiResult::Success(parsed_response))
+                debug!(
+                    "[GOOGLE API CALL] list_files for user {}, page_token {:?}",
+                    user_email, page_token
+                );
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await
+                    .with_context(|| {
+                        format!("Failed to send list_files request for user {}", user_email)
+                    })?;
+
+                let status = response.status();
+                debug!("Drive list_files response status: {}", status);
+
+                if !status.is_success() {
+                    return classify_google_api_error(response, "Failed to list files").await;
+                }
+
+                let response_text = response.text().await?;
+                debug!("Drive API raw response: {}", response_text);
+
+                let parsed_response = match serde_json::from_str(&response_text) {
+                    Ok(parsed_response) => parsed_response,
+                    Err(e) => {
+                        return Ok(ApiResult::OtherError(anyhow!(
+                            "Failed to parse Drive API response: {}. Raw response: {}",
+                            e,
+                            response_text
+                        )));
+                    }
+                };
+
+                Ok(ApiResult::Success(parsed_response))
             }
-        }).await
+        })
+        .await
+    }
+
+    /// List a user's trashed files (`files.list` with `trashed=true`),
+    /// paginated fully. User-wide variant of [`Self::list_trashed_files_in_drive`]
+    /// for the unfiltered DWD full-sync path, which lists per user across all
+    /// drives (My Drive + shared drives the user can access).
+    pub async fn list_trashed_files_for_user(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+    ) -> Result<Vec<GoogleDriveFile>> {
+        execute_with_auth_retry(
+            auth,
+            user_email,
+            self.rate_limiter.clone(),
+            |token| async move {
+                let url = format!("{}/files", drive_api_base().as_str());
+                let query = "trashed=true".to_string();
+
+                let mut all_files: Vec<GoogleDriveFile> = Vec::new();
+                let mut page_token: Option<String> = None;
+
+                loop {
+                    let mut params: Vec<(&str, &str)> = vec![
+                        ("pageSize", "100"),
+                        ("fields", FILES_FIELDS),
+                        ("q", query.as_str()),
+                        ("includeItemsFromAllDrives", "true"),
+                        ("supportsAllDrives", "true"),
+                    ];
+                    if let Some(ref pt) = page_token {
+                        params.push(("pageToken", pt));
+                    }
+
+                    debug!(
+                        "[GOOGLE API CALL] list_trashed_files_for_user user={}, page_token={:?}",
+                        user_email, page_token
+                    );
+                    let response = self
+                        .client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .query(&params)
+                        .send()
+                        .await
+                        .with_context(|| {
+                            format!("Failed to list trashed files for user {}", user_email)
+                        })?;
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        return classify_google_api_error(
+                            response,
+                            "Failed to list trashed files for user",
+                        )
+                        .await;
+                    }
+
+                    let response_text = response.text().await?;
+                    let parsed: FilesListResponse =
+                        serde_json::from_str(&response_text).map_err(|e| {
+                            anyhow!(
+                                "Failed to parse user trashed file list response: {}. Raw: {}",
+                                e,
+                                response_text
+                            )
+                        })?;
+
+                    all_files.extend(parsed.files);
+                    page_token = parsed.next_page_token;
+                    if page_token.is_none() {
+                        break;
+                    }
+                }
+
+                Ok(ApiResult::Success(all_files))
+            },
+        )
+        .await
     }
 
     pub async fn get_file_content(
@@ -1107,10 +1199,7 @@ impl DriveClient {
             ("includeItemsFromAllDrives", "true"),
             ("supportsAllDrives", "true"),
             ("includeRemoved", "true"),
-            (
-                "fields",
-                "nextPageToken,newStartPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress)),fileId,time)",
-            ),
+            ("fields", CHANGES_FIELDS),
         ];
         if let Some(did) = drive_id {
             params.push(("driveId", did));
@@ -1248,7 +1337,7 @@ impl DriveClient {
 
                 let mut params: Vec<(&str, &str)> = vec![
                     ("pageSize", "100"),
-                    ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))"),
+                    ("fields", FILES_FIELDS),
                     ("q", query.as_str()),
                     ("orderBy", "modifiedTime desc"),
                     ("supportsAllDrives", "true"),
@@ -1260,7 +1349,10 @@ impl DriveClient {
                     params.push(("pageToken", pt));
                 }
 
-                debug!("[GOOGLE API CALL] list_files_in_drive drive={}, page_token={:?}", drive_id, page_token);
+                debug!(
+                    "[GOOGLE API CALL] list_files_in_drive drive={}, page_token={:?}",
+                    drive_id, page_token
+                );
                 let response = self
                     .client
                     .get(&url)
@@ -1272,20 +1364,193 @@ impl DriveClient {
 
                 let status = response.status();
                 if !status.is_success() {
-                    return classify_google_api_error(response, "Failed to list files in drive").await;
+                    return classify_google_api_error(response, "Failed to list files in drive")
+                        .await;
                 }
 
                 let response_text = response.text().await?;
-                let parsed: FilesListResponse = serde_json::from_str(&response_text).map_err(|e| {
-                    anyhow!(
-                        "Failed to parse drive-scoped file list response: {}. Raw: {}",
-                        e, response_text
-                    )
-                })?;
+                let parsed: FilesListResponse =
+                    serde_json::from_str(&response_text).map_err(|e| {
+                        anyhow!(
+                            "Failed to parse drive-scoped file list response: {}. Raw: {}",
+                            e,
+                            response_text
+                        )
+                    })?;
 
                 Ok(ApiResult::Success(parsed))
             }
-        }).await
+        })
+        .await
+    }
+
+    /// List a drive's trashed files (`files.list` with `trashed=true`),
+    /// paginated fully. Used by the SA-direct full-traversal path to reconcile
+    /// documents that were trashed before their trash event was observed by an
+    /// incremental run — incremental `changes.list` only reports a trash once,
+    /// so a pre-existing trashed file would otherwise stay in the index
+    /// forever.
+    pub async fn list_trashed_files_in_drive(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        drive_id: &str,
+    ) -> Result<Vec<GoogleDriveFile>> {
+        let drive_id_owned = drive_id.to_string();
+        execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
+            let drive_id = drive_id_owned.clone();
+            async move {
+                let url = format!("{}/files", drive_api_base().as_str());
+                let query = "trashed=true".to_string();
+
+                let mut all_files: Vec<GoogleDriveFile> = Vec::new();
+                let mut page_token: Option<String> = None;
+
+                loop {
+                    let mut params: Vec<(&str, &str)> = vec![
+                        ("pageSize", "100"),
+                        ("fields", FILES_FIELDS),
+                        ("q", query.as_str()),
+                        ("supportsAllDrives", "true"),
+                        ("includeItemsFromAllDrives", "true"),
+                        ("corpora", "drive"),
+                        ("driveId", &drive_id),
+                    ];
+                    if let Some(ref pt) = page_token {
+                        params.push(("pageToken", pt));
+                    }
+
+                    debug!(
+                        "[GOOGLE API CALL] list_trashed_files_in_drive drive={}, page_token={:?}",
+                        drive_id, page_token
+                    );
+                    let response = self
+                        .client
+                        .get(&url)
+                        .bearer_auth(&token)
+                        .query(&params)
+                        .send()
+                        .await
+                        .with_context(|| {
+                            format!("Failed to list trashed files in drive {}", drive_id)
+                        })?;
+
+                    let status = response.status();
+                    if !status.is_success() {
+                        return classify_google_api_error(
+                            response,
+                            "Failed to list trashed files in drive",
+                        )
+                        .await;
+                    }
+
+                    let response_text = response.text().await?;
+                    let parsed: FilesListResponse =
+                        serde_json::from_str(&response_text).map_err(|e| {
+                            anyhow!(
+                                "Failed to parse drive-scoped trashed file list response: {}. Raw: {}",
+                                e,
+                                response_text
+                            )
+                        })?;
+
+                    all_files.extend(parsed.files);
+                    page_token = parsed.next_page_token;
+                    if page_token.is_none() {
+                        break;
+                    }
+                }
+
+                Ok(ApiResult::Success(all_files))
+            }
+        })
+        .await
+    }
+
+    /// List a shared drive's member permissions (`permissions.list` with the
+    /// drive ID as the target). This is the effective ACL for every file in the
+    /// drive — `File.permissions` is never populated for shared-drive items.
+    ///
+    /// Paginates fully (pageSize=100) and returns the complete member list.
+    /// Requires a caller-provided bearer token (SA self-token or impersonated
+    /// DWD token).
+    pub async fn list_drive_permissions(
+        &self,
+        token: &str,
+        drive_id: &str,
+    ) -> Result<Vec<GoogleDrivePermission>> {
+        let url = format!(
+            "{}/files/{}/permissions",
+            drive_api_base().as_str(),
+            drive_id
+        );
+        let mut all_permissions: Vec<GoogleDrivePermission> = Vec::new();
+        let mut page_token: Option<String> = None;
+
+        loop {
+            let mut params: Vec<(&str, &str)> = vec![
+                ("supportsAllDrives", "true"),
+                ("pageSize", "100"),
+                (
+                    "fields",
+                    "nextPageToken,permissions(id,type,role,emailAddress,domain,allowFileDiscovery,permissionDetails)",
+                ),
+            ];
+            if let Some(ref pt) = page_token {
+                params.push(("pageToken", pt));
+            }
+
+            debug!(
+                "[GOOGLE API CALL] list_drive_permissions drive={}, page_token={:?}",
+                drive_id, page_token
+            );
+            let response = self
+                .client
+                .get(&url)
+                .bearer_auth(token)
+                .query(&params)
+                .send()
+                .await
+                .with_context(|| format!("Failed to list permissions for drive {}", drive_id))?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let error_text = response.text().await?;
+                return Err(anyhow!(
+                    "Failed to list permissions for drive {}: HTTP {} - {}",
+                    drive_id,
+                    status,
+                    error_text
+                ));
+            }
+
+            #[derive(Deserialize)]
+            struct DrivePermissionsResponse {
+                #[serde(rename = "nextPageToken")]
+                next_page_token: Option<String>,
+                #[serde(default)]
+                permissions: Vec<GoogleDrivePermission>,
+            }
+
+            let response_text = response.text().await?;
+            let parsed: DrivePermissionsResponse =
+                serde_json::from_str(&response_text).map_err(|e| {
+                    anyhow!(
+                        "Failed to parse permissions response for drive {}: {}. Raw: {}",
+                        drive_id,
+                        e,
+                        response_text
+                    )
+                })?;
+
+            all_permissions.extend(parsed.permissions);
+            page_token = parsed.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        Ok(all_permissions)
     }
 
     /// List all files under a given folder (non-recursive, paginated).
@@ -1320,7 +1585,7 @@ impl DriveClient {
 
                 let mut params: Vec<(&str, &str)> = vec![
                     ("pageSize", "100"),
-                    ("fields", "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))"),
+                    ("fields", FILES_FIELDS),
                     ("q", query.as_str()),
                     ("supportsAllDrives", "true"),
                     ("includeItemsFromAllDrives", "true"),
@@ -1331,7 +1596,10 @@ impl DriveClient {
                     params.push(("pageToken", pt));
                 }
 
-                debug!("[GOOGLE API CALL] list_files_in_folder folder={}, drive={}, page_token={:?}", folder_id, drive_id, page_token);
+                debug!(
+                    "[GOOGLE API CALL] list_files_in_folder folder={}, drive={}, page_token={:?}",
+                    folder_id, drive_id, page_token
+                );
                 let response = self
                     .client
                     .get(&url)
@@ -1343,20 +1611,24 @@ impl DriveClient {
 
                 let status = response.status();
                 if !status.is_success() {
-                    return classify_google_api_error(response, "Failed to list files in folder").await;
+                    return classify_google_api_error(response, "Failed to list files in folder")
+                        .await;
                 }
 
                 let response_text = response.text().await?;
-                let parsed: FilesListResponse = serde_json::from_str(&response_text).map_err(|e| {
-                    anyhow!(
-                        "Failed to parse folder-scoped file list response: {}. Raw: {}",
-                        e, response_text
-                    )
-                })?;
+                let parsed: FilesListResponse =
+                    serde_json::from_str(&response_text).map_err(|e| {
+                        anyhow!(
+                            "Failed to parse folder-scoped file list response: {}. Raw: {}",
+                            e,
+                            response_text
+                        )
+                    })?;
 
                 Ok(ApiResult::Success(parsed))
             }
-        }).await
+        })
+        .await
     }
 
     /// List immediate children (sub-folders only) of a given folder in any drive.

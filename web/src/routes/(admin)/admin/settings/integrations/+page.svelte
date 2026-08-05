@@ -281,7 +281,7 @@
         </div>
 
         <Tabs.Root bind:value={activeTab}>
-            <Tabs.List>
+            <Tabs.List class="w-full max-w-md">
                 <Tabs.Trigger
                     value="sources"
                     class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">

@@ -135,4 +135,118 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             },
         })
     })
+
+    it('rejects unknown actions and unknown top-level fields', async () => {
+        expect((await callPost({ action: 'bogus', serviceAccountJson: '{}' })).status).toBe(400)
+        expect(
+            (await callPost({ action: 'discover_folders', serviceAccountJson: '{}', evil: 1 }))
+                .status,
+        ).toBe(400)
+    })
+
+    it('rejects unknown auth modes', async () => {
+        const response = await callPost({
+            action: 'discover_folders',
+            serviceAccountJson: '{}',
+            authMode: 'bogus_mode',
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('requires principal email + domain in DWD mode', async () => {
+        const response = await callPost({
+            action: 'discover_folders',
+            serviceAccountJson: '{}',
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('forwards SA-direct discovery without principal/domain and with drive.readonly scope', async () => {
+        const connectorResponse = { status: 'success', result: { items: [] } }
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(connectorResponse), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        )
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'discover_folders',
+            serviceAccountJson: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
+            authMode: 'service_account_direct',
+            params: { auth_mode: 'service_account_direct' },
+        })
+
+        expect(response.status).toBe(200)
+        const [url, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        expect(url).toBe('http://cm.test/action')
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).toMatchObject({
+            action: 'discover_folders',
+            params: { auth_mode: 'service_account_direct' },
+            transient_credentials: {
+                provider: 'google',
+                auth_type: 'jwt',
+                principal_email: null,
+                credentials: {
+                    service_account_key: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
+                },
+                config: { scopes: ['https://www.googleapis.com/auth/drive.readonly'] },
+            },
+        })
+    })
+
+    it('forwards validate_shared_drive_access with drive ids in SA-direct mode', async () => {
+        const connectorResponse = {
+            status: 'success',
+            result: {
+                drives: [{ drive_id: 'd1', ok: true, role: 'organizer', error: null }],
+            },
+        }
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(connectorResponse), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        )
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'validate_shared_drive_access',
+            serviceAccountJson: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
+            authMode: 'service_account_direct',
+            params: { drive_ids: ['d1', 'd2'] },
+        })
+
+        expect(response.status).toBe(200)
+        const [url, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).toMatchObject({
+            action: 'validate_shared_drive_access',
+            params: { drive_ids: ['d1', 'd2'], auth_mode: 'service_account_direct' },
+        })
+    })
+
+    it('rejects validate_shared_drive_access without drive ids or outside SA-direct', async () => {
+        expect(
+            (
+                await callPost({
+                    action: 'validate_shared_drive_access',
+                    serviceAccountJson: '{}',
+                    authMode: 'service_account_direct',
+                    params: { drive_ids: [] },
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'validate_shared_drive_access',
+                    serviceAccountJson: '{}',
+                    params: { drive_ids: ['d1'] },
+                })
+            ).status,
+        ).toBe(400)
+    })
 })

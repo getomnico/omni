@@ -29,9 +29,18 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 
     const creds = await serviceCredentialsRepository.getOrgCredsBySourceId(source.id)
 
-    const credsConfig = (creds?.config as { domain?: string } | null) ?? {}
+    const credsConfig = (creds?.config as { domain?: string; scopes?: unknown } | null) ?? {}
     const sourceConfig =
-        (source.config as { domain?: string; folder_path_filters?: unknown } | null) ?? {}
+        (source.config as {
+            domain?: string
+            auth_mode?: string
+            folder_path_filters?: unknown
+        } | null) ?? {}
+
+    const authMode =
+        sourceConfig.auth_mode ??
+        (creds?.authType === AuthType.JWT ? 'domain_wide_delegation' : null)
+    const isSaDirect = authMode === 'service_account_direct'
 
     const folderPathFilters = Array.isArray(sourceConfig?.folder_path_filters)
         ? sourceConfig.folder_path_filters
@@ -45,6 +54,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     return {
         source,
         authType: (creds?.authType as AuthType | undefined) ?? null,
+        authMode,
+        isSaDirect,
         hasStoredKey: Boolean(creds),
         principalEmail: creds?.principalEmail ?? '',
         domain: credsConfig.domain ?? sourceConfig.domain ?? '',
@@ -149,6 +160,11 @@ export const actions: Actions = {
 
         const existingCreds = await serviceCredentialsRepository.getOrgCredsBySourceId(source.id)
         const isJwt = existingCreds?.authType === AuthType.JWT
+        const existingConfig: Record<string, unknown> =
+            source.config && typeof source.config === 'object' && !Array.isArray(source.config)
+                ? (source.config as Record<string, unknown>)
+                : {}
+        const isSaDirect = existingConfig.auth_mode === 'service_account_direct'
 
         try {
             if (isJwt) {
@@ -158,64 +174,114 @@ export const actions: Actions = {
                 const principalEmail = ((formData.get('principalEmail') as string) || '').trim()
                 const domain = ((formData.get('domain') as string) || '').trim()
 
-                if (
-                    isActive &&
-                    userFilterMode === 'whitelist' &&
-                    (!userWhitelist || userWhitelist.length === 0)
-                ) {
-                    throw error(400, 'Whitelist mode requires at least one user')
-                }
-                if (!principalEmail) {
-                    throw error(400, 'Admin email is required')
-                }
-                if (!domain) {
-                    throw error(400, 'Organization domain is required')
-                }
-
-                if (serviceAccountJson) {
-                    try {
-                        JSON.parse(serviceAccountJson)
-                    } catch {
-                        throw error(400, 'Invalid service account JSON')
+                if (isSaDirect) {
+                    // SA-direct: no admin email/domain required; the shared drive
+                    // selection is the only scope. Validate it was provided.
+                    const folderPathFilters = parseFolderPathFilters(formData)
+                    if (folderPathFilters.length === 0) {
+                        throw error(400, 'At least one shared drive is required')
                     }
+                    if (folderPathFilters.some((f) => f.kind !== 'shared_drive_root')) {
+                        throw error(
+                            400,
+                            'SA-direct supports whole shared drives only (folder-level restrictions are not supported)',
+                        )
+                    }
+
+                    if (serviceAccountJson) {
+                        try {
+                            JSON.parse(serviceAccountJson)
+                        } catch {
+                            throw error(400, 'Invalid service account JSON')
+                        }
+                    }
+
+                    const mergedConfig: Record<string, unknown> = {
+                        ...existingConfig,
+                        auth_mode: 'service_account_direct',
+                    }
+                    mergedConfig.folder_path_filters = folderPathFilters
+                    delete mergedConfig.domain
+
+                    const existingCredConfig: Record<string, unknown> =
+                        existingCreds?.config &&
+                        typeof existingCreds.config === 'object' &&
+                        !Array.isArray(existingCreds.config)
+                            ? (existingCreds.config as Record<string, unknown>)
+                            : {}
+
+                    await serviceCredentialsRepository.updateBySourceId(source.id, {
+                        principalEmail: null,
+                        config: {
+                            ...existingCredConfig,
+                            scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+                        },
+                        credentials: serviceAccountJson
+                            ? { service_account_key: serviceAccountJson }
+                            : null,
+                    })
+
+                    await updateSourceById(source.id, {
+                        isActive,
+                        userFilterMode,
+                        userWhitelist,
+                        userBlacklist,
+                        config: mergedConfig,
+                    })
+                } else {
+                    if (
+                        isActive &&
+                        userFilterMode === 'whitelist' &&
+                        (!userWhitelist || userWhitelist.length === 0)
+                    ) {
+                        throw error(400, 'Whitelist mode requires at least one user')
+                    }
+                    if (!principalEmail) {
+                        throw error(400, 'Admin email is required')
+                    }
+                    if (!domain) {
+                        throw error(400, 'Organization domain is required')
+                    }
+
+                    if (serviceAccountJson) {
+                        try {
+                            JSON.parse(serviceAccountJson)
+                        } catch {
+                            throw error(400, 'Invalid service account JSON')
+                        }
+                    }
+
+                    const folderPathFilters = parseFolderPathFilters(formData)
+
+                    // Merge folder_path_filters into config while PRESERVING all existing source config keys.
+                    const mergedConfig: Record<string, unknown> = { ...existingConfig, domain }
+                    mergedConfig.auth_mode = 'domain_wide_delegation'
+                    mergedConfig.folder_path_filters = folderPathFilters
+
+                    // Preserve existing credential config as well.
+                    const existingCredConfig: Record<string, unknown> =
+                        existingCreds?.config &&
+                        typeof existingCreds.config === 'object' &&
+                        !Array.isArray(existingCreds.config)
+                            ? (existingCreds.config as Record<string, unknown>)
+                            : {}
+
+                    await serviceCredentialsRepository.updateBySourceId(source.id, {
+                        principalEmail,
+                        config: { ...existingCredConfig, domain },
+                        credentials: serviceAccountJson
+                            ? { service_account_key: serviceAccountJson }
+                            : null,
+                    })
+
+                    await updateSourceById(source.id, {
+                        isActive,
+                        userFilterMode,
+                        userWhitelist,
+                        userBlacklist,
+                        config: mergedConfig,
+                    })
                 }
-
-                const folderPathFilters = parseFolderPathFilters(formData)
-
-                // Merge folder_path_filters into config while PRESERVING all existing source config keys.
-                const existingConfig: Record<string, unknown> =
-                    source.config &&
-                    typeof source.config === 'object' &&
-                    !Array.isArray(source.config)
-                        ? (source.config as Record<string, unknown>)
-                        : {}
-
-                const mergedConfig: Record<string, unknown> = { ...existingConfig, domain }
-                mergedConfig.folder_path_filters = folderPathFilters
-
-                // Preserve existing credential config as well.
-                const existingCredConfig: Record<string, unknown> =
-                    existingCreds?.config &&
-                    typeof existingCreds.config === 'object' &&
-                    !Array.isArray(existingCreds.config)
-                        ? (existingCreds.config as Record<string, unknown>)
-                        : {}
-
-                await serviceCredentialsRepository.updateBySourceId(source.id, {
-                    principalEmail,
-                    config: { ...existingCredConfig, domain },
-                    credentials: serviceAccountJson
-                        ? { service_account_key: serviceAccountJson }
-                        : null,
-                })
-
-                await updateSourceById(source.id, {
-                    isActive,
-                    userFilterMode,
-                    userWhitelist,
-                    userBlacklist,
-                    config: mergedConfig,
-                })
             } else {
                 // OAuth or other auth types — admin can only toggle enabled.
                 // Still merge any config changes without destroying existing keys.
