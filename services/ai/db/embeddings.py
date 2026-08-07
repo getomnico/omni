@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from asyncpg import Pool
 
-from .connection import get_db_pool
+from .connection import get_system_db_pool
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +33,11 @@ class EmbeddingsRepository:
         self.pool = pool
 
     async def _get_pool(self) -> Pool:
-        """Get database pool"""
+        """Get database pool. Embeddings are written by the background embedding
+        subsystem, so they always run under the privileged system pool."""
         if self.pool:
             return self.pool
-        return await get_db_pool()
+        return await get_system_db_pool()
 
     async def get_for_document(self, document_id: str) -> List[Embedding]:
         """Get all embeddings for a document, ordered by chunk_index."""

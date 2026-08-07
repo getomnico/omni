@@ -6,11 +6,26 @@ import { validateApiKey } from '$lib/server/apiKeys.js'
 import { rateLimit } from '$lib/server/rateLimit.js'
 import { Logger } from '$lib/server/logger.js'
 import { initTelemetry, extractTraceContext, getRequestId } from '$lib/server/telemetry.js'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import { documentRlsClient } from '$lib/server/db/index.js'
+import * as schema from '$lib/server/db/schema.js'
 
 // Initialize OpenTelemetry on module load
 initTelemetry()
 
 const handleAuth: Handle = async ({ event, resolve }) => {
+    const resolveWithDocumentRls = async (
+        email: string,
+        scope: 'public' | 'user',
+    ): Promise<Response> =>
+        documentRlsClient.begin(async (transaction) => {
+            await transaction`SET LOCAL ROLE omni_documents_user`
+            await transaction`SELECT set_config('omni.document_user_email', ${email}, true)`
+            await transaction`SELECT set_config('omni.document_access_scope', ${scope}, true)`
+            event.locals.db = drizzle(transaction, { schema })
+            return resolve(event)
+        })
+
     // 1. Try API key auth (Authorization: Bearer omni_* or X-API-Key header)
     const authHeader = event.request.headers.get('authorization')
     const xApiKey = event.request.headers.get('x-api-key')
@@ -34,7 +49,7 @@ const handleAuth: Handle = async ({ event, resolve }) => {
             event.locals.session = null
             event.locals.apiKeyAllowedSources = result.allowedSources
             event.locals.apiKeyScope = result.scope
-            return resolve(event)
+            return resolveWithDocumentRls(result.user.email, result.scope)
         }
         // Invalid API key on /api/ routes → 401 immediately
         if (event.url.pathname.startsWith('/api/')) {
@@ -69,7 +84,7 @@ const handleAuth: Handle = async ({ event, resolve }) => {
     event.locals.session = session
     event.locals.apiKeyAllowedSources = null // cookie auth = unrestricted
     event.locals.apiKeyScope = null
-    return resolve(event)
+    return user ? resolveWithDocumentRls(user.email, 'user') : resolve(event)
 }
 
 const handlePasswordChange: Handle = async ({ event, resolve }) => {

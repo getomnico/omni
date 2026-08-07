@@ -242,6 +242,32 @@ jobs:
               - '.github/workflows/build-cli.yml'
 
   # ---------------------------------------------------------------------------
+  # Authorization boundary regression tests
+  # ---------------------------------------------------------------------------
+  document-rls-security:
+    needs: detect-changes
+    if: >-
+      needs.detect-changes.outputs.is-tag != 'true' &&
+      (needs.detect-changes.outputs.ai == 'true' ||
+       needs.detect-changes.outputs.web == 'true' ||
+       needs.detect-changes.outputs.searcher == 'true' ||
+       needs.detect-changes.outputs.indexer == 'true' ||
+       needs.detect-changes.outputs.connector-manager == 'true' ||
+       needs.detect-changes.outputs.migrator == 'true' ||
+       needs.detect-changes.outputs.deployment == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test document RLS with real ParadeDB
+        run: cargo test -p shared --test document_rls_test --locked -- --nocapture
+      - name: Test permission-scope query generation
+        run: cargo test -p shared permission_filter_tests --lib --locked
+
+  # ---------------------------------------------------------------------------
   # Core services
   # ---------------------------------------------------------------------------
   build-ai:

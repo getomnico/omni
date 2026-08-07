@@ -16,7 +16,11 @@ export const GET: RequestHandler = async ({ fetch, locals, url }) => {
         typeaheadUrl.searchParams.set('limit', limit)
         typeaheadUrl.searchParams.set('user_id', locals.user.id)
 
-        const response = await fetch(typeaheadUrl.toString())
+        const response = await fetch(typeaheadUrl.toString(), {
+            headers: env.OMNI_INTERNAL_SERVICE_TOKEN
+                ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                : undefined,
+        })
 
         if (!response.ok) {
             console.error('Typeahead service error:', response.status, response.statusText)

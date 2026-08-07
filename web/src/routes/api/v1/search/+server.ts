@@ -88,11 +88,10 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
             ? body.mode
             : 'hybrid',
         include_facets: typeof body.include_facets === 'boolean' ? body.include_facets : undefined,
-        // 'admin' scope: omit user_email → searcher skips permission filter → all docs
-        // 'user'/'public' scope (or cookie auth): real user identity → user's permitted docs
-        user_email: locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
-        user_id: locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
-        user_configuration: locals.apiKeyScope === 'admin' ? undefined : locals.user.configuration,
+        user_email: locals.user.email,
+        user_id: locals.user.id,
+        user_configuration: locals.user.configuration,
+        document_access_scope: locals.apiKeyScope ?? 'user',
     }
 
     logger.debug('Agent search request', { query: queryData.query, mode: queryData.mode })
@@ -100,7 +99,12 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
     try {
         const response = await fetch(`${env.SEARCHER_URL}/search`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...(env.OMNI_INTERNAL_SERVICE_TOKEN
+                    ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                    : {}),
+            },
             body: JSON.stringify(queryData),
         })
 

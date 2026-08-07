@@ -17,6 +17,31 @@ from tools.registry import ToolContext
 pytestmark = pytest.mark.integration
 
 
+async def _seed_group_membership(db_pool, source_id: str, email: str, member: str) -> None:
+    group_id = str(ULID())
+    membership_id = str(ULID())
+    await db_pool.execute(
+        """
+        INSERT INTO groups (id, source_id, email, display_name, synced_at)
+        VALUES ($1, $2, $3, 'Test Group', NOW())
+        ON CONFLICT (source_id, email) DO NOTHING
+        """,
+        group_id,
+        source_id,
+        email,
+    )
+    await db_pool.execute(
+        """
+        INSERT INTO group_memberships (id, group_id, member_email, synced_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (group_id, member_email) DO NOTHING
+        """,
+        membership_id,
+        group_id,
+        member,
+    )
+
+
 def _ctx(
     user_email: str | None,
     skip: bool = False,
@@ -136,6 +161,7 @@ class TestDocumentHandlerPermissions:
             "content",
             permissions={"public": False, "users": [], "groups": ["eng@co.com"]},
         )
+        await _seed_group_membership(db_pool, source_id, "eng@co.com", "alice@co.com")
 
         result = await doc_handler.execute(
             "read_document",

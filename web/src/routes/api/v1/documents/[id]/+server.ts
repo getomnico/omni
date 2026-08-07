@@ -22,10 +22,9 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
     const queryData: Record<string, unknown> = {
         query: 'content',
         document_id: documentId,
-        user_email:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
-        user_id:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
+        user_email: locals.user.email,
+        user_id: locals.user.id,
+        document_access_scope: locals.apiKeyScope ?? 'user',
         limit: 1,
     }
 
@@ -47,7 +46,12 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
     try {
         const response = await fetch(`${env.SEARCHER_URL}/search`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...(env.OMNI_INTERNAL_SERVICE_TOKEN
+                    ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                    : {}),
+            },
             body: JSON.stringify(queryData),
         })
 

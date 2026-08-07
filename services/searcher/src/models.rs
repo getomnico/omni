@@ -5,6 +5,15 @@ use shared::{
 };
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize, Hash, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentAccessScope {
+    Public,
+    #[default]
+    User,
+    System,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Hash, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
@@ -38,6 +47,8 @@ pub struct SearchRequest {
     pub include_facets: Option<bool>,
     pub user_email: Option<String>,
     pub user_id: Option<String>,
+    #[serde(default)]
+    pub document_access_scope: DocumentAccessScope,
     #[serde(default, deserialize_with = "deserialize_user_configuration")]
     pub user_configuration: UserConfiguration,
     pub is_generated_query: Option<bool>,
@@ -312,6 +323,10 @@ mod tests {
         assert_eq!(request.limit(), 20);
         assert_eq!(request.offset(), 0);
         assert!(matches!(request.search_mode(), SearchMode::Fulltext));
+        assert!(matches!(
+            request.document_access_scope,
+            DocumentAccessScope::User
+        ));
     }
 
     #[test]

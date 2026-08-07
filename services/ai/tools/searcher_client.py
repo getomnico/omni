@@ -27,6 +27,7 @@ class SearchRequest(BaseModel):
     mode: str = "hybrid"
     user_id: str | None = None
     user_email: str | None = None
+    document_access_scope: str = "user"
     user_configuration: UserConfiguration | None = None
     is_generated_query: bool | None = None
     original_user_query: str | None = None
@@ -190,8 +191,20 @@ class SearcherClient:
 
             logger.info(f"Calling searcher service with query: {request.query}...")
 
+            headers: dict[str, str] = {}
+            token = os.environ.get("OMNI_INTERNAL_SERVICE_TOKEN")
+            if token:
+                headers["x-omni-internal-token"] = token
+            if request.document_access_scope == "system":
+                if not token:
+                    raise SearcherError(
+                        message="OMNI_INTERNAL_SERVICE_TOKEN is required for system document access",
+                        request=None,
+                        response=None,
+                    )
+                headers["x-omni-system-token"] = token
             response = await self.client.post(
-                f"{self.searcher_url}/search", json=search_payload
+                f"{self.searcher_url}/search", json=search_payload, headers=headers
             )
 
             if response.status_code == 200:

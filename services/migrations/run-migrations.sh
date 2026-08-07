@@ -64,3 +64,61 @@ if [[ -n "$pg_search_version" ]] && version_ge "$pg_search_version" "0.24.0" && 
 fi
 
 sqlx migrate run --source "$MIGRATIONS_DIR"
+
+# Core services must not connect as the migration/table-owner role because owners and
+# superusers bypass RLS. User-facing and privileged services use different logins so a
+# compromised web/search process cannot assume the system document role.
+USER_RUNTIME_USERNAME=${DATABASE_RUNTIME_USERNAME:-omni_runtime}
+USER_RUNTIME_PASSWORD=${DATABASE_RUNTIME_PASSWORD:-$DATABASE_PASSWORD}
+SYSTEM_RUNTIME_USERNAME=${DATABASE_SYSTEM_USERNAME:-omni_system_runtime}
+SYSTEM_RUNTIME_PASSWORD=${DATABASE_SYSTEM_PASSWORD:-$DATABASE_PASSWORD}
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+    -v user_runtime_username="$USER_RUNTIME_USERNAME" \
+    -v user_runtime_password="$USER_RUNTIME_PASSWORD" \
+    -v system_runtime_username="$SYSTEM_RUNTIME_USERNAME" \
+    -v system_runtime_password="$SYSTEM_RUNTIME_PASSWORD" <<'SQL'
+SELECT format(
+    'CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L',
+    :'user_runtime_username', :'user_runtime_password'
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'user_runtime_username')
+\gexec
+SELECT format(
+    'ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    :'user_runtime_username', :'user_runtime_password'
+)
+\gexec
+SELECT format('REVOKE omni_documents_system FROM %I', :'user_runtime_username')
+\gexec
+SELECT format('GRANT omni_documents_user TO %I WITH INHERIT FALSE, SET TRUE', :'user_runtime_username')
+\gexec
+
+SELECT format(
+    'CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD %L',
+    :'system_runtime_username', :'system_runtime_password'
+)
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'system_runtime_username')
+\gexec
+SELECT format(
+    'ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    :'system_runtime_username', :'system_runtime_password'
+)
+\gexec
+SELECT format('REVOKE omni_documents_user FROM %I', :'system_runtime_username')
+\gexec
+SELECT format('GRANT omni_documents_system TO %I WITH INHERIT FALSE, SET TRUE', :'system_runtime_username')
+\gexec
+
+SELECT format('GRANT USAGE ON SCHEMA public TO %I, %I', :'user_runtime_username', :'system_runtime_username')
+\gexec
+SELECT format('GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO %I, %I', :'user_runtime_username', :'system_runtime_username')
+\gexec
+SELECT format('GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO %I, %I', :'user_runtime_username', :'system_runtime_username')
+\gexec
+SELECT format('REVOKE ALL PRIVILEGES ON documents, embeddings, content_blobs FROM %I, %I', :'user_runtime_username', :'system_runtime_username')
+\gexec
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO %I, %I', :'user_runtime_username', :'system_runtime_username')
+\gexec
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO %I, %I', :'user_runtime_username', :'system_runtime_username')
+\gexec
+SQL

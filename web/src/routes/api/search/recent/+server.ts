@@ -12,7 +12,11 @@ export const GET: RequestHandler = async ({ fetch, locals }) => {
         const searchUrl = new URL(`${env.SEARCHER_URL}/recent-searches`)
         searchUrl.searchParams.set('user_id', locals.user.id)
 
-        const response = await fetch(searchUrl.toString())
+        const response = await fetch(searchUrl.toString(), {
+            headers: env.OMNI_INTERNAL_SERVICE_TOKEN
+                ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                : undefined,
+        })
 
         if (!response.ok) {
             console.error('Recent searches service error:', response.status, response.statusText)

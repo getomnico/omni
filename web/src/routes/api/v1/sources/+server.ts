@@ -40,7 +40,7 @@ export const GET: RequestHandler = async ({ locals }) => {
                   )
             : Promise.resolve([]),
         sourceIds.length > 0
-            ? db
+            ? locals.db
                   .select({
                       sourceId: documents.sourceId,
                       count: count(),
