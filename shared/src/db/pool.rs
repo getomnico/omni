@@ -10,7 +10,9 @@ pub async fn begin_document_user_on<'a>(
     public_only: bool,
 ) -> Result<Transaction<'a, Postgres>, DatabaseError> {
     let mut tx = pool.begin().await?;
-    sqlx::query("SET LOCAL ROLE omni_documents_user")
+    // No-op in production (the pool already logs in as omni_user); switches the
+    // owner connection to the user role in tests and maintenance sessions.
+    sqlx::query("SET LOCAL ROLE omni_user")
         .execute(&mut *tx)
         .await?;
     sqlx::query("SELECT set_config('omni.document_user_email', $1, true)")
@@ -28,7 +30,7 @@ pub async fn begin_document_system_on<'a>(
     pool: &'a PgPool,
 ) -> Result<Transaction<'a, Postgres>, DatabaseError> {
     let mut tx = pool.begin().await?;
-    sqlx::query("SET LOCAL ROLE omni_documents_system")
+    sqlx::query("SET LOCAL ROLE omni_system")
         .execute(&mut *tx)
         .await?;
     Ok(tx)
@@ -75,20 +77,11 @@ impl DatabasePool {
     }
 
     pub async fn from_config(config: &DatabaseConfig) -> Result<Self, DatabaseError> {
-        let mut options = PgPoolOptions::new()
+        let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
-            .acquire_timeout(Duration::from_secs(config.acquire_timeout_seconds));
-        if env::var("OMNI_DOCUMENT_DATABASE_ROLE").as_deref() == Ok("system") {
-            options = options.after_connect(|connection, _| {
-                Box::pin(async move {
-                    sqlx::query("SET ROLE omni_documents_system")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
-            });
-        }
-        let pool = options.connect(&config.database_url).await?;
+            .acquire_timeout(Duration::from_secs(config.acquire_timeout_seconds))
+            .connect(&config.database_url)
+            .await?;
         let system_pool = Self::connect_system_pool(config).await?;
 
         Ok(Self {
@@ -127,14 +120,6 @@ impl DatabasePool {
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .acquire_timeout(Duration::from_secs(config.acquire_timeout_seconds))
-            .after_connect(|connection, _| {
-                Box::pin(async move {
-                    sqlx::query("SET ROLE omni_documents_system")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
-            })
             .connect(url.as_str())
             .await?;
         Ok(Some(pool))

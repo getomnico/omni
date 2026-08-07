@@ -1,37 +1,38 @@
 -- Document authorization is enforced by PostgreSQL rather than by individual query paths.
--- Applications switch to one of these NOLOGIN roles on checkout. The login/migration role
--- remains the table owner so migrations can continue to run, but ordinary requests execute
--- as omni_documents_user and therefore cannot bypass RLS as the owner.
+-- User-facing services log in as omni_user and the background services as omni_system; each
+-- role is a real login with a password provisioned by run-migrations.sh. The login/migration
+-- role remains the table owner so migrations can continue to run, but ordinary requests run
+-- as omni_user and therefore cannot bypass RLS as the owner.
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_documents_user') THEN
-        CREATE ROLE omni_documents_user NOLOGIN NOSUPERUSER NOBYPASSRLS;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_user') THEN
+        CREATE ROLE omni_user LOGIN NOSUPERUSER NOBYPASSRLS;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_documents_system') THEN
-        CREATE ROLE omni_documents_system NOLOGIN NOSUPERUSER NOBYPASSRLS;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omni_system') THEN
+        CREATE ROLE omni_system LOGIN NOSUPERUSER NOBYPASSRLS;
     END IF;
 END
 $$;
 
-ALTER ROLE omni_documents_user NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-ALTER ROLE omni_documents_system NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE omni_user LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+ALTER ROLE omni_system LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 
 DO $$
 BEGIN
     EXECUTE format(
-        'GRANT omni_documents_user, omni_documents_system TO %I WITH INHERIT FALSE, SET TRUE',
+        'GRANT omni_user, omni_system TO %I WITH INHERIT FALSE, SET TRUE',
         current_user
     );
 END
 $$;
 
-GRANT USAGE ON SCHEMA public TO omni_documents_user, omni_documents_system;
-GRANT SELECT ON users, groups, group_memberships, sources, embedding_providers TO omni_documents_user;
-GRANT SELECT ON documents, embeddings, content_blobs TO omni_documents_user;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO omni_documents_system;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO omni_documents_system;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO omni_documents_system;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO omni_documents_system;
+GRANT USAGE ON SCHEMA public TO omni_user, omni_system;
+GRANT SELECT ON users, groups, group_memberships, sources, embedding_providers TO omni_user;
+GRANT SELECT ON documents, embeddings, content_blobs TO omni_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO omni_system;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO omni_system;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO omni_system;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO omni_system;
 
 CREATE OR REPLACE FUNCTION public.omni_document_viewer_email()
 RETURNS text
@@ -78,52 +79,52 @@ AS $$
 $$;
 
 REVOKE ALL ON FUNCTION public.omni_can_read_document(jsonb) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.omni_can_read_document(jsonb) TO omni_documents_user;
+GRANT EXECUTE ON FUNCTION public.omni_can_read_document(jsonb) TO omni_user;
 
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE documents FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS documents_user_select ON documents;
 DROP POLICY IF EXISTS documents_system_all ON documents;
 CREATE POLICY documents_user_select ON documents
-    FOR SELECT TO omni_documents_user
+    FOR SELECT TO omni_user
     USING (
-        current_user = 'omni_documents_user'
+        current_user = 'omni_user'
         AND omni_can_read_document(permissions)
     );
 CREATE POLICY documents_system_all ON documents
-    FOR ALL TO omni_documents_system
-    USING (current_user = 'omni_documents_system')
-    WITH CHECK (current_user = 'omni_documents_system');
+    FOR ALL TO omni_system
+    USING (current_user = 'omni_system')
+    WITH CHECK (current_user = 'omni_system');
 
 ALTER TABLE embeddings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE embeddings FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS embeddings_user_select ON embeddings;
 DROP POLICY IF EXISTS embeddings_system_all ON embeddings;
 CREATE POLICY embeddings_user_select ON embeddings
-    FOR SELECT TO omni_documents_user
+    FOR SELECT TO omni_user
     USING (
-        current_user = 'omni_documents_user'
+        current_user = 'omni_user'
         AND EXISTS (SELECT 1 FROM documents d WHERE d.id = embeddings.document_id)
     );
 CREATE POLICY embeddings_system_all ON embeddings
-    FOR ALL TO omni_documents_system
-    USING (current_user = 'omni_documents_system')
-    WITH CHECK (current_user = 'omni_documents_system');
+    FOR ALL TO omni_system
+    USING (current_user = 'omni_system')
+    WITH CHECK (current_user = 'omni_system');
 
 ALTER TABLE content_blobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE content_blobs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS content_blobs_user_select ON content_blobs;
 DROP POLICY IF EXISTS content_blobs_system_all ON content_blobs;
 CREATE POLICY content_blobs_user_select ON content_blobs
-    FOR SELECT TO omni_documents_user
+    FOR SELECT TO omni_user
     USING (
-        current_user = 'omni_documents_user'
+        current_user = 'omni_user'
         AND EXISTS (SELECT 1 FROM documents d WHERE d.content_id = content_blobs.id)
     );
 CREATE POLICY content_blobs_system_all ON content_blobs
-    FOR ALL TO omni_documents_system
-    USING (current_user = 'omni_documents_system')
-    WITH CHECK (current_user = 'omni_documents_system');
+    FOR ALL TO omni_system
+    USING (current_user = 'omni_system')
+    WITH CHECK (current_user = 'omni_system');
 
 -- Admin-scoped API keys exposed the entire corpus. Revoke them rather than silently
 -- changing their meaning, then constrain all new keys to the documented safe scopes.

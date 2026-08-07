@@ -31,7 +31,7 @@ async function getDocumentCounts(
 
     try {
         const counts = await documentRlsClient.begin(async (transaction) => {
-            await transaction`SET LOCAL ROLE omni_documents_user`
+            await transaction`SET LOCAL ROLE omni_user`
             await transaction`SELECT set_config('omni.document_user_email', ${userEmail}, true)`
             await transaction`SELECT set_config('omni.document_access_scope', 'user', true)`
             return drizzle(transaction, { schema }).execute(sql`

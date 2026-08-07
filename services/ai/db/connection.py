@@ -39,12 +39,10 @@ def _construct_database_url_for(
 async def _init_connection(conn):
     """Initialize connection with pgvector codec."""
     await register_vector(conn)
-
-
 async def _init_system_connection(conn):
-    """Initialize a system-scoped connection with pgvector codec and role."""
+    """Initialize a system connection with the pgvector codec. The pool already
+    logs in as ``omni_system``, so no role switch is needed."""
     await register_vector(conn)
-    await conn.execute("SET ROLE omni_documents_system")
 
 
 async def get_db_pool() -> Pool:
@@ -71,7 +69,7 @@ async def get_system_db_pool() -> Pool:
 
     Uses the dedicated system runtime login when configured. Falls back to the
     shared pool (tests, single-credential dev setups) where the connecting role
-    can still assume ``omni_documents_system``.
+    already connects as ``omni_system``.
     """
     global _db_system_pool
 
@@ -101,7 +99,7 @@ async def document_user_connection(
     db_pool = pool or await get_db_pool()
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute("SET LOCAL ROLE omni_documents_user")
+            await conn.execute("SET LOCAL ROLE omni_user")
             await conn.execute(
                 "SELECT set_config('omni.document_user_email', $1, true)", email
             )

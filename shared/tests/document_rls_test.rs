@@ -80,11 +80,10 @@ async fn document_rls_enforces_permissions_and_resets_pooled_context() -> Result
     assert!(relation.get::<bool, _>("relrowsecurity"));
     assert!(relation.get::<bool, _>("relforcerowsecurity"));
 
-    let runtime_role = sqlx::query(
-        "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'omni_documents_user'",
-    )
-    .fetch_one(pool)
-    .await?;
+    let runtime_role =
+        sqlx::query("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'omni_user'")
+            .fetch_one(pool)
+            .await?;
     assert!(!runtime_role.get::<bool, _>("rolsuper"));
     assert!(!runtime_role.get::<bool, _>("rolbypassrls"));
 
@@ -117,7 +116,7 @@ async fn document_rls_enforces_permissions_and_resets_pooled_context() -> Result
     assert_eq!(public_visible, vec!["rls-public"]);
 
     let mut missing = pool.begin().await?;
-    sqlx::query("SET LOCAL ROLE omni_documents_user")
+    sqlx::query("SET LOCAL ROLE omni_user")
         .execute(&mut *missing)
         .await?;
     let missing_count: i64 =
@@ -207,24 +206,24 @@ async fn runtime_login_cannot_activate_system_role_and_related_tables_are_isolat
     .await?;
 
     let runtime = sqlx::query(
-        "SELECT 1 FROM pg_roles WHERE rolname = 'omni_runtime' AND NOT EXISTS (
+        "SELECT 1 FROM pg_roles WHERE rolname = 'omni_user' AND NOT EXISTS (
             SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
-            WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = 'omni_runtime')
-              AND r.rolname = 'omni_documents_system'
+            WHERE m.member = (SELECT oid FROM pg_roles WHERE rolname = 'omni_user')
+              AND r.rolname = 'omni_system'
         )",
     )
     .fetch_optional(pool)
     .await?;
     assert!(
         runtime.is_some(),
-        "omni_runtime must not be granted omni_documents_system"
+        "omni_user must not be granted omni_system"
     );
 
     let mut user = env
         .db_pool
         .begin_document_user("alice@example.com", false)
         .await?;
-    let system_switch = sqlx::query("SET LOCAL ROLE omni_documents_system")
+    let system_switch = sqlx::query("SET LOCAL ROLE omni_system")
         .execute(&mut *user)
         .await;
     assert!(

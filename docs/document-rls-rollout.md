@@ -5,11 +5,11 @@ Document row-level security is enforced only when runtime services connect with 
 ## Required secrets
 
 - `DATABASE_USERNAME` / `DATABASE_PASSWORD`: migration and table-owner credentials. Only the migrator should receive these.
-- `DATABASE_RUNTIME_USERNAME` / `DATABASE_RUNTIME_PASSWORD`: non-superuser runtime login used by web, searcher, and AI. It can only assume the `omni_documents_user` role.
-- `DATABASE_SYSTEM_USERNAME` / `DATABASE_SYSTEM_PASSWORD`: privileged runtime login used by indexer, connector-manager, and by searcher/AI for system-scoped storage reads. It can only assume the `omni_documents_system` role; it has no direct table grants.
+- `DATABASE_RUNTIME_USERNAME` / `DATABASE_RUNTIME_PASSWORD`: non-superuser login (default `omni_user`) used by web, searcher, and AI.
+- `DATABASE_SYSTEM_USERNAME` / `DATABASE_SYSTEM_PASSWORD`: privileged login (default `omni_system`) used by indexer, connector-manager, and by searcher/AI system pools.
 - `OMNI_INTERNAL_SERVICE_TOKEN`: random service-to-service secret. When configured, the searcher requires it on every identity-bearing request so a direct caller cannot forge a user identity.
 
-The migrator creates the two NOLOGIN document roles, provisions the two runtime logins, grants only role-switch capability, and revokes direct access to `documents`, `embeddings`, and `content_blobs`. User-facing services must never receive the system login, and the user login must never hold membership in `omni_documents_system`.
+Migration 112 creates the two LOGIN roles; the migrator sets their passwords and revokes direct access to `documents`, `embeddings`, and `content_blobs`. User-facing services must never receive the system login, and the user login must never hold membership in `omni_system`.
 
 ## Upgrade order
 
@@ -30,14 +30,14 @@ FROM pg_class WHERE oid = 'documents'::regclass;
 
 SELECT rolname, rolsuper, rolbypassrls
 FROM pg_roles
-WHERE rolname IN ('omni_documents_user', 'omni_documents_system', 'omni_runtime');
+WHERE rolname IN ('omni_user', 'omni_system');
 
 SELECT grantee, privilege_type
 FROM information_schema.role_table_grants
 WHERE table_name = 'documents';
 ```
 
-Use `EXPLAIN (ANALYZE, BUFFERS)` under `SET LOCAL ROLE omni_documents_user` and transaction-local context for representative BM25, vector-join, typeahead candidate, direct-ID, facet, and count queries. Compare latency, buffers, and candidate counts with the pre-RLS baseline.
+Use `EXPLAIN (ANALYZE, BUFFERS)` under `SET LOCAL ROLE omni_user` and transaction-local context for representative BM25, vector-join, typeahead candidate, direct-ID, facet, and count queries. Compare latency, buffers, and candidate counts with the pre-RLS baseline.
 
 ## Known follow-ups
 

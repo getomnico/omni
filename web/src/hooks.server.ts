@@ -19,7 +19,7 @@ const handleAuth: Handle = async ({ event, resolve }) => {
         scope: 'public' | 'user',
     ): Promise<Response> =>
         documentRlsClient.begin(async (transaction) => {
-            await transaction`SET LOCAL ROLE omni_documents_user`
+            await transaction`SET LOCAL ROLE omni_user`
             await transaction`SELECT set_config('omni.document_user_email', ${email}, true)`
             await transaction`SELECT set_config('omni.document_access_scope', ${scope}, true)`
             event.locals.db = drizzle(transaction, { schema })
