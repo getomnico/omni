@@ -253,6 +253,56 @@ def _convert_messages_to_openai(
     return result
 
 
+def validate_openai_tool_message_sequence(
+    messages: list[ChatCompletionMessageParam],
+) -> None:
+    """Validate every assistant ``tool_calls`` batch is fully answered by ``tool``
+    messages before any non-tool message, and each ``tool`` message responds
+    exactly once to a call in the nearest preceding assistant batch.
+
+    Strict OpenAI-compatible endpoints (DeepSeek et al.) reject malformed
+    sequences with an opaque 400; run this pre-dispatch so violations surface as
+    a clear error naming the offending message instead.
+    """
+    pending_tool_call_ids: set[str] = set()
+    for index, message in enumerate(messages):
+        role = message.get("role")
+        if role == "assistant":
+            if pending_tool_call_ids:
+                raise ValueError(
+                    f"Invalid assistant message at index {index}: tool_calls "
+                    f"{sorted(pending_tool_call_ids)} from the preceding assistant "
+                    "message were never answered with tool messages"
+                )
+            pending_tool_call_ids = {
+                tool_call["id"] for tool_call in message.get("tool_calls") or []
+            }
+            continue
+        if role == "tool":
+            tool_call_id = message.get("tool_call_id")
+            if tool_call_id is None or tool_call_id not in pending_tool_call_ids:
+                raise ValueError(
+                    f"Invalid tool message at index {index}: tool_call_id={tool_call_id!r} "
+                    "has no matching tool_calls entry in the preceding assistant message"
+                )
+            pending_tool_call_ids.discard(tool_call_id)
+            continue
+        # Any non-tool message (system/user/developer) closes the current batch:
+        # every tool call of the preceding assistant message must already have
+        # been answered, and later tool messages can no longer pair to it.
+        if pending_tool_call_ids:
+            raise ValueError(
+                f"Invalid {role} message at index {index}: tool_calls "
+                f"{sorted(pending_tool_call_ids)} from the preceding assistant "
+                "message were never answered with tool messages"
+            )
+    if pending_tool_call_ids:
+        raise ValueError(
+            f"Invalid trailing messages: tool_calls {sorted(pending_tool_call_ids)} "
+            "from the final assistant message were never answered with tool messages"
+        )
+
+
 class OpenAICompatibleProvider(LLMProvider):
     """Provider for any OpenAI-compatible Chat Completions endpoint.
 
@@ -314,6 +364,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     f"Sending request with {len(tools)} tools: {[t['name'] for t in tools]}"
                 )
 
+            validate_openai_tool_message_sequence(openai_messages)
+
             stream = await self.client.chat.completions.create(**params)
 
             # Emit message_start
@@ -352,7 +404,9 @@ class OpenAICompatibleProvider(LLMProvider):
                     continue
 
                 delta = chunk.choices[0].delta
-                reasoning_content = _get_passthrough_delta_value(delta, REASONING_CONTENT_KEY)
+                reasoning_content = _get_passthrough_delta_value(
+                    delta, REASONING_CONTENT_KEY
+                )
                 if reasoning_content:
                     reasoning_content_parts.append(reasoning_content)
 
