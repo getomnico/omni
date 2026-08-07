@@ -1028,9 +1028,9 @@ class TestStreamErrorPersistence:
         ), f"Expected stream_error, got events: {events}"
 
         db_msgs = await MessagesRepository().get_active_path(chat_id)
-        assert len(db_msgs) == 2, (
-            f"Expected user + one finalized error row, got {len(db_msgs)} rows"
-        )
+        assert (
+            len(db_msgs) == 2
+        ), f"Expected user + one finalized error row, got {len(db_msgs)} rows"
         failed = db_msgs[-1]
         assert failed.error is not None, "Error column not persisted"
         assert failed.error["message"] == (
@@ -1170,7 +1170,11 @@ class TestStreamErrorPersistence:
         assert any(
             any(
                 isinstance(b, dict) and b.get("type") == "tool_use"
-                for b in (m.message.get("content") if isinstance(m.message.get("content"), list) else [])
+                for b in (
+                    m.message.get("content")
+                    if isinstance(m.message.get("content"), list)
+                    else []
+                )
             )
             for m in db_msgs
         ), "Expected the tool-call assistant row to remain"
@@ -1216,9 +1220,9 @@ class TestStreamErrorPersistence:
 
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         error_rows = [m for m in db_msgs if m.error is not None]
-        assert len(error_rows) == 1, (
-            f"Expected exactly one error row after replay, got {len(error_rows)}"
-        )
+        assert (
+            len(error_rows) == 1
+        ), f"Expected exactly one error row after replay, got {len(error_rows)}"
 
 
 # =============================================================================
@@ -2779,6 +2783,195 @@ class TestInterventionResume:
         )
         assert abandoned_result["is_error"] is True
         assert "interrupted" in abandoned_result["content"][0]["text"].lower()
+
+    @pytest.mark.asyncio
+    async def test_stale_intervention_is_expired_and_never_resumed(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        """When a newer user message arrives after an approved intervention
+        batch, the batch is treated as interrupted: the tool is not executed and
+        the stale intervention is retired so later reconnects stop bypassing the
+        no-new-message guard."""
+        chat_id, user_id, model_id = seeded_chat
+        messages_repo = MessagesRepository()
+        active_path = await messages_repo.get_active_path(chat_id)
+        intervention = await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_stale",
+                        "name": "test__stale",
+                        "input": {},
+                    }
+                ],
+            },
+            parent_id=active_path[-1].id,
+        )
+        await messages_repo.create(
+            chat_id,
+            {
+                "role": "user",
+                "content": "Newer question that supersedes the pending call.",
+            },
+            parent_id=intervention.id,
+        )
+        approval = await ToolApprovalsRepository().create_pending(
+            chat_id=chat_id,
+            user_id=user_id,
+            tool_name="test__stale",
+            tool_input={},
+            tool_call_id="toolu_stale",
+        )
+        await ToolApprovalsRepository().update_status(
+            approval.id, ToolApprovalStatus.APPROVED, user_id
+        )
+
+        handler = MultiActionHandler({"test__stale"}, {"test__stale"})
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM([("text", "Got it, switching tasks.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        # The stale call must be repaired, never executed or resumed.
+        assert handler.executions == []
+        assert len(llm.calls) == 1
+        request = llm.calls[0]["messages"]
+        model_blocks = [
+            block
+            for message in request
+            if message["role"] == "user" and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result"
+        ]
+        stale_result = next(
+            block for block in model_blocks if block["tool_use_id"] == "toolu_stale"
+        )
+        assert stale_result["is_error"] is True
+        assert "interrupted" in stale_result["content"][0]["text"].lower()
+        assert any(event_type == "end_of_stream" for event_type, _, _ in events)
+
+        # The stale intervention is retired, so it no longer counts as pending.
+        approvals = await _interventions(
+            chat_id,
+            ToolApprovalType.APPROVAL,
+            {ToolApprovalStatus.EXPIRED},
+        )
+        assert [approval.tool_call_id for approval in approvals] == ["toolu_stale"]
+
+        # A later reconnect without new input short-circuits instead of
+        # generating again.
+        async with _client(app) as client:
+            await collect_sse_events(client, chat_id)
+        assert len(llm.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_older_stale_intervention_expired_while_newer_batch_resumes(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        """When the active branch has both an older stale intervention batch and
+        a newer terminal resumable batch, only the newest batch's intervention
+        survives: the stale one is expired on the first handler run instead of
+        lingering in stream status until a later reconnect."""
+        chat_id, user_id, model_id = seeded_chat
+        messages_repo = MessagesRepository()
+        active_path = await messages_repo.get_active_path(chat_id)
+        stale_msg = await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_older_stale",
+                        "name": "test__older_stale",
+                        "input": {},
+                    }
+                ],
+            },
+            parent_id=active_path[-1].id,
+        )
+        await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_newer_resume",
+                        "name": "test__newer_resume",
+                        "input": {},
+                    }
+                ],
+            },
+            parent_id=stale_msg.id,
+        )
+        stale_approval = await ToolApprovalsRepository().create_pending(
+            chat_id=chat_id,
+            user_id=user_id,
+            tool_name="test__older_stale",
+            tool_input={},
+            tool_call_id="toolu_older_stale",
+        )
+        resume_approval = await ToolApprovalsRepository().create_pending(
+            chat_id=chat_id,
+            user_id=user_id,
+            tool_name="test__newer_resume",
+            tool_input={},
+            tool_call_id="toolu_newer_resume",
+        )
+        for approval in (stale_approval, resume_approval):
+            await ToolApprovalsRepository().update_status(
+                approval.id, ToolApprovalStatus.APPROVED, user_id
+            )
+
+        handler = MultiActionHandler(
+            {"test__older_stale", "test__newer_resume"},
+            {"test__older_stale", "test__newer_resume"},
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM([("text", "Done.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+
+        async with _client(app) as client:
+            await collect_sse_events(client, chat_id)
+
+        # Only the terminal batch executes.
+        assert handler.executions == ["test__newer_resume"]
+
+        # The stale intervention is retired on this run; the resumable one
+        # completed normally.
+        stale = await _interventions(
+            chat_id, ToolApprovalType.APPROVAL, {ToolApprovalStatus.EXPIRED}
+        )
+        assert [approval.tool_call_id for approval in stale] == ["toolu_older_stale"]
+        completed = await _interventions(
+            chat_id, ToolApprovalType.APPROVAL, {ToolApprovalStatus.COMPLETED}
+        )
+        assert [approval.tool_call_id for approval in completed] == [
+            "toolu_newer_resume"
+        ]
+
+        # The stale call is repaired for the model, never executed.
+        request = llm.calls[0]["messages"]
+        model_blocks = [
+            block
+            for message in request
+            if message["role"] == "user" and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if block.get("type") == "tool_result"
+        ]
+        older_result = next(
+            block
+            for block in model_blocks
+            if block["tool_use_id"] == "toolu_older_stale"
+        )
+        assert older_result["is_error"] is True
+        assert "interrupted" in older_result["content"][0]["text"].lower()
 
 
 # =============================================================================

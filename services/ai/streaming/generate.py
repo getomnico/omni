@@ -233,6 +233,49 @@ def latest_intervention_tool_batch_ids(
     return set()
 
 
+def _is_tool_result_message(message: MessageParam) -> bool:
+    blocks = message_content_blocks(message)
+    return (
+        message.get("role") == "user"
+        and bool(blocks)
+        and all(block["type"] == "tool_result" for block in blocks)
+    )
+
+
+def _tool_result_run_end(messages: list[MessageParam], start: int) -> int:
+    """Index just past the contiguous run of tool-result user messages at ``start``."""
+    end = start
+    while end < len(messages) and _is_tool_result_message(messages[end]):
+        end += 1
+    return end
+
+
+def resumable_batch_ids_for_interventions(
+    messages: list[MessageParam],
+    intervention_tool_call_ids: set[str],
+) -> set[str]:
+    """Tool-call ids of the latest intervention batch, only when that batch is
+    still the terminal active turn.
+
+    A batch is terminal when nothing but its own contiguous tool-result messages
+    follow it. If a newer user/assistant turn exists, the batch's calls must not
+    be resumed: appending their results after the newer turn would emit a
+    ``tool`` message that does not directly follow the issuing assistant message,
+    and splicing them into the earlier position would diverge from the persisted
+    history. Such stale calls are instead marked interrupted by
+    ``repair_interrupted_tool_calls`` and the newer turn proceeds.
+    """
+    batch_ids = latest_intervention_tool_batch_ids(messages, intervention_tool_call_ids)
+    if not batch_ids:
+        return set()
+    for index, message in enumerate(messages):
+        if {call["id"] for call in tool_use_blocks(message)} & batch_ids:
+            if _tool_result_run_end(messages, index + 1) == len(messages):
+                return batch_ids
+            return set()
+    return set()
+
+
 def coalesce_adjacent_tool_result_messages(
     messages: list[MessageParam],
 ) -> list[MessageParam]:
@@ -260,6 +303,11 @@ def coalesce_adjacent_tool_result_messages(
     return coalesced
 
 
+_INTERRUPTED_TOOL_RESULT_MARKER = (
+    "did not complete because the previous response was interrupted"
+)
+
+
 def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockParam:
     return ToolResultBlockParam(
         type="tool_result",
@@ -268,13 +316,64 @@ def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockPara
             {
                 "type": "text",
                 "text": (
-                    f"Tool call {tool_use['name']} did not complete because the previous response was interrupted. "
+                    f"Tool call {tool_use['name']} {_INTERRUPTED_TOOL_RESULT_MARKER}. "
                     "Treat this tool call as failed and retry it if the result is still needed."
                 ),
             }
         ],
         is_error=True,
     )
+
+
+def _joined_result_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(parts)
+    return ""
+
+
+def strip_synthetic_interrupted_results(
+    messages: list[MessageParam],
+    tool_call_ids: set[str],
+) -> list[MessageParam]:
+    """Drop synthetic interrupted-result placeholders for the given tool call ids.
+
+    Keeps exactly one result per ``tool_call_id`` in the conversation: when a
+    resumed call's real result is about to be appended, any repair placeholder
+    for the same id is removed rather than duplicated. Placeholders only exist
+    in-memory (never persisted), so stripping them leaves the DB history intact.
+    """
+    if not tool_call_ids:
+        return messages
+    stripped: list[MessageParam] = []
+    for message in messages:
+        blocks = message_content_blocks(message)
+        kept = [
+            block
+            for block in blocks
+            if not (
+                block["type"] == "tool_result"
+                and block.get("tool_use_id") in tool_call_ids
+                and block.get("is_error")
+                and _INTERRUPTED_TOOL_RESULT_MARKER
+                in _joined_result_text(block.get("content", ""))
+            )
+        ]
+        if len(kept) == len(blocks):
+            stripped.append(message)
+        elif message.get("role") == "user":
+            # A user message emptied by stripping is dropped entirely.
+            if kept:
+                stripped.append(MessageParam(role="user", content=kept))
+        else:
+            stripped.append(message)
+    return stripped
 
 
 def repair_interrupted_tool_calls(
@@ -293,8 +392,18 @@ def repair_interrupted_tool_calls(
             repaired.append(message)
             continue
 
-        next_message = messages[idx + 1] if idx + 1 < len(messages) else None
-        answered_ids = tool_result_ids(next_message) if next_message else set()
+        # A parallel batch can deliver its results across several consecutive
+        # user messages (e.g. one call delayed behind an approval), so collect
+        # answered ids from the whole contiguous tool-result run rather than only
+        # the immediately-next message; checking just the next message would
+        # mis-mark an already-answered call as interrupted and inject a duplicate
+        # tool result into the next provider request.
+        run_end = _tool_result_run_end(messages, idx + 1)
+        answered_ids = {
+            result_id
+            for result_message in messages[idx + 1 : run_end]
+            for result_id in tool_result_ids(result_message)
+        }
         missing = [
             tool_use
             for tool_use in tool_uses
@@ -307,12 +416,15 @@ def repair_interrupted_tool_calls(
             continue
 
         missing_results = [_interrupted_tool_result(tool_use) for tool_use in missing]
-        if answered_ids and next_message is not None:
-            content = next_message["content"]
+        if answered_ids and run_end > idx + 1:
+            # Partially answered batch: fold the failure placeholders into the
+            # last result message so the batch stays contiguous.
+            last_result_message = messages[run_end - 1]
+            content = last_result_message["content"]
             if isinstance(content, list):
-                next_message = cast(MessageParam, dict(next_message))
-                next_message["content"] = [*content, *missing_results]
-                messages[idx + 1] = next_message
+                last_result_message = cast(MessageParam, dict(last_result_message))
+                last_result_message["content"] = [*content, *missing_results]
+                messages[run_end - 1] = last_result_message
                 repair_count += len(missing_results)
                 continue
 
@@ -643,7 +755,7 @@ async def stream_generator(
         intervention_tool_call_ids = set(approval_interventions_by_tool_call_id) | set(
             oauth_interventions_by_tool_call_id
         )
-        resumable_batch_ids = latest_intervention_tool_batch_ids(
+        resumable_batch_ids = resumable_batch_ids_for_interventions(
             conversation_messages, intervention_tool_call_ids
         )
         resumable_tool_calls = [
@@ -1166,6 +1278,13 @@ async def stream_generator(
                     completed_intervention_ids.add(oauth_intervention.id)
 
             if tool_results:
+                # Exactly one result per tool_call_id: a resumed call's real
+                # result replaces any synthetic interrupted placeholder for the
+                # same id instead of being appended alongside it.
+                conversation_messages = strip_synthetic_interrupted_results(
+                    conversation_messages,
+                    {result["tool_use_id"] for result in tool_results},
+                )
                 tool_result_message = MessageParam(role="user", content=tool_results)
                 conversation_messages.append(tool_result_message)
                 for tool_result in tool_results:
