@@ -187,11 +187,14 @@ async def _list_anthropic_models(
     ]
 
 
-# Latest Gemini models as of July 2026.
+# Latest Gemini text/chat models as of July 2026 (stable first, then preview).
 _GEMINI_LATEST_MODELS = [
+    ("gemini-3.6-flash", "Gemini 3.6 Flash"),
     ("gemini-3.5-flash", "Gemini 3.5 Flash"),
-    ("gemini-3.5-pro", "Gemini 3.5 Pro"),
-    ("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
+    ("gemini-3.5-flash-lite", "Gemini 3.5 Flash-Lite"),
+    ("gemini-3.1-pro-preview", "Gemini 3.1 Pro (Preview)"),
+    ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+    ("gemini-2.5-flash", "Gemini 2.5 Flash"),
 ]
 
 

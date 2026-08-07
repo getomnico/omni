@@ -52,32 +52,34 @@ export const PREDEFINED_MODELS: Record<
     { modelId: string; displayName: string }[]
 > = {
     anthropic: [
-        { modelId: 'claude-opus-4-6', displayName: 'Claude Opus 4.6' },
-        { modelId: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5' },
+        { modelId: 'claude-opus-5', displayName: 'Claude Opus 5' },
+        { modelId: 'claude-sonnet-5', displayName: 'Claude Sonnet 5' },
         { modelId: 'claude-haiku-4-5-20251001', displayName: 'Claude Haiku 4.5' },
     ],
     openai: [
+        { modelId: 'gpt-5.6', displayName: 'GPT-5.6' },
         { modelId: 'gpt-5.2', displayName: 'GPT-5.2' },
         { modelId: 'gpt-5-mini', displayName: 'GPT-5 Mini' },
-        { modelId: 'gpt-4.1', displayName: 'GPT-4.1' },
     ],
     bedrock: [
-        { modelId: 'anthropic.claude-opus-4-6-v1', displayName: 'Claude Opus 4.6' },
-        { modelId: 'anthropic.claude-sonnet-4-5-20250929-v1:0', displayName: 'Claude Sonnet 4.5' },
+        { modelId: 'anthropic.claude-opus-5', displayName: 'Claude Opus 5' },
+        { modelId: 'anthropic.claude-sonnet-5', displayName: 'Claude Sonnet 5' },
         { modelId: 'anthropic.claude-haiku-4-5-20251001-v1:0', displayName: 'Claude Haiku 4.5' },
-        { modelId: 'amazon.nova-pro-v1:0', displayName: 'Amazon Nova Pro' },
+        { modelId: 'amazon.nova-2-lite-v1:0', displayName: 'Amazon Nova 2 Lite' },
     ],
     openai_compatible: [],
     gemini: [
-        { modelId: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro' },
-        { modelId: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
-        { modelId: 'gemini-2.5-flash-lite', displayName: 'Gemini 2.5 Flash Lite' },
+        { modelId: 'gemini-3.6-flash', displayName: 'Gemini 3.6 Flash' },
+        { modelId: 'gemini-3.5-flash', displayName: 'Gemini 3.5 Flash' },
+        { modelId: 'gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash-Lite' },
+        { modelId: 'gemini-3.1-pro-preview', displayName: 'Gemini 3.1 Pro' },
     ],
     azure_foundry: [],
     vertex_ai: [
-        { modelId: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5' },
-        { modelId: 'gemini-2.5-pro', displayName: 'Gemini 2.5 Pro' },
-        { modelId: 'gemini-2.5-flash', displayName: 'Gemini 2.5 Flash' },
+        { modelId: 'claude-opus-5', displayName: 'Claude Opus 5' },
+        { modelId: 'claude-sonnet-5', displayName: 'Claude Sonnet 5' },
+        { modelId: 'gemini-3.6-flash', displayName: 'Gemini 3.6 Flash' },
+        { modelId: 'gemini-3.5-flash', displayName: 'Gemini 3.5 Flash' },
     ],
 }
 
