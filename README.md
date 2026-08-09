@@ -3,11 +3,11 @@
 <img width="64" height="64" alt="omni-logo-256" src="https://github.com/user-attachments/assets/981ef763-41d5-4ae1-9cf8-a97d2e601c81#gh-light-mode-only" />
 <img width="64" height="64" alt="omni-logo-dark-256" src="https://github.com/user-attachments/assets/5d3fb1c2-ced0-433a-86a1-8b4e6005fb4f#gh-dark-mode-only" />
 
-**Omni is an AI Agent Platform for the Workplace.**
+**The open-source AI agent for your company.**
 
-Connect your company’s apps, create a unified context layer over workplace knowledge, and deploy agents that can search, reason, and act across your organization.
+Omni works across the tools your company already uses. It gathers relevant context, analyzes information, and carries out tasks while respecting existing permissions.
 
-[Documentation](https://docs.getomni.co)  •  [Deployment](#deployment)  •  [Features](#features)  •  [Architecture](#architecture)
+[Website](https://getomni.co)  •  [Documentation](https://docs.getomni.co)  •  [Deployment](#deployment)  •  [Features](#features)  •  [Architecture](#architecture)
 
 </div>
 
@@ -17,23 +17,25 @@ Connect your company’s apps, create a unified context layer over workplace kno
 
 ## What is Omni?
 
-Omni is a self-hosted AI agent platform for the workplace.
+Omni is an open-source, self-hosted AI agent for company-wide work.
 
-It connects to tools like Google Drive, Gmail, Slack, Confluence, Jira, HubSpot, and internal file systems, indexes your company knowledge, and gives agents the context they need to answer questions, analyze information, and help employees get work done.
+It connects to tools like Google Drive, Gmail, Slack, Confluence, Jira, HubSpot, and internal file systems. Employees can ask Omni to investigate an issue, prepare an update, analyze company data, find information, or carry out supported actions across these systems from one conversation.
 
-Instead of wiring every agent directly to every business system, Omni gives you a shared context and tool layer for workplace AI.
+Omni brings the agent runtime, company context, tool access, model support, and source permissions into one system your team can deploy and operate.
 
 
 ## Features
 
-- **Workplace AI Agents**: Build agents that can search company knowledge, read documents, analyze data, and use tools to complete work.
-- **Unified Context Layer**: Index Google Drive/Gmail, Slack, Confluence, Jira, HubSpot, local files, websites, and more into one searchable knowledge layer.
-- **Hybrid Search**: Full-text BM25 search with ParadeDB and semantic search with pgvector, all inside Postgres.
-- **Tool Use & Code Execution**: Agents can execute Python and bash in a sandboxed container to inspect files, analyze data, and generate outputs.
-- **Self-hosted by Design**: Run Omni entirely on your own infrastructure. Your data stays within your cloud/on-prem environment.
-- **Permission Inheritance**: Respects source system permissions. Users only see data they're already authorized to access.
-- **Bring Your Own LLM**: Anthropic, OpenAI, Gemini, AWS Bedrock, Vertex AI, Azure AI Foundry, or any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, LiteLLM, etc.).
-- **Simple Deployment**: Docker Compose for single-server setups, Terraform for production AWS/GCP deployments.
+- **Cross-Tool Task Execution**: Gather context and carry out supported actions across connected company systems.
+- **Permission-Aware Company Context**: Keep indexed information scoped by the permissions inherited from each source system.
+- **Grounded Answers with Citations**: Answer questions using company context and show the sources behind each response.
+- **Hybrid Search and Retrieval**: Full-text BM25 search with ParadeDB and semantic search with pgvector, all inside Postgres.
+- **Tool Use and Sandboxed Code Execution**: Run Python and bash in an isolated environment to inspect files, analyze data, and generate outputs.
+- **Workplace Connectors**: Connect Google Workspace, Microsoft 365, Slack, Jira, Confluence, HubSpot, and other company systems.
+- **Use the Models You Choose**: Anthropic, OpenAI, Gemini, AWS Bedrock, Vertex AI, Azure AI Foundry, or any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, LiteLLM, and others).
+- **Self-Hosted by Design**: Run Omni entirely in your cloud, on-premises, or in an isolated environment.
+- **Simple Deployment**: Use Docker Compose for single-server deployments or Terraform for production deployments on AWS and GCP.
+- **Extensible with MCP and Connector SDKs**: Connect MCP tools or build company-specific integrations in Python or TypeScript.
 
 ## Architecture
 
@@ -41,7 +43,7 @@ Omni uses **Postgres ([ParadeDB](https://paradedb.com))** as the core data layer
 
 No Elasticsearch. No dedicated vector database. One database to tune, backup, monitor, and operate.
 
-Core services are written in **Rust** for search, indexing, and connector orchestration; **Python** for AI and LLM orchestration; and **SvelteKit** for the web frontend. Each connector runs as its own lightweight container, allowing integrations to use different languages and dependencies without affecting the rest of the system.
+Core services are written in **Rust** for search, indexing, and connector orchestration; **Python** for the agent runtime and model orchestration; and **SvelteKit** for the web frontend. Each connector runs as its own lightweight container, allowing integrations to use different languages and dependencies without affecting the rest of the system.
 
 The agent runtime can execute code in a sandboxed container on an isolated Docker network, with no access to internal services or the internet. It uses Landlock filesystem restrictions, resource limits, and a read-only root filesystem.
 
