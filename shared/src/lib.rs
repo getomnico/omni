@@ -12,6 +12,7 @@ pub mod queue;
 pub mod rate_limiter;
 pub mod service_auth;
 pub mod storage;
+pub mod task_queue;
 pub mod telemetry;
 pub mod traits;
 pub mod utils;
@@ -40,6 +41,7 @@ pub use storage::{
     ContentMetadata as StorageContentMetadata, ObjectStorage, StorageError,
     factory::{StorageBackend, StorageFactory},
 };
+pub use task_queue::{ClaimOptions, NewTask, TaskClaim, TaskQueue, TaskRow, TaskStats, TaskStatus};
 pub use traits::Repository;
 
 pub fn init() {
