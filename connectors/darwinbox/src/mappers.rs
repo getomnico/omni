@@ -125,6 +125,143 @@ pub fn format_position_item(item: &JsonValue) -> SafeDocument {
 }
 
 /// Safely format an ATS job from known fields.
+/// Safely format a job-level master record. Darwinbox's joblevellist records
+/// use `job_level`/`job_level_code`/`grade`/`status` rather than the generic
+/// org-master `name`/`code` convention, so they get a dedicated mapper.
+pub fn format_job_level_item(item: &JsonValue) -> SafeDocument {
+    let title = item
+        .get("job_level")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            item.get("grade")
+                .and_then(JsonValue::as_str)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or("Job Level")
+        .to_string();
+
+    let mut body = format!("# {title}");
+    for (label, key) in [
+        ("Code", "job_level_code"),
+        ("Grade", "grade"),
+        ("Grade Code", "grade_code"),
+        ("Status", "status"),
+        ("Effective From", "effective_from"),
+        ("Created Date", "created_date"),
+        ("Updated Date", "updated_date"),
+    ] {
+        if let Some(value) = item
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
+            body.push_str(&format!("\n- {label}: {value}"));
+        }
+    }
+
+    let mut attributes = vec![("job_level".to_string(), title.clone())];
+    if let Some(code) = item
+        .get("job_level_code")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty())
+    {
+        attributes.push(("job_level_code".to_string(), code.to_string()));
+    }
+    SafeDocument {
+        title,
+        body,
+        attributes,
+    }
+}
+
+/// Pull a column value from a columnar org-master row. Only string values are
+/// projected; empty strings are treated as absent.
+pub fn table_column<'a>(cols: &'a [String], row: &'a [JsonValue], label: &str) -> Option<&'a str> {
+    let index = cols.iter().position(|col| col == label)?;
+    match row.get(index) {
+        Some(JsonValue::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+        _ => None,
+    }
+}
+
+/// Safely format a row from a columnar org-master response (`{cols, data}`,
+/// e.g. employeeJobLevel/employeeLocation/employeeManager) into a document.
+/// Only the provider's own column labels from a per-entity allowlist are
+/// rendered, so no unknown field can leak into indexed content.
+pub fn format_org_master_table_item(
+    cols: &[String],
+    row: &[JsonValue],
+    content_type: &str,
+) -> SafeDocument {
+    const FALLBACK_COLS: &[&str] = &["Employee ID", "Name", "From", "To", "Event", "Sub Event"];
+    let allowed: &[&str] = match content_type {
+        "employee_job_level" => &[
+            "Employee ID",
+            "Name",
+            "Job Level Name",
+            "From",
+            "To",
+            "Event",
+            "Sub Event",
+        ],
+        "employee_location" => &[
+            "Employee ID",
+            "Name",
+            "Company Name",
+            "Area",
+            "City",
+            "State",
+            "Country",
+            "Work Area Code",
+            "Pin Code",
+            "Location Head",
+            "From",
+            "To",
+            "Event",
+            "Sub Event",
+        ],
+        "employee_manager" => &[
+            "Employee ID",
+            "Name",
+            "Manager Name",
+            "From",
+            "To",
+            "Event",
+            "Sub Event",
+        ],
+        _ => FALLBACK_COLS,
+    };
+    let attribute_column = match content_type {
+        "employee_job_level" => "Job Level Name",
+        "employee_location" => "Area",
+        "employee_manager" => "Manager Name",
+        _ => "",
+    };
+
+    let title = table_column(cols, row, "Name")
+        .or_else(|| table_column(cols, row, "Employee ID"))
+        .unwrap_or("Employee record")
+        .to_string();
+    let mut body = format!("# {title}");
+    for column in allowed {
+        if let Some(value) = table_column(cols, row, column) {
+            body.push_str(&format!("\n- {column}: {value}"));
+        }
+    }
+
+    let attribute_value = table_column(cols, row, attribute_column).unwrap_or(&title);
+    let mut attributes = vec![(content_type.to_string(), attribute_value.to_string())];
+    if let Some(employee_id) = table_column(cols, row, "Employee ID") {
+        attributes.push(("employee_id".to_string(), employee_id.to_string()));
+    }
+    SafeDocument {
+        title,
+        body,
+        attributes,
+    }
+}
+
 pub fn format_ats_job_item(item: &JsonValue) -> SafeDocument {
     let title = item
         .get("job_title")

@@ -1293,8 +1293,8 @@ fn write(
 #[cfg(test)]
 mod tests {
     use super::{
-        all_direct_reports, direct_reports, ensure_direct_report, execute_action,
-        sanitize_action_response,
+        action_definitions, all_direct_reports, direct_reports, ensure_direct_report,
+        execute_action, sanitize_action_response,
     };
     use crate::client::DarwinboxClient;
     use crate::credentials::DarwinboxCredentials;
