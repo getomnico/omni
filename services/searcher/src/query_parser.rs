@@ -4,10 +4,10 @@ use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use regex::Regex;
 use serde_json::Value as JsonValue;
+use shared::SourceType;
 use shared::db::repositories::PersonRepository;
 use shared::models::UserConfiguration;
 use shared::models::{AttributeFilter, DateFilter};
-use shared::SourceType;
 use std::collections::HashMap;
 use time::OffsetDateTime;
 
@@ -350,6 +350,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "clickup" | "click_up" => Some(SourceType::Clickup),
         "paperless" | "paperless_ngx" => Some(SourceType::PaperlessNgx),
         "web" | "website" => Some(SourceType::Web),
+        "darwinbox" => Some(SourceType::Darwinbox),
         _ => None,
     }
 }
@@ -628,6 +629,13 @@ mod tests {
             assert_eq!(parsed.cleaned_query, "campaign");
             assert_eq!(parsed.source_types, vec![SourceType::GoogleAds]);
         }
+    }
+
+    #[test]
+    fn test_in_operator_darwinbox_alias() {
+        let parsed = test_parse("in:darwinbox leave policy");
+        assert_eq!(parsed.cleaned_query, "leave policy");
+        assert_eq!(parsed.source_types, vec![SourceType::Darwinbox]);
     }
 
     #[test]
