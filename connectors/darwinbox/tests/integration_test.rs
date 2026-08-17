@@ -601,3 +601,275 @@ async fn client_reports_denied_access_as_not_permitted() {
         omni_darwinbox_connector::client::DarwinboxApiError::NotPermitted { .. }
     ));
 }
+
+/// Employee master fixture: manager EMP001 with reports EMP002/EMP003 plus
+/// non-reports EMP004 (other manager) and EMP005 (no manager id).
+fn manager_employee_master() -> serde_json::Value {
+    json!({
+        "status": 1,
+        "message": "ok",
+        "employee_data": [
+            {"employee_id": "EMP001", "company_email_id": "mgr@example.com", "direct_manager_employee_id": "EMP000"},
+            {"employee_id": "EMP002", "company_email_id": "r1@example.com", "direct_manager_employee_id": "EMP001"},
+            {"employee_id": "EMP003", "company_email_id": "r2@example.com", "direct_manager_employee_id": " EMP001 "},
+            {"employee_id": "EMP004", "company_email_id": "o1@example.com", "direct_manager_employee_id": "EMP999"},
+            {"employee_id": "EMP005", "company_email_id": "o2@example.com"}
+        ]
+    })
+}
+
+async fn mock_employee_master(server: &MockServer, body: serde_json::Value) {
+    Mock::given(method("POST"))
+        .and(path("/masterapi/employee"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .mount(server)
+        .await;
+}
+
+/// A sample leaveActionTakenLeaves payload in the documented provider shape.
+fn leave_requests_payload() -> serde_json::Value {
+    json!({
+        "status": 1,
+        "message": "Successfully Loaded All Leaves",
+        "data": [
+            {
+                "id": "T1",
+                "applied_leave_id": "AL1",
+                "employee_name": "Report One",
+                "company_name": "WeWork",
+                "employee_no": "EMP002",
+                "leave_name": "Privileged Leave",
+                "leave_sub_category": "Annual",
+                "from": "01-06-2026",
+                "to": "03-06-2026",
+                "is_unpaid": 0,
+                "is_half_day": 0,
+                "is_firsthalf_secondhalf": null,
+                "fullday_halfday_status": "All Full Days",
+                "message": "Family trip",
+                "manager_message": "Approved",
+                "leave_reason": "Planned leave",
+                "action_on": "01-06-2026 10:00:00",
+                "action_by": "Mgr (EMP001)",
+                "total_working_days": 3,
+                "leave_days": ["2026-06-01"],
+                "salary": "SECRET-SALARY"
+            }
+        ]
+    })
+}
+
+async fn response_body(response: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("response body should be readable");
+    serde_json::from_slice(&bytes).expect("response should be valid JSON")
+}
+
+#[tokio::test]
+async fn get_team_leave_calendar_is_scoped_to_direct_reports() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+    Mock::given(method("POST"))
+        .and(path("/leavesactionapi/leaveActionTakenLeaves"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(leave_requests_payload()))
+        .mount(&server)
+        .await;
+
+    let config = test_config(&server.uri());
+    let response = execute_action(
+        "get_team_leave_calendar",
+        json!({ "from": "2026-06-01", "to": "2026-06-30" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap();
+    let body = response_body(response).await;
+    assert_eq!(body["status"], json!("success"));
+    let item = &body["result"]["data"][0];
+    assert_eq!(item["employee_no"], json!("EMP002"));
+    assert_eq!(item["leave_name"], json!("Privileged Leave"));
+    assert_eq!(item["from"], json!("01-06-2026"));
+    assert_eq!(item["total_working_days"], json!(3));
+    assert_eq!(item["action_by"], json!("Mgr (EMP001)"));
+    assert!(body.to_string().contains("SECRET") == false);
+
+    // The provider request must carry exactly the caller's direct reports and
+    // the team-calendar action filter.
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/leavesactionapi/leaveActionTakenLeaves")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 1);
+    let sent: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    assert_eq!(sent["employee_no"], json!(["EMP002", "EMP003"]));
+    assert_eq!(sent["action"], json!("2"));
+    assert_eq!(sent["from"], json!("2026-06-01"));
+    assert_eq!(sent["to"], json!("2026-06-30"));
+}
+
+#[tokio::test]
+async fn list_pending_leave_approvals_uses_action_one_for_reports() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+    Mock::given(method("POST"))
+        .and(path("/leavesactionapi/leaveActionTakenLeaves"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(leave_requests_payload()))
+        .mount(&server)
+        .await;
+
+    let config = test_config(&server.uri());
+    let response = execute_action(
+        "list_pending_leave_approvals",
+        json!({}),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap();
+    let body = response_body(response).await;
+    assert_eq!(body["status"], json!("success"));
+    assert_eq!(body["result"]["data"][0]["employee_no"], json!("EMP002"));
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/leavesactionapi/leaveActionTakenLeaves")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 1);
+    let sent: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    assert_eq!(sent["employee_no"], json!(["EMP002", "EMP003"]));
+    assert_eq!(sent["action"], json!("1"));
+    assert!(sent.get("from").is_none());
+    assert!(sent.get("to").is_none());
+}
+
+#[tokio::test]
+async fn manager_action_requires_direct_reports() {
+    let server = MockServer::start().await;
+    mock_employee_master(
+        &server,
+        json!({
+            "status": 1,
+            "employee_data": [
+                {"employee_id": "EMP001", "company_email_id": "mgr@example.com"},
+                {"employee_id": "EMP002", "company_email_id": "r1@example.com", "direct_manager_employee_id": "EMP999"}
+            ]
+        }),
+    )
+    .await;
+
+    let config = test_config(&server.uri());
+    let error = execute_action(
+        "get_team_leave_calendar",
+        json!({ "from": "2026-06-01", "to": "2026-06-30" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("no direct reports"));
+}
+
+#[tokio::test]
+async fn approve_leave_request_rejects_non_report_target() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+
+    // Writes require a non-read-only source.
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": false,
+        "authorization": { "participant_mode": "all" }
+    });
+    let error = execute_action(
+        "approve_leave_request",
+        json!({ "employee_no": "EMP004", "leave_id": "L1" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("not a direct report"));
+}
+
+#[tokio::test]
+async fn approve_leave_request_submits_for_direct_report() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+    Mock::given(method("POST"))
+        .and(path("/leavesactionapi/leaveaction"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": 1,
+            "message": "Leave approved"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": false,
+        "authorization": { "participant_mode": "all" }
+    });
+    let response = execute_action(
+        "approve_leave_request",
+        json!({ "employee_no": "EMP002", "leave_id": "T1", "manager_message": "Enjoy" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap();
+    let body = response_body(response).await;
+    assert_eq!(body["status"], json!("success"));
+    assert_eq!(body["result"]["status"], json!("submitted"));
+    assert_eq!(body["result"]["action"], json!("approve_leave_request"));
+
+    // The decision request must target the report's leave and carry the
+    // Darwinbox decision verb and the manager's message.
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/leavesactionapi/leaveaction")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 1);
+    let sent: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    assert_eq!(sent["employee_no"], json!("EMP002"));
+    assert_eq!(sent["leave_id"], json!("T1"));
+    assert_eq!(sent["action"], json!("Approve"));
+    assert_eq!(sent["manager_message"], json!("Enjoy"));
+}
+
+#[tokio::test]
+async fn reject_leave_request_is_blocked_by_read_only_source() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+
+    // test_config defaults to read_only; write actions must refuse loudly.
+    let config = test_config(&server.uri());
+    let error = execute_action(
+        "reject_leave_request",
+        json!({ "employee_no": "EMP002", "leave_id": "T1" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("read-only"));
+}

@@ -45,6 +45,13 @@ pub fn action_endpoints(action: &str) -> &'static [&'static str] {
         "apply_my_leave" | "revoke_my_leave" => {
             &["/masterapi/employee", "/leavesactionapi/importleave"]
         }
+        "list_pending_leave_approvals" | "get_team_leave_calendar" => &[
+            "/masterapi/employee",
+            "/leavesactionapi/leaveActionTakenLeaves",
+        ],
+        "approve_leave_request" | "reject_leave_request" => {
+            &["/masterapi/employee", "/leavesactionapi/leaveaction"]
+        }
         _ => &[],
     }
 }
@@ -127,14 +134,15 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             is_write: true,
             available: false,
         },
-        // Manager workflows — unavailable until authorization and typing are reviewed
+        // Manager workflows — leave reads, strictly scoped to the caller's
+        // direct reports via direct_reports().
         ActionPolicy {
             name: "list_pending_leave_approvals",
             module: "manager_workflows",
             mode: ActionMode::Read,
             audience: "manager",
             is_write: false,
-            available: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_team_leave_calendar",
@@ -142,7 +150,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Read,
             audience: "manager",
             is_write: false,
-            available: false,
+            available: true,
         },
         ActionPolicy {
             name: "get_team_attendance_exceptions",
@@ -160,14 +168,15 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             is_write: false,
             available: false,
         },
-        // Manager writes
+        // Manager writes — target employee must be a direct report
+        // (ensure_direct_report) and the source must not be read-only.
         ActionPolicy {
             name: "approve_leave_request",
             module: "manager_workflows",
             mode: ActionMode::Write,
             audience: "manager",
             is_write: true,
-            available: false,
+            available: true,
         },
         ActionPolicy {
             name: "reject_leave_request",
@@ -175,7 +184,7 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             mode: ActionMode::Write,
             audience: "manager",
             is_write: true,
-            available: false,
+            available: true,
         },
         // Directory (available, no module)
         ActionPolicy {
@@ -409,6 +418,30 @@ pub fn action_definitions() -> Vec<ActionDefinition> {
                 "revoke_my_leave",
                 "Revoke leave for the calling employee.",
                 json!({ "type": "object", "properties": { "leave_id": { "type": "string" }, "revoke_reason": { "type": "string" } }, "required": ["leave_id", "revoke_reason"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "list_pending_leave_approvals" => read(
+                "list_pending_leave_approvals",
+                "List pending leave approval requests from the calling employee's direct reports.",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+                &source_types,
+            ),
+            "get_team_leave_calendar" => read(
+                "get_team_leave_calendar",
+                "Get leave requests within a date range for the calling employee's direct reports.",
+                json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "approve_leave_request" => write(
+                "approve_leave_request",
+                "Approve a direct report's leave request.",
+                json!({ "type": "object", "properties": { "employee_no": { "type": "string" }, "leave_id": { "type": "string" }, "manager_message": { "type": "string" } }, "required": ["employee_no", "leave_id"], "additionalProperties": false }),
+                &source_types,
+            ),
+            "reject_leave_request" => write(
+                "reject_leave_request",
+                "Reject a direct report's leave request.",
+                json!({ "type": "object", "properties": { "employee_no": { "type": "string" }, "leave_id": { "type": "string" }, "manager_message": { "type": "string" } }, "required": ["employee_no", "leave_id"], "additionalProperties": false }),
                 &source_types,
             ),
             _ => continue,
@@ -911,6 +944,21 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
         "already_taken",
         "applied_unpaid",
         "system_unpaid",
+        // leaveActionTakenLeaves item fields (leave requests, pending
+        // approvals, team calendar). Without these the sanitizer would strip
+        // every detail except the leave name.
+        "applied_leave_id",
+        "company_name",
+        "leave_sub_category",
+        "is_unpaid",
+        "is_half_day",
+        "is_firsthalf_secondhalf",
+        "fullday_halfday_status",
+        "manager_message",
+        "leave_reason",
+        "action_on",
+        "action_by",
+        "total_working_days",
         "from",
         "to",
         "from_date",
@@ -1575,6 +1623,83 @@ mod tests {
         assert_eq!(unpaid["applied_unpaid"], json!(0));
         assert_eq!(unpaid["system_unpaid"], json!(0));
         assert!(unpaid.get("currently_availabel_balance").is_none());
+    }
+
+    #[test]
+    fn response_projection_keeps_leave_request_fields() {
+        // leaveActionTakenLeaves item shape (pending approvals / team calendar).
+        // Balance, dates, reason and audit fields must survive projection so
+        // the agent can answer "who is on leave and why".
+        let projected = sanitize_action_response(
+            "get_team_leave_calendar",
+            json!({
+                "status": 1,
+                "message": "Successfully Loaded All Leaves",
+                "data": [
+                    {
+                        "id": "T1",
+                        "applied_leave_id": "AL1",
+                        "employee_name": "Report One",
+                        "company_name": "WeWork",
+                        "employee_no": "EMP002",
+                        "leave_name": "Privileged Leave",
+                        "leave_sub_category": "Annual",
+                        "from": "01-06-2026",
+                        "to": "03-06-2026",
+                        "is_unpaid": 0,
+                        "is_half_day": 0,
+                        "is_firsthalf_secondhalf": null,
+                        "fullday_halfday_status": "All Full Days",
+                        "message": "Family trip",
+                        "manager_message": "Approved",
+                        "leave_reason": "Planned leave",
+                        "action_on": "01-06-2026 10:00:00",
+                        "action_by": "Mgr (EMP001)",
+                        "total_working_days": 3,
+                        "leave_days": ["2026-06-01"],
+                        "salary": "SECRET-SALARY",
+                        "bank_account": "SECRET-BANK"
+                    }
+                ]
+            }),
+            false,
+        );
+        let item = &projected["data"][0];
+        assert_eq!(item["employee_no"], json!("EMP002"));
+        assert_eq!(item["leave_name"], json!("Privileged Leave"));
+        assert_eq!(item["from"], json!("01-06-2026"));
+        assert_eq!(item["to"], json!("03-06-2026"));
+        assert_eq!(item["total_working_days"], json!(3));
+        assert_eq!(item["leave_reason"], json!("Planned leave"));
+        assert_eq!(item["action_by"], json!("Mgr (EMP001)"));
+        assert_eq!(item["applied_leave_id"], json!("AL1"));
+        assert!(!projected.to_string().contains("SECRET"));
+    }
+
+    #[test]
+    fn action_definitions_expose_leave_actions() {
+        let definitions = action_definitions();
+        let names = definitions
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>();
+        for name in [
+            "list_pending_leave_approvals",
+            "get_team_leave_calendar",
+            "approve_leave_request",
+            "reject_leave_request",
+        ] {
+            assert!(names.contains(&name), "{name} should be exposed");
+        }
+        for name in [
+            "regularize_my_attendance",
+            "get_team_attendance_exceptions",
+            "get_direct_report_profile",
+            "fetch_report_ids",
+            "list_jobs",
+        ] {
+            assert!(!names.contains(&name), "{name} should stay hidden");
+        }
     }
 
     #[tokio::test]
