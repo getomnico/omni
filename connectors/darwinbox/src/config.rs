@@ -215,6 +215,7 @@ pub fn document_permissions(
             }
         }
         "department" | "designation" | "office_location" | "business_unit" | "division"
+        | "job_level" | "employee_job_level" | "employee_location" | "employee_manager"
         | "cost_center" | "group_company" | "holiday" | "position" | "job" | "ats_job" => {
             omni_connector_sdk::DocumentPermissions {
                 public: true,

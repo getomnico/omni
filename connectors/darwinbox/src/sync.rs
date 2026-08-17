@@ -42,6 +42,11 @@ const ORG_MASTERS: &[(&str, &str, &str)] = &[
         "/orgmasterapi/divisionlist",
     ),
     (
+        "job_level",
+        "darwinbox:job_level",
+        "/orgmasterapi/joblevellist",
+    ),
+    (
         "cost_center",
         "darwinbox:cost_center",
         "/orgmasterapi/costcenterlist",
@@ -52,6 +57,31 @@ const ORG_MASTERS: &[(&str, &str, &str)] = &[
         "/orgmasterapi/groupcompanylist",
     ),
 ];
+
+/// Employee-scoped org master entities (e.g. per-employee job level, office
+/// location and manager). Unlike the flat lists these endpoints take an
+/// `employee_number` array, so each batch of employees from the directory
+/// snapshot is sent as its own request.
+const EMPLOYEE_SCOPED_ORG_MASTERS: &[(&str, &str, &str)] = &[
+    (
+        "employee_job_level",
+        "darwinbox:employee_job_level",
+        "/orgmasterapi/employeeJobLevel",
+    ),
+    (
+        "employee_location",
+        "darwinbox:employee_location",
+        "/orgmasterapi/employeeLocation",
+    ),
+    (
+        "employee_manager",
+        "darwinbox:employee_manager",
+        "/orgmasterapi/employeeManager",
+    ),
+];
+
+/// Cap on employees per employee-scoped org-master request.
+const EMPLOYEE_ORG_MASTER_BATCH: usize = 100;
 
 fn removed_person_emails(previous: &BTreeSet<String>, current: &BTreeSet<String>) -> Vec<String> {
     previous.difference(current).cloned().collect()
@@ -178,6 +208,50 @@ pub async fn run_sync(
                 &ctx,
             )
             .await
+        })
+        .await?;
+        if ran {
+            set_module_watermark(
+                &mut checkpoint,
+                DarwinboxSyncModuleKey::OrgMasters,
+                Utc::now().to_rfc3339(),
+            );
+        }
+    }
+
+    // Employee-scoped org masters (employeeJobLevel/employeeLocation/
+    // employeeManager) — the directory snapshot supplies the employee
+    // numbers; denied modules are skipped with a warning like the plain lists.
+    let directory_employee_ids = directory.as_ref().map(|response| {
+        response
+            .employee_data
+            .iter()
+            .filter_map(|employee| employee.employee_id.clone())
+            .filter(|id| !id.trim().is_empty())
+            .collect::<Vec<_>>()
+    });
+    for (content_type, external_prefix, path) in EMPLOYEE_SCOPED_ORG_MASTERS {
+        let Some(employee_ids) = directory_employee_ids.clone() else {
+            warn!(
+                source_id = ctx.source_id(),
+                "Skipping Darwinbox {content_type} sync: no Employee Master snapshot was available"
+            );
+            continue;
+        };
+        let ran = run_module(content_type, || async {
+            for batch in employee_ids.chunks(EMPLOYEE_ORG_MASTER_BATCH) {
+                let response = client.fetch_org_master_for_employees(path, batch).await?;
+                sync_org_master(
+                    config,
+                    content_type,
+                    external_prefix,
+                    &response,
+                    ctx.source_id(),
+                    &ctx,
+                )
+                .await?;
+            }
+            Ok(())
         })
         .await?;
         if ran {
@@ -353,6 +427,10 @@ fn content_type_to_attribute_key(content_type: &str) -> &'static str {
         "office_location" => "office_location",
         "business_unit" => "business_unit",
         "division" => "division",
+        "job_level" => "job_level",
+        "employee_job_level" => "employee_job_level",
+        "employee_location" => "employee_location",
+        "employee_manager" => "employee_manager",
         "cost_center" => "cost_center",
         "group_company" => "group_company",
         _ => "org_master",
@@ -503,6 +581,8 @@ fn extract_stable_id(value: &JsonValue) -> Option<String> {
         "code",
         "job_id",
         "employee_id",
+        "employee_number",
+        "employee_no",
         "department_code",
         "designation_code",
         "work_area_code",

@@ -178,6 +178,18 @@ impl DarwinboxClient {
         self.post_json(path, json!({}), false).await
     }
 
+    /// Fetch an org-master entity scoped to specific employees (e.g.
+    /// `/orgmasterapi/employeeJobLevel`). These endpoints take the documented
+    /// `employee_number` array instead of an empty body.
+    pub async fn fetch_org_master_for_employees(
+        &self,
+        path: &str,
+        employee_numbers: &[String],
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
+        self.post_json(path, json!({ "employee_number": employee_numbers }), false)
+            .await
+    }
+
     pub async fn fetch_position_master(
         &self,
         last_modified: Option<&str>,
