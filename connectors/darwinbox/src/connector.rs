@@ -117,6 +117,26 @@ impl Connector for DarwinboxConnector {
                 attribute_key: "job_title".to_string(),
                 value_type: "text".to_string(),
             },
+            SearchOperator {
+                operator: "job_level".to_string(),
+                attribute_key: "job_level".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "employee_job_level".to_string(),
+                attribute_key: "employee_job_level".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "employee_location".to_string(),
+                attribute_key: "employee_location".to_string(),
+                value_type: "text".to_string(),
+            },
+            SearchOperator {
+                operator: "employee_manager".to_string(),
+                attribute_key: "employee_manager".to_string(),
+                value_type: "text".to_string(),
+            },
         ]
     }
 

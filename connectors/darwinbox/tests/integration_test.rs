@@ -550,6 +550,115 @@ fn org_master_mappers_emit_searchable_attributes() {
     );
 }
 
+#[test]
+fn job_level_mapper_uses_provider_field_names() {
+    use omni_darwinbox_connector::mappers;
+    // Real joblevellist record: job_level/job_level_code/grade/status, not the
+    // generic name/code convention.
+    let document = mappers::format_job_level_item(&serde_json::json!({
+        "job_level": "Senior Manager",
+        "job_level_code": "006",
+        "grade": "Senior Manager",
+        "grade_code": "",
+        "status": "Active",
+        "created_date": "21-10-2019 20:26:44",
+        "updated_date": "12-03-2025 11:39:44",
+        "effective_from": "12-03-2025 00:00:00"
+    }));
+    assert_eq!(document.title, "Senior Manager");
+    assert!(document.body.contains("Code: 006"));
+    assert!(document.body.contains("Status: Active"));
+    assert!(
+        document
+            .body
+            .contains("Effective From: 12-03-2025 00:00:00")
+    );
+    assert!(
+        document
+            .attributes
+            .contains(&("job_level".to_string(), "Senior Manager".to_string()))
+    );
+    assert!(
+        document
+            .attributes
+            .contains(&("job_level_code".to_string(), "006".to_string()))
+    );
+}
+
+#[test]
+fn columnar_org_master_mapper_projects_provider_columns() {
+    use omni_darwinbox_connector::mappers;
+    // Real employeeJobLevel response shape: `cols` + `data` rows (arrays).
+    let cols = vec![
+        "Employee ID".to_string(),
+        "Name".to_string(),
+        "Job Level Name".to_string(),
+        "From".to_string(),
+        "To".to_string(),
+        "Event".to_string(),
+        "Sub Event".to_string(),
+    ];
+    let row = serde_json::json!([
+        "WWITest2",
+        "Dummy1 Test2",
+        "Lead (003)",
+        "05-08-2025",
+        "13-04-2025",
+        "",
+        ""
+    ]);
+    let document =
+        mappers::format_org_master_table_item(&cols, row.as_array().unwrap(), "employee_job_level");
+    assert_eq!(document.title, "Dummy1 Test2");
+    assert!(document.body.contains("Employee ID: WWITest2"));
+    assert!(document.body.contains("Job Level Name: Lead (003)"));
+    assert!(document.body.contains("From: 05-08-2025"));
+    assert!(
+        document
+            .attributes
+            .contains(&("employee_job_level".to_string(), "Lead (003)".to_string()))
+    );
+    assert!(
+        document
+            .attributes
+            .contains(&("employee_id".to_string(), "WWITest2".to_string()))
+    );
+
+    // employeeManager: the entity value is the manager name.
+    let manager_cols = vec![
+        "Employee ID".to_string(),
+        "Name".to_string(),
+        "Manager Name".to_string(),
+        "From".to_string(),
+        "To".to_string(),
+        "Event".to_string(),
+        "Sub Event".to_string(),
+    ];
+    let manager_row = serde_json::json!([
+        "WWITest2",
+        "Dummy1 Test2",
+        "Tanmay Dattani (WW2306)",
+        "06-07-2025",
+        "Present",
+        "",
+        ""
+    ]);
+    let document = mappers::format_org_master_table_item(
+        &manager_cols,
+        manager_row.as_array().unwrap(),
+        "employee_manager",
+    );
+    assert!(
+        document
+            .body
+            .contains("Manager Name: Tanmay Dattani (WW2306)")
+    );
+    assert!(document.attributes.contains(&(
+        "employee_manager".to_string(),
+        "Tanmay Dattani (WW2306)".to_string()
+    )));
+}
+
 #[tokio::test]
 async fn action_denied_by_provider_returns_not_allowed_error() {
     let server = MockServer::start().await;
@@ -680,7 +789,11 @@ async fn get_team_leave_calendar_is_scoped_to_direct_reports() {
         .mount(&server)
         .await;
 
-    let config = test_config(&server.uri());
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all", "max_batch_size": 20 }
+    });
     let response = execute_action(
         "get_team_leave_calendar",
         json!({ "from": "2026-06-01", "to": "2026-06-30" }),
@@ -728,7 +841,11 @@ async fn list_pending_leave_approvals_uses_action_one_for_reports() {
         .mount(&server)
         .await;
 
-    let config = test_config(&server.uri());
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all", "max_batch_size": 20 }
+    });
     let response = execute_action(
         "list_pending_leave_approvals",
         json!({}),
@@ -773,7 +890,11 @@ async fn manager_action_requires_direct_reports() {
     )
     .await;
 
-    let config = test_config(&server.uri());
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all" }
+    });
     let error = execute_action(
         "get_team_leave_calendar",
         json!({ "from": "2026-06-01", "to": "2026-06-30" }),
@@ -855,7 +976,7 @@ async fn approve_leave_request_submits_for_direct_report() {
         serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
     assert_eq!(sent["employee_no"], json!("EMP002"));
     assert_eq!(sent["leave_id"], json!("T1"));
-    assert_eq!(sent["action"], json!("Approve"));
+    assert_eq!(sent["action"], json!("approve"));
     assert_eq!(sent["manager_message"], json!("Enjoy"));
 }
 
@@ -865,7 +986,12 @@ async fn reject_leave_request_is_blocked_by_read_only_source() {
     mock_employee_master(&server, manager_employee_master()).await;
 
     // test_config defaults to read_only; write actions must refuse loudly.
-    let config = test_config(&server.uri());
+    // Use an open participant mode so the read-only gate is what rejects.
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all" }
+    });
     let error = execute_action(
         "reject_leave_request",
         json!({ "employee_no": "EMP002", "leave_id": "T1" }),

@@ -42,11 +42,6 @@ const ORG_MASTERS: &[(&str, &str, &str)] = &[
         "/orgmasterapi/divisionlist",
     ),
     (
-        "job_level",
-        "darwinbox:job_level",
-        "/orgmasterapi/joblevellist",
-    ),
-    (
         "cost_center",
         "darwinbox:cost_center",
         "/orgmasterapi/costcenterlist",
@@ -219,6 +214,33 @@ pub async fn run_sync(
         }
     }
 
+    // Job levels — records use provider-specific field names (job_level/
+    // job_level_code) rather than the generic name/code convention, so they
+    // get a dedicated mapper.
+    let ran = run_module("job_level", || async {
+        let response = client
+            .fetch_org_master("/orgmasterapi/joblevellist")
+            .await?;
+        sync_typed_collection(
+            config,
+            "job_level",
+            "darwinbox:job_level",
+            &response,
+            ctx.source_id(),
+            &ctx,
+            mappers::format_job_level_item,
+        )
+        .await
+    })
+    .await?;
+    if ran {
+        set_module_watermark(
+            &mut checkpoint,
+            DarwinboxSyncModuleKey::OrgMasters,
+            Utc::now().to_rfc3339(),
+        );
+    }
+
     // Employee-scoped org masters (employeeJobLevel/employeeLocation/
     // employeeManager) — the directory snapshot supplies the employee
     // numbers; denied modules are skipped with a warning like the plain lists.
@@ -241,7 +263,7 @@ pub async fn run_sync(
         let ran = run_module(content_type, || async {
             for batch in employee_ids.chunks(EMPLOYEE_ORG_MASTER_BATCH) {
                 let response = client.fetch_org_master_for_employees(path, batch).await?;
-                sync_org_master(
+                sync_org_master_table(
                     config,
                     content_type,
                     external_prefix,
@@ -401,6 +423,71 @@ async fn sync_org_master(
         let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("{external_prefix}:{id}");
+        emit_document(
+            ctx,
+            content_type,
+            source_id,
+            &document_id,
+            content_id,
+            &document,
+            &permissions,
+        )
+        .await?;
+        count += 1;
+    }
+    if count > 0 {
+        ctx.increment_scanned(count).await?;
+    }
+    Ok(())
+}
+
+/// Columnar org-master responses (`{cols: [...], data: [[...], ...]}`): each
+/// row is an array whose meaning comes from `cols`. Emit one document per row,
+/// projecting the provider's own column labels via a per-entity allowlist.
+async fn sync_org_master_table(
+    config: &DarwinboxSourceConfig,
+    content_type: &str,
+    external_prefix: &str,
+    response: &JsonValue,
+    source_id: &str,
+    ctx: &SyncContext,
+) -> Result<()> {
+    let permissions = config::document_permissions(content_type, config, source_id, None);
+    let cols = response
+        .get("cols")
+        .and_then(JsonValue::as_array)
+        .map(|cols| {
+            cols.iter()
+                .filter_map(|col| col.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let rows = response
+        .get("data")
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut count = 0i32;
+
+    for (index, row) in rows.iter().enumerate() {
+        if ctx.is_cancelled() {
+            ctx.cancel().await?;
+            return Ok(());
+        }
+        let Some(row_values) = row.as_array() else {
+            continue;
+        };
+        let employee_id = mappers::table_column(&cols, row_values, "Employee ID");
+        let from = mappers::table_column(&cols, row_values, "From");
+        let stable_id = match (employee_id, from) {
+            (Some(employee_id), Some(from)) => slugify(&format!("{employee_id}:{from}")),
+            (Some(employee_id), None) => slugify(&format!("{employee_id}:{index}")),
+            _ => format!("row:{index}"),
+        };
+        let document = mappers::format_org_master_table_item(&cols, row_values, content_type);
+        let content_id = ctx.store_content(&document.body).await?;
+
+        let document_id = format!("{external_prefix}:{stable_id}");
         emit_document(
             ctx,
             content_type,
@@ -586,6 +673,8 @@ fn extract_stable_id(value: &JsonValue) -> Option<String> {
         "department_code",
         "designation_code",
         "work_area_code",
+        "job_level",
+        "job_level_code",
         "name",
     ] {
         if let Some(raw) = object.get(key) {
@@ -786,6 +875,82 @@ mod tests {
                 "unexpected error: {error}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn employee_scoped_org_master_table_emits_documents_from_columnar_rows() {
+        // Real employeeManager shape: `cols` + `data` rows (arrays).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content_id": "c-1"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/events/batch"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/sync/run-1/scanned"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config: DarwinboxSourceConfig = serde_json::from_value(json!({
+            "base_url": server.uri(),
+            "authorization": { "participant_mode": "all" }
+        }))
+        .unwrap();
+        let ctx = SyncContext::new(
+            SdkClient::new(&server.uri()),
+            "run-1".to_string(),
+            "source-1".to_string(),
+            SourceType::Darwinbox,
+            SyncType::Full,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        sync_org_master_table(
+            &config,
+            "employee_manager",
+            "darwinbox:employee_manager",
+            &json!({
+                "status": 1,
+                "cols": ["Employee ID", "Name", "Manager Name", "From", "To", "Event", "Sub Event"],
+                "data": [
+                    ["WWITest2", "Dummy1 Test2", "Gowri Sridhar (WW1539)", "05-08-2025", "30-04-2025", "", ""],
+                    ["WWITest2", "Dummy1 Test2", "Tanmay Dattani (WW2306)", "06-07-2025", "Present", "", ""]
+                ],
+                "message": "Data Loaded Successfully"
+            }),
+            "source-1",
+            &ctx,
+        )
+        .await
+        .unwrap();
+        ctx.flush().await.unwrap();
+
+        let batch = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.url.path() == "/sdk/events/batch")
+            .expect("events batch should be emitted");
+        let body: JsonValue = serde_json::from_slice(&batch.body).unwrap();
+        let events = body["events"]
+            .as_array()
+            .expect("batch should carry events");
+        assert_eq!(events.len(), 2);
+        let event = &events[0];
+        assert_eq!(event["type"], "document_created");
+        assert_eq!(
+            event["document_id"],
+            "darwinbox:employee_manager:wwitest2-05-08-2025"
+        );
+        assert_eq!(event["metadata"]["content_type"], "employee_manager");
+        assert_eq!(event["metadata"]["title"], "Dummy1 Test2");
     }
 }
 
