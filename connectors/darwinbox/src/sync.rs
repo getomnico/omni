@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::{Result, bail};
 use chrono::Utc;
-use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, SyncContext};
+use omni_connector_sdk::{ConnectorEvent, DocumentMetadata, DocumentPermissions, SyncContext};
 use serde_json::{Value as JsonValue, json};
 use tracing::{info, warn};
 
@@ -13,6 +13,15 @@ use crate::models::{DarwinboxCheckpoint, DarwinboxSyncModuleKey, ModuleCheckpoin
 
 /// Schema version for per-person events and successfully synced email state.
 const CURRENT_CHECKPOINT_SCHEMA: u16 = 4;
+
+/// Permissions for records that must stay indexed but hidden from every
+/// search: they match no clause of the searcher's permission filter
+/// (public:true OR users:... OR groups:...).
+const PRIVATE_PERMISSIONS: DocumentPermissions = DocumentPermissions {
+    public: false,
+    users: Vec::new(),
+    groups: Vec::new(),
+};
 
 /// (content_type, external prefix, API path) for each org master entity.
 const ORG_MASTERS: &[(&str, &str, &str)] = &[
@@ -426,6 +435,11 @@ async fn sync_org_master(
         let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("{external_prefix}:{id}");
+        let doc_permissions = if mappers::record_is_active(item) {
+            &permissions
+        } else {
+            &PRIVATE_PERMISSIONS
+        };
         emit_document(
             ctx,
             content_type,
@@ -433,7 +447,7 @@ async fn sync_org_master(
             &document_id,
             content_id,
             &document,
-            &permissions,
+            doc_permissions,
         )
         .await?;
         count += 1;
@@ -601,6 +615,11 @@ where
         let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("{external_prefix}:{stable_id}");
+        let doc_permissions = if mappers::record_is_active(item) {
+            &permissions
+        } else {
+            &PRIVATE_PERMISSIONS
+        };
         emit_document(
             ctx,
             content_type,
@@ -608,7 +627,7 @@ where
             &document_id,
             content_id,
             &document,
-            &permissions,
+            doc_permissions,
         )
         .await?;
         count += 1;
@@ -978,6 +997,11 @@ mod tests {
                     "departments_hod": "Santosh Martin (WW1600)",
                     "status": "Active",
                     "effective_from_date": "05-07-2023"
+                }, {
+                    "department_name": "Growth Marketing & Partnerships",
+                    "department_code": "WWS_GMP",
+                    "top_department": "Brand & Marketing",
+                    "status": "Inactive"
                 }]
             })))
             .mount(&server)
@@ -1046,7 +1070,7 @@ mod tests {
         let events = body["events"]
             .as_array()
             .expect("batch should carry events");
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         let event = &events[0];
         assert_eq!(event["type"], "document_created");
         assert_eq!(event["document_id"], "darwinbox:department:wws-nmd");
@@ -1055,6 +1079,13 @@ mod tests {
             event["metadata"]["title"],
             "ARCHIVED--New Member Development"
         );
+        assert_eq!(event["permissions"]["public"], json!(true));
+        // Inactive records stay indexed but are hidden from search.
+        let inactive = &events[1];
+        assert_eq!(inactive["document_id"], "darwinbox:department:wws-gmp");
+        assert_eq!(inactive["permissions"]["public"], json!(false));
+        assert_eq!(inactive["permissions"]["users"], json!([]));
+        assert_eq!(inactive["permissions"]["groups"], json!([]));
     }
 
     #[tokio::test]
