@@ -571,6 +571,8 @@ mod sa_direct_tests {
     struct SaMockState {
         /// The ACL member list served for every drive (overridable per test).
         permissions: Arc<Mutex<Option<JsonValue>>>,
+        /// Per-folder ACLs keyed by folder id (SA-direct folder ACL fetches).
+        folder_permissions: Arc<Mutex<HashMap<String, JsonValue>>>,
         /// Whether the permissions endpoint returns 403 (e.g. Viewer role).
         permissions_forbidden: Arc<AtomicBool>,
         /// Files served by list_files_in_drive (corpora=drive).
@@ -588,6 +590,12 @@ mod sa_direct_tests {
     impl SaMockState {
         fn set_permissions(&self, perms: JsonValue) {
             *self.permissions.lock().unwrap() = Some(perms);
+        }
+        fn set_folder_permissions(&self, folder_id: &str, perms: JsonValue) {
+            self.folder_permissions
+                .lock()
+                .unwrap()
+                .insert(folder_id.to_string(), perms);
         }
         fn set_permissions_forbidden(&self, forbidden: bool) {
             self.permissions_forbidden
@@ -695,12 +703,23 @@ mod sa_direct_tests {
 
     async fn list_permissions_mock(
         State(state): State<SaMockState>,
-        Path(_drive_id): Path<String>,
+        Path(file_id): Path<String>,
     ) -> Json<JsonValue> {
         if state.permissions_forbidden.load(Ordering::SeqCst) {
             return Json(json!({
                 "error": { "code": 403, "message": "Forbidden", "status": "PERMISSION_DENIED" }
             }));
+        }
+        // Folder ACLs (SA-direct effective-permission model) are keyed by id;
+        // the drive ACL is the shared default.
+        if let Some(perms) = state
+            .folder_permissions
+            .lock()
+            .unwrap()
+            .get(&file_id)
+            .cloned()
+        {
+            return Json(json!({ "permissions": perms }));
         }
         let perms = state.permissions.lock().unwrap().clone();
         match perms {
@@ -724,6 +743,20 @@ mod sa_direct_tests {
             state.trashed_files.lock().unwrap().clone()
         } else {
             state.files.lock().unwrap().clone()
+        };
+        // Mirror the API's server-side filtering so the folders-only pass only
+        // receives folders.
+        let is_folder_query = query
+            .get("q")
+            .map(|q| q.contains("mimeType='application/vnd.google-apps.folder'"))
+            .unwrap_or(false);
+        let files: Vec<JsonValue> = if is_folder_query {
+            files
+                .into_iter()
+                .filter(|f| f["mimeType"].as_str() == Some("application/vnd.google-apps.folder"))
+                .collect()
+        } else {
+            files
         };
         // If a modifiedTime cutoff is present, filter the mocked files so we
         // can distinguish a cutoff crawl from an uncut full traversal.
@@ -1206,6 +1239,9 @@ mod sa_direct_tests {
                     .to_string(),
             )])),
             drive_change_tokens: Some(HashMap::from([("drive-1".to_string(), "start-1".to_string())])),
+            permission_model_version: Some(
+                omni_google_connector::models::SA_DIRECT_PERMISSION_MODEL_VERSION.to_string(),
+            ),
             ..Default::default()
         };
 
@@ -1357,6 +1393,219 @@ mod sa_direct_tests {
         assert!(
             created >= 1,
             "expected the live file to be re-indexed during full traversal"
+        );
+
+        Ok(())
+    }
+
+    /// Collect document_created event permissions (users) keyed by document id.
+    fn created_users_by_doc(bodies: &[JsonValue]) -> HashMap<String, Vec<String>> {
+        let mut perms_by_doc: HashMap<String, Vec<String>> = HashMap::new();
+        for body in bodies {
+            if let Some(events) = body.get("events").and_then(|e| e.as_array()) {
+                for event in events {
+                    if event.get("type").and_then(|t| t.as_str()) != Some("document_created") {
+                        continue;
+                    }
+                    let doc_id = event
+                        .get("document_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let users = event
+                        .get("permissions")
+                        .and_then(|p| p.get("users"))
+                        .and_then(|u| u.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    perms_by_doc.insert(doc_id, users);
+                }
+            }
+        }
+        perms_by_doc
+    }
+
+    /// Files inside a limited-access folder must be indexed with organizers +
+    /// the folder's direct grants, NOT the drive-wide ACL. Files in a normal
+    /// folder union in its direct grants (expansive access) and keep inherited
+    /// entries filtered out.
+    #[tokio::test]
+    async fn sa_direct_full_sync_applies_limited_access_folder_boundary() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        // Drive members: SA (organizer, excluded) + alice (writer) + bob (reader).
+        state.set_permissions(json!([
+            { "id": "p1", "type": "user", "emailAddress": SA_CLIENT_EMAIL, "domain": null, "role": "organizer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p2", "type": "user", "emailAddress": "alice@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p3", "type": "user", "emailAddress": "bob@example.com", "domain": null, "role": "reader", "allowFileDiscovery": null, "permissionDetails": null }
+        ]));
+
+        // secret-1 is limited-access and grants only carol.
+        state.set_folder_permissions(
+            "secret-1",
+            json!([
+                { "id": "p4", "type": "user", "emailAddress": "carol@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": null }
+            ]),
+        );
+        // folder-1 is a normal folder with a direct external grant + inherited
+        // drive entries (which must be filtered out of the direct ACL).
+        state.set_folder_permissions(
+            "folder-1",
+            json!([
+                { "id": "p5", "type": "user", "emailAddress": "alice@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": [
+                    { "permissionType": "sharedDrive", "role": "writer", "inherited": true, "inheritedFrom": "drive-1" }
+                ] },
+                { "id": "p6", "type": "user", "emailAddress": "guest@external.com", "domain": null, "role": "reader", "allowFileDiscovery": null, "permissionDetails": null }
+            ]),
+        );
+
+        state.set_files(vec![
+            json!({ "id": "doc-outside", "name": "Outside.txt", "mimeType": "text/plain", "size": "10", "webViewLink": "https://example.test/outside", "createdTime": "2024-01-01T00:00:00Z", "modifiedTime": "2024-01-02T00:00:00Z", "driveId": "drive-1", "permissions": [], "owners": [] }),
+            json!({ "id": "folder-1", "name": "Shared", "mimeType": "application/vnd.google-apps.folder", "size": null, "webViewLink": null, "createdTime": "2024-01-01T00:00:00Z", "modifiedTime": "2024-01-02T00:00:00Z", "driveId": "drive-1", "parents": [], "inheritedPermissionsDisabled": false, "permissions": [], "owners": [] }),
+            json!({ "id": "doc-in-folder", "name": "Inside shared.txt", "mimeType": "text/plain", "size": "10", "webViewLink": "https://example.test/infolder", "createdTime": "2024-01-01T00:00:00Z", "modifiedTime": "2024-01-02T00:00:00Z", "driveId": "drive-1", "parents": ["folder-1"], "permissions": [], "owners": [] }),
+            json!({ "id": "secret-1", "name": "Confidential", "mimeType": "application/vnd.google-apps.folder", "size": null, "webViewLink": null, "createdTime": "2024-01-01T00:00:00Z", "modifiedTime": "2024-01-02T00:00:00Z", "driveId": "drive-1", "parents": [], "inheritedPermissionsDisabled": true, "permissions": [], "owners": [] }),
+            json!({ "id": "doc-in-secret", "name": "Secret.txt", "mimeType": "text/plain", "size": "10", "webViewLink": "https://example.test/secret", "createdTime": "2024-01-01T00:00:00Z", "modifiedTime": "2024-01-02T00:00:00Z", "driveId": "drive-1", "parents": ["secret-1"], "permissions": [], "owners": [] }),
+        ]);
+
+        let sync_result = run_sa_sync(
+            &mock_base,
+            sa_source(),
+            sa_credentials(&mock_base),
+            SyncType::Full,
+        )
+        .await;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        let perms_by_doc = created_users_by_doc(&state.event_bodies());
+
+        let outside = perms_by_doc
+            .get("doc-outside")
+            .expect("doc-outside indexed");
+        assert!(outside.contains(&"alice@example.com".to_string()));
+        assert!(outside.contains(&"bob@example.com".to_string()));
+        assert!(
+            !outside.contains(&"carol@example.com".to_string()),
+            "drive-wide ACL must not leak into the limited folder"
+        );
+
+        let in_folder = perms_by_doc
+            .get("doc-in-folder")
+            .expect("doc-in-folder indexed");
+        assert!(in_folder.contains(&"alice@example.com".to_string()));
+        assert!(in_folder.contains(&"bob@example.com".to_string()));
+        assert!(
+            in_folder.contains(&"guest@external.com".to_string()),
+            "normal folder direct grants must union in (expansive access)"
+        );
+
+        let in_secret = perms_by_doc
+            .get("doc-in-secret")
+            .expect("doc-in-secret indexed");
+        assert_eq!(
+            in_secret,
+            &vec!["carol@example.com".to_string()],
+            "limited-access boundary must drop non-organizer drive members"
+        );
+
+        Ok(())
+    }
+
+    /// A folder-ACL fingerprint change (grant added/removed on a fingerprinted
+    /// folder) must force a full re-traversal on the next incremental run so
+    /// descendants are re-emitted with corrected ACLs.
+    #[tokio::test]
+    async fn sa_direct_incremental_folder_acl_change_forces_full_traversal() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        let drive_acl = json!([
+            { "id": "p1", "type": "user", "emailAddress": SA_CLIENT_EMAIL, "domain": null, "role": "organizer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p2", "type": "user", "emailAddress": "alice@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": null }
+        ]);
+        state.set_permissions(drive_acl.clone());
+
+        // Live ACL for secret-1 differs from the stale checkpoint fingerprint.
+        state.set_folder_permissions(
+            "secret-1",
+            json!([
+                { "id": "p4", "type": "user", "emailAddress": "carol@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": null },
+                { "id": "p5", "type": "user", "emailAddress": "dave@example.com", "domain": null, "role": "reader", "allowFileDiscovery": null, "permissionDetails": null }
+            ]),
+        );
+
+        let drive_acl_typed: Vec<omni_google_connector::models::GoogleDrivePermission> =
+            serde_json::from_value(drive_acl)?;
+        let drive_fp = omni_google_connector::models::drive_acl_fingerprint(&drive_acl_typed);
+        let config: omni_google_connector::models::GoogleSourceConfig =
+            serde_json::from_value(sa_source().config)?;
+        let scope_fp = format!(
+            "sa-direct:{}",
+            omni_google_connector::models::compute_scope_fingerprint(Some(
+                &config.folder_path_filters
+            ))
+        );
+
+        let checkpoint = GoogleSyncCheckpoint {
+            drive_change_tokens: Some(HashMap::from([("drive-1".to_string(), "tok1".to_string())])),
+            drive_scope_fingerprint: Some(scope_fp),
+            drive_acl_fingerprints: Some(HashMap::from([("drive-1".to_string(), drive_fp)])),
+            folder_access: Some(HashMap::from([(
+                "secret-1".to_string(),
+                omni_google_connector::models::FolderAccessInfo {
+                    drive_id: "drive-1".to_string(),
+                    parents: vec![],
+                    inherited_permissions_disabled: true,
+                    acl_fingerprint: "stale-fingerprint".to_string(),
+                },
+            )])),
+            permission_model_version: Some(
+                omni_google_connector::models::SA_DIRECT_PERMISSION_MODEL_VERSION.to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let sync_result = run_sa_sync_with_checkpoint(
+            &mock_base,
+            sa_source(),
+            sa_credentials(&mock_base),
+            SyncType::Incremental,
+            checkpoint,
+        )
+        .await;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        assert!(
+            state.file_list_calls() >= 1,
+            "folder ACL fingerprint change must trigger a full re-traversal"
         );
 
         Ok(())
