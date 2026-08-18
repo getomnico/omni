@@ -63,6 +63,123 @@ pub fn format_org_master_item(item: &JsonValue, attr_key: &'static str) -> SafeD
     }
 }
 
+/// Safely format a department master record. The departmentlist endpoint uses
+/// `department_name`/`department_code` rather than the generic org-master
+/// `name`/`code` convention, so departments get a dedicated mapper.
+pub fn format_department_item(item: &JsonValue) -> SafeDocument {
+    let title = item
+        .get("department_name")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            item.get("name")
+                .and_then(JsonValue::as_str)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or("Department")
+        .to_string();
+    let code = item
+        .get("department_code")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            item.get("code")
+                .and_then(JsonValue::as_str)
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_default();
+
+    let mut body = format!("# {title}\n\n- Code: {code}");
+    for (label, key) in [
+        ("Parent Department Code", "parent_department_code"),
+        ("Top Department", "top_department"),
+        ("Business Unit", "business_unit"),
+        ("Cost Center", "cost_center"),
+        ("Department HOD", "departments_hod"),
+        ("Status", "status"),
+        ("Effective From", "effective_from_date"),
+    ] {
+        if let Some(value) = item
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
+            body.push_str(&format!("\n- {label}: {value}"));
+        }
+    }
+
+    let mut attributes = vec![("department".to_string(), title.clone())];
+    if !code.is_empty() {
+        attributes.push(("department_code".to_string(), code.to_string()));
+    }
+    SafeDocument {
+        title,
+        body,
+        attributes,
+    }
+}
+
+/// Safely format an office location master record. The officelocationlist
+/// endpoint returns `work_area`/`loc_type_id`/`city`-style fields rather than
+/// the generic org-master `name`/`code` convention, so office locations get a
+/// dedicated mapper.
+pub fn format_office_location_item(item: &JsonValue) -> SafeDocument {
+    let work_area = item
+        .get("work_area")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty());
+    let city = item
+        .get("city")
+        .and_then(JsonValue::as_str)
+        .filter(|s| !s.trim().is_empty());
+    let title = match (work_area, city) {
+        (Some(work_area), Some(city)) => format!("{work_area} — {city}"),
+        (Some(work_area), None) => work_area.to_string(),
+        (None, Some(city)) => city.to_string(),
+        (None, None) => item
+            .get("company_name")
+            .and_then(JsonValue::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("Office Location")
+            .to_string(),
+    };
+    let code = item
+        .get("loc_type_id")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
+
+    let mut body = format!("# {title}");
+    for (label, key) in [
+        ("Work Area", "work_area"),
+        ("Company", "company_name"),
+        ("Address", "address"),
+        ("City", "city"),
+        ("State", "state"),
+        ("Country", "country"),
+        ("Pin Code", "pin_code"),
+        ("Location Head", "location_head"),
+        ("Status", "status"),
+    ] {
+        if let Some(value) = item
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .filter(|s| !s.trim().is_empty())
+        {
+            body.push_str(&format!("\n- {label}: {value}"));
+        }
+    }
+
+    let mut attributes = vec![("office_location".to_string(), title.clone())];
+    if !code.is_empty() {
+        attributes.push(("office_location_code".to_string(), code.to_string()));
+    }
+    SafeDocument {
+        title,
+        body,
+        attributes,
+    }
+}
+
 /// Read a string field from a provider item, preferring `key` and falling
 /// back to `alias` so both Darwinbox response key variants are accepted.
 pub fn field_with_alias<'a>(item: &'a JsonValue, key: &'a str, alias: &'a str) -> Option<&'a str> {
@@ -284,6 +401,103 @@ pub fn format_ats_job_item(item: &JsonValue) -> SafeDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn department_mapper_formats_real_api_shape() {
+        // Real departmentlist record: department_name/department_code, not the
+        // generic name/code convention.
+        let document = format_department_item(&serde_json::json!({
+            "parent_company_id": "Example Corp",
+            "department_name": "ARCHIVED--New Member Development",
+            "department_code": "WWS_NMD",
+            "parent_department_code": "SALES",
+            "top_department": "Sales",
+            "cost_center": "",
+            "departments_hod": "Santosh Martin (WW1600)",
+            "status": "Active",
+            "effective_from_date": "05-07-2023"
+        }));
+        assert_eq!(document.title, "ARCHIVED--New Member Development");
+        assert!(document.body.contains("- Code: WWS_NMD"));
+        assert!(document.body.contains("- Parent Department Code: SALES"));
+        assert!(document.body.contains("- Top Department: Sales"));
+        assert!(
+            document
+                .body
+                .contains("- Department HOD: Santosh Martin (WW1600)")
+        );
+        assert!(document.body.contains("- Status: Active"));
+        assert!(document.body.contains("- Effective From: 05-07-2023"));
+        assert!(document.attributes.contains(&(
+            "department".to_string(),
+            "ARCHIVED--New Member Development".to_string()
+        )));
+        assert!(
+            document
+                .attributes
+                .contains(&("department_code".to_string(), "WWS_NMD".to_string()))
+        );
+        assert!(!document.title.contains("unknown"));
+    }
+
+    #[test]
+    fn department_mapper_falls_back_to_generic_keys() {
+        let document = format_department_item(&serde_json::json!({
+            "name": "Corporate",
+            "code": "CORP",
+            "status": "active"
+        }));
+        assert_eq!(document.title, "Corporate");
+        assert!(document.body.contains("- Code: CORP"));
+    }
+
+    #[test]
+    fn office_location_mapper_formats_real_api_shape() {
+        // Real officelocationlist record: work_area/loc_type_id/city fields,
+        // none of which matched the generic org-master convention.
+        let document = format_office_location_item(&serde_json::json!({
+            "company_name": "Temporary Employees",
+            "address": "Prestige Central Ground Floor, 36, Infantry Rd, Bengaluru, Karnataka 560001",
+            "pin_code": " 560001",
+            "city": "Bengaluru",
+            "state": "Karnataka",
+            "country": "India",
+            "location_head": "",
+            "work_area": "BLR01",
+            "status": "Active",
+            "loc_type_id": "5db93215ece4c"
+        }));
+        assert_eq!(document.title, "BLR01 — Bengaluru");
+        assert!(document.body.contains("- Work Area: BLR01"));
+        assert!(document.body.contains("- Company: Temporary Employees"));
+        assert!(document.body.contains("- City: Bengaluru"));
+        assert!(document.body.contains("- State: Karnataka"));
+        assert!(document.body.contains("- Country: India"));
+        assert!(document.body.contains("- Status: Active"));
+        assert!(document.attributes.contains(&(
+            "office_location".to_string(),
+            "BLR01 — Bengaluru".to_string()
+        )));
+        assert!(document.attributes.contains(&(
+            "office_location_code".to_string(),
+            "5db93215ece4c".to_string()
+        )));
+        assert!(!document.title.contains("unknown"));
+    }
+
+    #[test]
+    fn office_location_mapper_falls_back_to_company_name() {
+        let document = format_office_location_item(&serde_json::json!({
+            "company_name": "Example Corp",
+            "loc_type_id": "abc123"
+        }));
+        assert_eq!(document.title, "Example Corp");
+        assert!(
+            document
+                .attributes
+                .contains(&("office_location_code".to_string(), "abc123".to_string()))
+        );
+    }
 
     #[test]
     fn holiday_mapper_formats_typed_item() {

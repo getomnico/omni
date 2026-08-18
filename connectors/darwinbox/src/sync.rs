@@ -418,8 +418,11 @@ async fn sync_org_master(
             );
             continue;
         };
-        let document =
-            mappers::format_org_master_item(item, content_type_to_attribute_key(content_type));
+        let document = match content_type {
+            "department" => mappers::format_department_item(item),
+            "office_location" => mappers::format_office_location_item(item),
+            _ => mappers::format_org_master_item(item, content_type_to_attribute_key(content_type)),
+        };
         let content_id = ctx.store_content(&document.body).await?;
 
         let document_id = format!("{external_prefix}:{id}");
@@ -673,6 +676,10 @@ fn extract_stable_id(value: &JsonValue) -> Option<String> {
         "department_code",
         "designation_code",
         "work_area_code",
+        "loc_type_id",
+        "work_area",
+        "city_code",
+        "city_id",
         "job_level",
         "job_level_code",
         "name",
@@ -951,6 +958,218 @@ mod tests {
         );
         assert_eq!(event["metadata"]["content_type"], "employee_manager");
         assert_eq!(event["metadata"]["title"], "Dummy1 Test2");
+    }
+
+    #[tokio::test]
+    async fn department_sync_emits_documents_from_real_api_field_names() {
+        // Real departmentlist records use department_name/department_code.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/orgmasterapi/departmentlist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": 1,
+                "message": "Data Loaded Successfully",
+                "data": [{
+                    "parent_company_id": "Example Corp",
+                    "department_name": "ARCHIVED--New Member Development",
+                    "department_code": "WWS_NMD",
+                    "parent_department_code": "SALES",
+                    "top_department": "Sales",
+                    "departments_hod": "Santosh Martin (WW1600)",
+                    "status": "Active",
+                    "effective_from_date": "05-07-2023"
+                }]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content_id": "c-1"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/events/batch"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/sync/run-1/scanned"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config: DarwinboxSourceConfig = serde_json::from_value(json!({
+            "base_url": server.uri(),
+            "authorization": { "participant_mode": "all" }
+        }))
+        .unwrap();
+        let credentials = crate::credentials::DarwinboxCredentials::Basic {
+            username: "api-user".to_string(),
+            password: "secret".to_string(),
+            api_key: "api-key".to_string(),
+            dataset_key: "dataset-key".to_string(),
+        };
+        let client = DarwinboxClient::new(&config, credentials).unwrap();
+        let ctx = SyncContext::new(
+            SdkClient::new(&server.uri()),
+            "run-1".to_string(),
+            "source-1".to_string(),
+            SourceType::Darwinbox,
+            SyncType::Full,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let response = client
+            .fetch_org_master("/orgmasterapi/departmentlist")
+            .await
+            .unwrap();
+        sync_org_master(
+            &config,
+            "department",
+            "darwinbox:department",
+            &response,
+            "source-1",
+            &ctx,
+        )
+        .await
+        .unwrap();
+        ctx.flush().await.unwrap();
+
+        let batch = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.url.path() == "/sdk/events/batch")
+            .expect("events batch should be emitted");
+        let body: JsonValue = serde_json::from_slice(&batch.body).unwrap();
+        let events = body["events"]
+            .as_array()
+            .expect("batch should carry events");
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event["type"], "document_created");
+        assert_eq!(event["document_id"], "darwinbox:department:wws-nmd");
+        assert_eq!(event["metadata"]["content_type"], "department");
+        assert_eq!(
+            event["metadata"]["title"],
+            "ARCHIVED--New Member Development"
+        );
+    }
+
+    #[tokio::test]
+    async fn office_location_sync_emits_documents_with_loc_type_stable_id() {
+        // Real officelocationlist records: no id/code; the stable key is
+        // loc_type_id. Every record must produce a document (previously all
+        // were skipped for lacking a stable ID).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/orgmasterapi/officelocationlist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": 1,
+                "message": "Data Loaded Successfully",
+                "data": [
+                    {
+                        "company_name": "Temporary Employees",
+                        "address": "Prestige Central Ground Floor, Bengaluru",
+                        "pin_code": " 560001",
+                        "city": "Bengaluru",
+                        "state": "Karnataka",
+                        "country": "India",
+                        "work_area": "BLR01",
+                        "status": "Active",
+                        "loc_type_id": "5db93215ece4c"
+                    },
+                    {
+                        "company_name": "Temporary Employees",
+                        "address": "Raheja Platinum, Mumbai",
+                        "pin_code": "400059",
+                        "city": "Mumbai",
+                        "state": "Maharashtra",
+                        "country": "India",
+                        "work_area": "WEST",
+                        "status": "Active",
+                        "loc_type_id": "5db9321cf1fd0"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/content"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"content_id": "c-1"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/events/batch"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sdk/sync/run-1/scanned"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let config: DarwinboxSourceConfig = serde_json::from_value(json!({
+            "base_url": server.uri(),
+            "authorization": { "participant_mode": "all" }
+        }))
+        .unwrap();
+        let credentials = crate::credentials::DarwinboxCredentials::Basic {
+            username: "api-user".to_string(),
+            password: "secret".to_string(),
+            api_key: "api-key".to_string(),
+            dataset_key: "dataset-key".to_string(),
+        };
+        let client = DarwinboxClient::new(&config, credentials).unwrap();
+        let ctx = SyncContext::new(
+            SdkClient::new(&server.uri()),
+            "run-1".to_string(),
+            "source-1".to_string(),
+            SourceType::Darwinbox,
+            SyncType::Full,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let response = client
+            .fetch_org_master("/orgmasterapi/officelocationlist")
+            .await
+            .unwrap();
+        sync_org_master(
+            &config,
+            "office_location",
+            "darwinbox:office_location",
+            &response,
+            "source-1",
+            &ctx,
+        )
+        .await
+        .unwrap();
+        ctx.flush().await.unwrap();
+
+        let batch = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.url.path() == "/sdk/events/batch")
+            .expect("events batch should be emitted");
+        let body: JsonValue = serde_json::from_slice(&batch.body).unwrap();
+        let events = body["events"]
+            .as_array()
+            .expect("batch should carry events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0]["document_id"],
+            "darwinbox:office_location:5db93215ece4c"
+        );
+        assert_eq!(events[0]["metadata"]["title"], "BLR01 — Bengaluru");
+        assert_eq!(
+            events[1]["document_id"],
+            "darwinbox:office_location:5db9321cf1fd0"
+        );
+        assert_eq!(events[1]["metadata"]["title"], "WEST — Mumbai");
     }
 }
 
