@@ -73,6 +73,8 @@ class PeopleSearchRequest(BaseModel):
     office_location: str | None = None
     work_country: str | None = None
     employee_type: str | None = None
+    manager: str | None = None
+    job_title: str | None = None
 
 
 class PersonResult(BaseModel):
@@ -96,6 +98,11 @@ class PersonResult(BaseModel):
     confirmation_status: str | None = None
     employment_start_date: str | None = None
     employment_end_date: str | None = None
+    manager_id: str | None = None
+    manager_name: str | None = None
+    phone: str | None = None
+    avatar_url: str | None = None
+    top_department: str | None = None
     score: float
 
 
@@ -221,6 +228,8 @@ class SearcherClient:
                 "office_location",
                 "work_country",
                 "employee_type",
+                "manager",
+                "job_title",
             ):
                 value = getattr(request, field)
                 if value:
@@ -278,9 +287,7 @@ class SearcherClient:
         )
         if response.status_code == 200:
             return CapabilitiesSyncResponse.model_validate(response.json())
-        logger.error(
-            f"Capability sync error: {response.status_code} - {response.text}"
-        )
+        logger.error(f"Capability sync error: {response.status_code} - {response.text}")
         raise SearcherError(
             message=f"Capability sync failed: {response.status_code} {response.text}",
             request=response.request,

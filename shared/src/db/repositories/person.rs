@@ -32,6 +32,8 @@ pub struct PersonSearchFilter {
     pub office_location: Option<String>,
     pub work_country: Option<String>,
     pub employee_type: Option<String>,
+    pub manager: Option<String>,
+    pub job_title: Option<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -56,6 +58,11 @@ pub struct PersonSearchResult {
     pub confirmation_status: Option<String>,
     pub employment_start_date: Option<chrono::NaiveDate>,
     pub employment_end_date: Option<chrono::NaiveDate>,
+    pub manager_id: Option<String>,
+    pub manager_name: Option<String>,
+    pub phone: Option<String>,
+    pub avatar_url: Option<String>,
+    pub top_department: Option<String>,
     pub score: f32,
 }
 
@@ -129,15 +136,21 @@ impl PersonRepository {
                    p.office_location, p.work_country, p.employee_id, p.employee_type,
                    p.cost_center, p.grade, p.band, p.confirmation_status,
                    p.employment_start_date, p.employment_end_date,
+                   p.manager_id, m.display_name AS manager_name,
+                   p.phone, p.avatar_url, p.top_department,
                    pdb.score(p.id) AS score
             FROM people p
+            LEFT JOIN people m ON m.id = p.manager_id
             WHERE p.is_active = true
               AND p.id @@@ pdb.parse(query_string => $1, lenient => true)
               AND ($2::text IS NULL OR p.department @@@ $2)
               AND ($3::text IS NULL OR p.office_location @@@ $3)
               AND ($4::text IS NULL OR p.work_country @@@ $4)
               AND ($5::text IS NULL OR p.employee_type @@@ $5)
-            ORDER BY score DESC LIMIT $6
+              AND ($6::text IS NULL OR m.display_name @@@ $6
+                    OR m.employee_id = $6)
+              AND ($7::text IS NULL OR p.job_title @@@ $7)
+            ORDER BY score DESC LIMIT $8
             "#,
         )
         .bind(query)
@@ -145,6 +158,8 @@ impl PersonRepository {
         .bind(filter.office_location.as_deref())
         .bind(filter.work_country.as_deref())
         .bind(filter.employee_type.as_deref())
+        .bind(filter.manager.as_deref())
+        .bind(filter.job_title.as_deref())
         .bind(limit)
         .fetch_all(&self.pool)
         .await?)

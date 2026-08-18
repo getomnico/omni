@@ -58,6 +58,14 @@ class PeopleSearchHandler:
                             "type": "string",
                             "description": "Filter results to this employee type, e.g. 'Full Time'.",
                         },
+                        "manager": {
+                            "type": "string",
+                            "description": "Filter results to the direct reports of this manager (by name or employee id), e.g. 'Priya Sharma'. Use to find who reports to someone.",
+                        },
+                        "job_title": {
+                            "type": "string",
+                            "description": "Filter results to this job title, e.g. 'Community Manager'.",
+                        },
                     },
                     "required": ["query"],
                 },
@@ -88,6 +96,8 @@ class PeopleSearchHandler:
             office_location=tool_input.get("office_location"),
             work_country=tool_input.get("work_country"),
             employee_type=tool_input.get("employee_type"),
+            manager=tool_input.get("manager"),
+            job_title=tool_input.get("job_title"),
         )
 
         try:
@@ -125,6 +135,12 @@ class PeopleSearchHandler:
                 parts.append(f"Work Country: {person.work_country}")
             if person.employee_id:
                 parts.append(f"Employee ID: {person.employee_id}")
+            if person.manager_name:
+                parts.append(f"Manager: {person.manager_name}")
+            if person.phone:
+                parts.append(f"Phone: {person.phone}")
+            if person.top_department:
+                parts.append(f"Top Department: {person.top_department}")
             lines.append("\n".join(parts))
 
         text = "\n\n".join(lines)

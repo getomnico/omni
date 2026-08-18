@@ -1812,6 +1812,118 @@ async fn test_person_search_structured_filters_and_rich_fields() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_people_search_manager_filter_and_manager_name() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+    let person_repo = PersonRepository::new(pool);
+
+    // Insert a manager and two reportees; reportees reference the manager id.
+    sqlx::query(
+        r#"
+        INSERT INTO people (
+            id, email, display_name, job_title, department, office_location,
+            employee_id, manager_id, is_active, source_data
+        ) VALUES (
+            'mgr-id-000000001', 'mgr@example.com', 'Maya Rao',
+            'Director', 'Marketing', 'Paris', 'EMP-1', NULL, true, '{}'
+        )
+        ON CONFLICT (id) DO NOTHING
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO people (
+            id, email, display_name, job_title, department, office_location,
+            employee_id, manager_id, is_active, source_data
+        ) VALUES
+        (
+            'rep1-id-000000001', 'r1@example.com', 'Riya One',
+            'Associate', 'Marketing', 'Paris', 'EMP-2',
+            'mgr-id-000000001', true, '{}'
+        ),
+        (
+            'rep2-id-000000001', 'r2@example.com', 'Rahul Two',
+            'Associate', 'Engineering', 'Bengaluru', 'EMP-3',
+            'mgr-id-000000001', true, '{}'
+        ),
+        (
+            'zoe-id-000000001', 'zoe@example.com', 'Zoe Three',
+            'Associate', 'Engineering', 'Bengaluru', 'EMP-4', NULL, true, '{}'
+        )
+        ON CONFLICT (id) DO NOTHING
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
+    // manager filter by manager display name -> exactly the two reportees.
+    let results = person_repo
+        .search_people(
+            "example.com",
+            10,
+            &PersonSearchFilter {
+                manager: Some("Maya Rao".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    let emails: Vec<&str> = results.iter().map(|r| r.email.as_str()).collect();
+    assert!(
+        emails.contains(&"r1@example.com") && emails.contains(&"r2@example.com"),
+        "expected both reportees under Maya, got {emails:?}"
+    );
+    assert!(
+        !emails.contains(&"mgr@example.com") && !emails.contains(&"zoe@example.com"),
+        "manager and unrelated people must not appear, got {emails:?}"
+    );
+
+    // manager filter by employee id works too.
+    let results = person_repo
+        .search_people(
+            "example.com",
+            10,
+            &PersonSearchFilter {
+                manager: Some("EMP-1".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(results.len(), 2);
+
+    // manager_name is resolved from the manager_id self-join.
+    let results = person_repo
+        .search_people("riya", 10, &PersonSearchFilter::default())
+        .await?;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].manager_name.as_deref(), Some("Maya Rao"));
+    assert_eq!(results[0].manager_id.as_deref(), Some("mgr-id-000000001"));
+
+    // A person without a manager reports no manager_name.
+    let results = person_repo
+        .search_people("zoe", 10, &PersonSearchFilter::default())
+        .await?;
+    assert_eq!(results[0].manager_name, None);
+
+    // job_title filter narrows to a title.
+    let results = person_repo
+        .search_people(
+            "example.com",
+            10,
+            &PersonSearchFilter {
+                job_title: Some("Director".to_string()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].email, "mgr@example.com");
+
+    Ok(())
+}
+
 // ============================================================================
 // Special Character / Tantivy Escaping Tests
 // ============================================================================
