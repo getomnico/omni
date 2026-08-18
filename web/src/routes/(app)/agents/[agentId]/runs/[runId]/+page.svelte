@@ -74,7 +74,10 @@
                         const searchResults = resultContent.filter(
                             (b: any) => b.type === 'search_result',
                         )
-                        if (toolMsg.toolUse.name === 'search_documents' || toolMsg.toolUse.name === 'web_search') {
+                        if (
+                            toolMsg.toolUse.name === 'search' ||
+                            toolMsg.toolUse.name === 'web_search'
+                        ) {
                             toolMsg.toolResult = {
                                 toolUseId,
                                 content: searchResults.map((r: any) => ({

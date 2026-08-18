@@ -30,7 +30,7 @@ from tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 
-_TOOL_NAMES = {"search_documents"}
+_TOOL_NAMES = {"search"}
 
 # Operators already documented as universal — exclude from connector-specific lists
 _UNIVERSAL_OPERATORS = {"by", "in", "from", "type", "before", "after"}
@@ -194,8 +194,8 @@ def _build_search_tools(
 
     return [
         {
-            "name": "search_documents",
-            "description": "Search the Omni index for data across all connected apps using hybrid text and semantic search. Use this when you need to find information to answer user questions. Use inline query operators (in:, by:, type:, status:, etc.) for filtering.",
+            "name": "search",
+            "description": "Search the Omni unified index across all connected apps using hybrid text and semantic search — documents, emails, messages, pages, and any other content your connectors sync. This is the primary tool for finding workplace information to answer user questions. Use inline query operators (in:, by:, type:, status:, etc.) for filtering. For people-directory lookups (a person's title, manager, email or office), use search_people instead.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -247,7 +247,7 @@ class SearchToolHandler:
     async def execute(
         self, tool_name: str, tool_input: dict, context: ToolContext
     ) -> ToolResult:
-        if tool_name == "search_documents":
+        if tool_name == "search":
             return await self._execute_search(tool_input, context)
         return ToolResult(
             content=[{"type": "text", "text": f"Unknown search tool: {tool_name}"}],
@@ -260,7 +260,7 @@ class SearchToolHandler:
         try:
             params = SearchToolParams.model_validate(tool_input)
         except ValidationError as e:
-            logger.error(f"Invalid search_documents input: {e}")
+            logger.error(f"Invalid search input: {e}")
             return ToolResult(
                 content=[{"type": "text", "text": f"Invalid parameters: {e}"}],
                 is_error=True,
@@ -268,10 +268,10 @@ class SearchToolHandler:
 
         # Strip the _ref: prefix if the LLM passes the internal reference token as document_id
         if params.document_id and params.document_id.startswith("_ref:"):
-            params.document_id = params.document_id[len("_ref:"):]
+            params.document_id = params.document_id[len("_ref:") :]
 
         logger.info(
-            f"Executing search_documents with query: {params.query}, document_id: {params.document_id}, context: {context}"
+            f"Executing search with query: {params.query}, document_id: {params.document_id}, context: {context}"
         )
         search_user_id = None if context.skip_permission_check else context.user_id
         search_user_email = (
@@ -406,7 +406,7 @@ async def _execute_search_tool(
     original_user_query: str | None = None,
     user_configuration: UserConfiguration | None = None,
 ) -> list[SearchResult]:
-    """Execute search_documents tool by calling omni-searcher."""
+    """Execute search tool by calling omni-searcher."""
     search_request = SearchRequest(
         query=tool_input.query,
         document_id=tool_input.document_id,

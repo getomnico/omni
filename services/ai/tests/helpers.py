@@ -176,7 +176,7 @@ def message_start_event():
 
 def tool_call_events(
     tool_call_json: dict[str, Any],
-    tool_name: str = "search_documents",
+    tool_name: str = "search",
     tool_id: str = "toolu_test",
 ):
     """Yield Anthropic SDK events simulating a tool_use content block."""
@@ -210,7 +210,7 @@ def tool_call_events(
 
 def thinking_tool_call_events(
     tool_call_json: dict[str, Any],
-    tool_name: str = "search_documents",
+    tool_name: str = "search",
     tool_id: str = "toolu_think",
 ):
     """Yield Anthropic SDK events simulating a tool_use turn on a model that
@@ -342,7 +342,7 @@ def empty_text_response_events():
 def create_mock_llm(
     tool_call_json: dict[str, Any],
     response_text: str = "Here are the results.",
-    tool_name: str = "search_documents",
+    tool_name: str = "search",
 ):
     """Return a mock LLMProvider: call 1 = tool call, call 2+ = text response."""
     call_count = 0
@@ -605,7 +605,7 @@ class GatedRecordingLLM:
         elif kind == "tool_call":
             for event in tool_call_events(
                 payload["input"],
-                tool_name=payload.get("name", "search_documents"),
+                tool_name=payload.get("name", "search"),
                 tool_id=payload.get("id", f"toolu_{call_idx}"),
             ):
                 yield event
@@ -614,7 +614,7 @@ class GatedRecordingLLM:
         elif kind == "thinking_tool_call":
             for event in thinking_tool_call_events(
                 payload["input"],
-                tool_name=payload.get("name", "search_documents"),
+                tool_name=payload.get("name", "search"),
                 tool_id=payload.get("id", f"toolu_{call_idx}"),
             ):
                 yield event

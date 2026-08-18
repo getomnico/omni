@@ -2,7 +2,7 @@ event: message
 data: {"message":{"id":"msg_bdrk_01YS372VPHyjdf47UZNQhEDv","content":[],"model":"claude-sonnet-4-5-20250929","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":11990,"output_tokens":5}},"type":"message_start"}
 
 event: message
-data: {"content_block":{"id":"toolu_bdrk_01L5f8soX2KKwkWKrMUNj7cK","input":{},"name":"search_documents","type":"tool_use"},"index":0,"type":"content_block_start"}
+data: {"content_block":{"id":"toolu_bdrk_01L5f8soX2KKwkWKrMUNj7cK","input":{},"name":"search","type":"tool_use"},"index":0,"type":"content_block_start"}
 
 event: message
 data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":0,"type":"content_block_delta"}
@@ -80,7 +80,7 @@ event: message
 data: {"message":{"id":"msg_bdrk_01Jzo6KPHjMHjPhZSeWWufyZ","content":[],"model":"claude-sonnet-4-5-20250929","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"input_tokens":16602,"output_tokens":27}},"type":"message_start"}
 
 event: message
-data: {"content_block":{"id":"toolu_bdrk_01T5YmwHqCHKq237uxjo58qh","input":{},"name":"search_documents","type":"tool_use"},"index":0,"type":"content_block_start"}
+data: {"content_block":{"id":"toolu_bdrk_01T5YmwHqCHKq237uxjo58qh","input":{},"name":"search","type":"tool_use"},"index":0,"type":"content_block_start"}
 
 event: message
 data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":0,"type":"content_block_delta"}

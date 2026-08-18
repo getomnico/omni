@@ -35,7 +35,7 @@
     }
 
     const ToolIndicators: Record<string, { loading: string; loaded: string }> = {
-        search_documents: {
+        search: {
             loading: 'searching',
             loaded: 'searched',
         },
@@ -102,7 +102,7 @@
     }
 
     const ToolInputKey: Record<string, string> = {
-        search_documents: 'query',
+        search: 'query',
         web_search: 'query',
         fetch_web_page: 'url',
         read_document: 'name',
@@ -398,7 +398,7 @@
             {/if}
         </div>
     </div>
-{:else if toolName === 'search_documents' || toolName === 'web_search'}
+{:else if toolName === 'search' || toolName === 'web_search'}
     <Accordion.Root type="single" bind:value={selectedItem}>
         <Accordion.Item value={message.toolUse.id}>
             <Accordion.Trigger

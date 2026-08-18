@@ -47,7 +47,7 @@ Current date and time: {current_datetime}
 Connected apps: {connected_apps}
 {toolsets_section}
 # Searching
-- The `search_documents` tool is the primary tool to query the Omni unified index that syncs data from all of the above connected apps.
+- The `search` tool is the primary tool to query the Omni unified index that syncs data from all of the above connected apps (documents, emails, messages, pages, and anything else connectors sync). For people-directory lookups (a person's title, manager, email or office), use `search_people` instead.
 {web_tool_lines}
 - Search results include relevant content snippets (highlights) extracted from the indexed documents. For most factual questions, these snippets already contain the answer — use them directly without calling `read_document`.
 - Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
@@ -67,7 +67,7 @@ Connected apps: {connected_apps}
 - Always search for **what the user is looking for** (facts, dates, decisions), not for document names or filenames. For example: instead of "termination_letter_employee_2026.pdf", search for "employee termination date last working day".
 - Never copy-paste a filename into the search query. The index contains the full document text — search for words that would appear inside the document.
 - Never re-search for a document you already found. If a search returned a document that seems relevant but the highlights don't have enough detail, use `read_document` with the `[_ref:ULID]` value from the result, not a new search with the filename.
-- If you find a document but need its full content, pass `document_id` to `search_documents` to search within that specific document: `{{"query": "letzter Arbeitstag", "document_id": "_ref:ULID"}}`. This returns all matching chunks from that single document.
+- If you find a document but need its full content, pass `document_id` to `search` to search within that specific document: `{{"query": "letzter Arbeitstag", "document_id": "_ref:ULID"}}`. This returns all matching chunks from that single document.
 
 # Taking actions
 - Before executing a write action, state exactly what you will do and why in one sentence. The user will be prompted to approve or deny.
@@ -119,7 +119,7 @@ Current date and time: {current_datetime}
 Connected apps: {connected_apps}
 {toolsets_section}
 # Searching
-- Use `search_documents` for internal workplace information from connected apps.
+- Use `search` for internal workplace information from connected apps.
 {web_tool_lines}
 - Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
 - Use `resource_search`/`load_resource` for connector-exposed MCP reference resources; read large resources in line-number chunks.
@@ -155,7 +155,7 @@ Connected apps: {connected_apps}
 - This is a read-only session. No write actions are available.
 
 # Searching
-- Use `search_documents` for internal workplace information from connected apps.
+- Use `search` for internal workplace information from connected apps.
 {web_tool_lines}
 - Use inline query operators for efficient filtering: in:slack, type:pdf, status:done, by:sarah, before:2024-06, after:2024-01.
 - Use `resource_search`/`load_resource` for connector-exposed MCP reference resources; read large resources in line-number chunks.
@@ -471,7 +471,9 @@ def _format_execution_log(execution_log: list[dict], max_chars: int = 5000) -> s
 
 
 def format_run_history(
-    runs: list, max_detailed: int = 3, user_configuration: UserConfiguration | None = None
+    runs: list,
+    max_detailed: int = 3,
+    user_configuration: UserConfiguration | None = None,
 ) -> str:
     """Format agent run history for injection into the system prompt.
 
@@ -492,9 +494,15 @@ def format_run_history(
     sections.append(f"## Agent Run History ({len(runs)} most recent runs)\n")
 
     for i, run in enumerate(runs):
-        started = format_datetime(run.started_at, user_configuration) if run.started_at else "N/A"
+        started = (
+            format_datetime(run.started_at, user_configuration)
+            if run.started_at
+            else "N/A"
+        )
         completed = (
-            format_datetime(run.completed_at, user_configuration) if run.completed_at else "N/A"
+            format_datetime(run.completed_at, user_configuration)
+            if run.completed_at
+            else "N/A"
         )
 
         header = f"### Run {i+1} — {started}"
@@ -544,7 +552,9 @@ def build_agent_chat_system_prompt(
 
     connected_apps = ", ".join(display_names) if display_names else "None"
     user_line = _format_user_line(user_name, user_email)
-    run_history_section = format_run_history(runs, user_configuration=user_configuration)
+    run_history_section = format_run_history(
+        runs, user_configuration=user_configuration
+    )
 
     prompt = AGENT_CHAT_SYSTEM_PROMPT_TEMPLATE.format(
         agent_name=agent.name,

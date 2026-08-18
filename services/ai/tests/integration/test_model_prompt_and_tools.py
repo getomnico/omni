@@ -64,8 +64,8 @@ class _RecordingSearcherClient:
         self.search_responses.append(response)
         return response
 
-    async def search_documents(self, request):
-        return await self.inner.search_documents(request)
+    async def search(self, request):
+        return await self.inner.search(request)
 
 
 class _RecordingLLM:
@@ -209,15 +209,25 @@ def _build_app(llm: _RecordingLLM, model_id: str) -> FastAPI:
     app = FastAPI()
     app.state = AppState()
     from provider_cache import ResolvedModel
+
     async def _resolve_for_model(mid: str):
         return ResolvedModel(provider=llm, model_record_id=mid, model_name=mid)
+
     async def _resolve_default():
-        return ResolvedModel(provider=llm, model_record_id=model_id, model_name=model_id)
+        return ResolvedModel(
+            provider=llm, model_record_id=model_id, model_name=model_id
+        )
+
     async def _resolve_secondary_or_default():
-        return ResolvedModel(provider=llm, model_record_id=model_id, model_name=model_id)
+        return ResolvedModel(
+            provider=llm, model_record_id=model_id, model_name=model_id
+        )
+
     app.state.provider_cache.resolve_for_model = _resolve_for_model
     app.state.provider_cache.resolve_default = _resolve_default
-    app.state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
+    app.state.provider_cache.resolve_secondary_or_default = (
+        _resolve_secondary_or_default
+    )
     searcher_tool = SearcherTool()
     recording_client = _RecordingSearcherClient(searcher_tool.client)
     searcher_tool.client = recording_client
@@ -274,7 +284,7 @@ async def test_initial_chat_turn_sends_loadable_toolsets_but_no_connector_tools(
     assert len(llm.calls) == 1
     names = _tool_names(llm.calls[0])
     assert {"tool_search", "load_tool", "load_tool_set"} <= names
-    assert "search_documents" in names
+    assert "search" in names
     assert "gmail__send_email" not in names
     assert "gmail__list_threads" not in names
 

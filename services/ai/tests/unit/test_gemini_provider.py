@@ -49,7 +49,7 @@ def test_convert_messages_does_not_forward_search_result_extras():
 def _darwinbox_style_tools() -> list[dict]:
     return [
         {
-            "name": "search_documents",
+            "name": "search",
             "description": "Search the Omni index",
             "input_schema": {
                 "type": "object",
@@ -96,7 +96,7 @@ def test_convert_tools_strips_schema_keys_gemini_cannot_round_trip():
     converted = _convert_tools_to_gemini(_darwinbox_style_tools())
     declarations = converted[0].function_declarations
     assert [d.name for d in declarations] == [
-        "search_documents",
+        "search",
         "darwinbox__attendance",
         "darwinbox__apply_leave",
     ]

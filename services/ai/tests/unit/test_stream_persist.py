@@ -31,7 +31,7 @@ def test_valid_json_input_is_parsed():
     tool_call = ToolUseBlockParam(
         type="tool_use",
         id="toolu_json",
-        name="search_documents",
+        name="search",
         input='{"query": "leave balance"}',
     )
     errors = parse_tool_call_inputs([tool_call])
@@ -42,7 +42,7 @@ def test_valid_json_input_is_parsed():
 
 def test_invalid_json_input_yields_parse_error():
     tool_call = ToolUseBlockParam(
-        type="tool_use", id="toolu_bad", name="search_documents", input="{nope"
+        type="tool_use", id="toolu_bad", name="search", input="{nope"
     )
     errors = parse_tool_call_inputs([tool_call])
 

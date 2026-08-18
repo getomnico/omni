@@ -109,7 +109,7 @@ export type OAuthRequiredEvent = OAuthRequiredAIEvent & {
     provider_configured: boolean
 }
 
-export type ToolName = 'search_documents' | 'read_document' | string
+export type ToolName = 'search' | 'read_document' | string
 
 export type UploadMessageContent = {
     id: number
