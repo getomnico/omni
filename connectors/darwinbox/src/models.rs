@@ -85,7 +85,9 @@ pub struct EmployeeWireRecord {
     pub company_email_id: Option<String>,
     #[serde(default)]
     pub department_name: Option<String>,
-    #[serde(default)]
+    // The live tenant sends `job_title_name`; older tenants may still send
+    // `designation_name`. Accept both so job titles never silently drop.
+    #[serde(default, alias = "job_title_name")]
     pub designation_name: Option<String>,
     #[serde(default)]
     pub office_area: Option<String>,
@@ -676,6 +678,42 @@ mod tests {
         assert_eq!(
             response.employee_data[0].personal_mobile_no.as_deref(),
             Some("9876543210")
+        );
+    }
+
+    #[test]
+    fn employee_wire_record_accepts_job_title_name() {
+        // The live tenant sends `job_title_name` (not `designation_name`); the
+        // alias keeps job titles from silently dropping.
+        let response: EmployeeDataResponse = serde_json::from_value(serde_json::json!({
+            "status": 1,
+            "employee_data": [{
+                "employee_id": "E-1",
+                "company_email_id": "ada@example.com",
+                "job_title_name": "Lead, People Operations"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            response.employee_data[0].designation_name.as_deref(),
+            Some("Lead, People Operations")
+        );
+    }
+
+    #[test]
+    fn employee_wire_record_keeps_designation_name_fallback() {
+        let response: EmployeeDataResponse = serde_json::from_value(serde_json::json!({
+            "status": 1,
+            "employee_data": [{
+                "employee_id": "E-1",
+                "company_email_id": "ada@example.com",
+                "designation_name": "Designer"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            response.employee_data[0].designation_name.as_deref(),
+            Some("Designer")
         );
     }
 

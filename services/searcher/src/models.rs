@@ -206,6 +206,16 @@ pub struct PersonResult {
     pub employment_start_date: Option<chrono::NaiveDate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub employment_end_date: Option<chrono::NaiveDate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub manager_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_department: Option<String>,
     pub score: f32,
 }
 

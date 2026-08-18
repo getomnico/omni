@@ -463,6 +463,8 @@ pub struct PeopleSearchQuery {
     pub office_location: Option<String>,
     pub work_country: Option<String>,
     pub employee_type: Option<String>,
+    pub manager: Option<String>,
+    pub job_title: Option<String>,
 }
 
 pub async fn people_search(
@@ -477,6 +479,8 @@ pub async fn people_search(
         office_location: non_empty(&query.office_location),
         work_country: non_empty(&query.work_country),
         employee_type: non_empty(&query.employee_type),
+        manager: non_empty(&query.manager),
+        job_title: non_empty(&query.job_title),
     };
 
     let results = person_repo
@@ -507,6 +511,11 @@ pub async fn people_search(
             confirmation_status: p.confirmation_status,
             employment_start_date: p.employment_start_date,
             employment_end_date: p.employment_end_date,
+            manager_id: p.manager_id,
+            manager_name: p.manager_name,
+            phone: p.phone,
+            avatar_url: p.avatar_url,
+            top_department: p.top_department,
             score: p.score,
         })
         .collect();
