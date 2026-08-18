@@ -37,10 +37,10 @@ const DEFAULT_GOOGLE_DRIVE_MAX_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 
 /// `fields` projection for file listings — includes `driveId` so shared-drive
 /// files can be attributed to their drive (observability + SA-direct metadata).
-const FILES_FIELDS: &str = "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))";
+const FILES_FIELDS: &str = "nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,driveId,inheritedPermissionsDisabled,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress))";
 
 /// `fields` projection for changes listings — mirrors `FILES_FIELDS`.
-const CHANGES_FIELDS: &str = "nextPageToken,newStartPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,trashed,driveId,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress)),fileId,time)";
+const CHANGES_FIELDS: &str = "nextPageToken,newStartPageToken,changes(changeType,removed,file(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,parents,shared,trashed,driveId,inheritedPermissionsDisabled,permissions(id,type,emailAddress,domain,role,allowFileDiscovery,permissionDetails),owners(emailAddress)),fileId,time)";
 
 fn build_files_query(activity_after: Option<&str>) -> String {
     let mut query_parts = vec!["trashed=false".to_string()];
@@ -1384,6 +1384,75 @@ impl DriveClient {
         .await
     }
 
+    pub async fn list_folders_in_drive(
+        &self,
+        auth: &GoogleAuth,
+        user_email: &str,
+        drive_id: &str,
+        page_token: Option<&str>,
+    ) -> Result<FilesListResponse> {
+        let drive_id_owned = drive_id.to_string();
+        let page_token = page_token.map(|s| s.to_string());
+
+        execute_with_auth_retry(auth, user_email, self.rate_limiter.clone(), |token| {
+            let drive_id = drive_id_owned.clone();
+            let page_token = page_token.clone();
+            async move {
+                let url = format!("{}/files", drive_api_base().as_str());
+                // Folders are always fetched in full (no cutoff): their
+                // access metadata (limited-access flag + direct ACL) defines
+                // the effective permissions of every descendant file.
+                let query =
+                    "trashed=false and mimeType='application/vnd.google-apps.folder'".to_string();
+
+                let mut params: Vec<(&str, &str)> = vec![
+                    ("pageSize", "100"),
+                    ("fields", FILES_FIELDS),
+                    ("q", query.as_str()),
+                    ("supportsAllDrives", "true"),
+                    ("includeItemsFromAllDrives", "true"),
+                    ("corpora", "drive"),
+                    ("driveId", &drive_id),
+                ];
+                if let Some(ref pt) = page_token {
+                    params.push(("pageToken", pt));
+                }
+
+                debug!(
+                    "[GOOGLE API CALL] list_folders_in_drive drive={}, page_token={:?}",
+                    drive_id, page_token
+                );
+                let response = self
+                    .client
+                    .get(&url)
+                    .bearer_auth(&token)
+                    .query(&params)
+                    .send()
+                    .await
+                    .with_context(|| format!("Failed to list folders in drive {}", drive_id))?;
+
+                let status = response.status();
+                if !status.is_success() {
+                    return classify_google_api_error(response, "Failed to list folders in drive")
+                        .await;
+                }
+
+                let response_text = response.text().await?;
+                let parsed: FilesListResponse =
+                    serde_json::from_str(&response_text).map_err(|e| {
+                        anyhow!(
+                            "Failed to parse drive-scoped folder list response: {}. Raw: {}",
+                            e,
+                            response_text
+                        )
+                    })?;
+
+                Ok(ApiResult::Success(parsed))
+            }
+        })
+        .await
+    }
+
     /// List a drive's trashed files (`files.list` with `trashed=true`),
     /// paginated fully. Used by the SA-direct full-traversal path to reconcile
     /// documents that were trashed before their trash event was observed by an
@@ -1473,7 +1542,8 @@ impl DriveClient {
     ///
     /// Paginates fully (pageSize=100) and returns the complete member list.
     /// Requires a caller-provided bearer token (SA self-token or impersonated
-    /// DWD token).
+    /// DWD token). Works for any fileId — used for drive ACLs and, in the
+    /// SA-direct effective-permission model, for folder ACLs.
     pub async fn list_drive_permissions(
         &self,
         token: &str,

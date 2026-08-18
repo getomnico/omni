@@ -319,7 +319,46 @@ pub struct GoogleSyncCheckpoint {
     /// so previously indexed unchanged documents get the new ACLs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive_acl_fingerprints: Option<HashMap<String, String>>,
+    /// Per-folder access state for the SA-direct effective-permission model.
+    /// Only folders that are limited-access or carry direct grants are
+    /// recorded; incremental syncs re-fetch their ACLs to detect changes that
+    /// `changes.list` does not deliver for descendants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_access: Option<HashMap<String, FolderAccessInfo>>,
+    /// Bumped whenever the SA-direct permission model changes so a deploy
+    /// forces one uncut full re-traversal, re-emitting every document with
+    /// corrected ACLs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_model_version: Option<String>,
     pub chat: Option<GoogleChatCheckpoint>,
+}
+
+/// Bumped whenever the SA-direct permission model changes; see
+/// `GoogleSyncCheckpoint::permission_model_version`.
+pub const SA_DIRECT_PERMISSION_MODEL_VERSION: &str = "effective-acl-v1";
+
+/// Run-local access metadata for a folder during an SA-direct sync. Folders
+/// are discovered from the drive listing (parents + limited-access flag) and
+/// their directly-assigned ACLs are fetched lazily via `permissions.list`.
+#[derive(Debug, Clone, Default)]
+pub struct FolderAccessEntry {
+    pub parents: Vec<String>,
+    pub inherited_permissions_disabled: bool,
+    /// Directly-assigned ACL entries (inherited entries filtered out), `None`
+    /// until fetched.
+    pub acl: Option<Vec<GoogleDrivePermission>>,
+}
+
+/// Persisted per-folder access state in the sync checkpoint (see
+/// `GoogleSyncCheckpoint::folder_access`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderAccessInfo {
+    pub drive_id: String,
+    pub parents: Vec<String>,
+    pub inherited_permissions_disabled: bool,
+    /// Fingerprint over the directly-assigned ACL entries, mirroring
+    /// `drive_acl_fingerprint`.
+    pub acl_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -391,6 +430,12 @@ pub struct GoogleDriveFile {
     pub trashed: Option<bool>,
     #[serde(rename = "driveId")]
     pub drive_id: Option<String>,
+    /// Folders only: `true` when the folder has limited access
+    /// (`inheritedPermissionsDisabled`), meaning inherited drive/parent
+    /// permissions do not apply to its contents. Files in shared drives do not
+    /// populate this field.
+    #[serde(rename = "inheritedPermissionsDisabled")]
+    pub inherited_permissions_disabled: Option<bool>,
     pub permissions: Option<Vec<GoogleDrivePermission>>,
     pub owners: Option<Vec<Owner>>,
 }
@@ -417,6 +462,22 @@ pub struct GoogleDrivePermission {
     pub allow_file_discovery: Option<bool>,
     #[serde(rename = "permissionDetails")]
     pub permission_details: Option<Vec<serde_json::Value>>,
+}
+
+impl GoogleDrivePermission {
+    /// Whether this permission entry is purely inherited from the drive or a
+    /// parent folder (per `permissionDetails[].inherited`). Entries without
+    /// `permissionDetails` are treated as directly assigned.
+    pub fn is_inherited_only(&self) -> bool {
+        match &self.permission_details {
+            None => false,
+            Some(details) => details.iter().all(|d| {
+                d.get("inherited")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -572,6 +633,124 @@ pub fn drive_acl_fingerprint(permissions: &[GoogleDrivePermission]) -> String {
         ));
     }
     entries.into_iter().collect::<Vec<_>>().join(";")
+}
+
+/// Filter a folder/file permission list down to directly-assigned entries,
+/// dropping entries inherited from the drive or a parent folder (per
+/// `permissionDetails[].inherited`). Entries without `permissionDetails` are
+/// treated as direct. Inherited entries are already represented by the drive
+/// baseline / parent-folder effective ACL, so including them would double-count
+/// (and, for limited-access folders, would wrongly restore drive-wide access).
+pub fn filter_direct_permissions(
+    permissions: &[GoogleDrivePermission],
+) -> Vec<GoogleDrivePermission> {
+    permissions
+        .iter()
+        .filter(|perm| !perm.is_inherited_only())
+        .cloned()
+        .collect()
+}
+
+/// Union `from` into `into` (expansive-access merge): users/groups dedupe,
+/// `public` ORs. Direct grants add access; they never remove it.
+pub fn merge_document_permissions(into: &mut DocumentPermissions, from: &DocumentPermissions) {
+    if from.public {
+        into.public = true;
+    }
+    for user in &from.users {
+        if !into.users.contains(user) {
+            into.users.push(user.clone());
+        }
+    }
+    for group in &from.groups {
+        if !into.groups.contains(group) {
+            into.groups.push(group.clone());
+        }
+    }
+}
+
+/// The subset of a drive ACL that always retains access to limited-access
+/// folders: entries with role `organizer`. Per Google's limited-access model,
+/// only the `owner` role, the `organizer` role, and directly-granted principals
+/// keep access when `inheritedPermissionsDisabled` is set; shared-drive items
+/// have no owners, so organizers are the always-access set.
+pub fn organizer_permissions(
+    acl: &[GoogleDrivePermission],
+    exclude_email: Option<&str>,
+) -> DocumentPermissions {
+    let organizers: Vec<GoogleDrivePermission> = acl
+        .iter()
+        .filter(|perm| perm.role == "organizer")
+        .cloned()
+        .collect();
+    map_drive_permissions(&organizers, exclude_email)
+}
+
+/// Compute the effective permission set for a file in a shared drive,
+/// mirroring Google's model:
+///
+/// - Baseline is the drive ACL (membership is the floor).
+/// - Each ancestor folder's directly-assigned grants are unioned in
+///   (expansive access).
+/// - A limited-access ancestor folder (`inheritedPermissionsDisabled`) is a
+///   boundary: inherited drive membership stops there, and the effective ACL
+///   becomes drive organizers + that folder's direct grants. With nested
+///   boundaries the deepest one governs.
+/// - The file's own direct grants (shared-drive files do not carry permissions
+///   in list responses, but be correct if present) are unioned in.
+///
+/// `folder_access` must be populated for every ancestor folder of `file` (see
+/// `FolderAccessEntry`); ancestors absent from the map are treated as
+/// contributing nothing (no direct grants, not limited-access).
+pub fn compute_effective_permissions(
+    file: &GoogleDriveFile,
+    drive_id: &str,
+    baseline: &DocumentPermissions,
+    drive_acl_raw: &[GoogleDrivePermission],
+    folder_access: &HashMap<String, FolderAccessEntry>,
+    exclude_email: Option<&str>,
+) -> DocumentPermissions {
+    // Collect the ancestor chain file-adjacent -> root-most, stopping at the
+    // drive root or at a folder outside the access map (contributes nothing).
+    let mut chain: Vec<&FolderAccessEntry> = Vec::new();
+    let mut parent = file.parents.as_ref().and_then(|p| p.first()).cloned();
+    while let Some(parent_id) = parent {
+        if parent_id == drive_id {
+            break;
+        }
+        match folder_access.get(&parent_id) {
+            Some(entry) => {
+                chain.push(entry);
+                parent = entry.parents.first().cloned();
+            }
+            None => break,
+        }
+    }
+
+    let mut effective = baseline.clone();
+    // Process root-most -> file-adjacent so nested boundaries resolve to the
+    // deepest boundary (later replacements win).
+    for entry in chain.iter().rev() {
+        if entry.inherited_permissions_disabled {
+            effective = organizer_permissions(drive_acl_raw, exclude_email);
+            if let Some(acl) = &entry.acl {
+                let folder_permissions = map_drive_permissions(acl, exclude_email);
+                merge_document_permissions(&mut effective, &folder_permissions);
+            }
+        } else if let Some(acl) = &entry.acl {
+            let folder_permissions = map_drive_permissions(acl, exclude_email);
+            merge_document_permissions(&mut effective, &folder_permissions);
+        }
+    }
+
+    // The file's own direct grants.
+    if let Some(permissions) = &file.permissions {
+        let direct = filter_direct_permissions(permissions);
+        let file_permissions = map_drive_permissions(&direct, exclude_email);
+        merge_document_permissions(&mut effective, &file_permissions);
+    }
+
+    effective
 }
 
 /// Validate that a service account can read ACLs for a shared drive.
@@ -1346,6 +1525,7 @@ mod tests {
             shared: Some(true),
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
                 permission_type: "user".to_string(),
@@ -1501,6 +1681,7 @@ mod tests {
             shared: None,
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: None,
             owners: None,
         };
@@ -1553,6 +1734,7 @@ mod tests {
             shared: None,
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: None,
             owners: None,
         };
@@ -1583,6 +1765,7 @@ mod tests {
             shared: Some(true),
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![
                 GoogleDrivePermission {
                     id: "perm1".to_string(),
@@ -1652,6 +1835,7 @@ mod tests {
             shared: None,
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: None,
             owners: None,
         };
@@ -1689,6 +1873,7 @@ mod tests {
             shared: Some(true),
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![
                 GoogleDrivePermission {
                     id: "perm_anyone_link".to_string(),
@@ -1732,6 +1917,7 @@ mod tests {
             shared: Some(true),
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm_domain".to_string(),
                 permission_type: "domain".to_string(),
@@ -1764,6 +1950,7 @@ mod tests {
             shared: None,
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![]),
             owners: Some(vec![Owner {
                 id: None,
@@ -1798,6 +1985,7 @@ mod tests {
             shared: Some(true),
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![]),
             owners: Some(vec![Owner {
                 id: None,
@@ -1843,6 +2031,7 @@ mod tests {
             shared: None,
             trashed: None,
             drive_id: None,
+            inherited_permissions_disabled: None,
             permissions: Some(vec![GoogleDrivePermission {
                 id: "perm1".to_string(),
                 permission_type: "user".to_string(),
@@ -2468,5 +2657,301 @@ mod tests {
             fp1, fp3,
             "identical ACLs must produce identical fingerprints"
         );
+    }
+
+    #[test]
+    fn test_filter_direct_permissions_keeps_only_direct_entries() {
+        let inherited = GoogleDrivePermission {
+            id: "p1".to_string(),
+            permission_type: "user".to_string(),
+            email_address: Some("member@example.com".to_string()),
+            domain: None,
+            role: "reader".to_string(),
+            allow_file_discovery: None,
+            permission_details: Some(vec![json!({
+                "permissionType": "sharedDrive",
+                "role": "reader",
+                "inherited": true,
+                "inheritedFrom": "drive-1"
+            })]),
+        };
+        let direct = GoogleDrivePermission {
+            id: "p2".to_string(),
+            permission_type: "user".to_string(),
+            email_address: Some("guest@external.com".to_string()),
+            domain: None,
+            role: "writer".to_string(),
+            allow_file_discovery: None,
+            permission_details: Some(vec![json!({
+                "permissionType": "file",
+                "role": "writer",
+                "inherited": false
+            })]),
+        };
+        let no_details = GoogleDrivePermission {
+            id: "p3".to_string(),
+            permission_type: "domain".to_string(),
+            email_address: None,
+            domain: Some("example.com".to_string()),
+            role: "reader".to_string(),
+            allow_file_discovery: Some(true),
+            permission_details: None,
+        };
+
+        let filtered = filter_direct_permissions(&[inherited, direct, no_details]);
+        assert_eq!(filtered.len(), 2, "inherited-only entries must be dropped");
+        assert_eq!(filtered[0].id, "p2");
+        assert_eq!(filtered[1].id, "p3");
+    }
+
+    fn perm(id: &str, perm_type: &str, email: Option<&str>, role: &str) -> GoogleDrivePermission {
+        GoogleDrivePermission {
+            id: id.to_string(),
+            permission_type: perm_type.to_string(),
+            email_address: email.map(|e| e.to_string()),
+            domain: None,
+            role: role.to_string(),
+            allow_file_discovery: None,
+            permission_details: None,
+        }
+    }
+
+    fn folder_entry(
+        parents: Vec<&str>,
+        limited: bool,
+        acl: Vec<GoogleDrivePermission>,
+    ) -> FolderAccessEntry {
+        FolderAccessEntry {
+            parents: parents.into_iter().map(|s| s.to_string()).collect(),
+            inherited_permissions_disabled: limited,
+            acl: Some(acl),
+        }
+    }
+
+    fn drive_file(parent: Option<&str>) -> GoogleDriveFile {
+        GoogleDriveFile {
+            id: "file-1".to_string(),
+            name: "Doc.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: parent.map(|p| vec![p.to_string()]),
+            shared: None,
+            trashed: None,
+            drive_id: Some("drive-1".to_string()),
+            inherited_permissions_disabled: None,
+            permissions: None,
+            owners: None,
+        }
+    }
+
+    #[test]
+    fn test_effective_permissions_baseline_only() {
+        // Drive ACL: SA (organizer, excluded) + alice (writer). No folders.
+        let drive_acl = vec![
+            perm(
+                "p1",
+                "user",
+                Some("sa@test.iam.gserviceaccount.com"),
+                "organizer",
+            ),
+            perm("p2", "user", Some("alice@example.com"), "writer"),
+        ];
+        let baseline = map_drive_permissions(&drive_acl, Some("sa@test.iam.gserviceaccount.com"));
+        let effective = compute_effective_permissions(
+            &drive_file(None),
+            "drive-1",
+            &baseline,
+            &drive_acl,
+            &HashMap::new(),
+            Some("sa@test.iam.gserviceaccount.com"),
+        );
+        assert!(!effective.public);
+        assert_eq!(effective.users, vec!["alice@example.com"]);
+        assert!(effective.groups.is_empty());
+    }
+
+    #[test]
+    fn test_effective_permissions_expansive_union_on_normal_folder() {
+        // Folder "folder-1" directly grants an external user: union.
+        let drive_acl = vec![perm("p1", "user", Some("alice@example.com"), "writer")];
+        let baseline = map_drive_permissions(&drive_acl, None);
+        let mut folder_access = HashMap::new();
+        folder_access.insert(
+            "folder-1".to_string(),
+            folder_entry(
+                vec!["drive-1"],
+                false,
+                vec![perm("p2", "user", Some("guest@external.com"), "reader")],
+            ),
+        );
+        let effective = compute_effective_permissions(
+            &drive_file(Some("folder-1")),
+            "drive-1",
+            &baseline,
+            &drive_acl,
+            &folder_access,
+            None,
+        );
+        assert_eq!(effective.users.len(), 2);
+        assert!(effective.users.contains(&"alice@example.com".to_string()));
+        assert!(effective.users.contains(&"guest@external.com".to_string()));
+    }
+
+    #[test]
+    fn test_effective_permissions_limited_access_boundary() {
+        // Drive members: SA (organizer, excluded) + bob (reader). The folder is
+        // limited-access and grants only carol. Bob must lose access;
+        // organizers (minus the SA) always retain it.
+        let drive_acl = vec![
+            perm(
+                "p1",
+                "user",
+                Some("sa@test.iam.gserviceaccount.com"),
+                "organizer",
+            ),
+            perm("p2", "user", Some("bob@example.com"), "reader"),
+        ];
+        let baseline = map_drive_permissions(&drive_acl, Some("sa@test.iam.gserviceaccount.com"));
+        let mut folder_access = HashMap::new();
+        folder_access.insert(
+            "secret-1".to_string(),
+            folder_entry(
+                vec!["drive-1"],
+                true,
+                vec![perm("p3", "user", Some("carol@example.com"), "writer")],
+            ),
+        );
+        let effective = compute_effective_permissions(
+            &drive_file(Some("secret-1")),
+            "drive-1",
+            &baseline,
+            &drive_acl,
+            &folder_access,
+            Some("sa@test.iam.gserviceaccount.com"),
+        );
+        assert_eq!(
+            effective.users,
+            vec!["carol@example.com"],
+            "boundary must drop non-organizer drive members"
+        );
+    }
+
+    #[test]
+    fn test_effective_permissions_organizer_retains_access_at_boundary() {
+        // A different organizer (dave) keeps access inside the limited folder.
+        let drive_acl = vec![perm("p1", "user", Some("dave@example.com"), "organizer")];
+        let baseline = map_drive_permissions(&drive_acl, None);
+        let mut folder_access = HashMap::new();
+        folder_access.insert(
+            "secret-1".to_string(),
+            folder_entry(
+                vec!["drive-1"],
+                true,
+                vec![perm("p2", "user", Some("carol@example.com"), "writer")],
+            ),
+        );
+        let effective = compute_effective_permissions(
+            &drive_file(Some("secret-1")),
+            "drive-1",
+            &baseline,
+            &drive_acl,
+            &folder_access,
+            None,
+        );
+        assert!(effective.users.contains(&"dave@example.com".to_string()));
+        assert!(effective.users.contains(&"carol@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_effective_permissions_nested_boundary_deepest_wins() {
+        // outer (normal, grants eve) -> inner (limited, grants frank).
+        // Eve must NOT appear: the inner boundary replaces everything above it.
+        let drive_acl = vec![perm("p1", "user", Some("alice@example.com"), "writer")];
+        let baseline = map_drive_permissions(&drive_acl, None);
+        let mut folder_access = HashMap::new();
+        folder_access.insert(
+            "outer-1".to_string(),
+            folder_entry(
+                vec!["drive-1"],
+                false,
+                vec![perm("p2", "user", Some("eve@example.com"), "reader")],
+            ),
+        );
+        folder_access.insert(
+            "inner-1".to_string(),
+            folder_entry(
+                vec!["outer-1"],
+                true,
+                vec![perm("p3", "user", Some("frank@example.com"), "writer")],
+            ),
+        );
+        let file = GoogleDriveFile {
+            parents: Some(vec!["inner-1".to_string()]),
+            ..drive_file(None)
+        };
+        let effective = compute_effective_permissions(
+            &file,
+            "drive-1",
+            &baseline,
+            &drive_acl,
+            &folder_access,
+            None,
+        );
+        assert_eq!(
+            effective.users,
+            vec!["frank@example.com"],
+            "deepest boundary governs"
+        );
+        assert!(!effective.users.contains(&"eve@example.com".to_string()));
+        assert!(!effective.users.contains(&"alice@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_effective_permissions_group_and_domain_entries_survive() {
+        let drive_acl = vec![perm("p1", "domain", None, "reader")];
+        let mut drive_acl = drive_acl;
+        drive_acl[0].domain = Some("example.com".to_string());
+        drive_acl[0].allow_file_discovery = Some(true);
+        let baseline = map_drive_permissions(&drive_acl, None);
+        let mut folder_access = HashMap::new();
+        folder_access.insert(
+            "folder-1".to_string(),
+            folder_entry(
+                vec!["drive-1"],
+                false,
+                vec![perm("p2", "group", Some("hr@example.com"), "reader")],
+            ),
+        );
+        let effective = compute_effective_permissions(
+            &drive_file(Some("folder-1")),
+            "drive-1",
+            &baseline,
+            &drive_acl,
+            &folder_access,
+            None,
+        );
+        assert!(effective.groups.contains(&"example.com".to_string()));
+        assert!(effective.groups.contains(&"hr@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_merge_document_permissions_dedupes() {
+        let mut into = DocumentPermissions {
+            public: false,
+            users: vec!["a@example.com".to_string()],
+            groups: vec!["g1@example.com".to_string()],
+        };
+        let from = DocumentPermissions {
+            public: true,
+            users: vec!["a@example.com".to_string(), "b@example.com".to_string()],
+            groups: vec!["g2@example.com".to_string()],
+        };
+        merge_document_permissions(&mut into, &from);
+        assert!(into.public);
+        assert_eq!(into.users.len(), 2);
+        assert_eq!(into.groups.len(), 2);
     }
 }
