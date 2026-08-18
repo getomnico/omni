@@ -188,6 +188,16 @@ pub fn field_with_alias<'a>(item: &'a JsonValue, key: &'a str, alias: &'a str) -
         .or_else(|| item.get(alias).and_then(JsonValue::as_str))
 }
 
+/// True when an org-master record is currently active. Records whose status is
+/// anything other than `Active` (e.g. `Inactive`, `Archived`) stay indexed but
+/// are hidden from search via private permissions.
+pub fn record_is_active(item: &JsonValue) -> bool {
+    item.get("status")
+        .and_then(JsonValue::as_str)
+        .map(|status| status.trim().eq_ignore_ascii_case("active"))
+        .unwrap_or(true)
+}
+
 /// Format a holiday document from the typed holiday-list item.
 pub fn format_holiday_item(item: &models::HolidayItem) -> SafeDocument {
     let mut lines = vec![format!("# {}", item.name), format!("- Date: {}", item.date)];
@@ -497,6 +507,20 @@ mod tests {
                 .attributes
                 .contains(&("office_location_code".to_string(), "abc123".to_string()))
         );
+    }
+
+    #[test]
+    fn record_is_active_treats_only_active_as_active() {
+        assert!(record_is_active(&serde_json::json!({"status": "Active"})));
+        assert!(record_is_active(&serde_json::json!({"status": " active "})));
+        assert!(!record_is_active(
+            &serde_json::json!({"status": "Inactive"})
+        ));
+        assert!(!record_is_active(
+            &serde_json::json!({"status": "Archived"})
+        ));
+        // No status field: treated as active (employee-scoped tables etc.).
+        assert!(record_is_active(&serde_json::json!({"name": "X"})));
     }
 
     #[test]
