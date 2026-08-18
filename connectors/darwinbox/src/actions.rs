@@ -37,6 +37,7 @@ pub fn action_endpoints(action: &str) -> &'static [&'static str] {
             "/masterapi/employee",
             "/leavesactionapi/leaveActionTakenLeaves",
         ],
+        "get_my_pending_tasks" => &["/masterapi/employee", "/orgmasterapi/getTasks"],
         "get_my_attendance" => &["/masterapi/employee", "/AttendanceDataApi/monthly"],
         "get_my_timesheet" => &[
             "/masterapi/employee",
@@ -86,6 +87,14 @@ pub fn action_policies() -> &'static [ActionPolicy] {
         },
         ActionPolicy {
             name: "get_my_leave_requests",
+            module: "employee_self_service",
+            mode: ActionMode::Read,
+            audience: "self",
+            is_write: false,
+            available: true,
+        },
+        ActionPolicy {
+            name: "get_my_pending_tasks",
             module: "employee_self_service",
             mode: ActionMode::Read,
             audience: "self",
@@ -396,6 +405,12 @@ pub fn action_definitions() -> Vec<ActionDefinition> {
                 json!({ "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "action": { "type": "string" } }, "required": ["from", "to"], "additionalProperties": false }),
                 &source_types,
             ),
+            "get_my_pending_tasks" => read(
+                "get_my_pending_tasks",
+                "Get pending tasks (e.g. policy sign-offs, approvals) for the calling employee.",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+                &source_types,
+            ),
             "get_my_attendance" => read(
                 "get_my_attendance",
                 "Get attendance for the calling employee.",
@@ -631,6 +646,11 @@ pub async fn execute_action(
                     action: optional_str(&params, "action").unwrap_or("0").to_string(),
                 })
                 .await?
+        }
+        "get_my_pending_tasks" => {
+            let employee = calling_employee.as_ref().expect("self action resolved caller");
+            let employee_no = employee_id(employee)?;
+            client.fetch_pending_tasks(employee_no).await?
         }
         "get_my_attendance" => {
             let employee = calling_employee.as_ref().expect("self action resolved caller");
@@ -983,6 +1003,24 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
         "office_area",
         "direct_manager_employee_id",
         "employee_type",
+        // getTasks envelope scalars: the aggregate counts at the top plus the
+        // per-task item fields (the caller sees only their own tasks).
+        "total_count",
+        "count",
+        "category_header",
+        "sub_category",
+        "user_id",
+        "policy_id",
+        "mobile_allowed",
+        "category",
+        "reportee_task",
+        "title",
+        "redirect_url",
+        "phase_id",
+        "actionid",
+        "approval_flow_set_id",
+        "separation_flow_id",
+        "created_on_timestamp",
     ];
     const SAFE_CONTAINER_KEYS: &[&str] = &[
         "employees",
@@ -995,6 +1033,16 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
         "timesheet",
         "attendance",
     ];
+    // Maps whose keys are provider-defined (getTasks groups tasks under
+    // dynamic category names and indexes items numerically). The keys cannot
+    // be allowlisted, so the whole map is kept but every value is still
+    // projected through the scalar/container allowlists.
+    const SAFE_MAP_CONTAINER_KEYS: &[&str] = &["tasks_data", "details"];
+    // Structured payloads with provider-defined keys whose values are plain
+    // scalar metadata (policy names/dates, action button labels, per-category
+    // counts) — no nested objects that could carry unknown fields. Kept
+    // verbatim because the keys are arbitrary labels.
+    const SAFE_RAW_KEYS: &[&str] = &["headers_data", "action_buttons", "category_wise_count"];
 
     fn project_object(value: JsonValue) -> JsonValue {
         let JsonValue::Object(object) = value else {
@@ -1004,7 +1052,31 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
             object
                 .into_iter()
                 .filter_map(|(key, value)| {
-                    if SAFE_SCALAR_KEYS.contains(&key.as_str())
+                    if SAFE_RAW_KEYS.contains(&key.as_str()) {
+                        // Verbatim passthrough for provider-defined maps.
+                        Some((key, value))
+                    } else if SAFE_MAP_CONTAINER_KEYS.contains(&key.as_str()) {
+                        // Dynamic-key map: keep the map but project every
+                        // value through the allowlists (e.g. getTasks' task
+                        // items indexed numerically under each category).
+                        let projected = match value {
+                            JsonValue::Object(items) => JsonValue::Object(
+                                items
+                                    .into_iter()
+                                    .map(|(item_key, item)| (item_key, project_object(item)))
+                                    .collect(),
+                            ),
+                            JsonValue::Array(items) => JsonValue::Array(
+                                items
+                                    .into_iter()
+                                    .filter(|item| item.is_object())
+                                    .map(project_object)
+                                    .collect(),
+                            ),
+                            _ => JsonValue::Null,
+                        };
+                        Some((key, projected))
+                    } else if SAFE_SCALAR_KEYS.contains(&key.as_str())
                         && !value.is_array()
                         && !value.is_object()
                     {
@@ -1718,6 +1790,68 @@ mod tests {
     }
 
     #[test]
+    fn response_projection_keeps_pending_task_payload() {
+        // Real getTasks response: category-keyed task groups with
+        // provider-defined header maps. The sanitizer must keep the task
+        // structure (headers_data etc.) while still stripping unknown keys.
+        let projected = sanitize_action_response(
+            "get_my_pending_tasks",
+            json!({
+                "status": 1,
+                "message": "success",
+                "data": {
+                    "total_count": 2,
+                    "category_wise_count": { "policy_sign_off": 2 },
+                    "tasks_data": {
+                        "policy_sign_off": {
+                            "count": 2,
+                            "category_header": "HR Policy Sign Off",
+                            "details": {
+                                "1": {
+                                    "id": "a69f91200353d3949170430",
+                                    "sub_category": null,
+                                    "meta": [],
+                                    "user_id": "226875",
+                                    "headers_data": {
+                                        "Policy Name": "Code Of Conduct - Section 8",
+                                        "Trigger Date with time zone": "05-May-2026",
+                                        "Is Overdue": false
+                                    },
+                                    "policy_id": "a69f8465f34acd",
+                                    "action_buttons": { "1": "ACT" },
+                                    "mobile_allowed": true,
+                                    "category": "policy_sign_off",
+                                    "reportee_task": false,
+                                    "title": "Please sign-off the policy by clicking on ACT button.",
+                                    "salary": "SECRET-SALARY"
+                                }
+                            }
+                        }
+                    }
+                }
+            }),
+            false,
+        );
+        let task = &projected["data"]["tasks_data"]["policy_sign_off"]["details"]["1"];
+        assert_eq!(task["id"], json!("a69f91200353d3949170430"));
+        assert_eq!(
+            task["title"],
+            json!("Please sign-off the policy by clicking on ACT button.")
+        );
+        assert_eq!(
+            task["headers_data"]["Policy Name"],
+            json!("Code Of Conduct - Section 8")
+        );
+        assert_eq!(task["action_buttons"]["1"], json!("ACT"));
+        assert_eq!(projected["data"]["total_count"], json!(2));
+        assert_eq!(
+            projected["data"]["category_wise_count"]["policy_sign_off"],
+            json!(2)
+        );
+        assert!(task.get("salary").is_none());
+    }
+
+    #[test]
     fn action_definitions_expose_leave_actions() {
         let definitions = action_definitions();
         let names = definitions
@@ -1729,6 +1863,7 @@ mod tests {
             "get_team_leave_calendar",
             "approve_leave_request",
             "reject_leave_request",
+            "get_my_pending_tasks",
         ] {
             assert!(names.contains(&name), "{name} should be exposed");
         }

@@ -1003,3 +1003,107 @@ async fn reject_leave_request_is_blocked_by_read_only_source() {
     .unwrap_err();
     assert!(error.to_string().contains("read-only"));
 }
+
+#[tokio::test]
+async fn get_my_pending_tasks_resolves_caller_and_returns_task_payload() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+    Mock::given(method("POST"))
+        .and(path("/orgmasterapi/getTasks"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": 1,
+            "message": "success",
+            "data": {
+                "total_count": 2,
+                "category_wise_count": { "policy_sign_off": 2 },
+                "tasks_data": {
+                    "policy_sign_off": {
+                        "count": 2,
+                        "category_header": "HR Policy Sign Off",
+                        "details": {
+                            "1": {
+                                "id": "task-1",
+                                "title": "Please sign-off the policy by clicking on ACT button.",
+                                "category": "policy_sign_off",
+                                "headers_data": {
+                                    "Policy Name": "Code Of Conduct - Section 8",
+                                    "Trigger Date with time zone": "05-May-2026",
+                                    "Is Overdue": false
+                                },
+                                "action_buttons": { "1": "ACT" },
+                                "user_id": "226875",
+                                "mobile_allowed": true,
+                                "reportee_task": false,
+                                "salary": "SECRET-SALARY"
+                            }
+                        }
+                    }
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all" }
+    });
+    let response = execute_action(
+        "get_my_pending_tasks",
+        json!({}),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap();
+    let body = response_body(response).await;
+    assert_eq!(body["status"], json!("success"));
+    let task = &body["result"]["data"]["tasks_data"]["policy_sign_off"]["details"]["1"];
+    assert_eq!(
+        task["title"],
+        json!("Please sign-off the policy by clicking on ACT button.")
+    );
+    assert_eq!(
+        task["headers_data"]["Policy Name"],
+        json!("Code Of Conduct - Section 8")
+    );
+    assert_eq!(body["result"]["data"]["total_count"], json!(2));
+    assert!(body.to_string().contains("SECRET") == false);
+
+    // The provider request must carry exactly the caller's employee id.
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server should record requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/orgmasterapi/getTasks")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 1);
+    let sent: serde_json::Value =
+        serde_json::from_slice(&requests[0].body).expect("request body should be JSON");
+    assert_eq!(sent["employee_id"], json!("EMP001"));
+}
+
+#[tokio::test]
+async fn get_my_pending_tasks_rejects_identity_spoofing() {
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all" }
+    });
+    let error = execute_action(
+        "get_my_pending_tasks",
+        json!({ "employee_id": "EMP999" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("mgr@example.com"),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("employee_id"));
+}
