@@ -287,6 +287,18 @@ impl DarwinboxClient {
             .await
     }
 
+    pub async fn fetch_pending_tasks(
+        &self,
+        employee_id: &str,
+    ) -> std::result::Result<JsonValue, DarwinboxApiError> {
+        self.post_json(
+            "/orgmasterapi/getTasks",
+            json!({ "employee_id": employee_id }),
+            false,
+        )
+        .await
+    }
+
     pub async fn take_leave_decision(
         &self,
         request: LeaveDecisionRequest,
@@ -471,6 +483,7 @@ fn capability_for_endpoint(path: &str) -> &'static str {
         "/leavesactionapi/leavebalance" => "leave balance",
         "/leavesactionapi/holidaylist" => "holiday calendar",
         "/leavesactionapi/leaveActionTakenLeaves" => "leave requests",
+        "/orgmasterapi/getTasks" => "pending tasks",
         "/AttendanceDataApi/monthly" => "attendance",
         "/attendanceDataApi/timesheetdatewise" => "timesheet",
         "/leavesactionapi/importleave" => "leave changes",
