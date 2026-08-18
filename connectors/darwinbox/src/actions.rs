@@ -969,6 +969,13 @@ fn sanitize_action_response(action: &str, value: JsonValue, is_write: bool) -> J
         "attendance_status",
         "holiday_name",
         "holiday_date",
+        // Real holidaylist item fields. The provider sends `name` (not
+        // `holiday_name`) plus these flag keys; without them the sanitizer
+        // would strip every holiday's name and flags.
+        "name",
+        "holiday_repeats",
+        "is_optional",
+        "is_national",
         "display_name",
         "company_email_id",
         "department_name",
@@ -1674,6 +1681,40 @@ mod tests {
         assert_eq!(item["action_by"], json!("Mgr (EMP001)"));
         assert_eq!(item["applied_leave_id"], json!("AL1"));
         assert!(!projected.to_string().contains("SECRET"));
+    }
+
+    #[test]
+    fn response_projection_keeps_holiday_names() {
+        // Real holidaylist item shape: name/date/year plus flag keys. The
+        // sanitizer must keep the holiday name so get_holiday_calendar can
+        // report what the holiday actually is.
+        let projected = sanitize_action_response(
+            "get_holiday_calendar",
+            json!({
+                "status": 1,
+                "message": "Successfully Loaded All Holidays",
+                "holidays": [
+                    {
+                        "id": "a68f996eb7bec5",
+                        "name": "New Year's Holiday",
+                        "date": "2026-01-01",
+                        "year": "2026",
+                        "holiday_repeats": "No",
+                        "is_optional": "No",
+                        "is_national": "No",
+                        "salary": "SECRET-SALARY"
+                    }
+                ]
+            }),
+            false,
+        );
+        let item = &projected["holidays"][0];
+        assert_eq!(item["name"], json!("New Year's Holiday"));
+        assert_eq!(item["date"], json!("2026-01-01"));
+        assert_eq!(item["year"], json!("2026"));
+        assert_eq!(item["holiday_repeats"], json!("No"));
+        assert_eq!(item["is_national"], json!("No"));
+        assert!(item.get("salary").is_none());
     }
 
     #[test]
