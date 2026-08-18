@@ -1107,3 +1107,35 @@ async fn get_my_pending_tasks_rejects_identity_spoofing() {
     .unwrap_err();
     assert!(error.to_string().contains("employee_id"));
 }
+
+#[tokio::test]
+async fn find_employee_works_for_non_employee_caller() {
+    // find_employee is a public directory lookup: a caller who is not a
+    // Darwinbox employee (e.g. an admin without a synced profile) must still
+    // be able to search the directory. Previously it was gated on the caller
+    // resolving to an employee, which blocked non-employees entirely.
+    let server = MockServer::start().await;
+    mock_employee_master(&server, manager_employee_master()).await;
+
+    let config = json!({
+        "base_url": server.uri(),
+        "read_only": true,
+        "authorization": { "participant_mode": "all" }
+    });
+    let response = execute_action(
+        "find_employee",
+        json!({ "query": "r1@example.com" }),
+        Some(test_credential()),
+        Some(test_source(config)),
+        test_actor("praveen@example.com"),
+    )
+    .await
+    .unwrap();
+    let body = response_body(response).await;
+    assert_eq!(body["status"], json!("success"));
+    let employees = body["result"]["employees"]
+        .as_array()
+        .expect("expected an employees array");
+    assert!(!employees.is_empty(), "expected at least one match");
+    assert_eq!(employees[0]["employee_id"], json!("EMP002"));
+}

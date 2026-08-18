@@ -195,12 +195,15 @@ pub fn action_policies() -> &'static [ActionPolicy] {
             is_write: true,
             available: true,
         },
-        // Directory (available, no module)
+        // Directory (available, no module). find_employee is a public
+        // directory lookup: its handler searches the employee master by query
+        // and never needs a resolved caller identity, so it must not be gated
+        // on the caller being an employee (unlike self-service actions).
         ActionPolicy {
             name: "find_employee",
             module: "",
             mode: ActionMode::Read,
-            audience: "self",
+            audience: "",
             is_write: false,
             available: true,
         },
