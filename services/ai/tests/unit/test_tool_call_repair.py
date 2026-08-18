@@ -12,7 +12,7 @@ from streaming.generate import (
 )
 
 
-def _tool_use(tool_id: str, name: str = "search_documents") -> dict:
+def _tool_use(tool_id: str, name: str = "search") -> dict:
     return {"type": "tool_use", "id": tool_id, "name": name, "input": {}}
 
 
@@ -32,7 +32,7 @@ def _interrupted_placeholder(tool_id: str) -> dict:
         "content": [
             {
                 "type": "text",
-                "text": f"Tool call search_documents {_INTERRUPTED_TOOL_RESULT_MARKER}. "
+                "text": f"Tool call search {_INTERRUPTED_TOOL_RESULT_MARKER}. "
                 "Treat this tool call as failed and retry it if the result is still needed.",
             }
         ],

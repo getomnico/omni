@@ -275,7 +275,7 @@
     ]
 
     const toolVerbMap: Record<string, string[]> = {
-        search_documents: ['Searching', 'Looking it up', 'Digging through results'],
+        search: ['Searching', 'Looking it up', 'Digging through results'],
         web_search: ['Searching the web', 'Checking public sources'],
         fetch_web_page: ['Fetching web page', 'Reading web page'],
         read_document: ['Reading document', 'Reviewing document'],
@@ -935,7 +935,7 @@
         // pulled from `search_result` content blocks). Search tools render that
         // shape; everything else surfaces output via actionResult / oauthRequired
         // and should stay as a compact status row.
-        const SEARCH_TOOLS = new Set(['search_documents', 'web_search'])
+        const SEARCH_TOOLS = new Set(['search', 'web_search'])
         const updateToolBlock = (
             toolUseId: string,
             updateBlock: (block: ToolMessageContent) => ToolMessageContent,

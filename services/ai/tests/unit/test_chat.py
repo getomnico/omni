@@ -287,7 +287,7 @@ async def test_citation_stream_processor():
             content_block=ToolUseBlock(
                 type="tool_use",
                 id="toolu_test",
-                name="search_documents",
+                name="search",
                 input={},
             ),
         )
@@ -389,8 +389,14 @@ async def test_citation_stream_processor():
     tool_events = [
         event
         for event in with_tool
-        if (event.type == "content_block_start" and event.content_block.type == "tool_use")
-        or (event.type == "content_block_delta" and event.delta.type == "input_json_delta")
+        if (
+            event.type == "content_block_start"
+            and event.content_block.type == "tool_use"
+        )
+        or (
+            event.type == "content_block_delta"
+            and event.delta.type == "input_json_delta"
+        )
     ]
     assert [event.index for event in tool_events] == [2, 2]
     assert with_tool[-1].type == "content_block_stop"

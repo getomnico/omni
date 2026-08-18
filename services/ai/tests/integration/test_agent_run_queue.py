@@ -11,7 +11,11 @@ from anthropic.types import MessageParam, ToolUseBlockParam
 from ulid import ULID
 
 import db.connection
-from agents.models import AgentRunAlreadyActive, AgentRunRetryPolicy, AgentRunTriggerType
+from agents.models import (
+    AgentRunAlreadyActive,
+    AgentRunRetryPolicy,
+    AgentRunTriggerType,
+)
 from agents.queue_worker import _execute_claimed_run
 from agents.repository import AgentRepository, AgentRunRepository
 from agents.scheduler import materialize_due_agent_runs
@@ -51,22 +55,38 @@ async def _create_agent(db_pool, user_id: str) -> str:
 def _policy(max_attempts: int = 3) -> AgentRunRetryPolicy:
     return AgentRunRetryPolicy(
         max_attempts=max_attempts,
-        backoff_delays=(timedelta(seconds=0), timedelta(seconds=0), timedelta(seconds=0)),
+        backoff_delays=(
+            timedelta(seconds=0),
+            timedelta(seconds=0),
+            timedelta(seconds=0),
+        ),
     )
 
 
 def _app_state_with_llm(mock_llm) -> AppState:
     app_state = AppState()
     from provider_cache import ResolvedModel
+
     async def _resolve_for_model(model_id: str):
-        return ResolvedModel(provider=mock_llm, model_record_id=model_id, model_name="mock-model")
+        return ResolvedModel(
+            provider=mock_llm, model_record_id=model_id, model_name="mock-model"
+        )
+
     async def _resolve_default():
-        return ResolvedModel(provider=mock_llm, model_record_id="mock-model", model_name="mock-model")
+        return ResolvedModel(
+            provider=mock_llm, model_record_id="mock-model", model_name="mock-model"
+        )
+
     async def _resolve_secondary_or_default():
-        return ResolvedModel(provider=mock_llm, model_record_id="mock-model", model_name="mock-model")
+        return ResolvedModel(
+            provider=mock_llm, model_record_id="mock-model", model_name="mock-model"
+        )
+
     app_state.provider_cache.resolve_for_model = _resolve_for_model
     app_state.provider_cache.resolve_default = _resolve_default
-    app_state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
+    app_state.provider_cache.resolve_secondary_or_default = (
+        _resolve_secondary_or_default
+    )
     app_state.searcher_tool = AsyncMock()
     app_state.content_storage = AsyncMock()
     app_state.redis_client = None
@@ -74,7 +94,9 @@ def _app_state_with_llm(mock_llm) -> AppState:
 
 
 @pytest.mark.asyncio
-async def test_create_run_if_idle_returns_conflict_for_active_run(db_pool, _patch_db_pool):
+async def test_create_run_if_idle_returns_conflict_for_active_run(
+    db_pool, _patch_db_pool
+):
     user_id, _ = await create_test_user(db_pool)
     agent_id = await _create_agent(db_pool, user_id)
     repo = AgentRunRepository(pool=db_pool)
@@ -122,7 +144,9 @@ async def test_cluster_concurrency_cap_blocks_claims(db_pool, _patch_db_pool):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_and_completion_are_fenced_by_claim_token(db_pool, _patch_db_pool):
+async def test_heartbeat_and_completion_are_fenced_by_claim_token(
+    db_pool, _patch_db_pool
+):
     user_id, _ = await create_test_user(db_pool)
     agent_id = await _create_agent(db_pool, user_id)
     repo = AgentRunRepository(pool=db_pool)
@@ -131,7 +155,9 @@ async def test_heartbeat_and_completion_are_fenced_by_claim_token(db_pool, _patc
     assert claim is not None
 
     assert not await repo.heartbeat_run(claim.run.id, "0" * 26, timedelta(minutes=5))
-    assert await repo.heartbeat_run(claim.run.id, claim.claim_token, timedelta(minutes=5))
+    assert await repo.heartbeat_run(
+        claim.run.id, claim.claim_token, timedelta(minutes=5)
+    )
 
     assert await repo.complete_run(claim.run.id, "0" * 26, "bad") is None
     completed = await repo.complete_run(claim.run.id, claim.claim_token, "done")
@@ -140,7 +166,9 @@ async def test_heartbeat_and_completion_are_fenced_by_claim_token(db_pool, _patc
 
 
 @pytest.mark.asyncio
-async def test_stale_lease_recovery_and_old_token_cannot_complete(db_pool, _patch_db_pool):
+async def test_stale_lease_recovery_and_old_token_cannot_complete(
+    db_pool, _patch_db_pool
+):
     user_id, _ = await create_test_user(db_pool)
     agent_id = await _create_agent(db_pool, user_id)
     repo = AgentRunRepository(pool=db_pool)
@@ -177,10 +205,14 @@ async def test_run_logs_are_fenced_and_ordered(db_pool, _patch_db_pool):
 
     tool_use = MessageParam(
         role="assistant",
-        content=[ToolUseBlockParam(type="tool_use", id="toolu_1", name="search", input={})],
+        content=[
+            ToolUseBlockParam(type="tool_use", id="toolu_1", name="search", input={})
+        ],
     )
     assert await repo.append_run_log_messages(claim.run.id, "0" * 26, [tool_use]) == []
-    rows = await repo.append_run_log_messages(claim.run.id, claim.claim_token, [tool_use])
+    rows = await repo.append_run_log_messages(
+        claim.run.id, claim.claim_token, [tool_use]
+    )
     assert len(rows) == 1
     assert rows[0].message_seq_num == 0
 
@@ -190,7 +222,9 @@ async def test_run_logs_are_fenced_and_ordered(db_pool, _patch_db_pool):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_materializes_due_run_without_duplicate(db_pool, _patch_db_pool):
+async def test_scheduler_materializes_due_run_without_duplicate(
+    db_pool, _patch_db_pool
+):
     user_id, _ = await create_test_user(db_pool)
     agent_id = await _create_agent(db_pool, user_id)
     agent_repo = AgentRepository(pool=db_pool)
@@ -217,7 +251,9 @@ async def test_scheduler_materializes_due_run_without_duplicate(db_pool, _patch_
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_executes_claimed_run_through_executor(db_pool, _patch_db_pool):
+async def test_queue_worker_executes_claimed_run_through_executor(
+    db_pool, _patch_db_pool
+):
     user_id, _ = await create_test_user(db_pool)
     agent_id = await _create_agent(db_pool, user_id)
     run_repo = AgentRunRepository(pool=db_pool)
@@ -225,10 +261,12 @@ async def test_queue_worker_executes_claimed_run_through_executor(db_pool, _patc
     claim = await run_repo.claim_next_run(10, timedelta(minutes=5), _policy())
     assert claim is not None
 
-    mock_llm = create_mock_llm_multi([
-        ("text", "The queued agent run completed."),
-        ("text", "Queued run summary."),
-    ])
+    mock_llm = create_mock_llm_multi(
+        [
+            ("text", "The queued agent run completed."),
+            ("text", "Queued run summary."),
+        ]
+    )
     await _execute_claimed_run(_app_state_with_llm(mock_llm), claim, _policy())
 
     completed = await run_repo.get_run(claim.run.id)
@@ -240,7 +278,9 @@ async def test_queue_worker_executes_claimed_run_through_executor(db_pool, _patc
 
 
 @pytest.mark.asyncio
-async def test_executor_recovers_interrupted_tool_call_from_run_logs(db_pool, _patch_db_pool):
+async def test_executor_recovers_interrupted_tool_call_from_run_logs(
+    db_pool, _patch_db_pool
+):
     user_id, _ = await create_test_user(db_pool)
     agent_id = await _create_agent(db_pool, user_id)
     run_repo = AgentRunRepository(pool=db_pool)
@@ -255,7 +295,7 @@ async def test_executor_recovers_interrupted_tool_call_from_run_logs(db_pool, _p
             ToolUseBlockParam(
                 type="tool_use",
                 id="toolu_interrupted",
-                name="search_documents",
+                name="search",
                 input={"query": "quarterly report"},
             )
         ],
@@ -264,13 +304,17 @@ async def test_executor_recovers_interrupted_tool_call_from_run_logs(db_pool, _p
         claim.run.id, claim.claim_token, [initial, interrupted_tool_use]
     )
 
-    mock_llm = create_mock_llm_multi([
-        ("text", "I saw the interrupted tool call and reconciled it."),
-        ("text", "Recovered interrupted run."),
-    ])
+    mock_llm = create_mock_llm_multi(
+        [
+            ("text", "I saw the interrupted tool call and reconciled it."),
+            ("text", "Recovered interrupted run."),
+        ]
+    )
     await _execute_claimed_run(_app_state_with_llm(mock_llm), claim, _policy())
 
     logs = await run_repo.list_run_logs(claim.run.id)
     log_text = str([log.message for log in logs])
     assert "previous attempt was interrupted" in log_text
-    assert (await run_repo.get_run(claim.run.id)).summary == "Recovered interrupted run."
+    assert (
+        await run_repo.get_run(claim.run.id)
+    ).summary == "Recovered interrupted run."

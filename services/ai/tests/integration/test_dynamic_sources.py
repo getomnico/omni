@@ -508,7 +508,7 @@ async def test_build_registry_search_tool_has_dynamic_sources(
 
         # Verify search tool has query with operator syntax
         search_tools = result.registry.get_all_tools()
-        search_tool = next(t for t in search_tools if t["name"] == "search_documents")
+        search_tool = next(t for t in search_tools if t["name"] == "search")
         query_desc = search_tool["input_schema"]["properties"]["query"]["description"]
         assert "in:<source>" in query_desc
 
@@ -891,7 +891,7 @@ async def test_build_registry_no_sources_generic_description(
     result = await _build_registry(request, chat, is_admin=False, loaded_toolsets=set())
 
     search_tools = result.registry.get_all_tools()
-    search_tool = next(t for t in search_tools if t["name"] == "search_documents")
+    search_tool = next(t for t in search_tools if t["name"] == "search")
     query_desc = search_tool["input_schema"]["properties"]["query"]["description"]
     assert "in:<source>" in query_desc
 
@@ -944,7 +944,7 @@ async def test_build_registry_deleted_sources_excluded(
         )
 
         search_tools = result.registry.get_all_tools()
-        search_tool = next(t for t in search_tools if t["name"] == "search_documents")
+        search_tool = next(t for t in search_tools if t["name"] == "search")
         query_desc = search_tool["input_schema"]["properties"]["query"]["description"]
         assert "in:<source>" in query_desc
 

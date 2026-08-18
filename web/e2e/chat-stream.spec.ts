@@ -19,7 +19,7 @@ const capturedSeedChatPath = process.env.OMNI_CAPTURE_SEED_CHAT_PATH
 const capturedExpectedText = process.env.OMNI_CAPTURE_EXPECT_TEXT
 const capturedSubmitText = process.env.OMNI_CAPTURE_SUBMIT_TEXT
 
-const streamedMarkdown = `Here are the tools I have available to call right now:\n\n### Search & Retrieval\n- **\`search_documents(query, limit, document_id?)\`** — Search indexed documents\n- **\`read_document(document_id)\`** — Read a document`
+const streamedMarkdown = `Here are the tools I have available to call right now:\n\n### Search & Retrieval\n- **\`search(query, limit, document_id?)\`** — Search indexed documents\n- **\`read_document(document_id)\`** — Read a document`
 const branchedTemplateFixture = new URL(
     './fixtures/chat-01KT1M7YAYQBDP6Z46FAY7G42H.json',
     import.meta.url,
@@ -106,7 +106,7 @@ function assistantSearchToolEvents(index: number, toolUseId: string, query: stri
             content_block: {
                 type: 'tool_use',
                 id: toolUseId,
-                name: 'search_documents',
+                name: 'search',
                 input: {},
             },
         }),
@@ -351,7 +351,7 @@ async function seedInterruptedToolCallChat(): Promise<
                     {
                         type: 'tool_use',
                         id: toolUseId,
-                        name: 'search_documents',
+                        name: 'search',
                         input: { query: 'interrupted tool call', limit: 10 },
                     },
                 ],
@@ -549,7 +549,7 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
             page.getByText('Here are the tools I have available to call right now:'),
         ).toBeVisible()
         await expect(page.getByRole('heading', { name: 'Search & Retrieval' })).toBeVisible()
-        await expect(page.getByText('search_documents(query, limit, document_id?)')).toBeVisible()
+        await expect(page.getByText('search(query, limit, document_id?)')).toBeVisible()
         await expect(page.getByText('Read a document')).toBeVisible()
     } finally {
         await cleanupChat(seeded)

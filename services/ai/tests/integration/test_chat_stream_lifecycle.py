@@ -1058,7 +1058,7 @@ class TestStreamErrorPersistence:
                 (
                     "tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "multi-turn"},
                         "id": "toolu_mt",
                     },
@@ -1139,7 +1139,7 @@ class TestStreamErrorPersistence:
                 (
                     "tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "boom"},
                         "id": "toolu_boom",
                     },
@@ -1255,7 +1255,7 @@ class TestStreamStatusPending:
                     {
                         "type": "tool_use",
                         "id": tool_use_id,
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "test"},
                     }
                 ],
@@ -1268,7 +1268,7 @@ class TestStreamStatusPending:
         await approvals_repo.create_pending(
             chat_id=chat_id,
             user_id=_user_id,
-            tool_name="search_documents",
+            tool_name="search",
             tool_input={"query": "test"},
             tool_call_id=tool_use_id,
             approval_type=ToolApprovalType.APPROVAL,
@@ -1471,7 +1471,7 @@ class TestReconnectActive:
                 (
                     "tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "test"},
                         "id": "toolu_b2_active",
                     },
@@ -1538,7 +1538,7 @@ class TestCancelEarly:
                 (
                     "tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "cancel me"},
                         "id": "toolu_c2",
                     },
@@ -1662,7 +1662,7 @@ class TestCancelMidToolCall:
                 (
                     "tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "test"},
                         "id": "toolu_mt_cancel",
                     },
@@ -1890,7 +1890,7 @@ class TestInterruptedToolCall:
                     {
                         "type": "tool_use",
                         "id": tool_use_id,
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "interrupted"},
                     }
                 ],
@@ -1946,7 +1946,7 @@ class TestMultiTurn:
                 (
                     "tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "multi-turn"},
                         "id": "toolu_mt",
                     },
@@ -2020,7 +2020,7 @@ class TestMultiTurn:
                 (
                     "thinking_tool_call",
                     {
-                        "name": "search_documents",
+                        "name": "search",
                         "input": {"query": "leave balance"},
                         "id": "toolu_think123",
                     },

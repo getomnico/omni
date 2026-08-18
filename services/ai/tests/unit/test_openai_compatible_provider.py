@@ -49,7 +49,7 @@ def test_convert_messages_preserves_deepseek_reasoning_content_with_tool_calls()
                 {
                     "type": "tool_use",
                     "id": "call_1",
-                    "name": "search_documents",
+                    "name": "search",
                     "input": {"query": "omni"},
                 },
                 {
@@ -129,7 +129,7 @@ def _assistant_with_tool_calls(tool_call_ids: list[str]) -> dict:
             {
                 "type": "tool_use",
                 "id": tool_id,
-                "name": "search_documents",
+                "name": "search",
                 "input": {},
             }
             for tool_id in tool_call_ids
@@ -155,7 +155,7 @@ def _openai_assistant_with_tool_calls(tool_call_ids: list[str]) -> dict:
             {
                 "id": tool_id,
                 "type": "function",
-                "function": {"name": "search_documents", "arguments": "{}"},
+                "function": {"name": "search", "arguments": "{}"},
             }
             for tool_id in tool_call_ids
         ],

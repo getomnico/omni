@@ -185,7 +185,7 @@ class SearcherClient:
         self.searcher_url = searcher_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=30.0)
 
-    async def search_documents(self, request: SearchRequest) -> SearchResponse:
+    async def search(self, request: SearchRequest) -> SearchResponse:
         """
         Search documents using omni-searcher service
 

@@ -1,4 +1,4 @@
-"""Integration tests for search_documents tool calls flowing through the chat SSE stream.
+"""Integration tests for search tool calls flowing through the chat SSE stream.
 
 Validates that the chat handler correctly maps LLM tool calls to SearchRequest
 and passes them to the searcher. Filters are now expressed via inline query
@@ -96,7 +96,7 @@ def create_mock_llm_with_invalid_tool_json(raw_json: str, response_text: str):
                 content_block=ToolUseBlock(
                     type="tool_use",
                     id="toolu_invalid_json",
-                    name="search_documents",
+                    name="search",
                     input={},
                 ),
             )
@@ -222,15 +222,25 @@ def _build_app(llm_provider, searcher_tool, model_id: str) -> FastAPI:
     app = FastAPI()
     app.state = AppState()
     from provider_cache import ResolvedModel
+
     async def _resolve_for_model(mid: str):
         return ResolvedModel(provider=llm_provider, model_record_id=mid, model_name=mid)
+
     async def _resolve_default():
-        return ResolvedModel(provider=llm_provider, model_record_id=model_id, model_name=model_id)
+        return ResolvedModel(
+            provider=llm_provider, model_record_id=model_id, model_name=model_id
+        )
+
     async def _resolve_secondary_or_default():
-        return ResolvedModel(provider=llm_provider, model_record_id=model_id, model_name=model_id)
+        return ResolvedModel(
+            provider=llm_provider, model_record_id=model_id, model_name=model_id
+        )
+
     app.state.provider_cache.resolve_for_model = _resolve_for_model
     app.state.provider_cache.resolve_default = _resolve_default
-    app.state.provider_cache.resolve_secondary_or_default = _resolve_secondary_or_default
+    app.state.provider_cache.resolve_secondary_or_default = (
+        _resolve_secondary_or_default
+    )
     app.state.searcher_tool = searcher_tool
     app.include_router(chat_router)
     return app

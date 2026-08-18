@@ -14,7 +14,7 @@ event: message
 data: {"index":0,"type":"content_block_stop"}
 
 event: message
-data: {"content_block":{"id":"toolu_01FK1YdwtRAfb8y3Cn136HFB","caller":{"type":"direct"},"input":{},"name":"search_documents","type":"tool_use"},"index":1,"type":"content_block_start"}
+data: {"content_block":{"id":"toolu_01FK1YdwtRAfb8y3Cn136HFB","caller":{"type":"direct"},"input":{},"name":"search","type":"tool_use"},"index":1,"type":"content_block_start"}
 
 event: message
 data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":1,"type":"content_block_delta"}
@@ -47,7 +47,7 @@ event: message
 data: {"index":1,"type":"content_block_stop"}
 
 event: message
-data: {"content_block":{"id":"toolu_01KUUvEettAFPx5VjWsF9BMn","caller":{"type":"direct"},"input":{},"name":"search_documents","type":"tool_use"},"index":2,"type":"content_block_start"}
+data: {"content_block":{"id":"toolu_01KUUvEettAFPx5VjWsF9BMn","caller":{"type":"direct"},"input":{},"name":"search","type":"tool_use"},"index":2,"type":"content_block_start"}
 
 event: message
 data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":2,"type":"content_block_delta"}
@@ -80,7 +80,7 @@ event: message
 data: {"index":2,"type":"content_block_stop"}
 
 event: message
-data: {"content_block":{"id":"toolu_01LYN35t3eSswU9jxuZ2KT9S","caller":{"type":"direct"},"input":{},"name":"search_documents","type":"tool_use"},"index":3,"type":"content_block_start"}
+data: {"content_block":{"id":"toolu_01LYN35t3eSswU9jxuZ2KT9S","caller":{"type":"direct"},"input":{},"name":"search","type":"tool_use"},"index":3,"type":"content_block_start"}
 
 event: message
 data: {"delta":{"partial_json":"","type":"input_json_delta"},"index":3,"type":"content_block_delta"}

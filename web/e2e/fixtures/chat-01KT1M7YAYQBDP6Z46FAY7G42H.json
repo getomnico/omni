@@ -21,7 +21,7 @@
                 },
                 {
                     "id": "toolu_01QyzVfjTLcmeE8M9a73Poh8",
-                    "name": "search_documents",
+                    "name": "search",
                     "type": "tool_use",
                     "input": {
                         "query": "NEPA Nepanagar origin name"
@@ -882,7 +882,7 @@
                 },
                 {
                     "id": "toolu_01FK1YdwtRAfb8y3Cn136HFB",
-                    "name": "search_documents",
+                    "name": "search",
                     "type": "tool_use",
                     "input": {
                         "limit": 20,
@@ -891,7 +891,7 @@
                 },
                 {
                     "id": "toolu_01KUUvEettAFPx5VjWsF9BMn",
-                    "name": "search_documents",
+                    "name": "search",
                     "type": "tool_use",
                     "input": {
                         "limit": 20,
@@ -900,7 +900,7 @@
                 },
                 {
                     "id": "toolu_01LYN35t3eSswU9jxuZ2KT9S",
-                    "name": "search_documents",
+                    "name": "search",
                     "type": "tool_use",
                     "input": {
                         "limit": 20,
