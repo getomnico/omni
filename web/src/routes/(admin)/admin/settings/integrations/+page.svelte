@@ -20,6 +20,7 @@
     import slackLogo from '$lib/images/icons/slack.svg'
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
+    import salesforceLogo from '$lib/images/icons/salesforce.svg'
     import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import clickupLogo from '$lib/images/icons/clickup.svg'
@@ -51,6 +52,7 @@
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
+    import SalesforceConnectorSetup from '$lib/components/salesforce-connector-setup.svelte'
     import FirefliesConnectorSetup from '$lib/components/fireflies-connector-setup.svelte'
     import ImapConnectorSetup from '$lib/components/imap-connector-setup.svelte'
     import MicrosoftConnectorSetup from '$lib/components/microsoft-connector-setup.svelte'
@@ -209,6 +211,7 @@
         slack: slackLogo,
         atlassian: atlassianLogo,
         hubspot: hubspotLogo,
+        salesforce: salesforceLogo,
         fireflies: firefliesLogo,
         microsoft: microsoftLogo,
         clickup: clickupLogo,
@@ -777,6 +780,11 @@
 
 <HubspotConnectorSetup
     open={activeSetup === 'hubspot'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<SalesforceConnectorSetup
+    open={activeSetup === 'salesforce'}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

@@ -206,6 +206,7 @@ pub enum SourceType {
     GoogleAds,
     Darwinbox,
     Windshift,
+    Salesforce,
 }
 
 impl SourceType {
@@ -237,6 +238,7 @@ impl SourceType {
             SourceType::GoogleAds => "google_ads",
             SourceType::Darwinbox => "darwinbox",
             SourceType::Windshift => "windshift",
+            SourceType::Salesforce => "salesforce",
         }
     }
 }
@@ -286,6 +288,7 @@ impl TryFrom<&str> for SourceType {
             "google_ads" => Ok(SourceType::GoogleAds),
             "darwinbox" => Ok(SourceType::Darwinbox),
             "windshift" => Ok(SourceType::Windshift),
+            "salesforce" => Ok(SourceType::Salesforce),
             other => Err(format!("unknown source type: {other}")),
         }
     }
@@ -332,6 +335,7 @@ pub enum ServiceProvider {
     #[serde(rename = "remote_mcp")]
     RemoteMcp,
     Windshift,
+    Salesforce,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

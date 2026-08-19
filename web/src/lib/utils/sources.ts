@@ -32,6 +32,7 @@ const sourceNouns: Record<string, string> = {
     [SourceType.CONFLUENCE]: 'pages',
     [SourceType.JIRA]: 'issues',
     [SourceType.HUBSPOT]: 'records',
+    [SourceType.SALESFORCE]: 'records',
     [SourceType.FIREFLIES]: 'transcripts',
     [SourceType.IMAP]: 'emails',
     [SourceType.ONE_DRIVE]: 'files',

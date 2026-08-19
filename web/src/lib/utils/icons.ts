@@ -16,6 +16,7 @@ import confluenceIcon from '$lib/images/icons/confluence.svg'
 import jiraIcon from '$lib/images/icons/jira.svg'
 import firefliesIcon from '$lib/images/icons/fireflies.svg'
 import hubspotIcon from '$lib/images/icons/hubspot.svg'
+import salesforceIcon from '$lib/images/icons/salesforce.svg'
 import microsoftIcon from '$lib/images/icons/microsoft.svg'
 import oneDriveIcon from '$lib/images/icons/onedrive.svg'
 import outlookIcon from '$lib/images/icons/outlook.svg'
@@ -61,6 +62,7 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.JIRA]: jiraIcon,
     [SourceType.FIREFLIES]: firefliesIcon,
     [SourceType.HUBSPOT]: hubspotIcon,
+    [SourceType.SALESFORCE]: salesforceIcon,
     [SourceType.ONE_DRIVE]: oneDriveIcon,
     [SourceType.OUTLOOK]: outlookIcon,
     [SourceType.OUTLOOK_CALENDAR]: outlookIcon,

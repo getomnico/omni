@@ -729,6 +729,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  salesforce-connector:
+    image: ghcr.io/getomnico/omni/omni-salesforce-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
+    container_name: omni-salesforce-connector
+    profiles:
+      - salesforce
+    expose:
+      - "${SALESFORCE_CONNECTOR_PORT:-4019}"
+    environment:
+      <<: *otel-config
+      PORT: ${SALESFORCE_CONNECTOR_PORT:-4019}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: salesforce-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   microsoft-connector:
     image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
     <<: *resources-connector
