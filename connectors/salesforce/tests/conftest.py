@@ -430,17 +430,25 @@ class MockSalesforceAPI:
         self.objects: dict[str, list[dict[str, object]]] = {}
         self.deleted: dict[str, list[dict[str, str]]] = {}
         self.should_fail_auth: bool = False
+        self.fail_next_api_call: bool = False
         self.created_records: list[dict[str, object]] = []
         self.updated_records: list[tuple[str, str]] = []
         self.next_record_id = 1
+        # JWT token endpoint state
+        self.token_issuances: int = 0
+        self.last_assertion: str = ""
+        self.instance_url: str = "http://localhost"
 
     def reset(self) -> None:
         self.objects.clear()
         self.deleted.clear()
         self.should_fail_auth = False
+        self.fail_next_api_call = False
         self.created_records.clear()
         self.updated_records.clear()
         self.next_record_id = 1
+        self.token_issuances = 0
+        self.last_assertion = ""
 
     def add_record(self, object_type: str, payload: dict[str, object]) -> None:
         self.objects.setdefault(object_type, []).append(payload)
@@ -539,6 +547,17 @@ class MockSalesforceAPI:
         mock = self
 
         def auth_guard() -> JSONResponse | None:
+            if mock.fail_next_api_call:
+                mock.fail_next_api_call = False
+                return JSONResponse(
+                    [
+                        {
+                            "message": "Session expired or invalid",
+                            "errorCode": "INVALID_SESSION_ID",
+                        }
+                    ],
+                    status_code=401,
+                )
             if mock.should_fail_auth:
                 return JSONResponse(
                     [
@@ -550,6 +569,23 @@ class MockSalesforceAPI:
                     status_code=401,
                 )
             return None
+
+        async def handle_token(request: Request) -> JSONResponse:
+            form = await request.form()
+            grant_type = form.get("grant_type", "")
+            if grant_type != "urn:ietf:params:oauth:grant-type:jwt-bearer":
+                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+            mock.last_assertion = str(form.get("assertion", ""))
+            mock.token_issuances += 1
+            return JSONResponse(
+                {
+                    "access_token": f"jwt-test-token-{mock.token_issuances}",
+                    "instance_url": mock.instance_url,
+                    "token_type": "Bearer",
+                    "issued_at": int(time.time() * 1000),
+                    "expires_in": 7200,
+                }
+            )
 
         async def handle_query(request: Request) -> JSONResponse:
             denied = auth_guard()
@@ -658,6 +694,7 @@ class MockSalesforceAPI:
             )
 
         routes = [
+            Route("/services/oauth2/token", handle_token, methods=["POST"]),
             Route("/services/data/v62.0/query/", handle_query),
             Route(
                 "/services/data/v62.0/sobjects/{object_type}/updated",
@@ -722,6 +759,7 @@ def mock_salesforce_api() -> MockSalesforceAPI:
 def mock_salesforce_server(mock_salesforce_api: MockSalesforceAPI) -> str:
     """Start mock Salesforce API server in a daemon thread. Returns base URL."""
     port = _free_port()
+    mock_salesforce_api.instance_url = f"http://localhost:{port}"
     app = mock_salesforce_api.create_app()
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
     server = uvicorn.Server(config)
