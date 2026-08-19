@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from typing import TypeVar
 
+import jwt
+import requests
 from simple_salesforce import (  # type: ignore[attr-defined]
     Salesforce,
     SalesforceAuthenticationFailed,
@@ -18,10 +21,14 @@ from simple_salesforce import (  # type: ignore[attr-defined]
 )
 
 from .config import API_VERSION
+from .models import AuthMode, SalesforceAuth
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# Salesforce access tokens live ~2h; refresh this early to never hit expiry.
+TOKEN_REFRESH_EARLY_SECONDS = 300
 
 
 class SalesforceClientError(Exception):
@@ -66,17 +73,39 @@ def with_retry(
         async def wrapper(*args: object, **kwargs: object) -> T:
             last_exception: SalesforceError | None = None
             error_retries = 0
+            refreshed = False
+
+            async def refresh_once() -> bool:
+                """Refresh the session token once (JWT mode only); else False."""
+                nonlocal refreshed
+                if refreshed:
+                    return False
+                # The decorated method is called as instance.method(...), so the
+                # bound instance is the first positional argument.
+                bound = args[0] if args else None
+                handler = getattr(bound, "_refresh_expired_token", None)
+                if handler is None:
+                    return False
+                did_refresh = await handler()
+                if not did_refresh:
+                    return False
+                refreshed = True
+                return True
 
             while True:
                 try:
                     return await func(*args, **kwargs)
                 except SalesforceAuthenticationFailed as e:
+                    if await refresh_once():
+                        continue
                     raise AuthenticationError("Invalid or expired access token") from e
                 except SalesforceError as e:
                     last_exception = e
                     status = getattr(e, "status", 0)
 
                     if status == 401:
+                        if await refresh_once():
+                            continue
                         raise AuthenticationError("Invalid or expired access token") from e
                     if status == 403:
                         raise ForbiddenError(f"Insufficient permissions: {e}") from e
@@ -256,42 +285,164 @@ def _parse_iso(value: object) -> datetime:
 
 
 class SalesforceClient:
-    """Async wrapper around simple-salesforce with typed responses."""
+    """Async wrapper around simple-salesforce with typed responses and auth.
 
-    def __init__(self, access_token: str, instance_url: str):
-        version = API_VERSION.lstrip("v")
-        self._sf = Salesforce(
-            instance_url=instance_url,
-            session_id=access_token,
-            version=version,
-        )
-        # simple-salesforce always builds an https base_url; honor the exact
-        # instance_url the operator provided (https in production, but also
-        # http for self-hosted/dev instances and test mocks).
-        self._sf.base_url = f"{instance_url.rstrip('/')}/services/data/v{version}/"
-        self._instance_url = instance_url
+    Auth comes from a :class:`SalesforceAuth`: a static bearer token (quick
+    test sessions) or JWT bearer auto-refresh (the connected-app flow used in
+    production). In JWT mode the client mints short-lived access tokens itself
+    and re-authenticates automatically on expiry/401.
+    """
+
+    def __init__(self, auth: SalesforceAuth, instance_url: str | None = None):
+        self._auth = auth
+        # Optional fallback instance URL (e.g. from the source config). JWT
+        # mode usually learns the instance from the token response instead.
+        self._fallback_instance_url = instance_url
+        self._sf: Salesforce | None = None
+        self._token: str | None = None
+        self._token_instance_url: str | None = None
+        self._token_expires_at: float = 0.0
 
     @property
     def instance_url(self) -> str:
-        return self._instance_url
+        return (
+            self._token_instance_url or self._auth.instance_url or self._fallback_instance_url or ""
+        )
+
+    async def _ensure_session(self) -> Salesforce:
+        """Return a session with a valid token, fetching one if needed."""
+        if self._sf is not None:
+            if self._auth.mode != AuthMode.JWT or not self._token_expiring_soon():
+                return self._sf
+            # Token approaching expiry: drop it and mint a fresh one.
+            self._sf = None
+            self._token = None
+
+        token, instance_url = await self._session_credentials()
+
+        version = API_VERSION.lstrip("v")
+        self._sf = Salesforce(
+            instance_url=instance_url,
+            session_id=token,
+            version=version,
+        )
+        # simple-salesforce always builds an https base_url; honor the exact
+        # instance_url (https in production, http for mocks/dev instances).
+        self._sf.base_url = f"{instance_url.rstrip('/')}/services/data/v{version}/"
+        self._token = token
+        self._token_instance_url = instance_url
+        return self._sf
+
+    async def _session_credentials(self) -> tuple[str, str]:
+        """Return a valid (token, instance_url) pair for this auth mode."""
+        if self._auth.mode == AuthMode.JWT:
+            if self._token is not None and self._token_instance_url is not None:
+                if not self._token_expiring_soon():
+                    # Reuse the cached (just-refreshed) token.
+                    return self._token, self._token_instance_url
+                return await asyncio.to_thread(self._fetch_jwt_token)
+            return await asyncio.to_thread(self._fetch_jwt_token)
+        token = self._auth.access_token
+        instance_url = self._auth.instance_url or self._fallback_instance_url
+        if token is None:
+            raise AuthenticationError("Missing access_token in credentials")
+        if instance_url is None:
+            raise AuthenticationError("Missing instance_url in credentials")
+        return token, instance_url
+
+    async def _refresh_expired_token(self) -> bool:
+        """Fetch a fresh token on 401; returns True if one was minted."""
+        if self._auth.mode != AuthMode.JWT:
+            return False
+        self._sf = None
+        self._token = None
+        self._token_expires_at = 0.0
+        await asyncio.to_thread(self._fetch_jwt_token)
+        return True
+
+    def _fetch_jwt_token(self) -> tuple[str, str]:
+        """Exchange a signed assertion for an access token (JWT bearer flow)."""
+        client_id = self._auth.client_id
+        username = self._auth.username
+        private_key = self._auth.private_key
+        if not client_id or not username or not private_key:
+            raise AuthenticationError("JWT credentials incomplete")
+        now = int(time.time())
+        payload = {
+            "iss": client_id,
+            "sub": username,
+            "aud": self._auth.login_url,
+            "iat": now,
+            "exp": now + 300,
+        }
+        assertion = jwt.encode(payload, private_key, algorithm="RS256")
+        response = requests.post(
+            f"{self._auth.login_url.rstrip('/')}/services/oauth2/token",
+            data={
+                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": assertion,
+            },
+            timeout=30,
+        )
+        if response.status_code != 200:
+            raise AuthenticationError(
+                f"JWT token request failed ({response.status_code}): {response.text[:200]}"
+            )
+        body = response.json()
+        token = body.get("access_token")
+        instance_url = body.get("instance_url")
+        if not isinstance(token, str) or not token:
+            raise AuthenticationError("JWT token response missing access_token")
+        if not isinstance(instance_url, str) or not instance_url:
+            raise AuthenticationError("JWT token response missing instance_url")
+        issued_at = body.get("issued_at")
+        expires_in = body.get("expires_in")
+        default_refresh = 7200 if not isinstance(expires_in, int) else expires_in
+        expires_at: float = float(now + default_refresh)
+        if isinstance(issued_at, int) and issued_at > 0:
+            expires_at = issued_at / 1000 + default_refresh
+        self._token = token
+        self._token_instance_url = instance_url
+        self._token_expires_at = expires_at
+        if (
+            self._auth.mode == AuthMode.JWT
+            and self._auth.login_url.startswith("https")
+            and self._auth.private_key
+        ):
+            logger.info(
+                "Minted fresh Salesforce access token for %s (expires in %ds)",
+                self._auth.username,
+                max(0, int(expires_at - time.time())),
+            )
+        return token, instance_url
+
+    def _token_expiring_soon(self) -> bool:
+        return (
+            self._token is not None
+            and self._token_expires_at > 0
+            and time.time() >= self._token_expires_at - TOKEN_REFRESH_EARLY_SECONDS
+        )
 
     @with_retry(max_retries=3)
     async def query(self, soql: str) -> QueryResult:
         """Execute a SOQL query and return a typed result."""
-        raw = await asyncio.to_thread(self._sf.query, soql)
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.query, soql)
         return QueryResult.from_response(_require_mapping(raw, "query"))
 
     @with_retry(max_retries=3)
     async def query_more(self, next_records_url: str) -> QueryResult:
         """Fetch the next page of a query result."""
-        raw = await asyncio.to_thread(self._sf.query_more, next_records_url, identifier_is_url=True)
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.query_more, next_records_url, identifier_is_url=True)
         return QueryResult.from_response(_require_mapping(raw, "query page"))
 
     @with_retry(max_retries=3)
     async def get_updated(self, object_type: str, start: datetime, end: datetime) -> UpdatedResult:
         """List ids of records updated within [start, end]."""
+        sf = await self._ensure_session()
         raw = await asyncio.to_thread(
-            self._sf.restful,
+            sf.restful,
             f"sobjects/{object_type}/updated",
             params={
                 "start": _format_api_datetime(start),
@@ -303,8 +454,9 @@ class SalesforceClient:
     @with_retry(max_retries=3)
     async def get_deleted(self, object_type: str, start: datetime, end: datetime) -> DeletedResult:
         """List records deleted within [start, end]."""
+        sf = await self._ensure_session()
         raw = await asyncio.to_thread(
-            self._sf.restful,
+            sf.restful,
             f"sobjects/{object_type}/deleted",
             params={
                 "start": _format_api_datetime(start),
@@ -316,14 +468,16 @@ class SalesforceClient:
     @with_retry(max_retries=3)
     async def get_deleted_more(self, next_records_url: str) -> DeletedResult:
         """Fetch the next page of a deleted-records result."""
-        raw = await asyncio.to_thread(self._sf.restful, next_records_url.lstrip("/"))
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.restful, next_records_url.lstrip("/"))
         return DeletedResult.from_response(_require_mapping(raw, "deleted page"))
 
     @with_retry(max_retries=3)
     async def create(self, object_type: str, data: Mapping[str, object]) -> str:
         """Create a record and return its id."""
+        sf = await self._ensure_session()
         raw = await asyncio.to_thread(
-            self._sf.restful,
+            sf.restful,
             f"sobjects/{object_type}/",
             method="POST",
             data=json.dumps({k: v for k, v in data.items() if v is not None}),
@@ -336,8 +490,9 @@ class SalesforceClient:
     @with_retry(max_retries=3)
     async def update(self, object_type: str, record_id: str, data: Mapping[str, object]) -> None:
         """Update a record in place."""
+        sf = await self._ensure_session()
         await asyncio.to_thread(
-            self._sf.restful,
+            sf.restful,
             f"sobjects/{object_type}/{record_id}",
             method="PATCH",
             data=json.dumps({k: v for k, v in data.items() if v is not None}),
@@ -348,8 +503,9 @@ class SalesforceClient:
         self, object_type: str, record_id: str, fields: tuple[str, ...]
     ) -> Mapping[str, object]:
         """Fetch a single record by id with the given fields."""
+        sf = await self._ensure_session()
         raw = await asyncio.to_thread(
-            self._sf.restful,
+            sf.restful,
             f"sobjects/{object_type}/{record_id}",
             params={"fields": ",".join(fields)},
         )

@@ -50,6 +50,7 @@ from .models import (
     OpportunityRecord,
     RecordCursor,
     RoleRecord,
+    SalesforceAuth,
     SalesforceCheckpoint,
     SalesforceSourceConfig,
     ShareRecord,
@@ -170,21 +171,14 @@ class SalesforceConnector(Connector):
         checkpoint: Mapping[str, object] | None,
         ctx: SyncContext,
     ) -> None:
-        access_token = credentials.get("access_token")
-        if not isinstance(access_token, str) or not access_token:
-            await ctx.fail("Missing access_token in credentials")
-            return
-
-        instance_url = credentials.get("instance_url") or source_config.get("instance_url")
-        if not isinstance(instance_url, str) or not instance_url:
-            await ctx.fail("Missing instance_url in credentials or source config")
+        try:
+            auth = SalesforceAuth.from_mapping(credentials)
+        except ValueError as e:
+            await ctx.fail(str(e))
             return
 
         config = SalesforceSourceConfig.from_mapping(source_config)
-        client = SalesforceClient(
-            access_token=access_token,
-            instance_url=instance_url,
-        )
+        client = SalesforceClient(auth, instance_url=config.instance_url)
 
         try:
             await client.test_connection()
@@ -198,7 +192,7 @@ class SalesforceConnector(Connector):
         logger.info(
             "Starting Salesforce %s sync for %s",
             ctx.sync_mode.value,
-            instance_url,
+            client.instance_url,
         )
 
         # Schema fingerprint: when the synced field/object set changes, saved

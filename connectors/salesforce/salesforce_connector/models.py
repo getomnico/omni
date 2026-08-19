@@ -399,6 +399,62 @@ class ShareRecord:
         )
 
 
+class AuthMode(StrEnum):
+    """How the connector authenticates against Salesforce."""
+
+    BEARER = "bearer"
+    JWT = "jwt"
+
+
+@dataclass(frozen=True)
+class SalesforceAuth:
+    """Typed authentication settings, decoded from the service credentials.
+
+    Two modes, chosen by which fields are present:
+    - bearer: a static ``access_token`` (plus ``instance_url``) pasted into the
+      web UI. Fine for a test session, but tokens expire.
+    - jwt: ``client_id`` (connected-app consumer key) + ``private_key`` (PEM)
+      + ``username``; the client mints its own short-lived access tokens via
+      the OAuth 2.0 JWT bearer flow and refreshes them automatically.
+    """
+
+    mode: AuthMode
+    access_token: str | None = None
+    instance_url: str | None = None
+    client_id: str | None = None
+    private_key: str | None = None
+    username: str | None = None
+    login_url: str = "https://login.salesforce.com"
+
+    @classmethod
+    def from_mapping(cls, raw: Mapping[str, object] | None) -> SalesforceAuth:
+        if raw is None:
+            raise ValueError("Missing credentials")
+        client_id = _as_str(raw.get("client_id"))
+        private_key = _as_str(raw.get("private_key"))
+        username = _as_str(raw.get("username"))
+        if client_id is not None and private_key is not None and username is not None:
+            login_url = _as_str(raw.get("login_url")) or "https://login.salesforce.com"
+            return cls(
+                mode=AuthMode.JWT,
+                client_id=client_id,
+                private_key=private_key,
+                username=username,
+                login_url=login_url,
+            )
+        access_token = _as_str(raw.get("access_token"))
+        if access_token is None:
+            raise ValueError(
+                "Missing credentials: provide access_token (+ instance_url), "
+                "or client_id + private_key + username for JWT auth"
+            )
+        return cls(
+            mode=AuthMode.BEARER,
+            access_token=access_token,
+            instance_url=_as_str(raw.get("instance_url")),
+        )
+
+
 @dataclass(frozen=True)
 class SalesforceSourceConfig:
     """Typed source configuration, decoded from the source config mapping."""
