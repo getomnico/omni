@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "salesforce-connector"
 version = "1.0.0"
 description = "Salesforce CRM connector for Omni"
-readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [
