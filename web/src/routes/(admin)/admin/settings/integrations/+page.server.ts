@@ -35,6 +35,7 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     'github',
     // CRM & sales
     'hubspot',
+    'salesforce',
     // Meetings
     'fireflies',
     // HRIS
