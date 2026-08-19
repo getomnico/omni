@@ -17,7 +17,7 @@ from .client import (
     SalesforceClientError,
 )
 from .config import SalesforceObjectConfig, config_for
-from .models import _as_int, _as_str
+from .models import SalesforceAuth, _as_int, _as_str
 
 logger = logging.getLogger(__name__)
 
@@ -288,13 +288,7 @@ class UpdateTaskParams:
 def _client_from_credentials(
     credentials: Mapping[str, object],
 ) -> SalesforceClient:
-    access_token = _as_str(credentials.get("access_token"))
-    instance_url = _as_str(credentials.get("instance_url"))
-    if access_token is None:
-        raise ValueError("Missing access_token in credentials")
-    if instance_url is None:
-        raise ValueError("Missing instance_url in credentials")
-    return SalesforceClient(access_token=access_token, instance_url=instance_url)
+    return SalesforceClient(SalesforceAuth.from_mapping(credentials))
 
 
 def _summary(object_type: str, raw: Mapping[str, object]) -> dict[str, str]:
