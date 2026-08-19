@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { createApiKey, listApiKeys, revokeApiKey, deleteApiKey } from '$lib/server/apiKeys'
+import { parseApiKeyScope } from '$lib/server/apiKeyScope'
 import { isValid } from 'ulid'
 
 function parseJson(request: Request): Promise<Record<string, unknown>> {
@@ -51,7 +52,10 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     // Validate allowed_sources if provided
     let allowedSources: string[] | null = null
     if (allowed_sources != null) {
-        if (!Array.isArray(allowed_sources) || !allowed_sources.every((s) => typeof s === 'string')) {
+        if (
+            !Array.isArray(allowed_sources) ||
+            !allowed_sources.every((s) => typeof s === 'string')
+        ) {
             return json(
                 { error: 'allowed_sources must be an array of source type strings' },
                 { status: 400 },
@@ -60,19 +64,19 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         allowedSources = allowed_sources as string[]
     }
 
-    // Validate scope — 'admin' requires admin role
-    let scope: 'public' | 'user' | 'admin' = 'public'
-    if (scopeInput === 'admin') {
-        if (locals.user.role !== 'admin') {
-            return json({ error: 'Admin scope requires admin role' }, { status: 403 })
-        }
-        scope = 'admin'
-    } else if (scopeInput === 'user') {
-        scope = 'user'
+    const scope = scopeInput === undefined ? 'public' : parseApiKeyScope(scopeInput)
+    if (!scope) {
+        return json({ error: 'scope must be "public" or "user"' }, { status: 400 })
     }
 
     try {
-        const result = await createApiKey(locals.user.id, name.trim(), expiresAt, allowedSources, scope)
+        const result = await createApiKey(
+            locals.user.id,
+            name.trim(),
+            expiresAt,
+            allowedSources,
+            scope,
+        )
         return json(
             {
                 id: result.id,

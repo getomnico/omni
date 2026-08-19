@@ -1,15 +1,43 @@
 """Integration tests for DocumentsRepository.get_by_id permission filtering.
 
-Verifies that the BM25 permission filter in get_by_id correctly gates
-document access based on public/users/groups, using a real ParadeDB instance.
+Verifies that PostgreSQL RLS correctly gates document access based on
+public/users/groups, using a real ParadeDB instance. Group membership is
+resolved from the ``groups`` / ``group_memberships`` tables (DB truth), not
+from caller-supplied strings.
 """
 
 import pytest
+from ulid import ULID
 
 from db.documents import DocumentsRepository
 from tests.helpers import create_test_document, create_test_source, create_test_user
 
 pytestmark = pytest.mark.integration
+
+
+async def _seed_group_membership(db_pool, source_id: str, email: str, member: str) -> None:
+    group_id = str(ULID())
+    membership_id = str(ULID())
+    await db_pool.execute(
+        """
+        INSERT INTO groups (id, source_id, email, display_name, synced_at)
+        VALUES ($1, $2, $3, 'Test Group', NOW())
+        ON CONFLICT (source_id, email) DO NOTHING
+        """,
+        group_id,
+        source_id,
+        email,
+    )
+    await db_pool.execute(
+        """
+        INSERT INTO group_memberships (id, group_id, member_email, synced_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (group_id, member_email) DO NOTHING
+        """,
+        membership_id,
+        group_id,
+        member,
+    )
 
 
 @pytest.fixture
@@ -70,6 +98,10 @@ class TestGetByIdPermissionFilter:
         doc_id = await _doc(
             db_pool, user_id, {"public": False, "users": [], "groups": ["eng@co.com"]}
         )
+        source_id = await db_pool.fetchval(
+            "SELECT source_id FROM documents WHERE id = $1", doc_id
+        )
+        await _seed_group_membership(db_pool, source_id, "eng@co.com", "alice@co.com")
         assert (
             await repo.get_by_id(
                 doc_id,
@@ -123,6 +155,10 @@ class TestGetByIdPermissionFilter:
         external_id = await db_pool.fetchval(
             "SELECT external_id FROM documents WHERE id = $1", doc_id
         )
+        source_id = await db_pool.fetchval(
+            "SELECT source_id FROM documents WHERE id = $1", doc_id
+        )
+        await _seed_group_membership(db_pool, source_id, "eng@co.com", "alice@co.com")
         assert (
             await repo.get_by_external_id(
                 external_id,

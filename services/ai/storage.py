@@ -16,7 +16,7 @@ from typing import Optional
 import boto3
 import ulid
 
-from db.connection import get_db_pool
+from db.connection import get_system_db_pool
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class PostgresContentStorage(ContentStorage):
     async def put(self, content: bytes, content_type: Optional[str]) -> str:
         content_id = str(ulid.ULID())
         sha256 = hashlib.sha256(content).hexdigest()
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         await pool.execute(
             """
             INSERT INTO content_blobs
@@ -81,7 +81,7 @@ class PostgresContentStorage(ContentStorage):
         return content_id
 
     async def get_bytes(self, content_id: str) -> bytes:
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         row = await pool.fetchrow(
             """
             SELECT content, storage_backend
@@ -102,7 +102,7 @@ class PostgresContentStorage(ContentStorage):
         return row["content"]
 
     async def delete(self, content_id: str) -> None:
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         result = await pool.execute(
             "DELETE FROM content_blobs WHERE id = $1", content_id
         )
@@ -110,7 +110,7 @@ class PostgresContentStorage(ContentStorage):
             raise ValueError(f"Content not found: {content_id}")
 
     async def get_metadata(self, content_id: str) -> ContentMetadata:
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         row = await pool.fetchrow(
             """
             SELECT content_type, size_bytes, sha256_hash
@@ -154,7 +154,7 @@ class S3ContentStorage(ContentStorage):
             ),
         )
 
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         await pool.execute(
             """
             INSERT INTO content_blobs
@@ -170,7 +170,7 @@ class S3ContentStorage(ContentStorage):
         return content_id
 
     async def _get_storage_key(self, content_id: str) -> str:
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         row = await pool.fetchrow(
             """
             SELECT storage_key, storage_backend
@@ -206,11 +206,11 @@ class S3ContentStorage(ContentStorage):
             None,
             lambda: self.s3_client.delete_object(Bucket=self.bucket, Key=storage_key),
         )
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         await pool.execute("DELETE FROM content_blobs WHERE id = $1", content_id)
 
     async def get_metadata(self, content_id: str) -> ContentMetadata:
-        pool = await get_db_pool()
+        pool = await get_system_db_pool()
         row = await pool.fetchrow(
             """
             SELECT content_type, size_bytes, sha256_hash

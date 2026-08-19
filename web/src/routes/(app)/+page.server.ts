@@ -13,7 +13,7 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
     const connectedSourcesCount = connectedSources.length
 
     // Get total indexed documents count
-    const documentsBySource = await db
+    const documentsBySource = await locals.db
         .select({
             count: sql<number>`COUNT(*)::int`,
         })
@@ -42,6 +42,9 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(env.OMNI_INTERNAL_SERVICE_TOKEN
+                    ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                    : {}),
             },
             body: JSON.stringify({
                 user_id: locals.user?.id,

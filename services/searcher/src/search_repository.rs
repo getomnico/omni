@@ -1,12 +1,12 @@
 use pgvector::Vector;
 use serde_json::Value as JsonValue;
 use shared::{
+    DatabasePool, SourceType,
     db::error::DatabaseError,
     db::repositories::document,
     models::{AttributeFilter, ChunkResult, DateFilter, Document, Facet, FacetValue},
-    SourceType,
 };
-use sqlx::{postgres::PgRow, FromRow, PgPool, Row};
+use sqlx::{FromRow, Row, postgres::PgRow};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
@@ -60,12 +60,25 @@ impl SearchHitWithTotalRow {
 }
 
 pub struct SearchDocumentRepository {
-    pool: PgPool,
+    pool: DatabasePool,
+    user_email: Option<String>,
+    public_only: bool,
 }
 
 impl SearchDocumentRepository {
-    pub fn new(pool: &PgPool) -> Self {
-        Self { pool: pool.clone() }
+    pub fn new(pool: &DatabasePool, user_email: Option<&str>, public_only: bool) -> Self {
+        Self {
+            pool: pool.clone(),
+            user_email: user_email.map(ToOwned::to_owned),
+            public_only,
+        }
+    }
+
+    async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Postgres>, DatabaseError> {
+        match self.user_email.as_deref() {
+            Some(email) => self.pool.begin_document_user(email, self.public_only).await,
+            None => self.pool.begin_document_system().await,
+        }
     }
 
     pub async fn build_query_text(&self, query: &str) -> Result<Option<String>, DatabaseError> {
@@ -79,7 +92,7 @@ impl SearchDocumentRepository {
         let raw_terms: Vec<String> =
             sqlx::query_scalar("SELECT unnest($1::pdb.simple('ascii_folding=true')::text[])")
                 .bind(query)
-                .fetch_all(&self.pool)
+                .fetch_all(self.pool.pool())
                 .await?;
 
         let mut seen = HashSet::new();
@@ -309,7 +322,9 @@ impl SearchDocumentRepository {
             .bind(recency_half_life_days as f64)
             .bind(MIN_SCORE_RATIO);
 
-        let rows = query_builder.fetch_all(&self.pool).await?;
+        let mut tx = self.begin().await?;
+        let rows = query_builder.fetch_all(&mut *tx).await?;
+        tx.commit().await?;
         let total_count = rows.first().map_or(0, |row| row.total_count);
         let results = rows
             .into_iter()
@@ -331,6 +346,7 @@ impl SearchDocumentRepository {
         date_filter: Option<&DateFilter>,
         person_filters: Option<&[String]>,
     ) -> Result<(Vec<SearchHit>, i64), DatabaseError> {
+        let mut tx = self.begin().await?;
         let mut param_idx = 1;
         let mut filters = Vec::new();
         build_common_filters(
@@ -452,7 +468,8 @@ impl SearchDocumentRepository {
 
         query_builder = query_builder.bind(limit).bind(offset);
 
-        let rows = query_builder.fetch_all(&self.pool).await?;
+        let rows = query_builder.fetch_all(&mut *tx).await?;
+        tx.commit().await?;
         let total_count = rows.first().map_or(0, |row| row.total_count);
         let results = rows
             .into_iter()
@@ -466,6 +483,7 @@ impl SearchDocumentRepository {
         document_ids: &[String],
         query: &str,
     ) -> Result<HashMap<String, Vec<String>>, DatabaseError> {
+        let mut tx = self.begin().await?;
         if document_ids.is_empty() || query.trim().is_empty() {
             return Ok(HashMap::new());
         }
@@ -483,8 +501,9 @@ impl SearchDocumentRepository {
         )
         .bind(document_ids)
         .bind(query)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         Ok(rows
             .into_iter()
@@ -515,6 +534,7 @@ impl SearchDocumentRepository {
         recency_boost_weight: f32,
         recency_half_life_days: f32,
     ) -> Result<Vec<ChunkResult>, DatabaseError> {
+        let mut tx = self.begin().await?;
         let dims = embedding.len() as i16;
         let vector = Vector::from(embedding);
 
@@ -656,7 +676,8 @@ impl SearchDocumentRepository {
             }
         }
 
-        let results = query.fetch_all(&self.pool).await?;
+        let results = query.fetch_all(&mut *tx).await?;
+        tx.commit().await?;
         let chunk_results = results
             .into_iter()
             .map(|row| {
@@ -687,6 +708,7 @@ impl SearchDocumentRepository {
         date_filter: Option<&DateFilter>,
         person_filters: Option<&[String]>,
     ) -> Result<Vec<Facet>, DatabaseError> {
+        let mut tx = self.begin().await?;
         if source_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -726,7 +748,8 @@ impl SearchDocumentRepository {
                     qb = qb.bind(ct);
                 }
             }
-            let rows = qb.fetch_all(&self.pool).await?;
+            let rows = qb.fetch_all(&mut *tx).await?;
+            tx.commit().await?;
             return Ok(rows_to_facets(rows));
         }
 
@@ -803,7 +826,8 @@ impl SearchDocumentRepository {
 
         query_builder = query_builder.bind(FACET_CANDIDATE_LIMIT);
 
-        let facet_rows = query_builder.fetch_all(&self.pool).await?;
+        let facet_rows = query_builder.fetch_all(&mut *tx).await?;
+        tx.commit().await?;
         Ok(rows_to_facets(facet_rows))
     }
 
@@ -812,6 +836,7 @@ impl SearchDocumentRepository {
         keys: &[String],
         limit: i64,
     ) -> Result<HashMap<String, Vec<String>>, DatabaseError> {
+        let mut tx = self.begin().await?;
         if keys.is_empty() {
             return Ok(HashMap::new());
         }
@@ -835,8 +860,9 @@ impl SearchDocumentRepository {
         )
         .bind(keys)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         let mut result: HashMap<String, Vec<String>> = HashMap::new();
         for (key, val) in rows {

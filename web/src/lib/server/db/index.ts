@@ -11,5 +11,11 @@ const client = postgres(database.url, {
 
 export const db = drizzle(client, { schema })
 
-process.on('SIGTERM', () => client.end())
-process.on('SIGINT', () => client.end())
+export const documentRlsClient = postgres(database.url, {
+    max: 20,
+    idle_timeout: 20,
+    connect_timeout: 10,
+})
+
+process.on('SIGTERM', () => Promise.all([client.end(), documentRlsClient.end()]))
+process.on('SIGINT', () => Promise.all([client.end(), documentRlsClient.end()]))

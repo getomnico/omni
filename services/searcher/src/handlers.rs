@@ -13,7 +13,7 @@ use anyhow::anyhow;
 use axum::body::Body;
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::Json,
 };
 use futures_util::Stream;
@@ -147,11 +147,50 @@ pub async fn health_check(State(state): State<AppState>) -> SearcherResult<Json<
     })))
 }
 
+pub fn require_internal_token(headers: &HeaderMap) -> SearcherResult<()> {
+    // When the internal service token is configured, every identity-bearing request must
+    // present it. This prevents a direct caller from forging another user's identity at
+    // the searcher boundary. Tests and local setups that leave the token unset keep the
+    // endpoint open for the in-process test harness.
+    let Ok(expected) = std::env::var("OMNI_INTERNAL_SERVICE_TOKEN") else {
+        return Ok(());
+    };
+    let provided = headers
+        .get("x-omni-internal-token")
+        .and_then(|value| value.to_str().ok());
+    if provided != Some(expected.as_str()) {
+        return Err(SearcherError::BadRequest(
+            "Internal service token is required".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub async fn search(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(mut request): Json<SearchRequest>,
 ) -> SearcherResult<Json<Value>> {
     info!("Received search request: {:?}", request);
+
+    require_internal_token(&headers)?;
+
+    if matches!(
+        request.document_access_scope,
+        crate::models::DocumentAccessScope::System
+    ) {
+        let expected = std::env::var("OMNI_INTERNAL_SERVICE_TOKEN").map_err(|_| {
+            SearcherError::BadRequest("System document access is not configured".to_string())
+        })?;
+        let provided = headers
+            .get("x-omni-system-token")
+            .and_then(|value| value.to_str().ok());
+        if provided != Some(expected.as_str()) {
+            return Err(SearcherError::BadRequest(
+                "System document access is not authorized".to_string(),
+            ));
+        }
+    }
     hydrate_user_configuration(&state, &mut request).await?;
 
     let search_engine = SearchEngine::new(
@@ -219,8 +258,10 @@ pub async fn recent_searches(
 
 pub async fn ai_answer(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(mut request): Json<SearchRequest>,
 ) -> Result<axum::response::Response<Body>, axum::http::StatusCode> {
+    require_internal_token(&headers).map_err(|_| axum::http::StatusCode::BAD_REQUEST)?;
     info!("Received AI answer request: {:?}", request);
     hydrate_user_configuration(&state, &mut request)
         .await
@@ -296,8 +337,10 @@ pub async fn ai_answer(
 
 pub async fn typeahead(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<TypeaheadQuery>,
 ) -> SearcherResult<Json<Value>> {
+    require_internal_token(&headers)?;
     let user_id = query.user_id.clone();
     if user_id.is_empty() {
         info!("typeahead: empty user_id, returning empty");
@@ -413,15 +456,17 @@ pub async fn typeahead(
 // TODO: Make this a GET request, this should not be POST
 pub async fn suggested_questions(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<SuggestedQuestionsRequest>,
 ) -> SearcherResult<Json<SuggestedQuestionsResponse>> {
+    require_internal_token(&headers)?;
     info!("Received suggested questions request");
 
     let user_repo = UserRepository::new(&state.db_pool.pool());
     let user = match user_repo.find_by_id(request.user_id.clone()).await {
-        Ok(Some(user)) => user,
-        Ok(None) => {
-            error!("User not found for user_id {}", request.user_id);
+        Ok(Some(user)) if user.is_active => user,
+        Ok(Some(_)) | Ok(None) => {
+            error!("Active user not found for user_id {}", request.user_id);
             return Err(SearcherError::NotFound(format!(
                 "User not found for user_id {}",
                 request.user_id
@@ -453,6 +498,8 @@ pub async fn suggested_questions(
 pub struct AttributeValuesQuery {
     pub keys: String,
     pub limit: Option<i64>,
+    pub user_id: String,
+    pub document_access_scope: Option<crate::models::DocumentAccessScope>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -533,8 +580,10 @@ fn non_empty(value: &Option<String>) -> Option<String> {
 
 pub async fn attribute_values(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(query): Query<AttributeValuesQuery>,
 ) -> SearcherResult<Json<AttributeValuesResponse>> {
+    require_internal_token(&headers)?;
     let keys: Vec<String> = query
         .keys
         .split(',')
@@ -549,7 +598,33 @@ pub async fn attribute_values(
     }
 
     let limit = query.limit.unwrap_or(25).min(100);
-    let repo = SearchDocumentRepository::new(state.db_pool.pool());
+    let scope = query.document_access_scope.unwrap_or_default();
+    let user_email = match scope {
+        crate::models::DocumentAccessScope::Public => {
+            shared::db::repositories::document::PUBLIC_ONLY_PERMISSION_IDENTITY.to_string()
+        }
+        crate::models::DocumentAccessScope::User => {
+            UserRepository::new(state.db_pool.pool())
+                .find_by_id(query.user_id)
+                .await
+                .map_err(|e| SearcherError::Internal(anyhow!(e)))?
+                .filter(|user| user.is_active)
+                .ok_or_else(|| {
+                    SearcherError::BadRequest("Unknown or inactive user identity".to_string())
+                })?
+                .email
+        }
+        crate::models::DocumentAccessScope::System => {
+            return Err(SearcherError::BadRequest(
+                "System scope is not available on this endpoint".to_string(),
+            ));
+        }
+    };
+    let repo = SearchDocumentRepository::new(
+        &state.db_pool,
+        Some(&user_email),
+        matches!(scope, crate::models::DocumentAccessScope::Public),
+    );
     let attributes = repo
         .get_distinct_attribute_values(&keys, limit)
         .await

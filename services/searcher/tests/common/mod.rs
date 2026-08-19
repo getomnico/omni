@@ -1,18 +1,18 @@
 use anyhow::Result;
 use axum::{
+    Router,
     body::Body,
     http::{Method, Request, StatusCode},
-    Router,
 };
 use omni_searcher::{
-    create_app, operator_registry::OperatorRegistry,
-    suggested_questions::SuggestedQuestionsGenerator, typeahead::TitleIndex, AppState,
+    AppState, create_app, operator_registry::OperatorRegistry,
+    suggested_questions::SuggestedQuestionsGenerator, typeahead::TitleIndex,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use shared::test_utils::create_test_documents_with_embeddings;
-use shared::{models::DocumentPermissions, AIClient, ObjectStorage, SearcherConfig};
+use shared::{AIClient, ObjectStorage, SearcherConfig, models::DocumentPermissions};
 use std::sync::Arc;
 use tower::ServiceExt;
 use ulid::Ulid;
@@ -113,9 +113,29 @@ impl SearcherTestFixture {
             search_body["limit"] = json!(limit);
         }
 
-        if let Some(email) = user_email {
-            search_body["user_email"] = json!(email);
-        }
+        let (user_id, email) = if let Some(email) = user_email {
+            let existing: Option<String> =
+                sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+                    .bind(email)
+                    .fetch_optional(self.test_env.db_pool.pool())
+                    .await?;
+            let user_id = existing.unwrap_or_else(|| Ulid::new().to_string());
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, 'hash') ON CONFLICT (email) DO NOTHING",
+            )
+            .bind(&user_id)
+            .bind(email)
+            .execute(self.test_env.db_pool.pool())
+            .await?;
+            (user_id, email.to_string())
+        } else {
+            (
+                "01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string(),
+                "test@example.com".to_string(),
+            )
+        };
+        search_body["user_id"] = json!(user_id);
+        search_body["user_email"] = json!(email);
 
         let request = Request::builder()
             .method(Method::POST)
@@ -140,7 +160,13 @@ impl SearcherTestFixture {
     }
 
     /// Helper method to make search requests with a raw JSON body
-    pub async fn search_with_body(&self, body: Value) -> Result<(StatusCode, Value)> {
+    pub async fn search_with_body(&self, mut body: Value) -> Result<(StatusCode, Value)> {
+        if body.get("user_id").is_none() {
+            body["user_id"] = json!("01JGF7V3E0Y2R1X8P5Q7W9T4N6");
+        }
+        if body.get("user_email").is_none() {
+            body["user_email"] = json!("test@example.com");
+        }
         let request = Request::builder()
             .method(Method::POST)
             .uri("/search")

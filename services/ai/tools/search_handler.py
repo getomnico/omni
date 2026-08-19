@@ -284,6 +284,7 @@ class SearchToolHandler:
             search_user_email,
             context.original_user_query,
             context.user_configuration,
+            "system" if context.skip_permission_check else "user",
         )
 
         content_blocks: list = []
@@ -405,6 +406,7 @@ async def _execute_search_tool(
     user_email: str | None = None,
     original_user_query: str | None = None,
     user_configuration: UserConfiguration | None = None,
+    document_access_scope: str = "user",
 ) -> list[SearchResult]:
     """Execute search tool by calling omni-searcher."""
     search_request = SearchRequest(
@@ -415,6 +417,7 @@ async def _execute_search_tool(
         mode="hybrid",
         user_id=user_id,
         user_email=user_email,
+        document_access_scope=document_access_scope,
         is_generated_query=True,
         original_user_query=original_user_query,
         user_configuration=user_configuration,

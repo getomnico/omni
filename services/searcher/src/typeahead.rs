@@ -112,7 +112,7 @@ impl TitleIndex {
     }
 
     pub async fn refresh(&self) -> anyhow::Result<()> {
-        let repo = DocumentRepository::new(self.db_pool.pool());
+        let repo = DocumentRepository::new(self.db_pool.system_pool());
         let types: Vec<String> = MENTIONABLE_CONTENT_TYPES
             .iter()
             .map(|s| s.to_string())
@@ -545,8 +545,11 @@ mod tests {
         // PDF explicit
         assert!(allowed.contains(&"application/pdf"));
         // Microsoft Office
-        assert!(allowed
-            .contains(&"application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        assert!(
+            allowed.contains(
+                &"application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+        );
         assert!(allowed.contains(&"application/msword"));
         assert!(
             allowed.contains(&"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
