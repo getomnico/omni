@@ -33,6 +33,7 @@ export enum SourceType {
     GOOGLE_ADS = 'google_ads',
     DARWINBOX = 'darwinbox',
     WINDSHIFT = 'windshift',
+    SALESFORCE = 'salesforce',
 }
 
 export enum ServiceProvider {
@@ -53,6 +54,7 @@ export enum ServiceProvider {
     DARWINBOX = 'darwinbox',
     REMOTE_MCP = 'remote_mcp',
     WINDSHIFT = 'windshift',
+    SALESFORCE = 'salesforce',
 }
 
 export enum AuthType {
@@ -273,6 +275,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.GOOGLE_ADS]: 3600,
     [SourceType.DARWINBOX]: 3600,
     [SourceType.WINDSHIFT]: 1800,
+    [SourceType.SALESFORCE]: 3600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const
