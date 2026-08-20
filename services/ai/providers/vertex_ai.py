@@ -92,6 +92,7 @@ class VertexAIProvider(LLMProvider):
                 status_code=e.status_code,
                 cause=e,
                 is_context_overflow=e.is_context_overflow,
+                is_retryable=e.is_retryable,
             ) from e
 
     async def generate_response(
@@ -115,6 +116,7 @@ class VertexAIProvider(LLMProvider):
                 status_code=e.status_code,
                 cause=e,
                 is_context_overflow=e.is_context_overflow,
+                is_retryable=e.is_retryable,
             ) from e
 
     async def health_check(

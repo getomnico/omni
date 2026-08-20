@@ -36,6 +36,7 @@ class ProviderError(Exception):
         status_code: int | None = None,
         cause: BaseException | None = None,
         is_context_overflow: bool | None = None,
+        is_retryable: bool = False,
     ):
         super().__init__(message)
         self.message = message
@@ -43,5 +44,10 @@ class ProviderError(Exception):
         self.model = model
         self.status_code = status_code
         self.is_context_overflow = bool(is_context_overflow)
+        # True only for transport-level failures (connection reset, mid-stream
+        # read error, remote disconnect) that a caller may safely retry once.
+        # Providers set it from the underlying exception type; a missing
+        # status_code alone does not imply transport failure.
+        self.is_retryable = is_retryable
         if cause is not None:
             self.__cause__ = cause

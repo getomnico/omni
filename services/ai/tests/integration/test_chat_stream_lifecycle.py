@@ -182,6 +182,9 @@ async def seeded_chat(
     finally:
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM chat_messages WHERE chat_id = $1", chat_id)
+            # Usage upserts are fire-and-forget; clear them before the chat
+            # (and model) rows they reference are removed.
+            await conn.execute("DELETE FROM model_usage WHERE chat_id = $1", chat_id)
             await conn.execute("DELETE FROM chats WHERE id = $1", chat_id)
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM models WHERE id = $1", model_id)
@@ -1042,6 +1045,68 @@ class TestStreamErrorPersistence:
             if b.get("type") == "text"
         )
         assert text == "Partial answer", f"Partial content lost: {text!r}"
+
+    @pytest.mark.asyncio
+    async def test_transient_mid_stream_drop_retries_and_persists_single_row(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        """A provider-flagged transport failure after message_start but before
+        any content is retried once transparently: the client sees exactly one
+        message_start, the recovered text lands on a single assistant row, and
+        no stream_error is emitted."""
+        import httpx
+
+        from providers.types import ProviderError, ProviderType
+        from tests.helpers import message_start_event, text_response_events
+
+        chat_id, _user_id, model_id = seeded_chat
+
+        class DropThenRecoverLLM(GatedRecordingLLM):
+            async def stream_response(self, **kwargs):
+                self.calls.append({"kwargs": kwargs})
+                if len(self.calls) == 1:
+                    yield message_start_event()
+                    raise ProviderError(
+                        "Connection reset mid-stream",
+                        provider_type=ProviderType.ANTHROPIC,
+                        model=model_id,
+                        is_retryable=True,
+                        cause=httpx.ReadError("stream reset"),
+                    )
+                for event in text_response_events("Recovered answer"):
+                    yield event
+
+        llm = DropThenRecoverLLM([("text", "unused")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        message_starts = [
+            data
+            for event_type, data, _sid in events
+            if event_type == "message"
+            and json.loads(data).get("type") == "message_start"
+        ]
+        assert (
+            len(message_starts) == 1
+        ), f"Expected exactly one message_start, got {len(message_starts)}"
+        assert not any(
+            event_type == "stream_error" for event_type, _d, _sid in events
+        ), f"Expected no stream_error, got events: {events}"
+        assert len(llm.calls) == 2, f"Expected one retry, got {len(llm.calls)} calls"
+
+        db_msgs = await MessagesRepository().get_active_path(chat_id)
+        assert (
+            len(db_msgs) == 2
+        ), f"Expected user + one assistant row, got {len(db_msgs)} rows"
+        assistant = db_msgs[-1]
+        assert assistant.error is None
+        text = " ".join(
+            b.get("text", "")
+            for b in assistant.message.get("content", [])
+            if b.get("type") == "text"
+        )
+        assert text == "Recovered answer", f"Recovered content lost: {text!r}"
 
     @pytest.mark.asyncio
     async def test_tool_loop_error_uses_last_persisted_parent(

@@ -89,6 +89,21 @@ class CompactionEnd:
     """Internal marker emitted after a compaction pass finishes."""
 
 
+_TRANSIENT_RETRY_BACKOFF_SECONDS = 1.0
+
+
+def _is_retryable_provider_error(error: ProviderError) -> bool:
+    """Whether a failed provider stream is worth one automatic retry.
+
+    Only transport-level failures (connection reset, mid-stream read error,
+    remote disconnect) qualify; each provider flags them via
+    ``ProviderError.is_retryable``. HTTP status errors are intentionally out of
+    scope: the provider SDKs already retry those at request-creation time, so
+    retrying here as well would multiply the request count.
+    """
+    return error.is_retryable
+
+
 async def event_stream_with_context_retry(
     turn_tools: list[dict],
     conversation_messages: list[MessageParam],
@@ -102,12 +117,32 @@ async def event_stream_with_context_retry(
     model_record_id: str | None = None,
     model_name: str | None = None,
 ) -> AsyncIterator[MessageStreamEvent | CompactionStart | CompactionEnd]:
-    """Stream events from the LLM provider with one automatic compaction retry
-    on context-overflow errors.
+    """Stream events from the LLM provider with one-shot automatic recovery.
+
+    A single provider call is retried when it fails before any substantive
+    content has been streamed:
+
+    - a context-overflow error triggers a forced compaction, then one retry;
+    - a transport-level failure (connection drop, mid-stream read error)
+      flagged by the provider triggers one retry after a short backoff.
+
+    The failed attempt's usage is persisted before the retry, since the
+    provider may bill for both attempts.
+
+    A retry is only safe while the client has not seen a content block, so
+    once any non-``message_start`` event has been emitted the error
+    propagates instead. A retried stream re-emits the ``message_start``
+    envelope; the duplicate is dropped here because the caller already
+    buffered the original and content blocks carry no message id, so the
+    retained envelope stays valid.
 
     ``conversation_messages`` is mutated in-place when a compaction retry
     replaces the full history with a compacted version.
     """
+    # message_start envelope already delivered to the caller. Tracked across
+    # attempts so a retried stream's duplicate envelope can be dropped.
+    emitted_message_start = False
+
     for llm_attempt in range(2):
         tracker = UsageTracker(
             UsageRepository(),
@@ -145,15 +180,24 @@ async def event_stream_with_context_retry(
                 processed_stream
             )
 
-        emitted_event = False
+        emitted_non_envelope = False
         try:
             async for wrapped_event in processed_stream:
-                emitted_event = True
+                event_type = getattr(wrapped_event, "type", None)
+                if event_type == "message_start":
+                    if emitted_message_start:
+                        # Retried stream re-emits the envelope the caller
+                        # already buffered from the failed attempt.
+                        continue
+                    emitted_message_start = True
+                else:
+                    emitted_non_envelope = True
                 yield wrapped_event
             tracker.save()
             return
         except ProviderError as e:
-            if e.is_context_overflow and llm_attempt == 0 and not emitted_event:
+            can_retry = llm_attempt == 0 and not emitted_non_envelope
+            if can_retry and e.is_context_overflow:
                 logger.warning(
                     "Chat %s hit provider context limit; retrying once after forced compaction",
                     chat_id,
@@ -172,6 +216,14 @@ async def event_stream_with_context_retry(
                 )
                 if should_emit_progress:
                     yield CompactionEnd()
+                continue
+            if can_retry and _is_retryable_provider_error(e):
+                logger.warning(
+                    "Chat %s hit a transient transport error; retrying once",
+                    chat_id,
+                )
+                tracker.save()
+                await asyncio.sleep(_TRANSIENT_RETRY_BACKOFF_SECONDS)
                 continue
             raise
 

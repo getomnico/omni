@@ -7,7 +7,14 @@ import logging
 from collections.abc import AsyncIterator, Iterable
 from typing import Any, ClassVar, cast
 
-from anthropic import APIStatusError, AsyncAnthropic, AsyncStream, MessageStreamEvent
+import httpx
+from anthropic import (
+    APIConnectionError,
+    APIStatusError,
+    AsyncAnthropic,
+    AsyncStream,
+    MessageStreamEvent,
+)
 from anthropic.types import MessageParam, ToolParam
 
 from . import LLMProvider, TokenUsage
@@ -30,6 +37,13 @@ def _anthropic_context_overflow(e: BaseException) -> bool:
         if isinstance(error, dict) and error.get("type") == "request_too_large":
             return True
     return "prompt is too long" in str(e).lower()
+
+
+def _anthropic_is_retryable(e: BaseException) -> bool:
+    """Transport-level failure (connect/read/timeout, dropped stream) that a
+    caller may safely retry once. Status errors are excluded: the SDK already
+    retries those at request-creation time."""
+    return isinstance(e, (httpx.TransportError, APIConnectionError))
 
 
 logger = logging.getLogger(__name__)
@@ -189,6 +203,7 @@ class AnthropicProvider(LLMProvider):
                 status_code=_anthropic_status_code(e),
                 cause=e,
                 is_context_overflow=_anthropic_context_overflow(e),
+                is_retryable=_anthropic_is_retryable(e),
             ) from e
 
     async def generate_response(
@@ -238,6 +253,7 @@ class AnthropicProvider(LLMProvider):
                 status_code=_anthropic_status_code(e),
                 cause=e,
                 is_context_overflow=_anthropic_context_overflow(e),
+                is_retryable=_anthropic_is_retryable(e),
             ) from e
 
     async def health_check(

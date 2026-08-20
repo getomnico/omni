@@ -36,7 +36,13 @@ from anthropic.types import (
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError,
+    ConnectionError as BotoConnectionError,
+    HTTPClientError,
+    SSLError as BotoSSLError,
+)
+
 
 from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import (
@@ -46,6 +52,14 @@ from .anthropic_message_adapter import (
 from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)
+
+
+def _bedrock_is_retryable(e: BaseException) -> bool:
+    """Transport-level failure (dropped/errored HTTP connection, mid-stream
+    disconnect) that a caller may safely retry once. ``ClientError`` (API
+    status errors) is excluded: boto3 already retries those at request-creation
+    time."""
+    return isinstance(e, (HTTPClientError, BotoConnectionError, BotoSSLError))
 
 
 def sanitize_document_name(name: str) -> str:
@@ -113,7 +127,9 @@ class BedrockProvider(LLMProvider):
         else:
             self.client = boto3.client("bedrock-runtime", region_name=region_name)
 
-    def _to_provider_error(self, e: Exception, model: str | None = None) -> ProviderError:
+    def _to_provider_error(
+        self, e: Exception, model: str | None = None
+    ) -> ProviderError:
         is_context_overflow = False
         if isinstance(e, ClientError):
             error = e.response.get("Error", {})
@@ -128,9 +144,7 @@ class BedrockProvider(LLMProvider):
         else:
             body = str(e)
             status = e.status_code if isinstance(e, APIStatusError) else None
-            is_context_overflow = (
-                isinstance(e, APIStatusError) and e.status_code == 413
-            )
+            is_context_overflow = isinstance(e, APIStatusError) and e.status_code == 413
         return ProviderError(
             body,
             provider_type=self.provider_type,
@@ -138,6 +152,7 @@ class BedrockProvider(LLMProvider):
             status_code=status,
             cause=e,
             is_context_overflow=is_context_overflow,
+            is_retryable=_bedrock_is_retryable(e),
         )
 
     def _determine_model_family(self, model_id: str) -> str:

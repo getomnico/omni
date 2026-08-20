@@ -12,7 +12,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar, cast
 
-from openai import APIStatusError, AsyncOpenAI
+import httpx
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
     ChatCompletionChunk,
@@ -73,6 +74,13 @@ def _openai_compat_error_code(e: BaseException) -> str | None:
 
 def _openai_compat_context_overflow(e: BaseException) -> bool:
     return _openai_compat_error_code(e) == "context_length_exceeded"
+
+
+def _openai_compat_is_retryable(e: BaseException) -> bool:
+    """Transport-level failure (connect/read/timeout, dropped stream) that a
+    caller may safely retry once. Status errors are excluded: the SDK already
+    retries those at request-creation time."""
+    return isinstance(e, (httpx.TransportError, APIConnectionError))
 
 
 logger = logging.getLogger(__name__)
@@ -536,6 +544,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 status_code=_openai_compat_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
+                is_retryable=_openai_compat_is_retryable(e),
             ) from e
 
     async def generate_response(
@@ -592,6 +601,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 status_code=_openai_compat_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
+                is_retryable=_openai_compat_is_retryable(e),
             ) from e
 
     async def health_check(

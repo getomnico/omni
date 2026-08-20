@@ -9,7 +9,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
-from openai import APIStatusError, AsyncOpenAI
+import httpx
+from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 from anthropic.types import (
     Message,
     MessageDeltaUsage,
@@ -53,6 +54,13 @@ def _openai_error_code(e: BaseException) -> str | None:
 
 def _openai_context_overflow(e: BaseException) -> bool:
     return _openai_error_code(e) == "context_length_exceeded"
+
+
+def _openai_is_retryable(e: BaseException) -> bool:
+    """Transport-level failure (connect/read/timeout, dropped stream) that a
+    caller may safely retry once. Status errors are excluded: the SDK already
+    retries those at request-creation time."""
+    return isinstance(e, (httpx.TransportError, APIConnectionError))
 
 
 logger = logging.getLogger(__name__)
@@ -295,7 +303,9 @@ class OpenAIProvider(LLMProvider):
                     )
 
                 elif event_type == "error":
-                    raise RuntimeError(getattr(event, "message", "Unknown stream error"))
+                    raise RuntimeError(
+                        getattr(event, "message", "Unknown stream error")
+                    )
 
             yield RawMessageStopEvent(type="message_stop")
 
@@ -310,6 +320,7 @@ class OpenAIProvider(LLMProvider):
                 status_code=_openai_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_context_overflow(e),
+                is_retryable=_openai_is_retryable(e),
             ) from e
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -481,6 +492,7 @@ class OpenAIProvider(LLMProvider):
                 status_code=_openai_status_code(e),
                 cause=e,
                 is_context_overflow=_openai_context_overflow(e),
+                is_retryable=_openai_is_retryable(e),
             ) from e
 
     async def health_check(

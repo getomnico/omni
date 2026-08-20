@@ -18,6 +18,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, ClassVar
 
+import httpx
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -45,6 +46,14 @@ from .types import ProviderError, ProviderType
 
 def _gemini_status_code(e: BaseException) -> int | None:
     return e.code if isinstance(e, APIError) else None
+
+
+def _gemini_is_retryable(e: BaseException) -> bool:
+    """Transport-level failure (connect/read/timeout, dropped stream) that a
+    caller may safely retry once. The genai client is httpx-based; status
+    errors surface as ``APIError`` and are already retried by the client at
+    request-creation time."""
+    return isinstance(e, httpx.TransportError)
 
 
 logger = logging.getLogger(__name__)
@@ -460,6 +469,7 @@ class GeminiProvider(LLMProvider):
                 model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
+                is_retryable=_gemini_is_retryable(e),
             ) from e
 
     async def generate_response(
@@ -504,6 +514,7 @@ class GeminiProvider(LLMProvider):
                 model=model or self.model_name,
                 status_code=_gemini_status_code(e),
                 cause=e,
+                is_retryable=_gemini_is_retryable(e),
             ) from e
 
     async def health_check(
