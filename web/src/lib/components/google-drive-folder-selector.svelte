@@ -48,9 +48,8 @@
     let inputRef = $state<HTMLInputElement | null>(null)
     let dropdownAnchor = $state<HTMLElement | null>(null)
 
-    // Guard: only start auto-discovery after mount, and only when credential
-    // context actually changes (not on first mount where persisted selected
-    // items are already present).
+    // Guard: preserve persisted selections on the initial mount. Discovery is
+    // search-driven and never runs automatically.
     let hasInitialized = $state(false)
 
     // Generation counter: bumped on every credential-context change.
@@ -58,10 +57,9 @@
     // before any state mutation after an await.
     let generation = $state(0)
 
-    // Request-level counter: bumped on EVERY discoverFolders invocation.
-    // Only the request whose version matches `currentRequestVersion` may
-    // mutate state after an await, preventing races between sequential calls
-    // with the same credential generation.
+    // Request-level counter: only the request whose version matches
+    // `currentRequestVersion` may mutate state after an await, preventing
+    // races between sequential searches with the same credential generation.
     let currentRequestVersion = $state(0)
     let lastDiscoveryQuery = $state('')
 
@@ -83,7 +81,7 @@
     // Track the previous context token to detect changes.
     let prevContextToken = $state('')
 
-    // Reactive effect: detect credential-context change and re-discover.
+    // Reactive effect: reset discovery state when the credential context changes.
     $effect(() => {
         // First evaluation: set up initial state without clearing selections.
         if (!hasInitialized) {
@@ -102,6 +100,7 @@
         // Cancel any in-flight request or pending search debounce.
         pendingRequest?.abort()
         pendingRequest = null
+        currentRequestVersion += 1
         if (searchDebounce) clearTimeout(searchDebounce)
         searchDebounce = undefined
 
@@ -118,9 +117,9 @@
         hasLoaded = false
         errorMessage = ''
         discoveryNotice = ''
+        lastDiscoveryQuery = ''
 
-        // Automatically trigger discovery for the new context.
-        discoverFolders(generation)
+        // Discovery starts only after the user enters a search prefix.
     })
 
     let pendingRequest: AbortController | null = null
@@ -131,20 +130,14 @@
         return Array.from(query.trim()).length
     }
 
-    // Load folders when credentials are available.
-    // Takes `gen` (credential generation) and `rv` (request version) captured
-    // at call time for race-safe post-await checks.
-    //
-    // Every invocation gets a unique request version. Only the call whose
-    // `rv` matches `currentRequestVersion` may mutate state after an await,
-    // preventing races between sequential calls with the same credential gen.
-    async function discoverFolders(gen: number, rv?: number, query = '') {
-        lastDiscoveryQuery = query
-        // Determine request version for this invocation.
-        if (rv === undefined) {
-            currentRequestVersion += 1
-            rv = currentRequestVersion
-        }
+    // Search accessible folders and drives for a user-entered prefix.
+    async function discoverFolders(gen: number, query: string) {
+        const normalizedQuery = query.trim()
+        if (queryLength(normalizedQuery) < minRemoteSearchLength) return
+
+        lastDiscoveryQuery = normalizedQuery
+        currentRequestVersion += 1
+        const rv = currentRequestVersion
 
         if (!serviceAccountJson) {
             if (!sourceId) {
@@ -179,7 +172,7 @@
 
             const actionParams = {
                 ...(isSaDirect ? { auth_mode: 'service_account_direct' } : {}),
-                ...(query ? { query } : {}),
+                query: normalizedQuery,
             }
 
             if (serviceAccountJson && (isSaDirect || (principalEmail && domain))) {
@@ -284,34 +277,46 @@
 
     function handleInput() {
         const query = searchQuery.trim()
+        if (
+            queryLength(query) >= minRemoteSearchLength &&
+            query === lastDiscoveryQuery &&
+            (isLoading || hasLoaded)
+        ) {
+            if (hasLoaded) {
+                filterItems(query)
+                showDropdown = filteredItems.length > 0
+            }
+            return
+        }
+
         if (searchDebounce) clearTimeout(searchDebounce)
         searchDebounce = undefined
-        if (
-            queryLength(query) < minRemoteSearchLength &&
-            queryLength(lastDiscoveryQuery) >= minRemoteSearchLength
-        ) {
-            // Restore the root-folder result set after leaving a remote search.
-            discoverFolders(generation)
-            showDropdown = false
+        pendingRequest?.abort()
+        pendingRequest = null
+        currentRequestVersion += 1
+        isLoading = false
+        errorMessage = ''
+        discoveryNotice = ''
+        showDropdown = false
+
+        if (queryLength(query) < minRemoteSearchLength) {
+            // Short or cleared input never triggers discovery.
+            lastDiscoveryQuery = ''
+            allItems = []
+            filteredItems = []
+            hasLoaded = false
             return
         }
-        if (queryLength(query) >= minRemoteSearchLength) {
-            // Search the full accessible hierarchy instead of limiting users to
-            // the initially discovered root folders. SA-direct searches drive
-            // names while DWD/OAuth searches folders and drives.
-            searchDebounce = setTimeout(() => {
-                discoverFolders(generation, undefined, query)
-                searchDebounce = undefined
-            }, 250)
-            showDropdown = false
-            return
-        }
-        if (!hasLoaded && !isLoading && !errorMessage) {
-            // Auto-discover on first input interaction
-            discoverFolders(generation)
-        }
-        filterItems(searchQuery)
-        showDropdown = filteredItems.length > 0 && queryLength(query) > 0
+
+        allItems = []
+        filteredItems = []
+        hasLoaded = false
+
+        // Search the full accessible hierarchy after the user pauses typing.
+        searchDebounce = setTimeout(() => {
+            discoverFolders(generation, query)
+            searchDebounce = undefined
+        }, 250)
     }
 
     function selectItem(item: DriveFolderDiscoveryEntry) {
@@ -348,11 +353,9 @@
         errorMessage = ''
         discoveryNotice = ''
         const query = searchQuery.trim()
-        discoverFolders(
-            generation,
-            undefined,
-            queryLength(query) >= minRemoteSearchLength ? query : '',
-        )
+        if (queryLength(query) >= minRemoteSearchLength) {
+            discoverFolders(generation, query)
+        }
     }
 
     // Clean up in-flight requests on destroy
@@ -371,14 +374,11 @@
     function handleFocus() {
         if (
             hasLoaded &&
-            searchQuery.trim().length > 0 &&
+            queryLength(searchQuery) >= minRemoteSearchLength &&
             filteredItems.length > 0 &&
             !showDropdown
         ) {
             showDropdown = true
-        }
-        if (!hasLoaded && !isLoading && !errorMessage) {
-            discoverFolders(generation)
         }
     }
 </script>
@@ -386,14 +386,6 @@
 <div class="space-y-2">
     <Label class="text-sm font-medium">{label}</Label>
     <p class="text-muted-foreground text-xs">{description} Search uses the beginning of a name.</p>
-
-    <!-- Loading state -->
-    {#if isLoading && !hasLoaded}
-        <div class="text-muted-foreground flex items-center gap-2 py-2 text-sm">
-            <Loader2 class="h-4 w-4 animate-spin" />
-            <span>Discovering Drive folders...</span>
-        </div>
-    {/if}
 
     <!-- Error state -->
     {#if errorMessage && !isLoading}
@@ -436,7 +428,7 @@
                 oninput={handleInput}
                 onfocus={handleFocus}
                 onblur={handleBlur}
-                placeholder="Search names (prefix)..."
+                placeholder="Search drives and folders..."
                 class="px-10 py-1"
                 {disabled} />
             {#if isLoading}
@@ -462,18 +454,6 @@
                         <div class="min-w-0 flex-1">
                             <div class="truncate font-medium">{item.name}</div>
                             <div class="text-muted-foreground truncate text-xs">{item.path}</div>
-                            {#if item.kind === 'shared_drive_root'}
-                                <div class="text-muted-foreground truncate text-[10px]">
-                                    Drive ID: {item.driveId}
-                                </div>
-                            {:else}
-                                <div class="text-muted-foreground truncate text-[10px]">
-                                    Folder ID: {item.id}
-                                </div>
-                                <div class="text-muted-foreground truncate text-[10px]">
-                                    Drive ID: {item.driveId}
-                                </div>
-                            {/if}
                         </div>
                         <span
                             class="mt-0.5 shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 uppercase dark:bg-slate-800 dark:text-slate-300">
@@ -492,12 +472,6 @@
                 <div
                     class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
                     <span class="max-w-40 truncate" title={item.path}>{item.name}</span>
-                    <span
-                        class="text-muted-foreground max-w-32 truncate text-[10px]"
-                        title={item.kind === 'folder'
-                            ? `Folder ID: ${item.id}\nDrive ID: ${item.driveId}`
-                            : `Drive ID: ${item.driveId}`}
-                        >{item.kind === 'folder' ? item.id : item.driveId}</span>
                     {#if !disabled}
                         <button
                             type="button"
