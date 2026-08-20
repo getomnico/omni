@@ -7,6 +7,12 @@
     import { onDestroy } from 'svelte'
     import type { FolderPathFilter } from '$lib/types'
     import type { DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse } from '$lib/types/search'
+    import {
+        GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS,
+        googleDriveFolderSearchLength,
+        scheduleGoogleDriveFolderSearch,
+        type GoogleDriveFolderSearchTimer,
+    } from '$lib/utils/google-drive-folder-search'
 
     let {
         sourceId = '',
@@ -123,17 +129,26 @@
     })
 
     let pendingRequest: AbortController | null = null
-    let searchDebounce: ReturnType<typeof setTimeout> | undefined
-    const minRemoteSearchLength = 2
+    let searchDebounce: GoogleDriveFolderSearchTimer | undefined
 
-    function queryLength(query: string): number {
-        return Array.from(query.trim()).length
+    // Keep every discovery request behind this scheduler. In particular,
+    // lifecycle and focus handlers must never invoke discovery.
+    function scheduleDiscovery(query: string) {
+        searchDebounce = scheduleGoogleDriveFolderSearch(
+            searchDebounce,
+            query,
+            (normalizedQuery) => {
+                discoverFolders(generation, normalizedQuery)
+                searchDebounce = undefined
+            },
+        )
     }
 
     // Search accessible folders and drives for a user-entered prefix.
     async function discoverFolders(gen: number, query: string) {
         const normalizedQuery = query.trim()
-        if (queryLength(normalizedQuery) < minRemoteSearchLength) return
+        if (googleDriveFolderSearchLength(normalizedQuery) < GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS)
+            return
 
         lastDiscoveryQuery = normalizedQuery
         currentRequestVersion += 1
@@ -278,7 +293,7 @@
     function handleInput() {
         const query = searchQuery.trim()
         if (
-            queryLength(query) >= minRemoteSearchLength &&
+            googleDriveFolderSearchLength(query) >= GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS &&
             query === lastDiscoveryQuery &&
             (isLoading || hasLoaded)
         ) {
@@ -299,7 +314,7 @@
         discoveryNotice = ''
         showDropdown = false
 
-        if (queryLength(query) < minRemoteSearchLength) {
+        if (googleDriveFolderSearchLength(query) < GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS) {
             // Short or cleared input never triggers discovery.
             lastDiscoveryQuery = ''
             allItems = []
@@ -313,10 +328,7 @@
         hasLoaded = false
 
         // Search the full accessible hierarchy after the user pauses typing.
-        searchDebounce = setTimeout(() => {
-            discoverFolders(generation, query)
-            searchDebounce = undefined
-        }, 250)
+        scheduleDiscovery(query)
     }
 
     function selectItem(item: DriveFolderDiscoveryEntry) {
@@ -352,10 +364,7 @@
         hasLoaded = false
         errorMessage = ''
         discoveryNotice = ''
-        const query = searchQuery.trim()
-        if (queryLength(query) >= minRemoteSearchLength) {
-            discoverFolders(generation, query)
-        }
+        scheduleDiscovery(searchQuery)
     }
 
     // Clean up in-flight requests on destroy
@@ -374,7 +383,7 @@
     function handleFocus() {
         if (
             hasLoaded &&
-            queryLength(searchQuery) >= minRemoteSearchLength &&
+            googleDriveFolderSearchLength(searchQuery) >= GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS &&
             filteredItems.length > 0 &&
             !showDropdown
         ) {

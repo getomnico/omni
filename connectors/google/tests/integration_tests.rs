@@ -1043,7 +1043,7 @@ mod sa_direct_tests {
         let response = connector
             .execute_action(
                 "discover_folders",
-                json!({ "auth_mode": "service_account_direct" }),
+                json!({ "auth_mode": "service_account_direct", "query": "policy" }),
                 Some(creds),
                 None,
                 None,

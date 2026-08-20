@@ -10,7 +10,9 @@ const FOLDER_DISCOVERY_AUTH_MODES = new Set(['domain_wide_delegation', 'service_
 
 function validateFolderDiscoveryParams(action: string, actionParams: unknown): void {
     if (!FOLDER_DISCOVERY_ACTIONS.has(action)) return
-    if (actionParams === undefined || actionParams === null) return
+    if (actionParams === undefined || actionParams === null) {
+        throw error(400, `${action} params with a query are required`)
+    }
     if (typeof actionParams !== 'object' || Array.isArray(actionParams)) {
         throw error(400, `${action} params must be a JSON object`)
     }
@@ -30,14 +32,15 @@ function validateFolderDiscoveryParams(action: string, actionParams: unknown): v
             throw error(400, `${action} auth_mode is invalid`)
         }
     }
-    if ('query' in params) {
-        if (typeof params.query !== 'string') {
-            throw error(400, `${action} query must be a string`)
-        }
-        const queryLength = Array.from(params.query.trim()).length
-        if (queryLength < 2 || queryLength > 200) {
-            throw error(400, `${action} query must contain 2–200 characters`)
-        }
+    if (!('query' in params)) {
+        throw error(400, `${action} query is required`)
+    }
+    if (typeof params.query !== 'string') {
+        throw error(400, `${action} query must be a string`)
+    }
+    const queryLength = Array.from(params.query.trim()).length
+    if (queryLength < 2 || queryLength > 200) {
+        throw error(400, `${action} query must contain 2–200 characters`)
     }
 }
 

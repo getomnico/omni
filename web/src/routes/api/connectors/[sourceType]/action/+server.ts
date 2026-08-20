@@ -140,15 +140,16 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
                 throw error(400, 'discover_folders auth_mode conflicts with authMode')
             }
         }
-        if (params && 'query' in params) {
-            const query = params.query
-            if (typeof query !== 'string') {
-                throw error(400, 'discover_folders query must be a string')
-            }
-            const queryLength = Array.from(query.trim()).length
-            if (queryLength < 2 || queryLength > 200) {
-                throw error(400, 'discover_folders query must contain 2–200 characters')
-            }
+        if (!params || !('query' in params)) {
+            throw error(400, 'discover_folders query is required')
+        }
+        const query = params.query
+        if (typeof query !== 'string') {
+            throw error(400, 'discover_folders query must be a string')
+        }
+        const queryLength = Array.from(query.trim()).length
+        if (queryLength < 2 || queryLength > 200) {
+            throw error(400, 'discover_folders query must contain 2–200 characters')
         }
     }
     if (action === 'validate_shared_drive_access') {

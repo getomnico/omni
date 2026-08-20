@@ -36,7 +36,6 @@ const GWS_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_FOLDER_DISCOVERY_RESULTS: usize = 500;
 const MIN_FOLDER_DISCOVERY_QUERY_CHARS: usize = 2;
 const FOLDER_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
-const MAX_INITIAL_DRIVE_ROOTS: usize = 100;
 const GWS_SCHEMA_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const GWS_SCHEMA_CACHE_MAX_ENTRIES: usize = 256;
 const GOOGLE_WORKSPACE_CLI_TOKEN: &str = "GOOGLE_WORKSPACE_CLI_TOKEN";
@@ -888,20 +887,22 @@ impl GoogleConnector {
         // Fail loudly on malformed params rather than guessing.
         let params: DiscoverFoldersParams = serde_json::from_value(params)?;
         let is_sa_direct = params.auth_mode == Some(GoogleAuthMode::ServiceAccountDirect);
-        let search_query = params
-            .query
-            .as_deref()
-            .map(str::trim)
-            .filter(|query| !query.is_empty());
-        if search_query.is_some_and(|query| query.chars().count() > 200) {
+        let search_query = match params.query.as_deref().map(str::trim) {
+            Some(query) if !query.is_empty() => query,
+            _ => {
+                return Ok(ActionResponse::failure(
+                    "folder discovery query is required".to_string(),
+                )
+                .into_response());
+            }
+        };
+        if search_query.chars().count() > 200 {
             return Ok(ActionResponse::failure(
                 "folder discovery query must be 200 characters or fewer".to_string(),
             )
             .into_response());
         }
-        if search_query
-            .is_some_and(|query| query.chars().count() < MIN_FOLDER_DISCOVERY_QUERY_CHARS)
-        {
+        if search_query.chars().count() < MIN_FOLDER_DISCOVERY_QUERY_CHARS {
             return Ok(ActionResponse::failure(
                 "folder discovery query must contain at least 2 characters".to_string(),
             )
@@ -950,26 +951,21 @@ impl GoogleConnector {
             }
         };
 
-        let discovery_limit = if search_query.is_some() {
-            MAX_FOLDER_DISCOVERY_RESULTS
-        } else {
-            MAX_INITIAL_DRIVE_ROOTS
-        };
+        let discovery_limit = MAX_FOLDER_DISCOVERY_RESULTS;
         let include_my_drive = creds.auth_type == AuthType::OAuth;
-        let include_folder_results = !is_sa_direct && (include_my_drive || search_query.is_some());
+        let include_folder_results = !is_sa_direct;
         let drive_client = self.sync_manager.drive_client().clone();
         let folder_drive_client = drive_client.clone();
         let drives_auth = google_auth.clone();
         let drives_user_email = user_email.clone();
         let folders_auth = google_auth.clone();
         let folders_user_email = user_email.clone();
-        let search_query_owned = search_query.map(str::to_owned);
-        let drives_search_query = search_query_owned.clone();
-        let folders_search_query = search_query_owned;
+        let drives_search_query = search_query.to_owned();
+        let folders_search_query = drives_search_query.clone();
         let drives_future = drive_client.list_drives(
             &drives_auth,
             &drives_user_email,
-            drives_search_query.as_deref(),
+            Some(&drives_search_query),
             discovery_limit,
         );
         let folders_future = async move {
@@ -978,7 +974,7 @@ impl GoogleConnector {
                     .list_accessible_folders(
                         &folders_auth,
                         &folders_user_email,
-                        folders_search_query.as_deref(),
+                        Some(&folders_search_query),
                         include_my_drive,
                         discovery_limit,
                     )
@@ -1002,13 +998,8 @@ impl GoogleConnector {
 
         // Shared-drive roots are valid selections for DWD, OAuth, and
         // SA-direct. SA-direct intentionally does not expose folder children.
-        // Search results may use the full combined result cap for roots, while
-        // initial discovery intentionally shows only a bounded root sample.
-        let root_limit = if search_query.is_some() {
-            MAX_FOLDER_DISCOVERY_RESULTS
-        } else {
-            MAX_INITIAL_DRIVE_ROOTS
-        };
+        // Search results use a bounded combined result cap for roots and folders.
+        let root_limit = MAX_FOLDER_DISCOVERY_RESULTS;
         for drive in &shared_drives {
             item_ids.insert(drive.id.clone());
         }
@@ -1044,11 +1035,7 @@ impl GoogleConnector {
                 items.push(DriveFolderDiscoveryEntry {
                     id: folder.id.clone(),
                     name: folder.name.clone(),
-                    path: build_discovery_folder_path(
-                        &folder,
-                        &shared_drive_names,
-                        search_query.is_some(),
-                    ),
+                    path: build_discovery_folder_path(&folder, &shared_drive_names, true),
                     drive_id,
                     kind: "folder".to_string(),
                 });
@@ -1264,10 +1251,10 @@ impl Connector for GoogleConnector {
                             "type": "string",
                             "minLength": 2,
                             "maxLength": 200,
-                            "description": "Optional folder or shared-drive name prefix search."
+                            "description": "Folder or shared-drive name prefix search."
                         }
                     },
-                    "required": []
+                    "required": ["query"]
                 }),
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
@@ -1287,10 +1274,10 @@ impl Connector for GoogleConnector {
                             "type": "string",
                             "minLength": 2,
                             "maxLength": 200,
-                            "description": "Optional folder or shared-drive name prefix search."
+                            "description": "Folder or shared-drive name prefix search."
                         }
                     },
-                    "required": []
+                    "required": ["query"]
                 }),
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
@@ -1677,6 +1664,26 @@ mod tests {
     fn google_connector_does_not_use_mcp_server() {
         let connector = test_connector();
         assert!(connector.mcp_server().is_none());
+    }
+
+    #[tokio::test]
+    async fn folder_discovery_requires_a_search_query() -> anyhow::Result<()> {
+        let connector = test_connector();
+        let response = connector
+            .execute_action(
+                "discover_folders",
+                json!({ "auth_mode": "service_account_direct" }),
+                Some(test_service_credential(AuthType::Jwt, json!({}))),
+                None,
+                None,
+            )
+            .await?;
+        let body: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await?)?;
+
+        assert_eq!(body["status"], "error");
+        assert_eq!(body["error"], "folder discovery query is required");
+        Ok(())
     }
 
     #[test]

@@ -146,7 +146,17 @@ describe('POST /api/sources/[sourceId]/action', () => {
             scope: 'user',
             createdBy: 'owner-1',
         } as never)
+        const connectorFetch = vi.fn()
+        vi.stubGlobal('fetch', connectorFetch)
 
+        expect(
+            (
+                await callPost(
+                    { action: 'discover_personal_folders' },
+                    { id: 'owner-1', role: 'member' },
+                )
+            ).status,
+        ).toBe(400)
         expect(
             (
                 await callPost(
@@ -166,5 +176,6 @@ describe('POST /api/sources/[sourceId]/action', () => {
                 )
             ).status,
         ).toBe(400)
+        expect(connectorFetch).not.toHaveBeenCalled()
     })
 })

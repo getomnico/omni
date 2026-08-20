@@ -110,7 +110,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             serviceAccountJson: '{"client_email":"service@example.com"}',
             principalEmail: 'admin@example.com',
             domain: 'example.com',
-            params: {},
+            params: { query: 'roadmap' },
         })
 
         expect(response).toEqual({ status: 200, body: connectorResponse })
@@ -123,7 +123,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             source_type: 'google_drive',
             user_id: 'admin-1',
             action: 'discover_folders',
-            params: {},
+            params: { query: 'roadmap', auth_mode: 'domain_wide_delegation' },
             transient_credentials: {
                 provider: 'google',
                 auth_type: 'jwt',
@@ -177,6 +177,35 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             action: 'discover_folders',
             params: { query: 'roadmap', auth_mode: 'domain_wide_delegation' },
         })
+    })
+
+    it('requires a non-empty folder search query without forwarding a request', async () => {
+        const connectorFetch = vi.fn()
+        vi.stubGlobal('fetch', connectorFetch)
+
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: {},
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: { query: 'x' },
+                })
+            ).status,
+        ).toBe(400)
+        expect(connectorFetch).not.toHaveBeenCalled()
     })
 
     it('rejects conflicting or invalid folder search auth params', async () => {
@@ -235,7 +264,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             action: 'discover_folders',
             serviceAccountJson: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
             authMode: 'service_account_direct',
-            params: { auth_mode: 'service_account_direct' },
+            params: { auth_mode: 'service_account_direct', query: 'drive' },
         })
 
         expect(response.status).toBe(200)
@@ -244,7 +273,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
         expect(forwarded).toMatchObject({
             action: 'discover_folders',
-            params: { auth_mode: 'service_account_direct' },
+            params: { auth_mode: 'service_account_direct', query: 'drive' },
             transient_credentials: {
                 provider: 'google',
                 auth_type: 'jwt',
