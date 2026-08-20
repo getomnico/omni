@@ -17,8 +17,9 @@
         selected = $bindable([] as FolderPathFilter[]),
         disabled = false,
         label = 'Folders to index',
-        description = 'Select specific shared drives or top-level folders to index. Leave empty to index everything.',
+        description = 'Select specific My Drive folders, shared drives, or shared-drive folders. Leave empty to index everything.',
         onSelectedChange = undefined as ((selected: FolderPathFilter[]) => void) | undefined,
+        action = 'discover_folders',
     }: {
         sourceId?: string
         serviceAccountJson?: string
@@ -30,6 +31,7 @@
         label?: string
         description?: string
         onSelectedChange?: (selected: FolderPathFilter[]) => void
+        action?: 'discover_folders' | 'discover_personal_folders'
     } = $props()
 
     const isSaDirect = $derived(authMode === 'service_account_direct')
@@ -42,6 +44,7 @@
     let isLoading = $state(false)
     let hasLoaded = $state(false)
     let errorMessage = $state('')
+    let discoveryNotice = $state('')
     let inputRef = $state<HTMLInputElement | null>(null)
     let dropdownAnchor = $state<HTMLElement | null>(null)
 
@@ -60,6 +63,7 @@
     // mutate state after an await, preventing races between sequential calls
     // with the same credential generation.
     let currentRequestVersion = $state(0)
+    let lastDiscoveryQuery = $state('')
 
     // Build a credential-context token from all relevant inputs.
     // Uses the raw values rather than a hash to guarantee no collisions,
@@ -95,9 +99,11 @@
         // Bump generation to invalidate any in-flight responses.
         generation += 1
 
-        // Cancel any in-flight request.
+        // Cancel any in-flight request or pending search debounce.
         pendingRequest?.abort()
         pendingRequest = null
+        if (searchDebounce) clearTimeout(searchDebounce)
+        searchDebounce = undefined
 
         // Clear selected items ONLY on an actual credential-context change
         // after initialization. On initial mount, pre-loaded selected items
@@ -111,12 +117,19 @@
         filteredItems = []
         hasLoaded = false
         errorMessage = ''
+        discoveryNotice = ''
 
         // Automatically trigger discovery for the new context.
         discoverFolders(generation)
     })
 
     let pendingRequest: AbortController | null = null
+    let searchDebounce: ReturnType<typeof setTimeout> | undefined
+    const minRemoteSearchLength = 2
+
+    function queryLength(query: string): number {
+        return Array.from(query.trim()).length
+    }
 
     // Load folders when credentials are available.
     // Takes `gen` (credential generation) and `rv` (request version) captured
@@ -125,7 +138,8 @@
     // Every invocation gets a unique request version. Only the call whose
     // `rv` matches `currentRequestVersion` may mutate state after an await,
     // preventing races between sequential calls with the same credential gen.
-    async function discoverFolders(gen: number, rv?: number) {
+    async function discoverFolders(gen: number, rv?: number, query = '') {
+        lastDiscoveryQuery = query
         // Determine request version for this invocation.
         if (rv === undefined) {
             currentRequestVersion += 1
@@ -156,11 +170,17 @@
         allItems = []
         filteredItems = []
         hasLoaded = false
+        discoveryNotice = ''
 
         const signal = controller.signal
 
         try {
             let response: Response
+
+            const actionParams = {
+                ...(isSaDirect ? { auth_mode: 'service_account_direct' } : {}),
+                ...(query ? { query } : {}),
+            }
 
             if (serviceAccountJson && (isSaDirect || (principalEmail && domain))) {
                 // Invoke the connector directly with transient credentials.
@@ -168,8 +188,8 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        action: 'discover_folders',
-                        params: isSaDirect ? { auth_mode: 'service_account_direct' } : {},
+                        action,
+                        params: actionParams,
                         serviceAccountJson,
                         principalEmail,
                         domain,
@@ -182,10 +202,7 @@
                 response = await fetch(`/api/sources/${sourceId}/action`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        action: 'discover_folders',
-                        params: isSaDirect ? { auth_mode: 'service_account_direct' } : {},
-                    }),
+                    body: JSON.stringify({ action, params: actionParams }),
                     signal,
                 })
             } else {
@@ -206,12 +223,16 @@
 
                 const statusOk = body?.status === 'ok' || body?.status === 'success'
                 const items = body?.result?.items ?? []
+                discoveryNotice = body.result?.truncated
+                    ? 'Results are limited. Refine your search to see more folders or drives.'
+                    : ''
                 if (statusOk && items.length > 0) {
                     allItems = items
                     filteredItems = items
                     hasLoaded = true
                     if (searchQuery.trim()) {
                         filterItems(searchQuery)
+                        showDropdown = filteredItems.length > 0
                     }
                 } else if (statusOk && items.length === 0) {
                     hasLoaded = true
@@ -257,20 +278,40 @@
             isSaDirect ? allItems.filter((item) => item.kind === 'shared_drive_root') : allItems
         ).filter(
             (item) =>
-                !selected.some((s) => s.id === item.id) &&
-                (item.name.toLowerCase().includes(q) ||
-                    item.path.toLowerCase().includes(q) ||
-                    item.driveId.toLowerCase().includes(q)),
+                !selected.some((s) => s.id === item.id) && item.name.toLowerCase().startsWith(q),
         )
     }
 
     function handleInput() {
+        const query = searchQuery.trim()
+        if (searchDebounce) clearTimeout(searchDebounce)
+        searchDebounce = undefined
+        if (
+            queryLength(query) < minRemoteSearchLength &&
+            queryLength(lastDiscoveryQuery) >= minRemoteSearchLength
+        ) {
+            // Restore the root-folder result set after leaving a remote search.
+            discoverFolders(generation)
+            showDropdown = false
+            return
+        }
+        if (queryLength(query) >= minRemoteSearchLength) {
+            // Search the full accessible hierarchy instead of limiting users to
+            // the initially discovered root folders. SA-direct searches drive
+            // names while DWD/OAuth searches folders and drives.
+            searchDebounce = setTimeout(() => {
+                discoverFolders(generation, undefined, query)
+                searchDebounce = undefined
+            }, 250)
+            showDropdown = false
+            return
+        }
         if (!hasLoaded && !isLoading && !errorMessage) {
             // Auto-discover on first input interaction
             discoverFolders(generation)
         }
         filterItems(searchQuery)
-        showDropdown = filteredItems.length > 0 && searchQuery.trim().length > 0
+        showDropdown = filteredItems.length > 0 && queryLength(query) > 0
     }
 
     function selectItem(item: DriveFolderDiscoveryEntry) {
@@ -305,12 +346,19 @@
         filteredItems = []
         hasLoaded = false
         errorMessage = ''
-        discoverFolders(generation)
+        discoveryNotice = ''
+        const query = searchQuery.trim()
+        discoverFolders(
+            generation,
+            undefined,
+            queryLength(query) >= minRemoteSearchLength ? query : '',
+        )
     }
 
     // Clean up in-flight requests on destroy
     onDestroy(() => {
         pendingRequest?.abort()
+        if (searchDebounce) clearTimeout(searchDebounce)
     })
 
     function handleBlur() {
@@ -337,13 +385,13 @@
 
 <div class="space-y-2">
     <Label class="text-sm font-medium">{label}</Label>
-    <p class="text-muted-foreground text-xs">{description}</p>
+    <p class="text-muted-foreground text-xs">{description} Search uses the beginning of a name.</p>
 
     <!-- Loading state -->
     {#if isLoading && !hasLoaded}
         <div class="text-muted-foreground flex items-center gap-2 py-2 text-sm">
             <Loader2 class="h-4 w-4 animate-spin" />
-            <span>Discovering shared drives and folders...</span>
+            <span>Discovering Drive folders...</span>
         </div>
     {/if}
 
@@ -365,11 +413,15 @@
         </Alert.Root>
     {/if}
 
+    {#if discoveryNotice && !isLoading}
+        <p class="text-muted-foreground py-1 text-xs">{discoveryNotice}</p>
+    {/if}
+
     <!-- Empty state (discovered but no items) -->
     {#if hasLoaded && allItems.length === 0 && !isLoading && !errorMessage}
         <p class="text-muted-foreground py-1 text-sm italic">
-            No shared drives found. Make sure the service account has access to shared drives in
-            this domain.
+            No folders or shared drives found. Make sure this account has access to the Drive
+            content you want to index.
         </p>
     {/if}
 
@@ -384,7 +436,7 @@
                 oninput={handleInput}
                 onfocus={handleFocus}
                 onblur={handleBlur}
-                placeholder="Search folders..."
+                placeholder="Search names (prefix)..."
                 class="px-10 py-1"
                 {disabled} />
             {#if isLoading}
@@ -410,6 +462,18 @@
                         <div class="min-w-0 flex-1">
                             <div class="truncate font-medium">{item.name}</div>
                             <div class="text-muted-foreground truncate text-xs">{item.path}</div>
+                            {#if item.kind === 'shared_drive_root'}
+                                <div class="text-muted-foreground truncate text-[10px]">
+                                    Drive ID: {item.driveId}
+                                </div>
+                            {:else}
+                                <div class="text-muted-foreground truncate text-[10px]">
+                                    Folder ID: {item.id}
+                                </div>
+                                <div class="text-muted-foreground truncate text-[10px]">
+                                    Drive ID: {item.driveId}
+                                </div>
+                            {/if}
                         </div>
                         <span
                             class="mt-0.5 shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 uppercase dark:bg-slate-800 dark:text-slate-300">
@@ -428,6 +492,12 @@
                 <div
                     class="bg-secondary text-secondary-foreground hover:bg-secondary/80 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium transition-colors">
                     <span class="max-w-40 truncate" title={item.path}>{item.name}</span>
+                    <span
+                        class="text-muted-foreground max-w-32 truncate text-[10px]"
+                        title={item.kind === 'folder'
+                            ? `Folder ID: ${item.id}\nDrive ID: ${item.driveId}`
+                            : `Drive ID: ${item.driveId}`}
+                        >{item.kind === 'folder' ? item.id : item.driveId}</span>
                     {#if !disabled}
                         <button
                             type="button"

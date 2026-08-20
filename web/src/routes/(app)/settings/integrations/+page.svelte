@@ -10,19 +10,23 @@
     import { Button } from '$lib/components/ui/button'
     import { Switch } from '$lib/components/ui/switch'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
+    import * as Dialog from '$lib/components/ui/dialog'
     import type { PageProps } from './$types'
     import googleLogo from '$lib/images/icons/google.svg'
     import windshiftLogo from '$lib/images/icons/windshift.png'
     import { Globe, HardDrive, Mail, Trash2 } from '@lucide/svelte'
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import WindshiftConnectorSetup from '$lib/components/windshift-connector-setup.svelte'
+    import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { formatDate, getSourceNoun } from '$lib/utils/sources'
     import { SourceType } from '$lib/types'
     import { invalidateAll } from '$app/navigation'
+    import { deserialize } from '$app/forms'
     import { toast } from 'svelte-sonner'
     import { onMount, onDestroy } from 'svelte'
     import type { SyncRun } from '$lib/server/db/schema'
+    import type { FolderPathFilter } from '$lib/types'
 
     let { data }: PageProps = $props()
 
@@ -48,6 +52,16 @@
     })
 
     onMount(() => {
+        const pendingDrive = data.userSources.find((source) => {
+            if (source.sourceType !== 'google_drive') return false
+            const config =
+                source.config && typeof source.config === 'object' && !Array.isArray(source.config)
+                    ? (source.config as Record<string, unknown>)
+                    : {}
+            return config.index_scope === 'pending'
+        })
+        if (pendingDrive) openDriveScope(pendingDrive)
+
         eventSource = new EventSource('/api/indexing/status?scope=user')
         eventSource.onmessage = (event) => {
             try {
@@ -120,6 +134,100 @@
 
     let showGoogleOAuthSetup = $state(false)
     let showWindshiftSetup = $state(false)
+    let driveToConfigure = $state<UserSource | null>(null)
+    let driveScopeMode = $state<'all' | 'selected'>('all')
+    let driveFolderFilters = $state<FolderPathFilter[]>([])
+    let originalDriveScopeMode = $state<'all' | 'selected'>('all')
+    let originalDriveFolderIds = $state<string[]>([])
+    let originalDriveScopeConfigured = $state(false)
+    let showDriveScopeWarning = $state(false)
+    let isSavingDriveScope = $state(false)
+
+    function folderFilterIds(filters: FolderPathFilter[]): string[] {
+        return filters.map((filter) => filter.id).sort()
+    }
+
+    function driveScopeChanged(): boolean {
+        return (
+            driveScopeMode !== originalDriveScopeMode ||
+            JSON.stringify(folderFilterIds(driveFolderFilters)) !==
+                JSON.stringify(originalDriveFolderIds)
+        )
+    }
+
+    function openDriveScope(source: UserSource) {
+        const config =
+            source.config && typeof source.config === 'object' && !Array.isArray(source.config)
+                ? (source.config as Record<string, unknown>)
+                : {}
+        driveToConfigure = source
+        driveScopeMode = config.index_scope === 'selected' ? 'selected' : 'all'
+        driveFolderFilters = Array.isArray(config.folder_path_filters)
+            ? (config.folder_path_filters as FolderPathFilter[])
+            : []
+        originalDriveScopeMode = driveScopeMode
+        originalDriveFolderIds = folderFilterIds(driveFolderFilters)
+        originalDriveScopeConfigured = config.index_scope !== 'pending'
+        showDriveScopeWarning = false
+    }
+
+    async function saveDriveScope() {
+        const source = driveToConfigure
+        if (!source) return
+        if (driveScopeMode === 'selected' && driveFolderFilters.length === 0) {
+            toast.error('Select at least one Drive folder')
+            return
+        }
+
+        if (originalDriveScopeConfigured && driveScopeChanged()) {
+            showDriveScopeWarning = true
+            return
+        }
+
+        await submitDriveScope()
+    }
+
+    async function submitDriveScope() {
+        const source = driveToConfigure
+        if (!source) return
+
+        showDriveScopeWarning = false
+        isSavingDriveScope = true
+        try {
+            const formData = new FormData()
+            formData.set('sourceId', source.id)
+            formData.set('indexScope', driveScopeMode)
+            formData.set('folder_path_filters', JSON.stringify(driveFolderFilters))
+            const response = await fetch('?/configureDrive', {
+                method: 'POST',
+                body: formData,
+                headers: { 'x-sveltekit-action': 'true' },
+            })
+            const actionResult = deserialize<
+                { success: true; sourceId: string },
+                { error?: string; sourceId?: string }
+            >(await response.text())
+            if (actionResult.type !== 'success') {
+                const failureData = actionResult.type === 'failure' ? actionResult.data : undefined
+                if (failureData?.sourceId) {
+                    driveToConfigure = null
+                    await invalidateAll()
+                }
+                const message =
+                    failureData?.error ||
+                    (actionResult.type === 'error' ? actionResult.error.message : undefined) ||
+                    `Failed to save Drive scope (${response.status})`
+                throw new Error(message)
+            }
+            driveToConfigure = null
+            toast.success('Google Drive indexing scope saved')
+            await invalidateAll()
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to save Drive scope')
+        } finally {
+            isSavingDriveScope = false
+        }
+    }
 
     let hasGoogleDrive = $derived(data.userSources.some((s) => s.sourceType === 'google_drive'))
     let hasGmail = $derived(data.userSources.some((s) => s.sourceType === 'gmail'))
@@ -158,6 +266,13 @@
                         {@const indexedCount = documentCounts[source.id] ?? 0}
                         {@const isRunning = source.isActive && sync?.status === 'running'}
                         {@const isFailed = source.isActive && sync?.status === 'failed'}
+                        {@const isDrivePending = !!(
+                            source.sourceType === 'google_drive' &&
+                            source.config &&
+                            typeof source.config === 'object' &&
+                            !Array.isArray(source.config) &&
+                            (source.config as Record<string, unknown>).index_scope === 'pending'
+                        )}
                         <Card
                             class="group hover:border-foreground/20 gap-0 overflow-hidden py-0 transition-colors">
                             <CardHeader
@@ -181,7 +296,9 @@
                                     <div class="min-w-0">
                                         <div class="truncate font-medium">{source.name}</div>
                                         <div class="text-muted-foreground text-xs">
-                                            {#if !source.isActive}
+                                            {#if isDrivePending}
+                                                Needs setup
+                                            {:else if !source.isActive}
                                                 Sync is paused
                                             {:else if isRunning}
                                                 Syncing now...
@@ -199,7 +316,7 @@
                                 <div class="flex shrink-0 items-center gap-2">
                                     <Switch
                                         checked={source.isActive}
-                                        disabled={togglingSourceId === source.id}
+                                        disabled={togglingSourceId === source.id || isDrivePending}
                                         onCheckedChange={(next) => toggleSource(source, next)}
                                         aria-label="Toggle sync for {source.name}"
                                         class="cursor-pointer" />
@@ -253,6 +370,44 @@
                                         <span>No {noun} indexed yet.</span>
                                     {/if}
                                 </div>
+
+                                {#if source.sourceType === 'google_drive'}
+                                    {@const driveConfig =
+                                        source.config &&
+                                        typeof source.config === 'object' &&
+                                        !Array.isArray(source.config)
+                                            ? (source.config as Record<string, unknown>)
+                                            : {}}
+                                    <div class="border-t pt-3">
+                                        {#if driveConfig.index_scope === 'pending'}
+                                            <p class="text-muted-foreground mb-2 text-xs">
+                                                Choose which Drive folders Omni may index to finish
+                                                setup.
+                                            </p>
+                                        {:else if driveConfig.index_scope === 'selected'}
+                                            <p class="text-muted-foreground mb-2 text-xs">
+                                                Indexing {Array.isArray(
+                                                    driveConfig.folder_path_filters,
+                                                )
+                                                    ? driveConfig.folder_path_filters.length
+                                                    : 0} selected folder(s).
+                                            </p>
+                                        {:else}
+                                            <p class="text-muted-foreground mb-2 text-xs">
+                                                Indexing all files this Google account can access.
+                                            </p>
+                                        {/if}
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            class="cursor-pointer"
+                                            onclick={() => openDriveScope(source)}>
+                                            {driveConfig.index_scope === 'pending'
+                                                ? 'Choose folders'
+                                                : 'Manage folders'}
+                                        </Button>
+                                    </div>
+                                {/if}
                             </CardContent>
                         </Card>
                     {/each}
@@ -360,6 +515,66 @@
     </div>
 </div>
 
+<Dialog.Root
+    open={driveToConfigure !== null}
+    onOpenChange={(open) => {
+        if (!open && !isSavingDriveScope) driveToConfigure = null
+    }}>
+    <Dialog.Content class="max-w-2xl">
+        <Dialog.Header>
+            <Dialog.Title>Choose Google Drive folders</Dialog.Title>
+            <Dialog.Description>
+                Omni will only index files inside the folders you select. Google still grants the
+                read-only Drive permission required to browse your account.
+            </Dialog.Description>
+        </Dialog.Header>
+
+        <div class="space-y-4 py-2">
+            <div class="grid gap-2 sm:grid-cols-2">
+                <button
+                    type="button"
+                    class={`cursor-pointer rounded-lg border p-3 text-left ${driveScopeMode === 'all' ? 'border-primary bg-primary/5' : ''}`}
+                    onclick={() => (driveScopeMode = 'all')}>
+                    <div class="font-medium">Entire Drive</div>
+                    <div class="text-muted-foreground text-xs">
+                        Index all files accessible to this Google account.
+                    </div>
+                </button>
+                <button
+                    type="button"
+                    class={`cursor-pointer rounded-lg border p-3 text-left ${driveScopeMode === 'selected' ? 'border-primary bg-primary/5' : ''}`}
+                    onclick={() => (driveScopeMode = 'selected')}>
+                    <div class="font-medium">Selected folders</div>
+                    <div class="text-muted-foreground text-xs">
+                        Include all files and subfolders beneath your selections.
+                    </div>
+                </button>
+            </div>
+
+            {#if driveScopeMode === 'selected'}
+                <GoogleDriveFolderSelector
+                    bind:selected={driveFolderFilters}
+                    sourceId={driveToConfigure?.id ?? ''}
+                    label="Folders to index"
+                    description="Search folders in My Drive and shared drives accessible to this account. Typing searches nested folders too."
+                    authMode="domain_wide_delegation"
+                    action="discover_personal_folders" />
+            {/if}
+        </div>
+
+        <Dialog.Footer>
+            <Button
+                variant="outline"
+                class="cursor-pointer"
+                disabled={isSavingDriveScope}
+                onclick={() => (driveToConfigure = null)}>Cancel</Button>
+            <Button class="cursor-pointer" disabled={isSavingDriveScope} onclick={saveDriveScope}>
+                {isSavingDriveScope ? 'Saving…' : 'Save and start indexing'}
+            </Button>
+        </Dialog.Footer>
+    </Dialog.Content>
+</Dialog.Root>
+
 <GoogleOAuthSetup
     open={showGoogleOAuthSetup}
     connectedSourceTypes={data.userSources.map((s) => s.sourceType)}
@@ -370,6 +585,28 @@
     open={showWindshiftSetup}
     baseUrl={data.windshiftBaseUrl}
     onCancel={() => (showWindshiftSetup = false)} />
+
+<AlertDialog.Root
+    open={showDriveScopeWarning}
+    onOpenChange={(open) => {
+        if (!open && !isSavingDriveScope) showDriveScopeWarning = false
+    }}>
+    <AlertDialog.Content>
+        <AlertDialog.Header>
+            <AlertDialog.Title>Change Google Drive folders?</AlertDialog.Title>
+            <AlertDialog.Description>
+                This will start a full sync using the new folder selection. Newly selected files
+                will be added, but files removed from the selection may remain searchable until a
+                later cleanup.
+            </AlertDialog.Description>
+        </AlertDialog.Header>
+        <AlertDialog.Footer>
+            <AlertDialog.Cancel class="cursor-pointer">Keep editing</AlertDialog.Cancel>
+            <AlertDialog.Action class="cursor-pointer" onclick={submitDriveScope}
+                >Save and start indexing</AlertDialog.Action>
+        </AlertDialog.Footer>
+    </AlertDialog.Content>
+</AlertDialog.Root>
 
 <AlertDialog.Root
     open={sourceToDisconnect !== null}

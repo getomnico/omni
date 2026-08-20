@@ -65,6 +65,13 @@
     let originalDomain = data.domain
     let originalFolderFilters = $state<FolderPathFilter[]>([...folderFilters])
 
+    function driveFolderScopeChanged(): boolean {
+        return (
+            JSON.stringify(folderFilters.map((filter) => filter.id).sort()) !==
+            JSON.stringify(originalFolderFilters.map((filter) => filter.id).sort())
+        )
+    }
+
     async function searchUsers() {
         if (searchQuery.trim().length < 2) {
             searchResults = []
@@ -228,9 +235,7 @@
         const usersChanged =
             JSON.stringify(selectedUsers.sort()) !== JSON.stringify(originalSelectedUsers.sort())
 
-        const foldersChanged =
-            JSON.stringify(folderFilters.map((f) => f.id).sort()) !==
-            JSON.stringify(originalFolderFilters.map((f) => f.id).sort())
+        const foldersChanged = driveFolderScopeChanged()
 
         if (isSaDirect) {
             hasUnsavedChanges =
@@ -333,11 +338,11 @@
                     </Alert.Root>
                     <Alert.Root variant="default" class="mt-2">
                         <Info class="h-4 w-4" />
-                        <Alert.Title>Folder-level filtering unavailable</Alert.Title>
+                        <Alert.Title>Folder-level filtering managed by the owner</Alert.Title>
                         <Alert.Description>
-                            To select specific folders or shared drives for indexing, switch to a
-                            domain-wide delegation (service account) connection. OAuth-connected
-                            sources always index all accessible files.
+                            This org-source admin screen does not edit OAuth folder scope. Personal
+                            OAuth Drive owners can choose folders from My Integrations; this
+                            org-wide OAuth source continues to index all accessible files.
                         </Alert.Description>
                     </Alert.Root>
                 </div>
@@ -371,6 +376,16 @@
                             type="hidden"
                             name="folder_path_filters"
                             value={JSON.stringify(folderFilters)} />
+                        {#if driveFolderScopeChanged()}
+                            <Alert.Root variant="default">
+                                <Info class="h-4 w-4" />
+                                <Alert.Title>Folder selection changed</Alert.Title>
+                                <Alert.Description>
+                                    Saving starts a full sync. Files removed from the selection may
+                                    remain searchable until a later cleanup.
+                                </Alert.Description>
+                            </Alert.Root>
+                        {/if}
                     </div>
                 {:else}
                     <div class="space-y-4">
@@ -402,13 +417,23 @@
                             {principalEmail}
                             {domain}
                             label="Drive Folder Filters"
-                            description="Optionally restrict indexing to specific shared drives and top-level folders. All sub-folders within a selected item are included."
+                            description="Optionally restrict indexing to specific shared drives or any accessible folder. All sub-folders within a selected item are included."
                             disabled={!enabled} />
                         <!-- Hidden form value to submit folder filters (always present for JWT, even when empty) -->
                         <input
                             type="hidden"
                             name="folder_path_filters"
                             value={JSON.stringify(folderFilters)} />
+                        {#if driveFolderScopeChanged()}
+                            <Alert.Root variant="default">
+                                <Info class="h-4 w-4" />
+                                <Alert.Title>Folder selection changed</Alert.Title>
+                                <Alert.Description>
+                                    Saving starts a full sync. Files removed from the selection may
+                                    remain searchable until a later cleanup.
+                                </Alert.Description>
+                            </Alert.Root>
+                        {/if}
                     </div>
 
                     <div class="space-y-4 border-t pt-6">

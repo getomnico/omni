@@ -168,6 +168,7 @@ export interface DriveFolderDiscoveryEntry {
 
 export interface DriveFolderDiscoveryResponse {
     items: DriveFolderDiscoveryEntry[]
+    truncated?: boolean
 }
 
 export interface ConnectorActionResponse<T = unknown> {

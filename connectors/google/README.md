@@ -53,3 +53,9 @@ The setup dialog has two tabs (DWD | Shared drive no-DWD); SA-direct is
 Drive-only and validates the SA's role on every selected drive before the
 source is created. The drive settings page repeats that validation before
 Save.
+
+Personal Google OAuth connections are configured from **My Integrations**.
+The owner must choose either the whole Drive or one or more accessible folders
+before indexing starts. Folder selections are stored in
+`sources.config.folder_path_filters` and enforced during OAuth sync; Google
+still grants the connector its normal read-only Drive OAuth scope.

@@ -72,7 +72,8 @@
                         {/if}
                     </div>
                     <div class="text-muted-foreground text-sm">
-                        Index your Drive documents, spreadsheets, and presentations
+                        Index your Drive documents, spreadsheets, and presentations. You will choose
+                        the folders after connecting.
                     </div>
                 </div>
             </label>

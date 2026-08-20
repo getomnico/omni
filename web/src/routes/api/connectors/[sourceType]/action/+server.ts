@@ -122,17 +122,66 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
         }
     }
     if (action === 'discover_folders') {
-        // params is optional; when present it may carry auth_mode.
-        if (params && Object.keys(params).length > 0 && !('auth_mode' in params)) {
-            throw error(400, 'discover_folders accepts only an optional auth_mode param')
+        const allowedParamFields = ['auth_mode', 'query']
+        for (const key of Object.keys(params ?? {})) {
+            if (!allowedParamFields.includes(key)) {
+                throw error(400, `Unknown discover_folders param: '${key}'`)
+            }
+        }
+        if (params && 'auth_mode' in params) {
+            const paramAuthMode = params.auth_mode
+            if (
+                typeof paramAuthMode !== 'string' ||
+                !ALLOWED_AUTH_MODES.includes(paramAuthMode as GoogleAuthMode)
+            ) {
+                throw error(400, 'discover_folders auth_mode is invalid')
+            }
+            if (paramAuthMode !== authMode) {
+                throw error(400, 'discover_folders auth_mode conflicts with authMode')
+            }
+        }
+        if (params && 'query' in params) {
+            const query = params.query
+            if (typeof query !== 'string') {
+                throw error(400, 'discover_folders query must be a string')
+            }
+            const queryLength = Array.from(query.trim()).length
+            if (queryLength < 2 || queryLength > 200) {
+                throw error(400, 'discover_folders query must contain 2–200 characters')
+            }
         }
     }
     if (action === 'validate_shared_drive_access') {
         if (!params || typeof params !== 'object' || Array.isArray(params)) {
             throw error(400, 'validate_shared_drive_access requires params')
         }
+        const allowedParamFields = ['auth_mode', 'drive_ids']
+        for (const key of Object.keys(params)) {
+            if (!allowedParamFields.includes(key)) {
+                throw error(400, `Unknown validate_shared_drive_access param: '${key}'`)
+            }
+        }
+        if ('auth_mode' in params) {
+            const paramAuthMode = params.auth_mode
+            if (
+                typeof paramAuthMode !== 'string' ||
+                !ALLOWED_AUTH_MODES.includes(paramAuthMode as GoogleAuthMode)
+            ) {
+                throw error(400, 'validate_shared_drive_access auth_mode is invalid')
+            }
+            if (paramAuthMode !== authMode) {
+                throw error(400, 'validate_shared_drive_access auth_mode conflicts with authMode')
+            }
+        }
         const driveIds = params.drive_ids
-        if (!Array.isArray(driveIds) || driveIds.length === 0) {
+        if (
+            !Array.isArray(driveIds) ||
+            driveIds.length === 0 ||
+            !driveIds.every(
+                (driveId): driveId is string =>
+                    typeof driveId === 'string' && driveId.trim().length > 0,
+            )
+        ) {
             throw error(400, 'validate_shared_drive_access requires a non-empty drive_ids array')
         }
         if (authMode !== 'service_account_direct') {

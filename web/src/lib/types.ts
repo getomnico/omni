@@ -95,9 +95,11 @@ export interface FolderPathFilter {
 }
 
 export type GoogleAuthMode = 'domain_wide_delegation' | 'service_account_direct'
+export type GoogleIndexScope = 'all' | 'selected' | 'pending'
 
 export interface GoogleDriveSourceConfig {
     auth_mode?: GoogleAuthMode
+    index_scope?: GoogleIndexScope
     folder_path_filters?: FolderPathFilter[]
     // Future: shared_drive_filters, mime_type_filters, etc.
 }
@@ -108,6 +110,7 @@ export interface GoogleDriveSourceConfig {
  */
 export interface GoogleSourceConfig {
     auth_mode: GoogleAuthMode
+    index_scope?: GoogleIndexScope
     domain?: string | null
     folder_path_filters?: FolderPathFilter[]
     space_allowlist?: string[]

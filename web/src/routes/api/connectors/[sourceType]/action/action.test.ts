@@ -136,11 +136,71 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         })
     })
 
-    it('rejects unknown actions and unknown top-level fields', async () => {
+    it('rejects unknown actions and unknown fields', async () => {
         expect((await callPost({ action: 'bogus', serviceAccountJson: '{}' })).status).toBe(400)
         expect(
             (await callPost({ action: 'discover_folders', serviceAccountJson: '{}', evil: 1 }))
                 .status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    params: { query: 'roadmap', evil: 1 },
+                })
+            ).status,
+        ).toBe(400)
+    })
+
+    it('forwards DWD folder search queries with the injected auth mode', async () => {
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify({ status: 'success', result: { items: [] } }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        )
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'discover_folders',
+            serviceAccountJson: '{}',
+            principalEmail: 'admin@example.com',
+            domain: 'example.com',
+            params: { query: 'roadmap' },
+        })
+
+        expect(response.status).toBe(200)
+        const [, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).toMatchObject({
+            action: 'discover_folders',
+            params: { query: 'roadmap', auth_mode: 'domain_wide_delegation' },
+        })
+    })
+
+    it('rejects conflicting or invalid folder search auth params', async () => {
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: { auth_mode: 'service_account_direct', query: 'roadmap' },
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: { query: 'x' },
+                })
+            ).status,
         ).toBe(400)
     })
 
@@ -245,6 +305,16 @@ describe('POST /api/connectors/[sourceType]/action', () => {
                     action: 'validate_shared_drive_access',
                     serviceAccountJson: '{}',
                     params: { drive_ids: ['d1'] },
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'validate_shared_drive_access',
+                    serviceAccountJson: '{}',
+                    authMode: 'service_account_direct',
+                    params: { drive_ids: ['   '] },
                 })
             ).status,
         ).toBe(400)

@@ -58,6 +58,17 @@ pub enum GoogleAuthMode {
     ServiceAccountDirect,
 }
 
+/// Controls whether a Drive source is ready to index and which files are in scope.
+/// Missing values are treated as `All` for backwards compatibility.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoogleIndexScope {
+    #[default]
+    All,
+    Selected,
+    Pending,
+}
+
 /// Typed view of a Google source's `sources.config` blob.
 ///
 /// Deserialized once at the sync/action boundary and validated via
@@ -67,11 +78,15 @@ pub enum GoogleAuthMode {
 pub struct GoogleSourceConfig {
     #[serde(default)]
     pub auth_mode: GoogleAuthMode,
+    /// Personal OAuth onboarding uses `pending` until the owner chooses a scope.
+    #[serde(default)]
+    pub index_scope: GoogleIndexScope,
     /// Retained for existing source-config compatibility (DWD).
     #[serde(default)]
     pub domain: Option<String>,
     /// Selected shared drives (kind `shared_drive_root`) and optional folder
-    /// subtrees (kind `folder`). Empty/missing => index everything (DWD).
+    /// subtrees (kind `folder`). Empty/missing means all files unless
+    /// `index_scope` is `selected`.
     #[serde(default)]
     pub folder_path_filters: Vec<FolderPathFilterEntry>,
     #[serde(default)]
@@ -87,6 +102,8 @@ impl GoogleSourceConfig {
     /// is the stored credential's auth type (OAuth vs service-account JWT).
     ///
     /// Rules:
+    /// - `Pending` is rejected so an OAuth source cannot sync before setup.
+    /// - `Selected` requires at least one folder filter.
     /// - `ServiceAccountDirect` requires JWT/service-account credentials and is
     ///   valid only for Google Drive.
     /// - `ServiceAccountDirect` requires a non-empty `folder_path_filters` list
@@ -97,8 +114,34 @@ impl GoogleSourceConfig {
         source_type: SourceType,
         credential_auth_type: AuthType,
     ) -> Result<(), String> {
+        match self.index_scope {
+            GoogleIndexScope::Pending => {
+                return Err("Google Drive source is waiting for an indexing scope".to_string());
+            }
+            GoogleIndexScope::Selected if self.folder_path_filters.is_empty() => {
+                return Err(
+                    "selected Drive scope requires at least one folder or shared drive".to_string(),
+                );
+            }
+            GoogleIndexScope::All | GoogleIndexScope::Selected => {}
+        }
+
         match self.auth_mode {
-            GoogleAuthMode::DomainWideDelegation => Ok(()),
+            GoogleAuthMode::DomainWideDelegation => {
+                if credential_auth_type != AuthType::OAuth
+                    && source_type == SourceType::GoogleDrive
+                    && self
+                        .folder_path_filters
+                        .iter()
+                        .any(|entry| entry.drive_id == "my_drive")
+                {
+                    return Err(
+                        "domain-wide Drive folder scopes must target shared drives; use personal OAuth for My Drive folders"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            }
             GoogleAuthMode::ServiceAccountDirect => {
                 if credential_auth_type == AuthType::OAuth {
                     return Err(
@@ -149,6 +192,7 @@ pub struct DriveFolderDiscoveryEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct DriveFolderDiscoveryResponse {
     pub items: Vec<DriveFolderDiscoveryEntry>,
+    pub truncated: bool,
 }
 
 /// Helper to parse folder_path_filters from a source config.
@@ -2446,6 +2490,38 @@ mod tests {
     }
 
     #[test]
+    fn test_personal_index_scope_validation() {
+        let pending: GoogleSourceConfig = serde_json::from_value(json!({
+            "index_scope": "pending"
+        }))
+        .unwrap();
+        assert!(
+            pending
+                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_err()
+        );
+
+        let selected: GoogleSourceConfig = serde_json::from_value(json!({
+            "index_scope": "selected"
+        }))
+        .unwrap();
+        assert!(
+            selected
+                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_err()
+        );
+
+        let all: GoogleSourceConfig = serde_json::from_value(json!({
+            "index_scope": "all"
+        }))
+        .unwrap();
+        assert!(
+            all.validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn test_google_source_config_tolerates_unknown_top_level_keys() {
         // Legacy/unknown top-level config keys must not reject deserialization
         // (they could break every existing source at dispatch time).
@@ -2525,7 +2601,7 @@ mod tests {
                 .is_err()
         );
 
-        // DWD remains permissive regardless of filters.
+        // DWD remains permissive for non-Drive configurations.
         let dwd = GoogleSourceConfig {
             auth_mode: GoogleAuthMode::DomainWideDelegation,
             folder_path_filters: vec![],
