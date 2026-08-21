@@ -113,6 +113,14 @@ struct DriveGroup {
     folder_ids: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct SharedDriveAclState {
+    drive_acl_fingerprints: HashMap<String, String>,
+    drive_acl_overrides: HashMap<String, DocumentPermissions>,
+    drive_acl_raw: HashMap<String, Vec<GoogleDrivePermission>>,
+    drive_acl_changed: HashMap<String, bool>,
+}
+
 struct DriveUserSyncResult {
     scanned: usize,
     updated: usize,
@@ -2001,25 +2009,109 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Fetch and fingerprint the shared-drive ACLs used by both service-account
+    /// direct sync and impersonated DWD sync. The caller controls whether a
+    /// technical service-account member is excluded from the mapped document ACL.
+    async fn load_shared_drive_acl_state(
+        &self,
+        access_token: &str,
+        drives: &[DriveGroup],
+        old_acl_fingerprints: &HashMap<String, String>,
+        exclude_email: Option<&str>,
+    ) -> Result<SharedDriveAclState> {
+        let mut state = SharedDriveAclState::default();
+        for drive_group in drives {
+            let drive_id = &drive_group.drive_id;
+            let drive_acl = self
+                .drive_client
+                .list_drive_permissions(access_token, drive_id)
+                .await
+                .with_context(|| format!("Failed to read ACLs for drive {}", drive_id))?;
+
+            let fingerprint = crate::models::drive_acl_fingerprint(&drive_acl);
+            let changed = old_acl_fingerprints.get(drive_id) != Some(&fingerprint);
+            if changed {
+                info!(
+                    "ACL fingerprint changed for drive {} — forcing full re-traversal",
+                    drive_id
+                );
+            }
+            state
+                .drive_acl_fingerprints
+                .insert(drive_id.clone(), fingerprint);
+            state.drive_acl_overrides.insert(
+                drive_id.clone(),
+                crate::models::map_drive_permissions(&drive_acl, exclude_email),
+            );
+            state.drive_acl_raw.insert(drive_id.clone(), drive_acl);
+            state.drive_acl_changed.insert(drive_id.clone(), changed);
+        }
+        Ok(state)
+    }
+
+    fn record_folder_access(
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        folder: &GoogleDriveFile,
+    ) {
+        let entry = folder_access.entry(folder.id.clone()).or_default();
+        entry.parents = folder.parents.clone().unwrap_or_default();
+        entry.inherited_permissions_disabled =
+            folder.inherited_permissions_disabled.unwrap_or(false);
+    }
+
+    /// Fetch directly-assigned ACLs for folders with bounded concurrency.
+    /// SA-direct preserves its historical best-effort behavior while scoped DWD
+    /// fails closed because it cannot safely model a selected subtree without
+    /// its folder ACLs.
+    async fn load_folder_acls(
+        &self,
+        access_token: &str,
+        folder_ids: Vec<String>,
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        strict: bool,
+    ) -> Result<()> {
+        let client = self.drive_client.clone();
+        let token = access_token.to_string();
+        let semaphore = Arc::new(Semaphore::new(GOOGLE_FILE_CONCURRENCY));
+        let mut tasks = tokio::task::JoinSet::new();
+        for folder_id in folder_ids {
+            let client = client.clone();
+            let token = token.clone();
+            let permit = semaphore.clone();
+            tasks.spawn(async move {
+                let _guard = permit.acquire_owned().await;
+                let result = client.list_drive_permissions(&token, &folder_id).await;
+                (folder_id, result)
+            });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            let (folder_id, result) =
+                joined.map_err(|error| anyhow!("Folder ACL fetch task failed: {}", error))?;
+            match result {
+                Ok(raw) => {
+                    if let Some(entry) = folder_access.get_mut(&folder_id) {
+                        entry.acl = Some(crate::models::filter_direct_permissions(&raw));
+                    }
+                }
+                Err(error) if strict => {
+                    return Err(error)
+                        .with_context(|| format!("Failed to read ACL for folder {}", folder_id));
+                }
+                Err(error) => {
+                    warn!("Failed to read ACLs for folder {}: {}", folder_id, error);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn record_scoped_folder_access(
         folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
         folder_drive_ids: &mut HashMap<String, String>,
         folder: &GoogleDriveFile,
         drive_id: &str,
     ) {
-        let existing_acl = folder_access
-            .get(&folder.id)
-            .and_then(|entry| entry.acl.clone());
-        folder_access.insert(
-            folder.id.clone(),
-            crate::models::FolderAccessEntry {
-                parents: folder.parents.clone().unwrap_or_default(),
-                inherited_permissions_disabled: folder
-                    .inherited_permissions_disabled
-                    .unwrap_or(false),
-                acl: existing_acl,
-            },
-        );
+        Self::record_folder_access(folder_access, folder);
         folder_drive_ids.insert(folder.id.clone(), drive_id.to_string());
     }
 
@@ -2128,31 +2220,8 @@ impl SyncManager {
                     .then(|| folder_id.clone())
             })
             .collect();
-        let client = self.drive_client.clone();
-        let token = access_token.to_string();
-        let semaphore = Arc::new(Semaphore::new(GOOGLE_FILE_CONCURRENCY));
-        let mut tasks = tokio::task::JoinSet::new();
-        for folder_id in pending {
-            let client = client.clone();
-            let token = token.clone();
-            let permit = semaphore.clone();
-            tasks.spawn(async move {
-                let _guard = permit.acquire_owned().await;
-                let result = client.list_drive_permissions(&token, &folder_id).await;
-                (folder_id, result)
-            });
-        }
-        while let Some(joined) = tasks.join_next().await {
-            let (folder_id, result) =
-                joined.map_err(|error| anyhow!("Folder ACL fetch task failed: {}", error))?;
-            let raw =
-                result.with_context(|| format!("Failed to read ACL for folder {}", folder_id))?;
-            if let Some(entry) = folder_access.get_mut(&folder_id) {
-                entry.acl = Some(crate::models::filter_direct_permissions(&raw));
-            }
-        }
-
-        Ok(())
+        self.load_folder_acls(access_token, pending, folder_access, true)
+            .await
     }
 
     /// Scoped full sync: crawl selected shared drives and/or folder subtrees only,
@@ -2253,40 +2322,32 @@ impl SyncManager {
             .drive_acl_fingerprints
             .clone()
             .unwrap_or_default();
-        let mut new_acl_fingerprints: HashMap<String, String> = HashMap::new();
-        let mut drive_acl_overrides: HashMap<String, DocumentPermissions> = HashMap::new();
-        let mut drive_acl_raw: HashMap<String, Vec<GoogleDrivePermission>> = HashMap::new();
-        let mut drive_acl_changed: HashMap<String, bool> = HashMap::new();
-        for drive_group in &drives {
-            let drive_id = &drive_group.drive_id;
-            let drive_acl = self
-                .drive_client
-                .list_drive_permissions(&access_token, drive_id)
-                .await
-                .with_context(|| format!("Failed to read ACLs for drive {}", drive_id))?;
+        let service_account_email = match service_auth.as_ref() {
+            GoogleAuth::ServiceAccount(service_account) => Some(service_account.client_email()),
+            GoogleAuth::OAuth(_) => None,
+        };
+        let acl_state = self
+            .load_shared_drive_acl_state(
+                &access_token,
+                &drives,
+                &old_acl_fingerprints,
+                service_account_email,
+            )
+            .await?;
+        for (drive_id, drive_acl) in &acl_state.drive_acl_raw {
             if drive_acl.is_empty() {
                 return Err(anyhow!(
                     "Drive {} returned an empty permission list; refusing to index shared-drive documents without a complete ACL",
                     drive_id
                 ));
             }
-
-            let fingerprint = crate::models::drive_acl_fingerprint(&drive_acl);
-            let changed = old_acl_fingerprints.get(drive_id) != Some(&fingerprint);
-            if changed {
-                info!(
-                    "ACL fingerprint changed for drive {} — forcing full re-traversal",
-                    drive_id
-                );
-            }
-            new_acl_fingerprints.insert(drive_id.clone(), fingerprint);
-            drive_acl_overrides.insert(
-                drive_id.clone(),
-                crate::models::map_drive_permissions(&drive_acl, None),
-            );
-            drive_acl_raw.insert(drive_id.clone(), drive_acl);
-            drive_acl_changed.insert(drive_id.clone(), changed);
         }
+        let SharedDriveAclState {
+            drive_acl_fingerprints: new_acl_fingerprints,
+            drive_acl_overrides,
+            drive_acl_raw,
+            drive_acl_changed,
+        } = acl_state;
 
         let stored_folder_access = existing_state.folder_access.clone().unwrap_or_default();
         let mut folder_access: HashMap<String, crate::models::FolderAccessEntry> =
@@ -2939,40 +3000,19 @@ impl SyncManager {
             .drive_acl_fingerprints
             .clone()
             .unwrap_or_default();
-        let mut new_acl_fingerprints: HashMap<String, String> = HashMap::new();
-        let mut drive_acl_overrides: HashMap<String, DocumentPermissions> = HashMap::new();
-        let mut drive_acl_changed: HashMap<String, bool> = HashMap::new();
-        // Raw (unmapped) drive ACLs, needed to compute the always-access
-        // organizer set at limited-access folder boundaries.
-        let mut drive_acl_raw: HashMap<String, Vec<GoogleDrivePermission>> = HashMap::new();
-
-        for drive_group in &drives {
-            let drive_id = &drive_group.drive_id;
-            let drive_acl = self
-                .drive_client
-                .list_drive_permissions(&access_token, drive_id)
-                .await
-                .with_context(|| format!("Failed to read ACLs for drive {}", drive_id))?;
-
-            let _role = crate::models::validate_sa_drive_access(drive_id, &drive_acl, &sa_email)?;
-
-            let permissions = crate::models::map_drive_permissions(&drive_acl, Some(&sa_email));
-            let fingerprint = crate::models::drive_acl_fingerprint(&drive_acl);
-            let changed = old_acl_fingerprints.get(drive_id) != Some(&fingerprint);
-            if changed {
-                info!(
-                    "ACL fingerprint changed for drive {} — forcing full re-traversal",
-                    drive_id
-                );
-            }
-            new_acl_fingerprints.insert(drive_id.clone(), fingerprint);
-            drive_acl_overrides.insert(drive_id.clone(), permissions);
-            drive_acl_changed.insert(drive_id.clone(), changed);
-            drive_acl_raw.insert(drive_id.clone(), drive_acl);
-
-            if drive_acl_raw
-                .get(drive_id)
-                .is_some_and(|acl| acl.iter().any(|p| p.permission_type == "group"))
+        let acl_state = self
+            .load_shared_drive_acl_state(
+                &access_token,
+                &drives,
+                &old_acl_fingerprints,
+                Some(&sa_email),
+            )
+            .await?;
+        for (drive_id, drive_acl) in &acl_state.drive_acl_raw {
+            crate::models::validate_sa_drive_access(drive_id, drive_acl, &sa_email)?;
+            if drive_acl
+                .iter()
+                .any(|permission| permission.permission_type == "group")
             {
                 warn!(
                     "Drive {} ACL includes group grants. Group-granted documents are visible \
@@ -2982,6 +3022,12 @@ impl SyncManager {
                 );
             }
         }
+        let SharedDriveAclState {
+            drive_acl_fingerprints: new_acl_fingerprints,
+            drive_acl_overrides,
+            drive_acl_raw,
+            drive_acl_changed,
+        } = acl_state;
 
         let content_cache = Arc::new(DriveContentCache::default());
         let mut total_scanned = 0;
@@ -3367,10 +3413,7 @@ impl SyncManager {
                 .list_folders_in_drive(service_auth, sa_email, drive_id, folder_page.as_deref())
                 .await?;
             for folder in response.files {
-                let entry = folder_access.entry(folder.id.clone()).or_default();
-                entry.parents = folder.parents.clone().unwrap_or_default();
-                entry.inherited_permissions_disabled =
-                    folder.inherited_permissions_disabled.unwrap_or(false);
+                Self::record_folder_access(folder_access, &folder);
             }
             match response.next_page_token {
                 Some(token) => folder_page = Some(token),
@@ -3387,34 +3430,8 @@ impl SyncManager {
             .filter(|(_, entry)| entry.acl.is_none())
             .map(|(id, _)| id.clone())
             .collect();
-        let client = self.drive_client.clone();
-        let token = access_token.to_string();
-        let semaphore = Arc::new(Semaphore::new(GOOGLE_FILE_CONCURRENCY));
-        let mut tasks = tokio::task::JoinSet::new();
-        for folder_id in pending {
-            let client = client.clone();
-            let token = token.clone();
-            let permit = semaphore.clone();
-            tasks.spawn(async move {
-                let _guard = permit.acquire_owned().await;
-                let result = client.list_drive_permissions(&token, &folder_id).await;
-                (folder_id, result)
-            });
-        }
-        while let Some(joined) = tasks.join_next().await {
-            let (folder_id, result) =
-                joined.map_err(|e| anyhow!("Folder ACL fetch task failed: {}", e))?;
-            match result {
-                Ok(raw) => {
-                    if let Some(entry) = folder_access.get_mut(&folder_id) {
-                        entry.acl = Some(crate::models::filter_direct_permissions(&raw));
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to read ACLs for folder {}: {}", folder_id, e);
-                }
-            }
-        }
+        self.load_folder_acls(access_token, pending, folder_access, false)
+            .await?;
 
         let mut file_batch: Vec<UserFile> = Vec::new();
         let mut page_token: Option<String> = None;
