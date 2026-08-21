@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator
 from typing import Any, ClassVar, cast
 
 import boto3
+import httpx
+from anthropic import APIConnectionError as AnthropicConnectionError
 from anthropic import APIStatusError, AnthropicBedrock
 from anthropic.types import (
     MessageParam,
@@ -59,7 +61,16 @@ def _bedrock_is_retryable(e: BaseException) -> bool:
     disconnect) that a caller may safely retry once. ``ClientError`` (API
     status errors) is excluded: boto3 already retries those at request-creation
     time."""
-    return isinstance(e, (HTTPClientError, BotoConnectionError, BotoSSLError))
+    return isinstance(
+        e,
+        (
+            httpx.TransportError,
+            AnthropicConnectionError,
+            HTTPClientError,
+            BotoConnectionError,
+            BotoSSLError,
+        ),
+    )
 
 
 def sanitize_document_name(name: str) -> str:

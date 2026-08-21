@@ -54,6 +54,7 @@ class TestTransportErrorClassification:
             _openai_is_retryable,
             _openai_compat_is_retryable,
             _gemini_is_retryable,
+            _bedrock_is_retryable,
         ):
             assert classifier(read_error)
             assert classifier(connect_error)
@@ -72,6 +73,8 @@ class TestTransportErrorClassification:
         assert _bedrock_is_retryable(
             ReadTimeoutError(endpoint_url="https://bedrock.test")
         )
+        assert _bedrock_is_retryable(httpx.ReadError("stream reset", request=_REQUEST))
+        assert _bedrock_is_retryable(AnthropicConnectionError(request=_REQUEST))
 
     def test_anthropic_deterministic_errors_are_not_retryable(self):
         assert not _anthropic_is_retryable(
