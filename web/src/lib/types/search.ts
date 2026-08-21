@@ -170,9 +170,3 @@ export interface DriveFolderDiscoveryResponse {
     items: DriveFolderDiscoveryEntry[]
     truncated?: boolean
 }
-
-export interface ConnectorActionResponse<T = unknown> {
-    status: string
-    result?: T
-    error?: string
-}

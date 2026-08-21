@@ -13,12 +13,9 @@
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
-    import type {
-        GoogleDirectoryUser,
-        SearchUsersResponse,
-        ConnectorActionResponse,
-    } from '$lib/types/search'
+    import type { GoogleDirectoryUser, SearchUsersResponse } from '$lib/types/search'
     import { AuthType } from '$lib/types'
+    import type { ConnectorActionResponse } from '$lib/types'
     import gmailLogo from '$lib/images/icons/gmail.svg'
 
     let { data }: PageProps = $props()

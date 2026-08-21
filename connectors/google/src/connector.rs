@@ -156,7 +156,7 @@ fn build_discovery_folder_path(
             shared_drive_names
                 .get(drive_id)
                 .map(|name| format!("{} (Shared Drive)", name))
-                .unwrap_or_else(|| format!("Shared Drive {}", drive_id))
+                .unwrap_or_else(|| "Shared Drive".to_string())
         })
         .unwrap_or_else(|| "My Drive".to_string());
     if partial {
@@ -1616,16 +1616,16 @@ mod tests {
     use serde_json::json;
 
     use crate::admin::AdminClient;
-    use crate::models::GoogleAuthMode;
+    use crate::models::{GoogleAuthMode, GoogleDriveFile};
     use crate::sync::SyncManager;
 
     use super::{
         DiscoverFoldersParams, GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE,
         GOOGLE_DOCS_SCOPE, GOOGLE_DRIVE_READ_SCOPE, GOOGLE_DRIVE_WRITE_SCOPE, GOOGLE_SHEETS_SCOPE,
         GOOGLE_SLIDES_SCOPE, GoogleConnector, GwsCallRequest, GwsSchemaRequest,
-        build_attachment_doc_id, build_gws_call_args, build_gws_schema_args,
-        file_name_with_extension, gws_action_response, gws_required_action_scopes,
-        missing_gws_call_scopes, parse_attachment_doc_id,
+        build_attachment_doc_id, build_discovery_folder_path, build_gws_call_args,
+        build_gws_schema_args, file_name_with_extension, gws_action_response,
+        gws_required_action_scopes, missing_gws_call_scopes, parse_attachment_doc_id,
     };
 
     fn test_connector() -> GoogleConnector {
@@ -1684,6 +1684,31 @@ mod tests {
         assert_eq!(body["status"], "error");
         assert_eq!(body["error"], "folder discovery query is required");
         Ok(())
+    }
+
+    #[test]
+    fn discovery_folder_path_does_not_expose_unknown_drive_id() {
+        let folder = GoogleDriveFile {
+            id: "folder-id".to_string(),
+            name: "Roadmap".to_string(),
+            mime_type: "application/vnd.google-apps.folder".to_string(),
+            web_view_link: None,
+            created_time: None,
+            modified_time: None,
+            size: None,
+            parents: None,
+            shared: None,
+            trashed: None,
+            drive_id: Some("drive-id".to_string()),
+            inherited_permissions_disabled: None,
+            permissions: None,
+            owners: None,
+        };
+
+        let path = build_discovery_folder_path(&folder, &std::collections::HashMap::new(), true);
+
+        assert_eq!(path, "/Shared Drive/…/Roadmap");
+        assert!(!path.contains("drive-id"));
     }
 
     #[test]

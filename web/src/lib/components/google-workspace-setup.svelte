@@ -8,14 +8,7 @@
     import * as Alert from '$lib/components/ui/alert'
     import { Loader2, CheckCircle2, XCircle, AlertCircle } from '@lucide/svelte'
     import { AuthType } from '$lib/types'
-    import type {
-        ConnectorActionResponse,
-        DriveAccessStatus,
-        FolderPathFilter,
-        GoogleAuthMode,
-        GoogleSourceConfig,
-        SharedDriveAccessResponse,
-    } from '$lib/types'
+    import type { ConnectorActionResponse } from '$lib/types'
     import { toast } from 'svelte-sonner'
     import { goto } from '$app/navigation'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
@@ -23,6 +16,7 @@
     import googleChatLogo from '$lib/images/icons/google-chat.svg'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
     import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
+    import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
 
     interface Props {
         open: boolean
@@ -31,6 +25,32 @@
     }
 
     let { open = false, onSuccess, onCancel }: Props = $props()
+
+    type GoogleAuthMode = 'domain_wide_delegation' | 'service_account_direct'
+
+    interface GoogleSourceConfig {
+        auth_mode: GoogleAuthMode
+        domain?: string | null
+        folder_path_filters?: FolderPathFilter[]
+    }
+
+    interface SharedDriveAccessResult {
+        drive_id: string
+        ok: boolean
+        role: string | null
+        error: string | null
+    }
+
+    interface SharedDriveAccessResponse {
+        drives: SharedDriveAccessResult[]
+    }
+
+    interface DriveAccessStatus {
+        pending: boolean
+        ok: boolean
+        role: string | null
+        error: string | null
+    }
 
     // Active tab: 'dwd' (domain-wide delegation) | 'sa-direct' (shared drive, no DWD)
     let activeTab = $state<GoogleAuthMode>('domain_wide_delegation')
@@ -44,10 +64,14 @@
     let connectChat = $state(false)
     let isSubmitting = $state(false)
     let driveFolderFilters = $state<FolderPathFilter[]>([])
+    let driveSelectorRevision = $state(0)
+    let driveFiltersBeforeCredentialReplacement = $state<FolderPathFilter[] | null>(null)
 
     // SA-direct form state (kept separate so switching tabs preserves each)
     let saServiceAccountJson = $state('')
     let saDriveFilters = $state<FolderPathFilter[]>([])
+    let saSelectorRevision = $state(0)
+    let saFiltersBeforeCredentialReplacement = $state<FolderPathFilter[] | null>(null)
     // Per-drive validation: drive_id -> { pending, ok, role, error }
     let accessValidation = $state<Record<string, DriveAccessStatus>>({})
     let isValidating = $state(false)
@@ -66,10 +90,57 @@
         }
     }
 
+    function invalidateSaValidation() {
+        validationGeneration += 1
+        validationAbort?.abort()
+        validationAbort = null
+        accessValidation = {}
+        isValidating = false
+        isSubmitting = false
+    }
+
+    function handleDwdCredentialsChange() {
+        driveFolderFilters = []
+        driveSelectorRevision += 1
+    }
+
+    function handleDwdAccountDetailsChange() {
+        driveFiltersBeforeCredentialReplacement = null
+        handleDwdCredentialsChange()
+    }
+
+    function handleDwdCredentialReplacementStart() {
+        driveFiltersBeforeCredentialReplacement = [...driveFolderFilters]
+    }
+
+    function handleDwdCredentialReplacementCancel() {
+        if (driveFiltersBeforeCredentialReplacement === null) return
+        driveFolderFilters = driveFiltersBeforeCredentialReplacement
+        driveFiltersBeforeCredentialReplacement = null
+        driveSelectorRevision += 1
+    }
+
+    function handleSaCredentialsChange() {
+        saDriveFilters = []
+        saSelectorRevision += 1
+        invalidateSaValidation()
+    }
+
+    function handleSaCredentialReplacementStart() {
+        saFiltersBeforeCredentialReplacement = [...saDriveFilters]
+    }
+
+    function handleSaCredentialReplacementCancel() {
+        if (saFiltersBeforeCredentialReplacement === null) return
+        saDriveFilters = saFiltersBeforeCredentialReplacement
+        saFiltersBeforeCredentialReplacement = null
+        saSelectorRevision += 1
+        invalidateSaValidation()
+    }
+
     // Event-driven SA-direct access validation. The drive selector reports
-    // every selection change (add/remove/credential-context clear) via
-    // onSelectedChange; validation runs only when both a key and drives are
-    // present, and is invalidated otherwise.
+    // every selection change (add/remove) via onSelectedChange; validation
+    // runs only when both a key and drives are present.
     function handleSaSelectionChange(filters: FolderPathFilter[]) {
         console.log(
             '[google-setup] saSelectionChange',
@@ -78,14 +149,7 @@
         if (saServiceAccountJson.trim() && filters.length > 0) {
             validateAccess(saServiceAccountJson, filters)
         } else {
-            // Invalidate and cancel any in-flight validation so stale results
-            // from a previous key/selection can't land.
-            validationGeneration += 1
-            validationAbort?.abort()
-            validationAbort = null
-            accessValidation = {}
-            isValidating = false
-            isSubmitting = false
+            invalidateSaValidation()
         }
     }
 
@@ -451,9 +515,13 @@
         connectGmail = true
         connectChat = false
         driveFolderFilters = []
+        driveSelectorRevision += 1
+        driveFiltersBeforeCredentialReplacement = null
         saServiceAccountJson = ''
         saDriveFilters = []
-        accessValidation = {}
+        saSelectorRevision += 1
+        saFiltersBeforeCredentialReplacement = null
+        invalidateSaValidation()
         activeTab = 'domain_wide_delegation'
     }
 
@@ -518,7 +586,11 @@
                     bind:serviceAccountJson
                     bind:principalEmail
                     bind:domain
-                    mode="dwd" />
+                    mode="dwd"
+                    onCredentialsChange={handleDwdCredentialsChange}
+                    onAccountDetailsChange={handleDwdAccountDetailsChange}
+                    onCredentialReplacementStart={handleDwdCredentialReplacementStart}
+                    onCredentialReplacementCancel={handleDwdCredentialReplacementCancel} />
 
                 {#if connectDrive}
                     <Card.Root class="border-dashed">
@@ -529,12 +601,14 @@
                             </Card.Description>
                         </Card.Header>
                         <Card.Content>
-                            <GoogleDriveFolderSelector
-                                bind:selected={driveFolderFilters}
-                                {serviceAccountJson}
-                                {principalEmail}
-                                {domain}
-                                authMode="domain_wide_delegation" />
+                            {#key driveSelectorRevision}
+                                <GoogleDriveFolderSelector
+                                    bind:selected={driveFolderFilters}
+                                    {serviceAccountJson}
+                                    {principalEmail}
+                                    {domain}
+                                    authMode="domain_wide_delegation" />
+                            {/key}
                         </Card.Content>
                     </Card.Root>
                 {/if}
@@ -543,7 +617,10 @@
             <Tabs.Content value="service_account_direct" class="space-y-4 pt-4">
                 <GoogleServiceAccountForm
                     bind:serviceAccountJson={saServiceAccountJson}
-                    mode="sa-direct" />
+                    mode="sa-direct"
+                    onCredentialsChange={handleSaCredentialsChange}
+                    onCredentialReplacementStart={handleSaCredentialReplacementStart}
+                    onCredentialReplacementCancel={handleSaCredentialReplacementCancel} />
 
                 {#if saDriveFilters.length > 0 && !allDrivesValidated}
                     <Alert.Root>
@@ -561,14 +638,16 @@
 
                 <Card.Root class="border-dashed">
                     <Card.Content class="space-y-3">
-                        <GoogleDriveFolderSelector
-                            bind:selected={saDriveFilters}
-                            serviceAccountJson={saServiceAccountJson}
-                            authMode="service_account_direct"
-                            label="Shared drives to index"
-                            description="Search and select shared drives to index in full. Only whole drives are supported in this mode, and at least one is required."
-                            disabled={!saServiceAccountJson.trim()}
-                            onSelectedChange={handleSaSelectionChange} />
+                        {#key saSelectorRevision}
+                            <GoogleDriveFolderSelector
+                                bind:selected={saDriveFilters}
+                                serviceAccountJson={saServiceAccountJson}
+                                authMode="service_account_direct"
+                                label="Shared drives to index"
+                                description="Search and select shared drives to index in full. Only whole drives are supported in this mode, and at least one is required."
+                                disabled={!saServiceAccountJson.trim()}
+                                onSelectedChange={handleSaSelectionChange} />
+                        {/key}
                     </Card.Content>
                 </Card.Root>
 

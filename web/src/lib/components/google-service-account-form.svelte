@@ -15,6 +15,10 @@
         // Hide the SA-direct explanation paragraph when the surrounding page
         // already explains the mode (e.g. a banner on the settings page).
         showSaDirectInfo?: boolean
+        onCredentialsChange?: () => void
+        onAccountDetailsChange?: () => void
+        onCredentialReplacementStart?: () => void
+        onCredentialReplacementCancel?: () => void
     }
 
     let {
@@ -25,6 +29,10 @@
         disabled = false,
         mode = 'dwd',
         showSaDirectInfo = true,
+        onCredentialsChange,
+        onAccountDetailsChange,
+        onCredentialReplacementStart,
+        onCredentialReplacementCancel,
     }: Props = $props()
 
     const isSaDirect = $derived(mode === 'sa-direct')
@@ -39,6 +47,9 @@
             hasStoredValue={hasStoredKey}
             multiline
             {disabled}
+            onValueChange={onCredentialsChange}
+            onReplacementStart={onCredentialReplacementStart}
+            onReplacementCancel={onCredentialReplacementCancel}
             placeholder="Paste your Google service account JSON key here..." />
         <p class="text-muted-foreground text-sm">
             Download this from the Google Cloud Console under "Service Accounts" > "Keys".
@@ -64,6 +75,7 @@
                 placeholder="admin@yourdomain.com"
                 type="email"
                 {disabled}
+                oninput={onAccountDetailsChange ?? onCredentialsChange}
                 required />
             <p class="text-muted-foreground text-sm">
                 The admin user the service account impersonates to access Google Workspace APIs.
@@ -79,6 +91,7 @@
                 placeholder="yourdomain.com"
                 type="text"
                 {disabled}
+                oninput={onAccountDetailsChange ?? onCredentialsChange}
                 required />
             <p class="text-muted-foreground text-sm">
                 Your Google Workspace domain (e.g., company.com).

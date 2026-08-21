@@ -13,6 +13,9 @@
         placeholder?: string
         rows?: number
         inputClass?: string
+        onValueChange?: () => void
+        onReplacementStart?: () => void
+        onReplacementCancel?: () => void
     }
 
     let {
@@ -25,6 +28,9 @@
         placeholder = '',
         rows = 10,
         inputClass = '',
+        onValueChange,
+        onReplacementStart,
+        onReplacementCancel,
     }: Props = $props()
 
     let replacing = $state(!hasStoredValue)
@@ -34,11 +40,17 @@
     function startReplace() {
         replacing = true
         value = ''
+        onReplacementStart?.()
     }
 
     function cancelReplace() {
         replacing = false
         value = ''
+        onReplacementCancel?.()
+    }
+
+    function handleInput() {
+        onValueChange?.()
     }
 </script>
 
@@ -63,6 +75,7 @@
             {disabled}
             {placeholder}
             {rows}
+            oninput={handleInput}
             class={inputClass ||
                 'max-h-64 overflow-y-auto font-mono text-sm break-all whitespace-pre-wrap'} />
         {#if hasStoredValue}
@@ -79,7 +92,15 @@
     </div>
 {:else}
     <div class="flex items-center gap-2">
-        <Input {id} {name} type="password" bind:value {disabled} {placeholder} class={inputClass} />
+        <Input
+            {id}
+            {name}
+            type="password"
+            bind:value
+            {disabled}
+            {placeholder}
+            oninput={handleInput}
+            class={inputClass} />
         {#if hasStoredValue}
             <Button
                 type="button"

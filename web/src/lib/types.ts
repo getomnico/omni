@@ -86,72 +86,11 @@ export interface ClickUpSourceConfig {
     space_filters?: string[]
 }
 
-export interface FolderPathFilter {
-    id: string
-    name: string
-    path: string
-    driveId: string
-    kind: 'shared_drive_root' | 'folder'
-}
-
-export type GoogleAuthMode = 'domain_wide_delegation' | 'service_account_direct'
-export type GoogleIndexScope = 'all' | 'selected' | 'pending'
-
-export interface GoogleDriveSourceConfig {
-    auth_mode?: GoogleAuthMode
-    index_scope?: GoogleIndexScope
-    folder_path_filters?: FolderPathFilter[]
-    // Future: shared_drive_filters, mime_type_filters, etc.
-}
-
-/**
- * Mirrors the connector's `GoogleSourceConfig` (models.rs).
- * `domain` is used only in domain_wide_delegation mode.
- */
-export interface GoogleSourceConfig {
-    auth_mode: GoogleAuthMode
-    index_scope?: GoogleIndexScope
-    domain?: string | null
-    folder_path_filters?: FolderPathFilter[]
-    space_allowlist?: string[]
-    include_group_chats?: boolean
-}
-
-export interface SharedDriveAccessResult {
-    drive_id: string
-    ok: boolean
-    role: string | null
-    error: string | null
-}
-
-export interface SharedDriveAccessResponse {
-    drives: SharedDriveAccessResult[]
-}
-
-/** Per-drive access-validation status shown in the setup UI. */
-export interface DriveAccessStatus {
-    pending: boolean
-    ok: boolean
-    role: string | null
-    error: string | null
-}
-
-/** Envelope returned by the transient connector action route. */
+/** Envelope returned by a connector action route. */
 export interface ConnectorActionResponse<T = unknown> {
-    status: 'success' | 'error'
+    status: string
     result?: T
     error?: string
-}
-
-export interface GmailSourceConfig {
-    auth_mode?: GoogleAuthMode
-    // Future: label_filters, date_range_filters, etc.
-}
-
-export interface GoogleChatSourceConfig {
-    auth_mode?: GoogleAuthMode
-    space_allowlist?: string[]
-    include_group_chats?: boolean
 }
 
 export interface FilesystemSourceConfig {

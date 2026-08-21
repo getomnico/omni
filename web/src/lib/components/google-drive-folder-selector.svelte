@@ -5,8 +5,8 @@
     import * as Alert from '$lib/components/ui/alert'
     import * as Popover from '$lib/components/ui/popover'
     import { onDestroy } from 'svelte'
-    import type { FolderPathFilter } from '$lib/types'
     import type { DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse } from '$lib/types/search'
+    import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
     import {
         GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS,
         googleDriveFolderSearchLength,
@@ -54,80 +54,11 @@
     let inputRef = $state<HTMLInputElement | null>(null)
     let dropdownAnchor = $state<HTMLElement | null>(null)
 
-    // Guard: preserve persisted selections on the initial mount. Discovery is
-    // search-driven and never runs automatically.
-    let hasInitialized = $state(false)
-
-    // Generation counter: bumped on every credential-context change.
-    // Each async operation captures the generation at start and verifies it
-    // before any state mutation after an await.
-    let generation = $state(0)
-
     // Request-level counter: only the request whose version matches
     // `currentRequestVersion` may mutate state after an await, preventing
-    // races between sequential searches with the same credential generation.
+    // races between sequential searches and remounted credential contexts.
     let currentRequestVersion = $state(0)
     let lastDiscoveryQuery = $state('')
-
-    // Build a credential-context token from all relevant inputs.
-    // Uses the raw values rather than a hash to guarantee no collisions,
-    // and includes sourceId as fallback for stored-credential mode.
-    // PrincipalEmail/domain changes count even when key is blank
-    // because they are part of the credential context.
-    let contextToken = $derived(
-        JSON.stringify({
-            sa: serviceAccountJson,
-            pe: principalEmail,
-            dm: domain,
-            am: authMode,
-            sid: sourceId,
-        }),
-    )
-
-    // Track the previous context token to detect changes.
-    let prevContextToken = $state('')
-
-    // Reactive effect: reset discovery state when the credential context changes.
-    $effect(() => {
-        // First evaluation: set up initial state without clearing selections.
-        if (!hasInitialized) {
-            hasInitialized = true
-            prevContextToken = contextToken
-            return
-        }
-
-        // Subsequent evaluations: detect actual changes.
-        if (contextToken === prevContextToken) return
-        prevContextToken = contextToken
-
-        // Bump generation to invalidate any in-flight responses.
-        generation += 1
-
-        // Cancel any in-flight request or pending search debounce.
-        pendingRequest?.abort()
-        pendingRequest = null
-        currentRequestVersion += 1
-        if (searchDebounce) clearTimeout(searchDebounce)
-        searchDebounce = undefined
-
-        // Clear selected items ONLY on an actual credential-context change
-        // after initialization. On initial mount, pre-loaded selected items
-        // from persisted config are preserved.
-        selected = []
-        onSelectedChange?.(selected)
-
-        // Reset discovery state.
-        searchQuery = ''
-        allItems = []
-        filteredItems = []
-        hasLoaded = false
-        errorMessage = ''
-        discoveryNotice = ''
-        lastDiscoveryQuery = ''
-
-        // Discovery starts only after the user enters a search prefix.
-    })
-
     let pendingRequest: AbortController | null = null
     let searchDebounce: GoogleDriveFolderSearchTimer | undefined
 
@@ -138,14 +69,14 @@
             searchDebounce,
             query,
             (normalizedQuery) => {
-                discoverFolders(generation, normalizedQuery)
+                discoverFolders(normalizedQuery)
                 searchDebounce = undefined
             },
         )
     }
 
     // Search accessible folders and drives for a user-entered prefix.
-    async function discoverFolders(gen: number, query: string) {
+    async function discoverFolders(query: string) {
         const normalizedQuery = query.trim()
         if (googleDriveFolderSearchLength(normalizedQuery) < GOOGLE_DRIVE_FOLDER_SEARCH_MIN_CHARS)
             return
@@ -219,15 +150,15 @@
                 return
             }
 
-            // RACE CHECK: if generation or request version has changed, discard.
-            if (gen !== generation || rv !== currentRequestVersion) return
+            // RACE CHECK: if the request version has changed, discard.
+            if (rv !== currentRequestVersion) return
 
             if (response.ok) {
                 const body: { status?: string; result?: DriveFolderDiscoveryResponse } =
                     await response.json()
 
                 // RACE CHECK
-                if (gen !== generation || rv !== currentRequestVersion) return
+                if (rv !== currentRequestVersion) return
 
                 const statusOk = body?.status === 'ok' || body?.status === 'success'
                 const items = body?.result?.items ?? []
@@ -252,23 +183,23 @@
                 let msg = 'Failed to discover folders'
                 try {
                     const errBody = await response.json()
-                    if (gen !== generation || rv !== currentRequestVersion) return
+                    if (rv !== currentRequestVersion) return
                     msg = errBody.error || errBody.message || msg
                 } catch {
-                    if (gen !== generation || rv !== currentRequestVersion) return
+                    if (rv !== currentRequestVersion) return
                     msg = (await response.text()) || msg
                 }
                 errorMessage = msg
             }
         } catch (err) {
-            if (gen !== generation || rv !== currentRequestVersion) return
+            if (rv !== currentRequestVersion) return
             if (err instanceof DOMException && err.name === 'AbortError') {
                 return
             }
             console.error('Error discovering folders:', err)
             errorMessage = 'Network error. Please check your connection and try again.'
         } finally {
-            if (gen === generation && rv === currentRequestVersion) {
+            if (rv === currentRequestVersion) {
                 isLoading = false
             }
         }
@@ -358,7 +289,7 @@
     }
 
     function handleRetry() {
-        // Reset state and trigger a fresh discovery with the current generation.
+        // Reset state and trigger a fresh discovery for the current query.
         allItems = []
         filteredItems = []
         hasLoaded = false
@@ -369,6 +300,7 @@
 
     // Clean up in-flight requests on destroy
     onDestroy(() => {
+        currentRequestVersion += 1
         pendingRequest?.abort()
         if (searchDebounce) clearTimeout(searchDebounce)
     })
@@ -394,7 +326,7 @@
 
 <div class="space-y-2">
     <Label class="text-sm font-medium">{label}</Label>
-    <p class="text-muted-foreground text-xs">{description} Search uses the beginning of a name.</p>
+    <p class="text-muted-foreground text-xs">{description}</p>
 
     <!-- Error state -->
     {#if errorMessage && !isLoading}

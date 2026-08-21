@@ -3,7 +3,6 @@ import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 import { SourceType } from '$lib/types'
-import type { GoogleAuthMode } from '$lib/types'
 
 /**
  * Invokes an action directly on a connector before a source exists.
@@ -18,7 +17,8 @@ import type { GoogleAuthMode } from '$lib/types'
  */
 
 const ALLOWED_ACTIONS = new Set(['discover_folders', 'validate_shared_drive_access'])
-const ALLOWED_AUTH_MODES: GoogleAuthMode[] = ['domain_wide_delegation', 'service_account_direct']
+const ALLOWED_AUTH_MODES = ['domain_wide_delegation', 'service_account_direct'] as const
+type GoogleAuthMode = (typeof ALLOWED_AUTH_MODES)[number]
 
 export const POST: RequestHandler = async ({ params: routeParams, request, locals }) => {
     // Admin-only

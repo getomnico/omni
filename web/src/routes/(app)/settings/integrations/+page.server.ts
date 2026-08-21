@@ -10,9 +10,17 @@ import {
     oauthServiceBaseUrl,
 } from '$lib/server/oauth/connectorOAuth'
 import { SourceType, supportsDataSync } from '$lib/types'
-import type { FolderPathFilter } from '$lib/types'
+import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
 import { getConfig } from '$lib/server/config'
 import type { PageServerLoad, Actions } from './$types'
+
+type GoogleIndexScope = 'all' | 'selected' | 'pending'
+
+interface GoogleDriveSourceConfig {
+    auth_mode?: 'domain_wide_delegation' | 'service_account_direct'
+    index_scope?: GoogleIndexScope
+    folder_path_filters?: FolderPathFilter[]
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
     if (!locals.user) {
@@ -84,11 +92,16 @@ function parsePersonalDriveScope(formData: FormData): {
 
     const raw = formData.get('folder_path_filters')
     let parsed: unknown = []
-    if (typeof raw === 'string' && raw.length > 0) {
-        try {
-            parsed = JSON.parse(raw)
-        } catch {
-            throw new Error('folder_path_filters is not valid JSON')
+    if (raw !== null) {
+        if (typeof raw !== 'string') {
+            throw new Error('folder_path_filters must be a JSON string')
+        }
+        if (raw.length > 0) {
+            try {
+                parsed = JSON.parse(raw)
+            } catch {
+                throw new Error('folder_path_filters is not valid JSON')
+            }
         }
     }
     if (!Array.isArray(parsed)) {
@@ -100,12 +113,12 @@ function parsePersonalDriveScope(formData: FormData): {
 
     const seen = new Set<string>()
     const filters: FolderPathFilter[] = []
+    const allowedKeys = new Set(['id', 'name', 'path', 'driveId', 'kind'])
     for (const value of parsed) {
         if (!value || typeof value !== 'object' || Array.isArray(value)) {
             throw new Error('Each folder filter must be an object')
         }
         const entry = value as Record<string, unknown>
-        const allowedKeys = new Set(['id', 'name', 'path', 'driveId', 'kind'])
         if (Object.keys(entry).some((key) => !allowedKeys.has(key))) {
             throw new Error('Folder filters contain an unknown field')
         }
@@ -192,10 +205,7 @@ export const actions: Actions = {
             return fail(400, { error: 'Source does not support data sync' })
         }
 
-        const sourceConfig =
-            source.config && typeof source.config === 'object' && !Array.isArray(source.config)
-                ? (source.config as Record<string, unknown>)
-                : {}
+        const sourceConfig = source.config as GoogleDriveSourceConfig
         if (
             source.sourceType === SourceType.GOOGLE_DRIVE &&
             sourceConfig.index_scope === 'pending'
@@ -236,10 +246,7 @@ export const actions: Actions = {
             return fail(400, { error: err instanceof Error ? err.message : 'Invalid Drive scope' })
         }
 
-        const existingConfig =
-            source.config && typeof source.config === 'object' && !Array.isArray(source.config)
-                ? (source.config as Record<string, unknown>)
-                : {}
+        const existingConfig = source.config as GoogleDriveSourceConfig
         const nextConfig = {
             ...existingConfig,
             index_scope: scope.indexScope,

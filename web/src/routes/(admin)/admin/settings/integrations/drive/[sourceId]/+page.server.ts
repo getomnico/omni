@@ -7,7 +7,7 @@ import { serviceCredentialsRepository } from '$lib/server/repositories/service-c
 import { userRepository } from '$lib/server/db/users'
 import { getConfig } from '$lib/server/config'
 import { AuthType, SourceType } from '$lib/types'
-import type { FolderPathFilter } from '$lib/types'
+import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)

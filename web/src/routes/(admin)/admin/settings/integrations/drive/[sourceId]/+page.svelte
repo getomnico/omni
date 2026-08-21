@@ -11,16 +11,13 @@
     import { Search, X, AlertCircle, Info, Loader2 } from '@lucide/svelte'
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
     import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
+    import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import type { PageProps } from './$types'
-    import type {
-        GoogleDirectoryUser,
-        SearchUsersResponse,
-        ConnectorActionResponse,
-    } from '$lib/types/search'
+    import type { GoogleDirectoryUser, SearchUsersResponse } from '$lib/types/search'
     import { AuthType } from '$lib/types'
-    import type { FolderPathFilter } from '$lib/types'
+    import type { ConnectorActionResponse } from '$lib/types'
     import googleDriveLogo from '$lib/images/icons/google-drive.svg'
 
     let { data }: PageProps = $props()
@@ -45,6 +42,29 @@
     let folderFilters = $state<FolderPathFilter[]>(
         (Array.isArray(data.folderPathFilters) ? data.folderPathFilters : []) as FolderPathFilter[],
     )
+    let folderSelectorRevision = $state(0)
+    let folderFiltersBeforeCredentialReplacement = $state<FolderPathFilter[] | null>(null)
+
+    function handleCredentialChange() {
+        folderFilters = []
+        folderSelectorRevision += 1
+    }
+
+    function handleAccountDetailsChange() {
+        folderFiltersBeforeCredentialReplacement = null
+        handleCredentialChange()
+    }
+
+    function handleCredentialReplacementStart() {
+        folderFiltersBeforeCredentialReplacement = [...folderFilters]
+    }
+
+    function handleCredentialReplacementCancel() {
+        if (folderFiltersBeforeCredentialReplacement === null) return
+        folderFilters = folderFiltersBeforeCredentialReplacement
+        folderFiltersBeforeCredentialReplacement = null
+        folderSelectorRevision += 1
+    }
 
     let searchQuery = $state('')
     let searchResults = $state<GoogleDirectoryUser[]>([])
@@ -362,16 +382,22 @@
                             bind:serviceAccountJson
                             mode="sa-direct"
                             hasStoredKey={data.hasStoredKey}
-                            showSaDirectInfo={false} />
+                            showSaDirectInfo={false}
+                            onCredentialsChange={handleCredentialChange}
+                            onAccountDetailsChange={handleAccountDetailsChange}
+                            onCredentialReplacementStart={handleCredentialReplacementStart}
+                            onCredentialReplacementCancel={handleCredentialReplacementCancel} />
 
-                        <GoogleDriveFolderSelector
-                            bind:selected={folderFilters}
-                            sourceId={data.source.id}
-                            {serviceAccountJson}
-                            authMode="service_account_direct"
-                            label="Shared Drives to Index"
-                            description="Select one or more whole shared drives to index."
-                            disabled={!enabled} />
+                        {#key folderSelectorRevision}
+                            <GoogleDriveFolderSelector
+                                bind:selected={folderFilters}
+                                sourceId={data.source.id}
+                                {serviceAccountJson}
+                                authMode="service_account_direct"
+                                label="Shared Drives to Index"
+                                description="Select one or more whole shared drives to index."
+                                disabled={!enabled} />
+                        {/key}
                         <input
                             type="hidden"
                             name="folder_path_filters"
@@ -393,7 +419,11 @@
                             bind:serviceAccountJson
                             bind:principalEmail
                             bind:domain
-                            hasStoredKey={data.hasStoredKey} />
+                            hasStoredKey={data.hasStoredKey}
+                            onCredentialsChange={handleCredentialChange}
+                            onAccountDetailsChange={handleAccountDetailsChange}
+                            onCredentialReplacementStart={handleCredentialReplacementStart}
+                            onCredentialReplacementCancel={handleCredentialReplacementCancel} />
 
                         {#if data.gmailSiblingId}
                             <Alert.Root>
@@ -410,15 +440,17 @@
 
                     <!-- Folder Path Filter (JWT only) -->
                     <div class="space-y-4 border-t pt-6">
-                        <GoogleDriveFolderSelector
-                            bind:selected={folderFilters}
-                            sourceId={data.source.id}
-                            {serviceAccountJson}
-                            {principalEmail}
-                            {domain}
-                            label="Drive Folder Filters"
-                            description="Optionally restrict indexing to specific shared drives or any accessible folder. All sub-folders within a selected item are included."
-                            disabled={!enabled} />
+                        {#key folderSelectorRevision}
+                            <GoogleDriveFolderSelector
+                                bind:selected={folderFilters}
+                                sourceId={data.source.id}
+                                {serviceAccountJson}
+                                {principalEmail}
+                                {domain}
+                                label="Drive Folder Filters"
+                                description="Optionally restrict indexing to specific shared drives or any accessible folder. All sub-folders within a selected item are included."
+                                disabled={!enabled} />
+                        {/key}
                         <!-- Hidden form value to submit folder filters (always present for JWT, even when empty) -->
                         <input
                             type="hidden"

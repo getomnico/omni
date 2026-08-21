@@ -18,6 +18,7 @@
     import GoogleOAuthSetup from '$lib/components/google-oauth-setup.svelte'
     import WindshiftConnectorSetup from '$lib/components/windshift-connector-setup.svelte'
     import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
+    import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
     import { getSourceIconPath } from '$lib/utils/icons'
     import { formatDate, getSourceNoun } from '$lib/utils/sources'
     import { SourceType } from '$lib/types'
@@ -26,11 +27,17 @@
     import { toast } from 'svelte-sonner'
     import { onMount, onDestroy } from 'svelte'
     import type { SyncRun } from '$lib/server/db/schema'
-    import type { FolderPathFilter } from '$lib/types'
 
     let { data }: PageProps = $props()
 
     type UserSource = (typeof data.userSources)[number]
+    type GoogleIndexScope = 'all' | 'selected' | 'pending'
+
+    interface GoogleDriveSourceConfig {
+        auth_mode?: 'domain_wide_delegation' | 'service_account_direct'
+        index_scope?: GoogleIndexScope
+        folder_path_filters?: FolderPathFilter[]
+    }
 
     let sourceToDisconnect = $state<UserSource | null>(null)
     let togglingSourceId = $state<string | null>(null)
@@ -54,10 +61,7 @@
     onMount(() => {
         const pendingDrive = data.userSources.find((source) => {
             if (source.sourceType !== 'google_drive') return false
-            const config =
-                source.config && typeof source.config === 'object' && !Array.isArray(source.config)
-                    ? (source.config as Record<string, unknown>)
-                    : {}
+            const config = source.config as GoogleDriveSourceConfig
             return config.index_scope === 'pending'
         })
         if (pendingDrive) openDriveScope(pendingDrive)
@@ -156,15 +160,10 @@
     }
 
     function openDriveScope(source: UserSource) {
-        const config =
-            source.config && typeof source.config === 'object' && !Array.isArray(source.config)
-                ? (source.config as Record<string, unknown>)
-                : {}
+        const config = source.config as GoogleDriveSourceConfig
         driveToConfigure = source
         driveScopeMode = config.index_scope === 'selected' ? 'selected' : 'all'
-        driveFolderFilters = Array.isArray(config.folder_path_filters)
-            ? (config.folder_path_filters as FolderPathFilter[])
-            : []
+        driveFolderFilters = config.folder_path_filters ?? []
         originalDriveScopeMode = driveScopeMode
         originalDriveFolderIds = folderFilterIds(driveFolderFilters)
         originalDriveScopeConfigured = config.index_scope !== 'pending'
@@ -266,13 +265,9 @@
                         {@const indexedCount = documentCounts[source.id] ?? 0}
                         {@const isRunning = source.isActive && sync?.status === 'running'}
                         {@const isFailed = source.isActive && sync?.status === 'failed'}
-                        {@const isDrivePending = !!(
+                        {@const isDrivePending =
                             source.sourceType === 'google_drive' &&
-                            source.config &&
-                            typeof source.config === 'object' &&
-                            !Array.isArray(source.config) &&
-                            (source.config as Record<string, unknown>).index_scope === 'pending'
-                        )}
+                            (source.config as GoogleDriveSourceConfig).index_scope === 'pending'}
                         <Card
                             class="group hover:border-foreground/20 gap-0 overflow-hidden py-0 transition-colors">
                             <CardHeader
@@ -372,12 +367,7 @@
                                 </div>
 
                                 {#if source.sourceType === 'google_drive'}
-                                    {@const driveConfig =
-                                        source.config &&
-                                        typeof source.config === 'object' &&
-                                        !Array.isArray(source.config)
-                                            ? (source.config as Record<string, unknown>)
-                                            : {}}
+                                    {@const driveConfig = source.config as GoogleDriveSourceConfig}
                                     <div class="border-t pt-3">
                                         {#if driveConfig.index_scope === 'pending'}
                                             <p class="text-muted-foreground mb-2 text-xs">
@@ -386,11 +376,9 @@
                                             </p>
                                         {:else if driveConfig.index_scope === 'selected'}
                                             <p class="text-muted-foreground mb-2 text-xs">
-                                                Indexing {Array.isArray(
-                                                    driveConfig.folder_path_filters,
-                                                )
-                                                    ? driveConfig.folder_path_filters.length
-                                                    : 0} selected folder(s).
+                                                Indexing {driveConfig.folder_path_filters?.length ??
+                                                    0}
+                                                selected folder(s).
                                             </p>
                                         {:else}
                                             <p class="text-muted-foreground mb-2 text-xs">
@@ -552,13 +540,15 @@
             </div>
 
             {#if driveScopeMode === 'selected'}
-                <GoogleDriveFolderSelector
-                    bind:selected={driveFolderFilters}
-                    sourceId={driveToConfigure?.id ?? ''}
-                    label="Folders to index"
-                    description="Search folders in My Drive and shared drives accessible to this account. Typing searches nested folders too."
-                    authMode="domain_wide_delegation"
-                    action="discover_personal_folders" />
+                {#key driveToConfigure?.id ?? ''}
+                    <GoogleDriveFolderSelector
+                        bind:selected={driveFolderFilters}
+                        sourceId={driveToConfigure?.id ?? ''}
+                        label="Folders to index"
+                        description="Search My Drive and shared drives by name prefix."
+                        authMode="domain_wide_delegation"
+                        action="discover_personal_folders" />
+                {/key}
             {/if}
         </div>
 
