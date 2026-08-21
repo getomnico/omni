@@ -58,6 +58,17 @@ pub enum GoogleAuthMode {
     ServiceAccountDirect,
 }
 
+/// Controls whether a Drive source is ready to index and which files are in scope.
+/// Missing values are treated as `All` for backwards compatibility.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoogleIndexScope {
+    #[default]
+    All,
+    Selected,
+    Pending,
+}
+
 /// Typed view of a Google source's `sources.config` blob.
 ///
 /// Deserialized once at the sync/action boundary and validated via
@@ -67,11 +78,15 @@ pub enum GoogleAuthMode {
 pub struct GoogleSourceConfig {
     #[serde(default)]
     pub auth_mode: GoogleAuthMode,
-    /// Retained for existing source-config compatibility (DWD).
+    /// Personal OAuth onboarding uses `pending` until the owner chooses a scope.
+    #[serde(default)]
+    pub index_scope: GoogleIndexScope,
+    /// Workspace domain used for DWD impersonation or SA-direct group sync.
     #[serde(default)]
     pub domain: Option<String>,
     /// Selected shared drives (kind `shared_drive_root`) and optional folder
-    /// subtrees (kind `folder`). Empty/missing => index everything (DWD).
+    /// subtrees (kind `folder`). Empty/missing means all files unless
+    /// `index_scope` is `selected`.
     #[serde(default)]
     pub folder_path_filters: Vec<FolderPathFilterEntry>,
     #[serde(default)]
@@ -87,18 +102,47 @@ impl GoogleSourceConfig {
     /// is the stored credential's auth type (OAuth vs service-account JWT).
     ///
     /// Rules:
+    /// - `Pending` is rejected so an OAuth source cannot sync before setup.
+    /// - `Selected` requires at least one folder filter.
     /// - `ServiceAccountDirect` requires JWT/service-account credentials and is
     ///   valid only for Google Drive.
-    /// - `ServiceAccountDirect` requires a non-empty `folder_path_filters` list
-    ///   whose entries are all `SharedDriveRoot` (whole drives only in v1).
+    /// - `ServiceAccountDirect` requires a non-empty domain and
+    ///   `folder_path_filters` list whose entries are all `SharedDriveRoot`
+    ///   (whole drives only in v1).
     /// - `DomainWideDelegation` keeps the existing permissive behavior.
     pub fn validate(
         &self,
         source_type: SourceType,
         credential_auth_type: AuthType,
     ) -> Result<(), String> {
+        match self.index_scope {
+            GoogleIndexScope::Pending => {
+                return Err("Google Drive source is waiting for an indexing scope".to_string());
+            }
+            GoogleIndexScope::Selected if self.folder_path_filters.is_empty() => {
+                return Err(
+                    "selected Drive scope requires at least one folder or shared drive".to_string(),
+                );
+            }
+            GoogleIndexScope::All | GoogleIndexScope::Selected => {}
+        }
+
         match self.auth_mode {
-            GoogleAuthMode::DomainWideDelegation => Ok(()),
+            GoogleAuthMode::DomainWideDelegation => {
+                if credential_auth_type != AuthType::OAuth
+                    && source_type == SourceType::GoogleDrive
+                    && self
+                        .folder_path_filters
+                        .iter()
+                        .any(|entry| entry.drive_id == "my_drive")
+                {
+                    return Err(
+                        "domain-wide Drive folder scopes must target shared drives; use personal OAuth for My Drive folders"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            }
             GoogleAuthMode::ServiceAccountDirect => {
                 if credential_auth_type == AuthType::OAuth {
                     return Err(
@@ -115,6 +159,16 @@ impl GoogleSourceConfig {
                 if self.folder_path_filters.is_empty() {
                     return Err(
                         "service_account_direct requires at least one shared drive in folder_path_filters"
+                            .to_string(),
+                    );
+                }
+                if self
+                    .domain
+                    .as_deref()
+                    .is_none_or(|domain| domain.trim().is_empty())
+                {
+                    return Err(
+                        "service_account_direct requires an organization domain for group membership sync"
                             .to_string(),
                     );
                 }
@@ -149,6 +203,7 @@ pub struct DriveFolderDiscoveryEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct DriveFolderDiscoveryResponse {
     pub items: Vec<DriveFolderDiscoveryEntry>,
+    pub truncated: bool,
 }
 
 /// Helper to parse folder_path_filters from a source config.
@@ -256,6 +311,15 @@ pub struct SharedDriveAccessResponse {
     pub drives: Vec<SharedDriveAccessResult>,
 }
 
+/// Result of validating SA-direct Google Workspace group membership access.
+/// Mirrors the web's `SaDirectGroupAccessResponse` type.
+#[derive(Debug, Clone, Serialize)]
+pub struct SaDirectGroupAccessResponse {
+    pub domain: String,
+    pub groups: usize,
+    pub memberships: usize,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GoogleConnectorState {
     pub webhook_channel_id: Option<String>,
@@ -319,7 +383,7 @@ pub struct GoogleSyncCheckpoint {
     /// so previously indexed unchanged documents get the new ACLs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive_acl_fingerprints: Option<HashMap<String, String>>,
-    /// Per-folder access state for the SA-direct effective-permission model.
+    /// Per-folder access state for shared-drive effective-permission models.
     /// Only folders that are limited-access or carry direct grants are
     /// recorded; incremental syncs re-fetch their ACLs to detect changes that
     /// `changes.list` does not deliver for descendants.
@@ -337,7 +401,7 @@ pub struct GoogleSyncCheckpoint {
 /// `GoogleSyncCheckpoint::permission_model_version`.
 pub const SA_DIRECT_PERMISSION_MODEL_VERSION: &str = "effective-acl-v1";
 
-/// Run-local access metadata for a folder during an SA-direct sync. Folders
+/// Run-local access metadata for a folder during a shared-drive sync. Folders
 /// are discovered from the drive listing (parents + limited-access flag) and
 /// their directly-assigned ACLs are fetched lazily via `permissions.list`.
 #[derive(Debug, Clone, Default)]
@@ -406,9 +470,9 @@ pub struct GoogleChatSegmentCheckpoint {
 pub struct UserFile {
     pub user_email: Arc<String>,
     pub file: GoogleDriveFile,
-    /// Optional drive-level ACL override (SA-direct mode). When set, this is
-    /// used as the event's permissions instead of the file's own (empty for
-    /// shared-drive items) permission array.
+    /// Optional effective ACL override for shared-drive syncs. When set, this
+    /// is used as the event's permissions instead of the file's own (usually
+    /// empty for shared-drive items) permission array.
     pub permissions_override: Option<DocumentPermissions>,
 }
 
@@ -2446,6 +2510,38 @@ mod tests {
     }
 
     #[test]
+    fn test_personal_index_scope_validation() {
+        let pending: GoogleSourceConfig = serde_json::from_value(json!({
+            "index_scope": "pending"
+        }))
+        .unwrap();
+        assert!(
+            pending
+                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_err()
+        );
+
+        let selected: GoogleSourceConfig = serde_json::from_value(json!({
+            "index_scope": "selected"
+        }))
+        .unwrap();
+        assert!(
+            selected
+                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_err()
+        );
+
+        let all: GoogleSourceConfig = serde_json::from_value(json!({
+            "index_scope": "all"
+        }))
+        .unwrap();
+        assert!(
+            all.validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn test_google_source_config_tolerates_unknown_top_level_keys() {
         // Legacy/unknown top-level config keys must not reject deserialization
         // (they could break every existing source at dispatch time).
@@ -2470,6 +2566,7 @@ mod tests {
         // Valid SA-direct: JWT creds + Drive + root filter.
         let valid = GoogleSourceConfig {
             auth_mode: GoogleAuthMode::ServiceAccountDirect,
+            domain: Some("example.com".to_string()),
             folder_path_filters: vec![root.clone()],
             ..Default::default()
         };
@@ -2525,7 +2622,7 @@ mod tests {
                 .is_err()
         );
 
-        // DWD remains permissive regardless of filters.
+        // DWD remains permissive for non-Drive configurations.
         let dwd = GoogleSourceConfig {
             auth_mode: GoogleAuthMode::DomainWideDelegation,
             folder_path_filters: vec![],

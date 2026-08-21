@@ -20,8 +20,12 @@ const GOOGLE_MAX_BUFFERED_BYTES: usize = 512 * 1024 * 1024;
 const GOOGLE_BUFFER_PERMIT_UNIT: usize = 64 * 1024;
 const GOOGLE_BUFFER_PERMITS: usize = GOOGLE_MAX_BUFFERED_BYTES / GOOGLE_BUFFER_PERMIT_UNIT;
 
-/// Batch size for SA-direct file emission (SA-direct path only).
+/// Batch size for shared-drive ACL-aware file emission.
 const SA_DIRECT_BATCH_SIZE: usize = 200;
+
+/// Bump when scoped DWD permission derivation changes so existing documents
+/// are re-emitted with freshly computed shared-drive ACLs.
+const SCOPED_DWD_PERMISSION_MODEL_VERSION: &str = "scoped-dwd-effective-acl-v1";
 
 /// `application/vnd.google-apps.folder` — folders carry access metadata but are
 /// never indexed as documents.
@@ -107,6 +111,20 @@ struct DriveGroup {
     drive_id: String,
     entire_drive: bool,
     folder_ids: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct SharedDriveAclState {
+    drive_acl_fingerprints: HashMap<String, String>,
+    drive_acl_overrides: HashMap<String, DocumentPermissions>,
+    drive_acl_raw: HashMap<String, Vec<GoogleDrivePermission>>,
+    drive_acl_changed: HashMap<String, bool>,
+}
+
+struct DriveUserSyncResult {
+    scanned: usize,
+    updated: usize,
+    next_page_token: Option<String>,
 }
 
 /// Build drive groups from folder-path filter entries. Multiple entries for the
@@ -1137,11 +1155,8 @@ impl SyncManager {
         Ok((drive_format, gmail_format))
     }
 
-    // TODO: When folder-path filters are narrowed or changed, documents that were
-    // previously indexed but are no longer in scope are NOT automatically pruned from
-    // the search index. A future reconciliation step should delete documents whose
-    // parent ancestry no longer intersects the configured filter set.
-
+    // Narrowing or changing folder filters does not prune documents from prior
+    // runs; source-wide reconciliation is tracked separately in issue #422.
     /// Check whether a file should be included based on configured folder-path filters.
     /// Uses `self.folder_cache` (the same LRU cache used by `build_full_path`) for
     /// folder-metadata lookups during ancestry resolution.
@@ -1210,8 +1225,31 @@ impl SyncManager {
         created_after: Option<&str>,
         content_cache: Arc<DriveContentCache>,
         folder_filter_ids: Option<Arc<HashSet<String>>>,
-    ) -> Result<(usize, usize)> {
+        preserved_change_token: Option<String>,
+    ) -> Result<DriveUserSyncResult> {
         info!("Processing Drive files for user: {}", user_email);
+
+        // A token preserved from a preceding changes pass is intentionally kept
+        // instead of replacing it with a later token. Changes made during this
+        // crawl must be replayed on the next run.
+        let next_page_token = if preserved_change_token.is_some() {
+            preserved_change_token
+        } else {
+            match self
+                .drive_client
+                .get_start_page_token_for_user(service_auth.as_ref(), user_email)
+                .await
+            {
+                Ok(token) => Some(token),
+                Err(error) => {
+                    warn!(
+                        "Failed to capture Drive change token for user {} before full traversal: {}",
+                        user_email, error
+                    );
+                    None
+                }
+            }
+        };
 
         let mut total_scanned = 0;
         let mut total_updated = 0;
@@ -1263,10 +1301,7 @@ impl SyncManager {
                             )
                             .await?
                         {
-                            debug!(
-                                "Skipping file {} ({}) — outside configured folder scope",
-                                file.name, file.id
-                            );
+                            // Full traversals only index in-scope files.
                             continue;
                         }
                     }
@@ -1342,7 +1377,11 @@ impl SyncManager {
             "Completed processing user {}: {} scanned, {} updated",
             user_email, total_scanned, total_updated
         );
-        Ok((total_scanned, total_updated))
+        Ok(DriveUserSyncResult {
+            scanned: total_scanned,
+            updated: total_updated,
+            next_page_token,
+        })
     }
 
     async fn sync_drive_for_user_incremental(
@@ -1355,7 +1394,7 @@ impl SyncManager {
         start_page_token: &str,
         content_cache: Arc<DriveContentCache>,
         folder_filter_ids: Option<Arc<HashSet<String>>>,
-    ) -> Result<(usize, usize)> {
+    ) -> Result<DriveUserSyncResult> {
         info!(
             "Processing incremental Drive sync for user {} from pageToken {}",
             user_email, start_page_token
@@ -1364,6 +1403,7 @@ impl SyncManager {
         let access_token = service_auth.get_access_token(user_email).await?;
 
         let mut all_changes = Vec::new();
+        let mut next_page_token: Option<String> = None;
         let mut current_token = start_page_token.to_string();
 
         loop {
@@ -1373,6 +1413,9 @@ impl SyncManager {
                 .await?;
 
             all_changes.extend(response.changes);
+            if response.new_start_page_token.is_some() {
+                next_page_token = response.new_start_page_token;
+            }
 
             if ctx.is_cancelled() {
                 info!(
@@ -1424,6 +1467,12 @@ impl SyncManager {
             }
 
             if let Some(file) = change.file {
+                if file.mime_type == FOLDER_MIME_TYPE {
+                    // Drive does not reliably emit changes for every descendant
+                    // when a folder moves. Defer subtree pruning to source-wide
+                    // reconciliation rather than guessing from one folder event.
+                    continue;
+                }
                 if !self.should_index_file(&file) {
                     continue;
                 }
@@ -1436,9 +1485,10 @@ impl SyncManager {
                         .await?
                     {
                         debug!(
-                            "Skipping change for file {} ({}) — outside configured folder scope",
+                            "File {} ({}) moved outside configured folder scope; publishing deletion",
                             file.name, file.id
                         );
+                        self.publish_deletion_event(ctx, &file.id).await?;
                         continue;
                     }
                 }
@@ -1486,7 +1536,19 @@ impl SyncManager {
             "Completed incremental Drive sync for user {}: {} scanned, {} updated",
             user_email, total_scanned, total_updated
         );
-        Ok((total_scanned, total_updated))
+        let next_page_token = if ctx.is_cancelled() {
+            None
+        } else {
+            // If Google omitted newStartPageToken, retain the old watermark and
+            // replay the changes next run rather than taking a fresh token that
+            // could skip changes made while this run was processing.
+            Some(next_page_token.unwrap_or_else(|| start_page_token.to_string()))
+        };
+        Ok(DriveUserSyncResult {
+            scanned: total_scanned,
+            updated: total_updated,
+            next_page_token,
+        })
     }
 
     async fn process_file_batch(
@@ -1530,9 +1592,10 @@ impl SyncManager {
 
                 let file_lock = content_cache.lock_for_file(&user_file.file.id);
                 let _file_guard = file_lock.lock().await;
-                // SA-direct mode carries a drive-level ACL override; use it as-is
-                // (the file's own permissions array is empty for shared drives).
-                // Otherwise derive from the file + syncing user as before.
+                // Shared-drive syncs carry a computed effective ACL override;
+                // use it as-is because the file's own permissions array is
+                // empty for shared-drive items. Otherwise derive permissions
+                // from the file and syncing user as before.
                 let current_permissions = match &user_file.permissions_override {
                     Some(override_permissions) => override_permissions.clone(),
                     None => user_file
@@ -1880,15 +1943,19 @@ impl SyncManager {
         drive_page_tokens: Option<HashMap<String, String>>,
         drive_change_tokens: Option<HashMap<String, String>>,
         drive_scope_fingerprint: Option<String>,
+        drive_acl_fingerprints: Option<HashMap<String, String>>,
+        folder_access: Option<HashMap<String, crate::models::FolderAccessInfo>>,
+        permission_model_version: Option<String>,
     ) -> GoogleSyncCheckpoint {
         GoogleSyncCheckpoint {
             gmail_history_ids: existing.gmail_history_ids.clone(),
             drive_page_tokens,
             drive_change_tokens,
             drive_scope_fingerprint,
-            drive_acl_fingerprints: existing.drive_acl_fingerprints.clone(),
+            drive_acl_fingerprints,
+            folder_access,
+            permission_model_version,
             chat: existing.chat.clone(),
-            ..Default::default()
         }
     }
 
@@ -1896,6 +1963,7 @@ impl SyncManager {
     /// Returns `true` if the file passes the cutoff (or no cutoff is set).
     /// Folders are never filtered by the cutoff — they must be discovered
     /// regardless of age so their contents can be indexed.
+    #[allow(dead_code)]
     fn pass_cutoff(file: &crate::models::GoogleDriveFile, cutoff: OffsetDateTime) -> bool {
         if file.mime_type == "application/vnd.google-apps.folder" {
             return true;
@@ -1941,6 +2009,221 @@ impl SyncManager {
         Ok(())
     }
 
+    /// Fetch and fingerprint the shared-drive ACLs used by both service-account
+    /// direct sync and impersonated DWD sync. The caller controls whether a
+    /// technical service-account member is excluded from the mapped document ACL.
+    async fn load_shared_drive_acl_state(
+        &self,
+        access_token: &str,
+        drives: &[DriveGroup],
+        old_acl_fingerprints: &HashMap<String, String>,
+        exclude_email: Option<&str>,
+    ) -> Result<SharedDriveAclState> {
+        let mut state = SharedDriveAclState::default();
+        for drive_group in drives {
+            let drive_id = &drive_group.drive_id;
+            let drive_acl = self
+                .drive_client
+                .list_drive_permissions(access_token, drive_id)
+                .await
+                .with_context(|| format!("Failed to read ACLs for drive {}", drive_id))?;
+
+            let fingerprint = crate::models::drive_acl_fingerprint(&drive_acl);
+            let changed = old_acl_fingerprints.get(drive_id) != Some(&fingerprint);
+            if changed {
+                info!(
+                    "ACL fingerprint changed for drive {} — forcing full re-traversal",
+                    drive_id
+                );
+            }
+            state
+                .drive_acl_fingerprints
+                .insert(drive_id.clone(), fingerprint);
+            state.drive_acl_overrides.insert(
+                drive_id.clone(),
+                crate::models::map_drive_permissions(&drive_acl, exclude_email),
+            );
+            state.drive_acl_raw.insert(drive_id.clone(), drive_acl);
+            state.drive_acl_changed.insert(drive_id.clone(), changed);
+        }
+        Ok(state)
+    }
+
+    fn record_folder_access(
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        folder: &GoogleDriveFile,
+    ) {
+        let entry = folder_access.entry(folder.id.clone()).or_default();
+        entry.parents = folder.parents.clone().unwrap_or_default();
+        entry.inherited_permissions_disabled =
+            folder.inherited_permissions_disabled.unwrap_or(false);
+    }
+
+    /// Fetch directly-assigned ACLs for folders with bounded concurrency.
+    /// SA-direct preserves its historical best-effort behavior while scoped DWD
+    /// fails closed because it cannot safely model a selected subtree without
+    /// its folder ACLs.
+    async fn load_folder_acls(
+        &self,
+        access_token: &str,
+        folder_ids: Vec<String>,
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        strict: bool,
+    ) -> Result<()> {
+        let client = self.drive_client.clone();
+        let token = access_token.to_string();
+        let semaphore = Arc::new(Semaphore::new(GOOGLE_FILE_CONCURRENCY));
+        let mut tasks = tokio::task::JoinSet::new();
+        for folder_id in folder_ids {
+            let client = client.clone();
+            let token = token.clone();
+            let permit = semaphore.clone();
+            tasks.spawn(async move {
+                let _guard = permit.acquire_owned().await;
+                let result = client.list_drive_permissions(&token, &folder_id).await;
+                (folder_id, result)
+            });
+        }
+        while let Some(joined) = tasks.join_next().await {
+            let (folder_id, result) =
+                joined.map_err(|error| anyhow!("Folder ACL fetch task failed: {}", error))?;
+            match result {
+                Ok(raw) => {
+                    if let Some(entry) = folder_access.get_mut(&folder_id) {
+                        entry.acl = Some(crate::models::filter_direct_permissions(&raw));
+                    }
+                }
+                Err(error) if strict => {
+                    return Err(error)
+                        .with_context(|| format!("Failed to read ACL for folder {}", folder_id));
+                }
+                Err(error) => {
+                    warn!("Failed to read ACLs for folder {}: {}", folder_id, error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record_scoped_folder_access(
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        folder_drive_ids: &mut HashMap<String, String>,
+        folder: &GoogleDriveFile,
+        drive_id: &str,
+    ) {
+        Self::record_folder_access(folder_access, folder);
+        folder_drive_ids.insert(folder.id.clone(), drive_id.to_string());
+    }
+
+    /// Load metadata and directly assigned ACLs from `folder_id` up to the
+    /// shared-drive root. The scoped traversal needs this for a selected folder
+    /// itself and for changed files whose ordinary ancestors are intentionally
+    /// absent from the compact persisted ACL checkpoint.
+    async fn ensure_scoped_folder_acl_chain(
+        &self,
+        service_auth: &GoogleAuth,
+        principal_email: &str,
+        access_token: &str,
+        folder_id: Option<String>,
+        drive_id: &str,
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        folder_drive_ids: &mut HashMap<String, String>,
+    ) -> Result<()> {
+        let mut current_id = folder_id;
+        while let Some(id) = current_id {
+            if id == drive_id {
+                break;
+            }
+
+            if !folder_access.contains_key(&id) {
+                let folder = self
+                    .drive_client
+                    .get_folder_metadata(service_auth, principal_email, &id)
+                    .await
+                    .with_context(|| format!("Failed to read metadata for folder {}", id))?;
+                Self::record_scoped_folder_access(
+                    folder_access,
+                    folder_drive_ids,
+                    &folder,
+                    drive_id,
+                );
+            }
+
+            let needs_acl = folder_access
+                .get(&id)
+                .is_some_and(|entry| entry.acl.is_none());
+            if needs_acl {
+                let raw = self
+                    .drive_client
+                    .list_drive_permissions(access_token, &id)
+                    .await
+                    .with_context(|| format!("Failed to read ACL for folder {}", id))?;
+                if let Some(entry) = folder_access.get_mut(&id) {
+                    entry.acl = Some(crate::models::filter_direct_permissions(&raw));
+                }
+            }
+
+            folder_drive_ids.insert(id.clone(), drive_id.to_string());
+            current_id = folder_access
+                .get(&id)
+                .and_then(|entry| entry.parents.first())
+                .cloned();
+        }
+        Ok(())
+    }
+
+    /// Populate the complete folder hierarchy and direct ACL map before files
+    /// from an entire shared drive are emitted. `files.list` ordering is
+    /// arbitrary, so files cannot safely be permissioned until their ancestor
+    /// metadata is available.
+    async fn load_scoped_drive_folder_access(
+        &self,
+        service_auth: &GoogleAuth,
+        principal_email: &str,
+        access_token: &str,
+        drive_id: &str,
+        folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
+        folder_drive_ids: &mut HashMap<String, String>,
+    ) -> Result<()> {
+        let mut page_token: Option<String> = None;
+        loop {
+            let response = self
+                .drive_client
+                .list_folders_in_drive(
+                    service_auth,
+                    principal_email,
+                    drive_id,
+                    page_token.as_deref(),
+                )
+                .await?;
+            for folder in response.files {
+                Self::record_scoped_folder_access(
+                    folder_access,
+                    folder_drive_ids,
+                    &folder,
+                    drive_id,
+                );
+            }
+            page_token = response.next_page_token;
+            if page_token.is_none() {
+                break;
+            }
+        }
+
+        let pending: Vec<String> = folder_drive_ids
+            .iter()
+            .filter(|(_, entry_drive_id)| entry_drive_id.as_str() == drive_id)
+            .filter_map(|(folder_id, _)| {
+                folder_access
+                    .get(folder_id)
+                    .is_some_and(|entry| entry.acl.is_none())
+                    .then(|| folder_id.clone())
+            })
+            .collect();
+        self.load_folder_acls(access_token, pending, folder_access, true)
+            .await
+    }
+
     /// Scoped full sync: crawl selected shared drives and/or folder subtrees only,
     /// using the configured DWD principal (no user impersonation/iteration).
     async fn sync_drive_scoped(
@@ -1955,9 +2238,6 @@ impl SyncManager {
         let native_source_type = SourceType::try_from(source.source_type.as_str())
             .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
         let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
-        let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
-        let drive_cutoff = parse_google_time(Some(&drive_cutoff_date))
-            .ok_or_else(|| anyhow!("Invalid Drive cutoff time: {}", drive_cutoff_date))?;
 
         // Parse filters; will error on malformed config.
         let filter_entries = match crate::models::parse_folder_path_filters(&source.config) {
@@ -1997,6 +2277,9 @@ impl SyncManager {
                 None,
                 None,
                 Some(current_fingerprint),
+                existing_state.drive_acl_fingerprints.clone(),
+                existing_state.folder_access.clone(),
+                existing_state.permission_model_version.clone(),
             ));
         }
 
@@ -2010,10 +2293,86 @@ impl SyncManager {
         // Shared-drive operations need a single access token (no impersonation per user).
         let access_token = service_auth.get_access_token(&principal_email).await?;
 
+        // Capture watermarks before ACL preflight. If a membership change
+        // forces a full traversal, changes made during that traversal must be
+        // replayed from a token that predates the preflight.
+        let mut full_traversal_start_tokens: HashMap<String, Option<String>> = HashMap::new();
+        for drive_group in &drives {
+            let token = match self
+                .drive_client
+                .get_start_page_token_for_drive(&access_token, &drive_group.drive_id)
+                .await
+            {
+                Ok(token) => Some(token),
+                Err(error) => {
+                    warn!(
+                        "Failed to get start page token for drive {}: {}",
+                        drive_group.drive_id, error
+                    );
+                    None
+                }
+            };
+            full_traversal_start_tokens.insert(drive_group.drive_id.clone(), token);
+        }
+
+        // Shared-drive file list responses do not contain their effective ACL.
+        // Resolve the drive member list explicitly and fingerprint it so a
+        // membership change re-emits unchanged documents with corrected ACLs.
+        let old_acl_fingerprints = existing_state
+            .drive_acl_fingerprints
+            .clone()
+            .unwrap_or_default();
+        let service_account_email = match service_auth.as_ref() {
+            GoogleAuth::ServiceAccount(service_account) => Some(service_account.client_email()),
+            GoogleAuth::OAuth(_) => None,
+        };
+        let acl_state = self
+            .load_shared_drive_acl_state(
+                &access_token,
+                &drives,
+                &old_acl_fingerprints,
+                service_account_email,
+            )
+            .await?;
+        for (drive_id, drive_acl) in &acl_state.drive_acl_raw {
+            if drive_acl.is_empty() {
+                return Err(anyhow!(
+                    "Drive {} returned an empty permission list; refusing to index shared-drive documents without a complete ACL",
+                    drive_id
+                ));
+            }
+        }
+        let SharedDriveAclState {
+            drive_acl_fingerprints: new_acl_fingerprints,
+            drive_acl_overrides,
+            drive_acl_raw,
+            drive_acl_changed,
+        } = acl_state;
+
+        let stored_folder_access = existing_state.folder_access.clone().unwrap_or_default();
+        let mut folder_access: HashMap<String, crate::models::FolderAccessEntry> =
+            stored_folder_access
+                .iter()
+                .map(|(folder_id, info)| {
+                    (
+                        folder_id.clone(),
+                        crate::models::FolderAccessEntry {
+                            parents: info.parents.clone(),
+                            inherited_permissions_disabled: info.inherited_permissions_disabled,
+                            acl: None,
+                        },
+                    )
+                })
+                .collect();
+        let mut folder_drive_ids: HashMap<String, String> = stored_folder_access
+            .iter()
+            .map(|(folder_id, info)| (folder_id.clone(), info.drive_id.clone()))
+            .collect();
+        let mut completed_drives: HashSet<String> = HashSet::new();
+
         let content_cache = Arc::new(DriveContentCache::default());
         let mut total_scanned = 0;
         let mut total_updated = 0;
-
         let mut new_change_tokens: HashMap<String, String> = HashMap::new();
         let old_change_tokens = existing_state
             .drive_change_tokens
@@ -2032,8 +2391,63 @@ impl SyncManager {
                 drive_group.drive_id, drive_group.entire_drive, drive_group.folder_ids
             );
 
-            let stored_token = old_change_tokens.get(&drive_group.drive_id);
-            let use_incremental = !effective_full && stored_token.is_some();
+            let drive_id = &drive_group.drive_id;
+            let drive_permissions = drive_acl_overrides
+                .get(drive_id)
+                .cloned()
+                .expect("drive ACL resolved in preflight");
+            let raw_drive_acl = drive_acl_raw
+                .get(drive_id)
+                .expect("drive ACL resolved in preflight");
+            let acl_changed = drive_acl_changed.get(drive_id).copied().unwrap_or(true);
+
+            // Permission changes on a folder do not update every descendant in
+            // changes.list. Re-check every persisted limited/direct-grant folder
+            // and force a complete selected-scope traversal if one changed.
+            let mut folder_acl_changed = false;
+            if sync_type == SyncType::Incremental && !scope_changed && !acl_changed {
+                for (folder_id, info) in &stored_folder_access {
+                    if info.drive_id != *drive_id {
+                        continue;
+                    }
+                    let raw = match self
+                        .drive_client
+                        .list_drive_permissions(&access_token, folder_id)
+                        .await
+                    {
+                        Ok(raw) => raw,
+                        Err(error) => {
+                            warn!(
+                                "Folder {} ACL fetch failed ({}); forcing full re-traversal of drive {}",
+                                folder_id, error, drive_id
+                            );
+                            folder_acl_changed = true;
+                            break;
+                        }
+                    };
+                    let direct = crate::models::filter_direct_permissions(&raw);
+                    if crate::models::drive_acl_fingerprint(&direct) != info.acl_fingerprint {
+                        info!(
+                            "ACL fingerprint changed for folder {} — forcing full re-traversal of drive {}",
+                            folder_id, drive_id
+                        );
+                        folder_acl_changed = true;
+                        break;
+                    }
+                    if let Some(entry) = folder_access.get_mut(folder_id) {
+                        entry.acl = Some(direct);
+                    }
+                }
+            }
+
+            let model_mismatch = existing_state.permission_model_version.as_deref()
+                != Some(SCOPED_DWD_PERMISSION_MODEL_VERSION);
+            let stored_token = old_change_tokens.get(drive_id);
+            let use_incremental = !effective_full
+                && !acl_changed
+                && !folder_acl_changed
+                && !model_mismatch
+                && stored_token.is_some();
 
             if use_incremental {
                 // Incremental per-drive changes path. Use newStartPageToken
@@ -2079,6 +2493,12 @@ impl SyncManager {
                         }
 
                         if let Some(file) = &change.file {
+                            if file.mime_type == FOLDER_MIME_TYPE {
+                                // Drive does not reliably emit changes for every
+                                // descendant when a folder moves. Defer subtree
+                                // pruning to source-wide reconciliation.
+                                continue;
+                            }
                             if !self.should_index_file(file) {
                                 continue;
                             }
@@ -2097,17 +2517,40 @@ impl SyncManager {
                                     .await?
                                 {
                                     debug!(
-                                        "Skipping changed file {} ({}) — outside folder scope",
+                                        "File {} ({}) moved outside configured folder scope; publishing deletion",
                                         file.name, file.id
                                     );
+                                    self.publish_deletion_event(ctx, &file.id).await?;
                                     continue;
                                 }
                             }
 
+                            self.ensure_scoped_folder_acl_chain(
+                                service_auth.as_ref(),
+                                &principal_email,
+                                &access_token,
+                                file.parents
+                                    .as_ref()
+                                    .and_then(|parents| parents.first())
+                                    .cloned(),
+                                drive_id,
+                                &mut folder_access,
+                                &mut folder_drive_ids,
+                            )
+                            .await?;
+                            let effective_permissions =
+                                crate::models::compute_effective_permissions(
+                                    file,
+                                    drive_id,
+                                    &drive_permissions,
+                                    raw_drive_acl,
+                                    &folder_access,
+                                    None,
+                                );
                             file_batch.push(UserFile {
                                 user_email: Arc::new(principal_email.clone()),
                                 file: file.clone(),
-                                permissions_override: None,
+                                permissions_override: Some(effective_permissions),
                             });
 
                             if file_batch.len() >= BATCH_SIZE {
@@ -2150,46 +2593,47 @@ impl SyncManager {
                     }
                 }
 
-                // Fallback: if no newStartPageToken was received, fetch one.
+                // If Google omitted newStartPageToken, retain the old
+                // watermark and replay this page on the next run. Taking a
+                // fresh token here could skip changes made while processing.
                 if !new_change_tokens.contains_key(&drive_group.drive_id) {
-                    match self
-                        .drive_client
-                        .get_start_page_token_for_drive(&access_token, &drive_group.drive_id)
-                        .await
-                    {
-                        Ok(token) => {
-                            new_change_tokens.insert(drive_group.drive_id.clone(), token);
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to get start page token for drive {}: {}",
-                                drive_group.drive_id, e
-                            );
-                        }
+                    if let Some(token) = stored_token {
+                        new_change_tokens.insert(drive_group.drive_id.clone(), token.clone());
                     }
                 }
             } else {
-                // Capture the drive-scoped token before the full crawl so changes
-                // made while pagination is in progress are replayed next time.
-                let next_change_token = match self
-                    .drive_client
-                    .get_start_page_token_for_drive(&access_token, &drive_group.drive_id)
-                    .await
-                {
-                    Ok(token) => Some(token),
-                    Err(error) => {
-                        warn!(
-                            "Failed to get start page token for drive {}: {}",
-                            drive_group.drive_id, error
-                        );
-                        None
-                    }
-                };
+                let next_change_token = full_traversal_start_tokens
+                    .get(drive_id)
+                    .cloned()
+                    .unwrap_or(None);
+
+                // Rebuild this drive's compact folder ACL state from the full
+                // selected-scope traversal, dropping entries for folders that
+                // no longer exist or are no longer selected.
+                let old_drive_folder_ids: Vec<String> = stored_folder_access
+                    .iter()
+                    .filter(|(_, info)| info.drive_id == *drive_id)
+                    .map(|(folder_id, _)| folder_id.clone())
+                    .collect();
+                for folder_id in old_drive_folder_ids {
+                    folder_access.remove(&folder_id);
+                    folder_drive_ids.remove(&folder_id);
+                }
 
                 // Full scoped sync for this drive. Stream directly into batches.
                 let mut file_batch: Vec<UserFile> = Vec::new();
 
                 if drive_group.entire_drive {
+                    self.load_scoped_drive_folder_access(
+                        service_auth.as_ref(),
+                        &principal_email,
+                        &access_token,
+                        drive_id,
+                        &mut folder_access,
+                        &mut folder_drive_ids,
+                    )
+                    .await?;
+
                     // Entire-drive selection: list all files with corpora=drive
                     let mut page_token: Option<String> = None;
                     loop {
@@ -2200,16 +2644,25 @@ impl SyncManager {
                                 &principal_email,
                                 &drive_group.drive_id,
                                 page_token.as_deref(),
-                                Some(&drive_cutoff_date),
+                                None,
                             )
                             .await?;
 
                         for file in response.files {
                             if self.should_index_file(&file) {
+                                let effective_permissions =
+                                    crate::models::compute_effective_permissions(
+                                        &file,
+                                        drive_id,
+                                        &drive_permissions,
+                                        raw_drive_acl,
+                                        &folder_access,
+                                        None,
+                                    );
                                 file_batch.push(UserFile {
                                     user_email: Arc::new(principal_email.clone()),
                                     file,
-                                    permissions_override: None,
+                                    permissions_override: Some(effective_permissions),
                                 });
                                 if file_batch.len() >= BATCH_SIZE {
                                     self.flush_batch(
@@ -2249,6 +2702,17 @@ impl SyncManager {
                             continue; // already traversed via overlapping selection
                         }
 
+                        self.ensure_scoped_folder_acl_chain(
+                            service_auth.as_ref(),
+                            &principal_email,
+                            &access_token,
+                            Some(folder_id.clone()),
+                            drive_id,
+                            &mut folder_access,
+                            &mut folder_drive_ids,
+                        )
+                        .await?;
+
                         let mut queue = VecDeque::from([folder_id.clone()]);
                         while let Some(current_folder_id) = queue.pop_front() {
                             if ctx.is_cancelled() {
@@ -2280,25 +2744,51 @@ impl SyncManager {
                                     }
                                     seen_file_ids.insert(file.id.clone());
 
-                                    // Folders are enqueued unconditionally.
-                                    if file.mime_type == "application/vnd.google-apps.folder"
-                                        && !visited_folders.contains(&file.id)
-                                    {
-                                        queue.push_back(file.id.clone());
+                                    // Folders are enqueued unconditionally and
+                                    // retained for descendant ACL computation.
+                                    if file.mime_type == FOLDER_MIME_TYPE {
+                                        Self::record_scoped_folder_access(
+                                            &mut folder_access,
+                                            &mut folder_drive_ids,
+                                            &file,
+                                            drive_id,
+                                        );
+                                        if !visited_folders.contains(&file.id) {
+                                            queue.push_back(file.id.clone());
+                                        }
                                     }
 
-                                    // Non-folder files: apply cutoff locally.
+                                    // Non-folder files in a selected subtree are
+                                    // part of the complete scope regardless of age.
                                     if !self.should_index_file(&file) {
                                         continue;
                                     }
-                                    if !Self::pass_cutoff(&file, drive_cutoff) {
-                                        continue;
-                                    }
-
+                                    self.ensure_scoped_folder_acl_chain(
+                                        service_auth.as_ref(),
+                                        &principal_email,
+                                        &access_token,
+                                        file.parents
+                                            .as_ref()
+                                            .and_then(|parents| parents.first())
+                                            .cloned(),
+                                        drive_id,
+                                        &mut folder_access,
+                                        &mut folder_drive_ids,
+                                    )
+                                    .await?;
+                                    let effective_permissions =
+                                        crate::models::compute_effective_permissions(
+                                            &file,
+                                            drive_id,
+                                            &drive_permissions,
+                                            raw_drive_acl,
+                                            &folder_access,
+                                            None,
+                                        );
                                     file_batch.push(UserFile {
                                         user_email: Arc::new(principal_email.clone()),
                                         file,
-                                        permissions_override: None,
+                                        permissions_override: Some(effective_permissions),
                                     });
                                     if file_batch.len() >= BATCH_SIZE {
                                         self.flush_batch(
@@ -2361,6 +2851,40 @@ impl SyncManager {
                     new_change_tokens.insert(drive_group.drive_id.clone(), token);
                 }
             }
+
+            if ctx.is_cancelled() {
+                break;
+            }
+            completed_drives.insert(drive_id.clone());
+        }
+
+        let mut new_folder_access = stored_folder_access;
+        for drive_group in &drives {
+            let drive_id = &drive_group.drive_id;
+            if !completed_drives.contains(drive_id) {
+                continue;
+            }
+            new_folder_access.retain(|_, info| info.drive_id != *drive_id);
+            for (folder_id, entry) in &folder_access {
+                if folder_drive_ids.get(folder_id) != Some(drive_id) {
+                    continue;
+                }
+                let Some(acl) = &entry.acl else {
+                    continue;
+                };
+                if !entry.inherited_permissions_disabled && acl.is_empty() {
+                    continue;
+                }
+                new_folder_access.insert(
+                    folder_id.clone(),
+                    crate::models::FolderAccessInfo {
+                        drive_id: drive_id.clone(),
+                        parents: entry.parents.clone(),
+                        inherited_permissions_disabled: entry.inherited_permissions_disabled,
+                        acl_fingerprint: crate::models::drive_acl_fingerprint(acl),
+                    },
+                );
+            }
         }
 
         info!(
@@ -2375,6 +2899,9 @@ impl SyncManager {
             None, // No per-user page tokens in scoped mode.
             Some(new_change_tokens),
             Some(current_fingerprint),
+            Some(new_acl_fingerprints),
+            Some(new_folder_access),
+            Some(SCOPED_DWD_PERMISSION_MODEL_VERSION.to_string()),
         ))
     }
 
@@ -2421,6 +2948,12 @@ impl SyncManager {
 
         // Build drive groups from the typed config (already validated root-only).
         let filter_entries = &config.folder_path_filters;
+        let current_fingerprint = format!(
+            "sa-direct:{}",
+            crate::models::compute_scope_fingerprint(Some(filter_entries))
+        );
+        let stored_fingerprint = existing_state.drive_scope_fingerprint.as_deref();
+        let scope_changed = stored_fingerprint != Some(&current_fingerprint);
         let drives = build_drive_groups(filter_entries);
         if drives.is_empty() {
             return Err(anyhow!(
@@ -2428,15 +2961,31 @@ impl SyncManager {
             ));
         }
 
+        // Capture every drive watermark before ACL and folder preflight. A full
+        // traversal may be selected only after those checks, so the watermark
+        // must be established before them to avoid skipping intervening changes.
+        let mut full_traversal_start_tokens: HashMap<String, Option<String>> = HashMap::new();
+        for drive_group in &drives {
+            let token = match self
+                .drive_client
+                .get_start_page_token_for_drive(&access_token, &drive_group.drive_id)
+                .await
+            {
+                Ok(token) => Some(token),
+                Err(error) => {
+                    warn!(
+                        "Failed to get start page token for drive {}: {}",
+                        drive_group.drive_id, error
+                    );
+                    None
+                }
+            };
+            full_traversal_start_tokens.insert(drive_group.drive_id.clone(), token);
+        }
+
         // Scope fingerprint: include the auth mode so a DWD→SA-direct switch on
         // the same source forces a full resync (defensive; in-place conversion is
         // not a supported v1 path).
-        let current_fingerprint = format!(
-            "sa-direct:{}",
-            crate::models::compute_scope_fingerprint(Some(filter_entries))
-        );
-        let stored_fingerprint = existing_state.drive_scope_fingerprint.as_deref();
-        let scope_changed = stored_fingerprint != Some(&current_fingerprint);
         if scope_changed {
             info!(
                 "Drive scope transition detected: {:?} -> {} — forcing full sync",
@@ -2451,40 +3000,19 @@ impl SyncManager {
             .drive_acl_fingerprints
             .clone()
             .unwrap_or_default();
-        let mut new_acl_fingerprints: HashMap<String, String> = HashMap::new();
-        let mut drive_acl_overrides: HashMap<String, DocumentPermissions> = HashMap::new();
-        let mut drive_acl_changed: HashMap<String, bool> = HashMap::new();
-        // Raw (unmapped) drive ACLs, needed to compute the always-access
-        // organizer set at limited-access folder boundaries.
-        let mut drive_acl_raw: HashMap<String, Vec<GoogleDrivePermission>> = HashMap::new();
-
-        for drive_group in &drives {
-            let drive_id = &drive_group.drive_id;
-            let drive_acl = self
-                .drive_client
-                .list_drive_permissions(&access_token, drive_id)
-                .await
-                .with_context(|| format!("Failed to read ACLs for drive {}", drive_id))?;
-
-            let _role = crate::models::validate_sa_drive_access(drive_id, &drive_acl, &sa_email)?;
-
-            let permissions = crate::models::map_drive_permissions(&drive_acl, Some(&sa_email));
-            let fingerprint = crate::models::drive_acl_fingerprint(&drive_acl);
-            let changed = old_acl_fingerprints.get(drive_id) != Some(&fingerprint);
-            if changed {
-                info!(
-                    "ACL fingerprint changed for drive {} — forcing full re-traversal",
-                    drive_id
-                );
-            }
-            new_acl_fingerprints.insert(drive_id.clone(), fingerprint);
-            drive_acl_overrides.insert(drive_id.clone(), permissions);
-            drive_acl_changed.insert(drive_id.clone(), changed);
-            drive_acl_raw.insert(drive_id.clone(), drive_acl);
-
-            if drive_acl_raw
-                .get(drive_id)
-                .is_some_and(|acl| acl.iter().any(|p| p.permission_type == "group"))
+        let acl_state = self
+            .load_shared_drive_acl_state(
+                &access_token,
+                &drives,
+                &old_acl_fingerprints,
+                Some(&sa_email),
+            )
+            .await?;
+        for (drive_id, drive_acl) in &acl_state.drive_acl_raw {
+            crate::models::validate_sa_drive_access(drive_id, drive_acl, &sa_email)?;
+            if drive_acl
+                .iter()
+                .any(|permission| permission.permission_type == "group")
             {
                 warn!(
                     "Drive {} ACL includes group grants. Group-granted documents are visible \
@@ -2494,6 +3022,12 @@ impl SyncManager {
                 );
             }
         }
+        let SharedDriveAclState {
+            drive_acl_fingerprints: new_acl_fingerprints,
+            drive_acl_overrides,
+            drive_acl_raw,
+            drive_acl_changed,
+        } = acl_state;
 
         let content_cache = Arc::new(DriveContentCache::default());
         let mut total_scanned = 0;
@@ -2738,6 +3272,10 @@ impl SyncManager {
                             .expect("drive ACL resolved in preflight"),
                         &drive_cutoff_date,
                         true,
+                        full_traversal_start_tokens
+                            .get(drive_id)
+                            .cloned()
+                            .unwrap_or(None),
                         &content_cache,
                         &mut folder_access,
                         &mut total_scanned,
@@ -2747,20 +3285,10 @@ impl SyncManager {
                     .await?;
                     full_drives.insert(drive_id.clone());
                 } else if !new_change_tokens.contains_key(drive_id) {
-                    match self
-                        .drive_client
-                        .get_start_page_token_for_drive(&access_token, drive_id)
-                        .await
-                    {
-                        Ok(token) => {
-                            new_change_tokens.insert(drive_id.clone(), token);
-                        }
-                        Err(e) => {
-                            warn!(
-                                "Failed to get start page token for drive {}: {}",
-                                drive_id, e
-                            );
-                        }
+                    // Keep the old watermark when Google did not return a new
+                    // one; taking a fresh token here can skip in-flight changes.
+                    if let Some(token) = old_change_tokens.get(drive_id) {
+                        new_change_tokens.insert(drive_id.clone(), token.clone());
                     }
                 }
             } else {
@@ -2777,7 +3305,14 @@ impl SyncManager {
                         .get(drive_id)
                         .expect("drive ACL resolved in preflight"),
                     &drive_cutoff_date,
-                    acl_changed || model_mismatch || folder_acl_changed,
+                    sync_type != SyncType::Incremental
+                        || acl_changed
+                        || model_mismatch
+                        || folder_acl_changed,
+                    full_traversal_start_tokens
+                        .get(drive_id)
+                        .cloned()
+                        .unwrap_or(None),
                     &content_cache,
                     &mut folder_access,
                     &mut total_scanned,
@@ -2857,12 +3392,17 @@ impl SyncManager {
         drive_acl_raw: &[GoogleDrivePermission],
         drive_cutoff_date: &str,
         uncut: bool,
+        start_change_token: Option<String>,
         content_cache: &Arc<DriveContentCache>,
         folder_access: &mut HashMap<String, crate::models::FolderAccessEntry>,
         total_scanned: &mut usize,
         total_updated: &mut usize,
         new_change_tokens: &mut HashMap<String, String>,
     ) -> Result<()> {
+        // Changes made after this token and during the full pass are replayed
+        // on the next incremental run.
+        let next_change_token = start_change_token;
+
         // Folders-first pass: the complete folder index must be in place before
         // computing effective permissions for any file (listing order is
         // arbitrary, so a file's ancestors may appear on later pages).
@@ -2873,10 +3413,7 @@ impl SyncManager {
                 .list_folders_in_drive(service_auth, sa_email, drive_id, folder_page.as_deref())
                 .await?;
             for folder in response.files {
-                let entry = folder_access.entry(folder.id.clone()).or_default();
-                entry.parents = folder.parents.clone().unwrap_or_default();
-                entry.inherited_permissions_disabled =
-                    folder.inherited_permissions_disabled.unwrap_or(false);
+                Self::record_folder_access(folder_access, &folder);
             }
             match response.next_page_token {
                 Some(token) => folder_page = Some(token),
@@ -2893,49 +3430,8 @@ impl SyncManager {
             .filter(|(_, entry)| entry.acl.is_none())
             .map(|(id, _)| id.clone())
             .collect();
-        let client = self.drive_client.clone();
-        let token = access_token.to_string();
-        let semaphore = Arc::new(Semaphore::new(GOOGLE_FILE_CONCURRENCY));
-        let mut tasks = tokio::task::JoinSet::new();
-        for folder_id in pending {
-            let client = client.clone();
-            let token = token.clone();
-            let permit = semaphore.clone();
-            tasks.spawn(async move {
-                let _guard = permit.acquire_owned().await;
-                let result = client.list_drive_permissions(&token, &folder_id).await;
-                (folder_id, result)
-            });
-        }
-        while let Some(joined) = tasks.join_next().await {
-            let (folder_id, result) =
-                joined.map_err(|e| anyhow!("Folder ACL fetch task failed: {}", e))?;
-            match result {
-                Ok(raw) => {
-                    if let Some(entry) = folder_access.get_mut(&folder_id) {
-                        entry.acl = Some(crate::models::filter_direct_permissions(&raw));
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to read ACLs for folder {}: {}", folder_id, e);
-                }
-            }
-        }
-
-        let next_change_token = match self
-            .drive_client
-            .get_start_page_token_for_drive(access_token, drive_id)
-            .await
-        {
-            Ok(token) => Some(token),
-            Err(error) => {
-                warn!(
-                    "Failed to get start page token for drive {}: {}",
-                    drive_id, error
-                );
-                None
-            }
-        };
+        self.load_folder_acls(access_token, pending, folder_access, false)
+            .await?;
 
         let mut file_batch: Vec<UserFile> = Vec::new();
         let mut page_token: Option<String> = None;
@@ -3138,6 +3634,10 @@ impl SyncManager {
         ctx: &SyncContext,
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
+        // Folder ancestry metadata is only a run-local view. Discard entries
+        // left by an interrupted run so a move is evaluated against current
+        // Drive parents during scope evaluation.
+        self.folder_cache.clear();
 
         let native_source_type = SourceType::try_from(source.source_type.as_str())
             .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
@@ -3169,24 +3669,22 @@ impl SyncManager {
             }
         };
 
-        // Scoped mode (filters present, non-OAuth): delegate to sync_drive_scoped.
+        // Scoped service-account mode uses the drive-corpora traversal. OAuth
+        // sources keep the per-user listing and apply ancestry filtering below.
         if parsed_filters.is_some() && !service_auth.is_oauth() {
             return self
                 .sync_drive_scoped(source, service_creds, sync_type, &existing_state, ctx)
                 .await;
         }
 
-        // === Unfiltered / OAuth path: existing all-user listing ===
+        // === OAuth or unfiltered DWD path: per-user listing ===
 
-        // Compute fingerprint. For OAuth sources, filters are ignored —
-        // folder filtering is DWD-only — so the fingerprint is always "all".
-        let current_fingerprint = if service_auth.is_oauth() {
-            "all".to_string()
-        } else {
-            match &parsed_filters {
-                Some(f) => crate::models::compute_scope_fingerprint(Some(f)),
-                None => "all".to_string(),
-            }
+        // Scope fingerprints are shared by OAuth and service-account sources.
+        // A changed personal scope forces a full traversal so files moved into
+        // the selected folders are discovered immediately.
+        let current_fingerprint = match &parsed_filters {
+            Some(f) => crate::models::compute_scope_fingerprint(Some(f)),
+            None => "all".to_string(),
         };
 
         // Detect scope transition and force full sync if needed.
@@ -3200,7 +3698,15 @@ impl SyncManager {
         }
 
         let (drive_cutoff_date, _gmail_cutoff_date) = self.get_cutoff_date()?;
-        info!("Using Drive cutoff date: {}", drive_cutoff_date);
+        // A selected Drive scope represents the user's complete folder
+        // selection, not only recently modified files. Full traversals must
+        // therefore include older files so they can be indexed.
+        let drive_created_after = if parsed_filters.is_some() {
+            None
+        } else {
+            Some(drive_cutoff_date.as_str())
+        };
+        info!("Using Drive cutoff date: {:?}", drive_created_after);
 
         // Build user list: single OAuth user or all domain users
         let user_emails: Vec<String> = if service_auth.is_oauth() {
@@ -3240,8 +3746,11 @@ impl SyncManager {
 
         let gmail_history_ids = existing_state.gmail_history_ids.clone();
         let chat_checkpoint = existing_state.chat.clone();
-        let old_page_tokens = existing_state.drive_page_tokens.unwrap_or_default();
+        let has_checkpoint = parsed_filters.is_some() && existing_state.drive_page_tokens.is_some();
+        let old_page_tokens = existing_state.drive_page_tokens.clone().unwrap_or_default();
         let can_resume_full = sync_type == SyncType::Full && ctx.is_resume() && !scope_changed;
+        let requires_complete_full_checkpoint =
+            parsed_filters.is_some() && !is_incremental && !can_resume_full;
         let mut new_page_tokens: HashMap<String, String> = if can_resume_full {
             old_page_tokens.clone()
         } else {
@@ -3259,13 +3768,12 @@ impl SyncManager {
         let mut successful_users = 0;
         let mut errors = 0;
         let mut last_error: Option<String> = None;
-        let folder_filter_ids: Option<Arc<HashSet<String>>> = if service_auth.is_oauth() {
-            None
-        } else {
-            parsed_filters
-                .as_ref()
-                .map(|filters| Arc::new(filters.iter().map(|filter| filter.id.clone()).collect()))
-        };
+        // OAuth sources use the same ancestry filter as DWD sources. Shared
+        // drive roots work because Drive file parents include the drive root id;
+        // My Drive folder selections are matched by walking parent metadata.
+        let folder_filter_ids: Option<Arc<HashSet<String>>> = parsed_filters
+            .as_ref()
+            .map(|filters| Arc::new(filters.iter().map(|filter| filter.id.clone()).collect()));
         let content_cache = Arc::new(DriveContentCache::default());
         let parallel_users = google_drive_parallel_users();
         info!("Processing Drive users with concurrency {}", parallel_users);
@@ -3274,7 +3782,6 @@ impl SyncManager {
             let service_auth = service_auth.clone();
             let source_id = source.id.clone();
             let sync_run_id = sync_run_id.to_string();
-            let drive_cutoff_date = drive_cutoff_date.clone();
             let ctx = ctx.clone();
             let content_cache = content_cache.clone();
             let stored_page_token = old_page_tokens.get(cur_user_email.as_str()).cloned();
@@ -3286,7 +3793,14 @@ impl SyncManager {
                         "Skipping Drive user {} already checkpointed for sync {}",
                         cur_user_email, sync_run_id
                     );
-                    return (cur_user_email, Ok((0, 0, None)));
+                    return (
+                        cur_user_email,
+                        Ok(DriveUserSyncResult {
+                            scanned: 0,
+                            updated: 0,
+                            next_page_token: None,
+                        }),
+                    );
                 }
 
                 if ctx.is_cancelled() {
@@ -3294,7 +3808,14 @@ impl SyncManager {
                         "Sync {} cancelled, skipping Drive sync for user {}",
                         sync_run_id, cur_user_email
                     );
-                    return (cur_user_email, Ok((0, 0, None)));
+                    return (
+                        cur_user_email,
+                        Ok(DriveUserSyncResult {
+                            scanned: 0,
+                            updated: 0,
+                            next_page_token: None,
+                        }),
+                    );
                 }
 
                 let _access_token = match service_auth.get_access_token(&cur_user_email).await {
@@ -3314,7 +3835,52 @@ impl SyncManager {
                 info!("Processing user: {}", cur_user_email);
 
                 let use_incremental = is_incremental && stored_page_token.is_some();
-                let result = if use_incremental {
+                let reconcile_changes_before_full =
+                    !is_incremental && has_checkpoint && stored_page_token.is_some();
+                let result = if reconcile_changes_before_full {
+                    let start_token = stored_page_token.as_deref().unwrap();
+                    // Consume the saved changes token before the full crawl so
+                    // removed or access-revoked files also leave the index.
+                    let pre_full_result = match self
+                        .sync_drive_for_user_incremental(
+                            &cur_user_email,
+                            service_auth.clone(),
+                            &source_id,
+                            &sync_run_id,
+                            &ctx,
+                            start_token,
+                            content_cache.clone(),
+                            folder_filter_ids.clone(),
+                        )
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(error) => {
+                            let user_email = cur_user_email.clone();
+                            return (
+                                cur_user_email,
+                                Err(error).with_context(|| {
+                                    format!(
+                                        "Pre-full-sync Drive changes reconciliation failed for {}",
+                                        user_email
+                                    )
+                                }),
+                            );
+                        }
+                    };
+                    self.sync_drive_for_user(
+                        &cur_user_email,
+                        service_auth.clone(),
+                        &source_id,
+                        &sync_run_id,
+                        &ctx,
+                        drive_created_after,
+                        content_cache.clone(),
+                        folder_filter_ids.clone(),
+                        pre_full_result.next_page_token,
+                    )
+                    .await
+                } else if use_incremental {
                     let start_token = stored_page_token.as_deref().unwrap();
                     info!(
                         "Using incremental Drive sync for user {} from pageToken {}",
@@ -3355,31 +3921,16 @@ impl SyncManager {
                         &source_id,
                         &sync_run_id,
                         &ctx,
-                        Some(&drive_cutoff_date),
+                        drive_created_after,
                         content_cache.clone(),
                         folder_filter_ids.clone(),
+                        None,
                     )
                     .await
                 };
 
                 match result {
-                    Ok((scanned, updated)) => {
-                        let page_token = match self
-                            .drive_client
-                            .get_start_page_token_for_user(service_auth.as_ref(), &cur_user_email)
-                            .await
-                        {
-                            Ok(token) => Some(token),
-                            Err(e) => {
-                                warn!(
-                                    "Failed to get start page token for user {}: {}",
-                                    cur_user_email, e
-                                );
-                                None
-                            }
-                        };
-                        (cur_user_email, Ok((scanned, updated, page_token)))
-                    }
+                    Ok(result) => (cur_user_email, Ok(result)),
                     Err(e) => (cur_user_email, Err(e)),
                 }
             }
@@ -3388,16 +3939,19 @@ impl SyncManager {
         let mut user_results = user_tasks.buffer_unordered(parallel_users);
         while let Some((cur_user_email, result)) = user_results.next().await {
             match result {
-                Ok((scanned, updated, page_token)) => {
+                Ok(result) => {
                     successful_users += 1;
-                    total_scanned += scanned;
-                    total_updated += updated;
+                    total_scanned += result.scanned;
+                    total_updated += result.updated;
                     info!(
                         "User {} Drive sync completed: {} scanned, {} updated",
-                        cur_user_email, scanned, updated
+                        cur_user_email, result.scanned, result.updated
                     );
 
-                    if let Some(token) = page_token {
+                    if let Some(token) = result
+                        .next_page_token
+                        .or_else(|| old_page_tokens.get(&cur_user_email).cloned())
+                    {
                         new_page_tokens.insert(cur_user_email.clone(), token);
                     }
 
@@ -3409,7 +3963,11 @@ impl SyncManager {
                             Some(new_page_tokens.clone())
                         },
                         drive_change_tokens: None,
-                        drive_scope_fingerprint: Some(current_fingerprint.clone()),
+                        drive_scope_fingerprint: if requires_complete_full_checkpoint {
+                            None
+                        } else {
+                            Some(current_fingerprint.clone())
+                        },
                         drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
                         chat: chat_checkpoint.clone(),
                         ..Default::default()
@@ -3450,6 +4008,9 @@ impl SyncManager {
             ));
         }
 
+        let full_scope_sync_completed =
+            !ctx.is_cancelled() && errors == 0 && successful_users == user_emails.len();
+
         info!(
             "Sync completed for source {}: {} scanned, {} updated",
             source.id, total_scanned, total_updated
@@ -3460,7 +4021,7 @@ impl SyncManager {
 
         info!("Completed sync for source: {}", source.id);
 
-        Ok(GoogleSyncCheckpoint {
+        let checkpoint = GoogleSyncCheckpoint {
             gmail_history_ids,
             drive_page_tokens: if new_page_tokens.is_empty() {
                 None
@@ -3468,11 +4029,23 @@ impl SyncManager {
                 Some(new_page_tokens)
             },
             drive_change_tokens: None,
-            drive_scope_fingerprint: Some(current_fingerprint),
+            drive_scope_fingerprint: if requires_complete_full_checkpoint
+                && !full_scope_sync_completed
+            {
+                None
+            } else {
+                Some(current_fingerprint)
+            },
             drive_acl_fingerprints: existing_state.drive_acl_fingerprints.clone(),
             chat: chat_checkpoint,
             ..Default::default()
-        })
+        };
+        if requires_complete_full_checkpoint {
+            ctx.save_checkpoint(serde_json::to_value(&checkpoint)?)
+                .await
+                .context("Failed to save Drive full-sync checkpoint")?;
+        }
+        Ok(checkpoint)
     }
 
     async fn sync_gmail_source_internal(
@@ -6053,6 +6626,11 @@ pub(crate) async fn check_ancestry_static(
         }
         if allowed_ids.contains(&cur) {
             return Ok(true);
+        }
+        // `root` is the My Drive root alias, not a regular folder resource.
+        // There is no need to fetch metadata once ancestry reaches it.
+        if cur == "root" {
+            continue;
         }
         let (_name, parent) = lookup(cur).await?;
         if let Some(p) = parent {

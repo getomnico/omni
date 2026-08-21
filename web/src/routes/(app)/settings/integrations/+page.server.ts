@@ -10,7 +10,17 @@ import {
     oauthServiceBaseUrl,
 } from '$lib/server/oauth/connectorOAuth'
 import { SourceType, supportsDataSync } from '$lib/types'
+import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
+import { getConfig } from '$lib/server/config'
 import type { PageServerLoad, Actions } from './$types'
+
+type GoogleIndexScope = 'all' | 'selected' | 'pending'
+
+interface GoogleDriveSourceConfig {
+    auth_mode?: 'domain_wide_delegation' | 'service_account_direct'
+    index_scope?: GoogleIndexScope
+    folder_path_filters?: FolderPathFilter[]
+}
 
 export const load: PageServerLoad = async ({ locals }) => {
     if (!locals.user) {
@@ -71,6 +81,76 @@ export const load: PageServerLoad = async ({ locals }) => {
     }
 }
 
+function parsePersonalDriveScope(formData: FormData): {
+    indexScope: 'all' | 'selected'
+    filters: FolderPathFilter[]
+} {
+    const indexScope = formData.get('indexScope')
+    if (indexScope !== 'all' && indexScope !== 'selected') {
+        throw new Error('indexScope must be all or selected')
+    }
+
+    const raw = formData.get('folder_path_filters')
+    let parsed: unknown = []
+    if (raw !== null) {
+        if (typeof raw !== 'string') {
+            throw new Error('folder_path_filters must be a JSON string')
+        }
+        if (raw.length > 0) {
+            try {
+                parsed = JSON.parse(raw)
+            } catch {
+                throw new Error('folder_path_filters is not valid JSON')
+            }
+        }
+    }
+    if (!Array.isArray(parsed)) {
+        throw new Error('folder_path_filters must be an array')
+    }
+    if (parsed.length > 100) {
+        throw new Error('At most 100 Drive folders can be selected')
+    }
+
+    const seen = new Set<string>()
+    const filters: FolderPathFilter[] = []
+    const allowedKeys = new Set(['id', 'name', 'path', 'driveId', 'kind'])
+    for (const value of parsed) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            throw new Error('Each folder filter must be an object')
+        }
+        const entry = value as Record<string, unknown>
+        if (Object.keys(entry).some((key) => !allowedKeys.has(key))) {
+            throw new Error('Folder filters contain an unknown field')
+        }
+        if (
+            typeof entry.id !== 'string' ||
+            typeof entry.name !== 'string' ||
+            typeof entry.path !== 'string' ||
+            typeof entry.driveId !== 'string' ||
+            (entry.kind !== 'folder' && entry.kind !== 'shared_drive_root')
+        ) {
+            throw new Error('Folder filters contain an invalid entry')
+        }
+        if (!entry.id || !entry.name || !entry.path || !entry.driveId) {
+            throw new Error('Folder filters contain an empty value')
+        }
+        if (seen.has(entry.id)) continue
+        seen.add(entry.id)
+        filters.push({
+            id: entry.id,
+            name: entry.name,
+            path: entry.path,
+            driveId: entry.driveId,
+            kind: entry.kind,
+        })
+    }
+
+    if (indexScope === 'selected' && filters.length === 0) {
+        throw new Error('Select at least one Drive folder')
+    }
+    return { indexScope, filters: indexScope === 'all' ? [] : filters }
+}
+
 export const actions: Actions = {
     disable: async ({ request, locals }) => {
         if (!locals.user) {
@@ -125,6 +205,75 @@ export const actions: Actions = {
             return fail(400, { error: 'Source does not support data sync' })
         }
 
+        const sourceConfig = source.config as GoogleDriveSourceConfig
+        if (
+            source.sourceType === SourceType.GOOGLE_DRIVE &&
+            sourceConfig.index_scope === 'pending'
+        ) {
+            return fail(400, { error: 'Choose a Google Drive indexing scope first' })
+        }
+
         await updateSourceById(sourceId, { isActive: true })
+    },
+
+    configureDrive: async ({ request, locals, fetch }) => {
+        if (!locals.user) {
+            throw redirect(302, '/login')
+        }
+
+        const formData = await request.formData()
+        const sourceId = formData.get('sourceId') as string
+        if (!sourceId) return fail(400, { error: 'Source ID is required' })
+        const [source] = await db
+            .select()
+            .from(sources)
+            .where(
+                and(
+                    eq(sources.id, sourceId),
+                    eq(sources.createdBy, locals.user.id),
+                    eq(sources.scope, 'user'),
+                    eq(sources.isDeleted, false),
+                    eq(sources.sourceType, SourceType.GOOGLE_DRIVE),
+                ),
+            )
+            .limit(1)
+        if (!source) return fail(404, { error: 'Google Drive source not found' })
+
+        let scope: ReturnType<typeof parsePersonalDriveScope>
+        try {
+            scope = parsePersonalDriveScope(formData)
+        } catch (err) {
+            return fail(400, { error: err instanceof Error ? err.message : 'Invalid Drive scope' })
+        }
+
+        const existingConfig = source.config as GoogleDriveSourceConfig
+        const nextConfig = {
+            ...existingConfig,
+            index_scope: scope.indexScope,
+            folder_path_filters: scope.filters,
+        }
+
+        await updateSourceById(source.id, { isActive: true, config: nextConfig })
+
+        try {
+            const response = await fetch(`${getConfig().services.connectorManagerUrl}/sync`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ source_id: source.id, sync_mode: 'full' }),
+            })
+            if (!response.ok && response.status !== 409) {
+                return fail(502, {
+                    error: 'Drive scope saved, but the full sync could not start',
+                    sourceId: source.id,
+                })
+            }
+        } catch {
+            return fail(502, {
+                error: 'Drive scope saved, but the full sync could not start',
+                sourceId: source.id,
+            })
+        }
+
+        return { success: true, sourceId: source.id }
     },
 }

@@ -1,13 +1,13 @@
 import { error, redirect } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
-import { sources } from '$lib/server/db/schema'
+import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { ulid } from 'ulid'
 import { eq } from 'drizzle-orm'
 import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
 import { OAuthStateManager } from '$lib/server/oauth/state'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
-import { decryptConfig } from '$lib/server/crypto/encryption'
+import { decryptConfig, encryptConfig } from '$lib/server/crypto/encryption'
 import { logger } from '$lib/server/logger'
 import { getConfig } from '$lib/server/config'
 import { getSourceById, getSourcesByType } from '$lib/server/db/sources'
@@ -266,12 +266,12 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     // user's personal source. Org-level sources are managed separately under
     // /admin/settings/integrations.
     const connectedSourceIds: string[] = []
+    const incrementalSyncSourceIds = new Set<string>()
     for (const sourceType of flow.sourceTypes) {
         const sourcesOfType = await getSourcesByType(sourceType)
         const existing = sourcesOfType.find((s) => s.scope === 'user' && s.createdBy === user.id)
 
         if (existing) {
-            // Source already exists for this user — refresh its creds in place.
             const existingCredential = await serviceCredentialsRepository.getByUserAndSource(
                 existing.id,
                 user.id,
@@ -279,6 +279,63 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             const existingCredentials = existingCredential
                 ? decryptConfig(existingCredential.credentials)
                 : {}
+            const accountChanged =
+                sourceType === SourceType.GOOGLE_DRIVE &&
+                (!existingCredential ||
+                    typeof principalEmail !== 'string' ||
+                    principalEmail.length === 0 ||
+                    typeof existingCredential.principalEmail !== 'string' ||
+                    existingCredential.principalEmail.length === 0 ||
+                    existingCredential.principalEmail.trim().toLowerCase() !==
+                        principalEmail.trim().toLowerCase())
+
+            if (accountChanged) {
+                // A personal Drive source is account-scoped. Do not reuse its
+                // documents or folder scope for a different Google identity.
+                // The old generation is hidden immediately and cleaned up by
+                // connector-manager; the new account starts in pending setup.
+                const replacementId = ulid()
+                const replacementCredentials = credentialsWithRefreshFallback({})
+                await db.transaction(async (tx) => {
+                    await tx.insert(sources).values({
+                        id: replacementId,
+                        name: existing.name,
+                        sourceType: existing.sourceType,
+                        integrationType: existing.integrationType,
+                        config: { index_scope: 'pending', folder_path_filters: [] },
+                        isActive: false,
+                        isDeleted: false,
+                        scope: 'user',
+                        userFilterMode: existing.userFilterMode,
+                        userWhitelist: existing.userWhitelist,
+                        userBlacklist: existing.userBlacklist,
+                        createdBy: existing.createdBy,
+                        syncIntervalSeconds: existing.syncIntervalSeconds,
+                    })
+                    await tx.insert(serviceCredentials).values({
+                        id: ulid(),
+                        sourceId: replacementId,
+                        userId: user.id,
+                        provider: credentialProvider,
+                        authType: 'oauth',
+                        principalEmail,
+                        credentials: encryptConfig(replacementCredentials),
+                        config: { granted_scopes: effectiveGrantedScopes },
+                        expiresAt,
+                    })
+                    await tx
+                        .update(sources)
+                        .set({ isActive: false, isDeleted: true, updatedAt: new Date() })
+                        .where(eq(sources.id, existing.id))
+                    await tx
+                        .delete(serviceCredentials)
+                        .where(eq(serviceCredentials.sourceId, existing.id))
+                })
+                connectedSourceIds.push(replacementId)
+                continue
+            }
+
+            // Same Google identity — refresh its creds in place and preserve scope.
             await serviceCredentialsRepository.createForUser({
                 sourceId: existing.id,
                 userId: user.id,
@@ -293,9 +350,13 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 expiresAt,
             })
             connectedSourceIds.push(existing.id)
+            if (sourceType === SourceType.GOOGLE_DRIVE) {
+                incrementalSyncSourceIds.add(existing.id)
+            }
             continue
         }
 
+        const isGoogleDrive = sourceType === SourceType.GOOGLE_DRIVE
         const [newSource] = await db
             .insert(sources)
             .values({
@@ -303,9 +364,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 name: getSourceDisplayName(sourceType as SourceType) ?? sourceType,
                 sourceType,
                 scope: 'user',
-                config: {},
+                config: isGoogleDrive ? { index_scope: 'pending', folder_path_filters: [] } : {},
                 createdBy: user.id,
-                isActive: true,
+                // Drive must wait for the owner to choose its indexing scope.
+                isActive: !isGoogleDrive,
             })
             .returning()
 
@@ -327,10 +389,26 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     const connectorManagerUrl = getConfig().services.connectorManagerUrl
     for (const sourceId of connectedSourceIds) {
         await notifyOAuthCredentialReady(sourceId, user.id)
+        const connectedSource = await getSourceById(sourceId)
+        // Personal Drive is intentionally inactive until its owner chooses an
+        // explicit scope in My Integrations. Other services retain the old
+        // immediate-sync behavior.
+        if (
+            connectedSource?.sourceType === SourceType.GOOGLE_DRIVE &&
+            (connectedSource.config as { index_scope?: unknown } | null)?.index_scope === 'pending'
+        ) {
+            continue
+        }
         try {
-            const syncResponse = await fetch(`${connectorManagerUrl}/sync/${sourceId}`, {
-                method: 'POST',
-            })
+            const syncResponse = incrementalSyncSourceIds.has(sourceId)
+                ? await fetch(`${connectorManagerUrl}/sync`, {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ source_id: sourceId, sync_mode: 'incremental' }),
+                  })
+                : await fetch(`${connectorManagerUrl}/sync/${sourceId}`, {
+                      method: 'POST',
+                  })
             if (!syncResponse.ok && syncResponse.status !== 409) {
                 logger.warn('Failed to trigger personal source sync after OAuth', {
                     sourceId,

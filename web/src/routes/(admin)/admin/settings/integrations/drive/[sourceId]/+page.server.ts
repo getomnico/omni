@@ -7,7 +7,8 @@ import { serviceCredentialsRepository } from '$lib/server/repositories/service-c
 import { userRepository } from '$lib/server/db/users'
 import { getConfig } from '$lib/server/config'
 import { AuthType, SourceType } from '$lib/types'
-import type { FolderPathFilter } from '$lib/types'
+import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
+import { GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
@@ -175,8 +176,8 @@ export const actions: Actions = {
                 const domain = ((formData.get('domain') as string) || '').trim()
 
                 if (isSaDirect) {
-                    // SA-direct: no admin email/domain required; the shared drive
-                    // selection is the only scope. Validate it was provided.
+                    // SA-direct does not impersonate an admin user, but group
+                    // membership sync still needs the Workspace domain.
                     const folderPathFilters = parseFolderPathFilters(formData)
                     if (folderPathFilters.length === 0) {
                         throw error(400, 'At least one shared drive is required')
@@ -196,12 +197,19 @@ export const actions: Actions = {
                         }
                     }
 
+                    if (!domain) {
+                        throw error(
+                            400,
+                            'Organization domain is required for SA-direct group membership sync',
+                        )
+                    }
+
                     const mergedConfig: Record<string, unknown> = {
                         ...existingConfig,
                         auth_mode: 'service_account_direct',
+                        domain,
                     }
                     mergedConfig.folder_path_filters = folderPathFilters
-                    delete mergedConfig.domain
 
                     const existingCredConfig: Record<string, unknown> =
                         existingCreds?.config &&
@@ -214,7 +222,8 @@ export const actions: Actions = {
                         principalEmail: null,
                         config: {
                             ...existingCredConfig,
-                            scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+                            domain,
+                            scopes: GOOGLE_SA_DIRECT_SCOPES,
                         },
                         credentials: serviceAccountJson
                             ? { service_account_key: serviceAccountJson }

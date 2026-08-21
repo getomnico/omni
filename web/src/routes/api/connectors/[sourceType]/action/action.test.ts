@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { GOOGLE_SA_DIRECT_DRIVE_SCOPES, GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
 
 // Mock server dependencies before importing the handler.
 vi.mock('$lib/server/config', () => ({
@@ -110,7 +111,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             serviceAccountJson: '{"client_email":"service@example.com"}',
             principalEmail: 'admin@example.com',
             domain: 'example.com',
-            params: {},
+            params: { query: 'roadmap' },
         })
 
         expect(response).toEqual({ status: 200, body: connectorResponse })
@@ -123,7 +124,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             source_type: 'google_drive',
             user_id: 'admin-1',
             action: 'discover_folders',
-            params: {},
+            params: { query: 'roadmap', auth_mode: 'domain_wide_delegation' },
             transient_credentials: {
                 provider: 'google',
                 auth_type: 'jwt',
@@ -136,11 +137,100 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         })
     })
 
-    it('rejects unknown actions and unknown top-level fields', async () => {
+    it('rejects unknown actions and unknown fields', async () => {
         expect((await callPost({ action: 'bogus', serviceAccountJson: '{}' })).status).toBe(400)
         expect(
             (await callPost({ action: 'discover_folders', serviceAccountJson: '{}', evil: 1 }))
                 .status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    params: { query: 'roadmap', evil: 1 },
+                })
+            ).status,
+        ).toBe(400)
+    })
+
+    it('forwards DWD folder search queries with the injected auth mode', async () => {
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify({ status: 'success', result: { items: [] } }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        )
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'discover_folders',
+            serviceAccountJson: '{}',
+            principalEmail: 'admin@example.com',
+            domain: 'example.com',
+            params: { query: 'roadmap' },
+        })
+
+        expect(response.status).toBe(200)
+        const [, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).toMatchObject({
+            action: 'discover_folders',
+            params: { query: 'roadmap', auth_mode: 'domain_wide_delegation' },
+        })
+    })
+
+    it('requires a non-empty folder search query without forwarding a request', async () => {
+        const connectorFetch = vi.fn()
+        vi.stubGlobal('fetch', connectorFetch)
+
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: {},
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: { query: 'x' },
+                })
+            ).status,
+        ).toBe(400)
+        expect(connectorFetch).not.toHaveBeenCalled()
+    })
+
+    it('rejects conflicting or invalid folder search auth params', async () => {
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: { auth_mode: 'service_account_direct', query: 'roadmap' },
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'discover_folders',
+                    serviceAccountJson: '{}',
+                    principalEmail: 'admin@example.com',
+                    domain: 'example.com',
+                    params: { query: 'x' },
+                })
+            ).status,
         ).toBe(400)
     })
 
@@ -175,7 +265,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             action: 'discover_folders',
             serviceAccountJson: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
             authMode: 'service_account_direct',
-            params: { auth_mode: 'service_account_direct' },
+            params: { auth_mode: 'service_account_direct', query: 'drive' },
         })
 
         expect(response.status).toBe(200)
@@ -184,7 +274,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
         expect(forwarded).toMatchObject({
             action: 'discover_folders',
-            params: { auth_mode: 'service_account_direct' },
+            params: { auth_mode: 'service_account_direct', query: 'drive' },
             transient_credentials: {
                 provider: 'google',
                 auth_type: 'jwt',
@@ -192,7 +282,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
                 credentials: {
                     service_account_key: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
                 },
-                config: { scopes: ['https://www.googleapis.com/auth/drive.readonly'] },
+                config: { scopes: GOOGLE_SA_DIRECT_DRIVE_SCOPES },
             },
         })
     })
@@ -228,6 +318,57 @@ describe('POST /api/connectors/[sourceType]/action', () => {
         })
     })
 
+    it('forwards SA-direct group access validation with the Workspace domain and Admin scope', async () => {
+        const connectorResponse = {
+            status: 'success',
+            result: { domain: 'example.com', groups: 2, memberships: 3 },
+        }
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(connectorResponse), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        )
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'validate_sa_direct_group_access',
+            serviceAccountJson: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
+            authMode: 'service_account_direct',
+            domain: 'example.com',
+            params: { auth_mode: 'service_account_direct' },
+        })
+
+        expect(response.status).toBe(200)
+        const [, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).toMatchObject({
+            action: 'validate_sa_direct_group_access',
+            params: { auth_mode: 'service_account_direct' },
+            transient_credentials: {
+                config: {
+                    domain: 'example.com',
+                    scopes: GOOGLE_SA_DIRECT_SCOPES,
+                },
+            },
+        })
+    })
+
+    it('requires a domain for SA-direct group access validation', async () => {
+        const connectorFetch = vi.fn()
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'validate_sa_direct_group_access',
+            serviceAccountJson: '{}',
+            authMode: 'service_account_direct',
+            params: { auth_mode: 'service_account_direct' },
+        })
+
+        expect(response.status).toBe(400)
+        expect(connectorFetch).not.toHaveBeenCalled()
+    })
+
     it('rejects validate_shared_drive_access without drive ids or outside SA-direct', async () => {
         expect(
             (
@@ -245,6 +386,16 @@ describe('POST /api/connectors/[sourceType]/action', () => {
                     action: 'validate_shared_drive_access',
                     serviceAccountJson: '{}',
                     params: { drive_ids: ['d1'] },
+                })
+            ).status,
+        ).toBe(400)
+        expect(
+            (
+                await callPost({
+                    action: 'validate_shared_drive_access',
+                    serviceAccountJson: '{}',
+                    authMode: 'service_account_direct',
+                    params: { drive_ids: ['   '] },
                 })
             ).status,
         ).toBe(400)

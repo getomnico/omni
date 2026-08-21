@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 import { SourceType } from '$lib/types'
-import type { GoogleAuthMode } from '$lib/types'
+import { GOOGLE_SA_DIRECT_DRIVE_SCOPES, GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
 
 /**
  * Invokes an action directly on a connector before a source exists.
@@ -12,13 +12,17 @@ import type { GoogleAuthMode } from '$lib/types'
  * endpoint and is never stored or returned.
  *
  * SECURITY: Strictly allowlisted — currently only google_drive's
- * discover_folders and validate_shared_drive_access actions with JWT
- * credentials are accepted. Unknown actions, fields, or auth modes fail
- * closed.
+ * discovery and setup-validation actions with JWT credentials are accepted.
+ * Unknown actions, fields, or auth modes fail closed.
  */
 
-const ALLOWED_ACTIONS = new Set(['discover_folders', 'validate_shared_drive_access'])
-const ALLOWED_AUTH_MODES: GoogleAuthMode[] = ['domain_wide_delegation', 'service_account_direct']
+const ALLOWED_ACTIONS = new Set([
+    'discover_folders',
+    'validate_shared_drive_access',
+    'validate_sa_direct_group_access',
+])
+const ALLOWED_AUTH_MODES = ['domain_wide_delegation', 'service_account_direct'] as const
+type GoogleAuthMode = (typeof ALLOWED_AUTH_MODES)[number]
 
 export const POST: RequestHandler = async ({ params: routeParams, request, locals }) => {
     // Admin-only
@@ -122,23 +126,98 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
         }
     }
     if (action === 'discover_folders') {
-        // params is optional; when present it may carry auth_mode.
-        if (params && Object.keys(params).length > 0 && !('auth_mode' in params)) {
-            throw error(400, 'discover_folders accepts only an optional auth_mode param')
+        const allowedParamFields = ['auth_mode', 'query']
+        for (const key of Object.keys(params ?? {})) {
+            if (!allowedParamFields.includes(key)) {
+                throw error(400, `Unknown discover_folders param: '${key}'`)
+            }
+        }
+        if (params && 'auth_mode' in params) {
+            const paramAuthMode = params.auth_mode
+            if (
+                typeof paramAuthMode !== 'string' ||
+                !ALLOWED_AUTH_MODES.includes(paramAuthMode as GoogleAuthMode)
+            ) {
+                throw error(400, 'discover_folders auth_mode is invalid')
+            }
+            if (paramAuthMode !== authMode) {
+                throw error(400, 'discover_folders auth_mode conflicts with authMode')
+            }
+        }
+        if (!params || !('query' in params)) {
+            throw error(400, 'discover_folders query is required')
+        }
+        const query = params.query
+        if (typeof query !== 'string') {
+            throw error(400, 'discover_folders query must be a string')
+        }
+        const queryLength = Array.from(query.trim()).length
+        if (queryLength < 2 || queryLength > 200) {
+            throw error(400, 'discover_folders query must contain 2–200 characters')
         }
     }
     if (action === 'validate_shared_drive_access') {
         if (!params || typeof params !== 'object' || Array.isArray(params)) {
             throw error(400, 'validate_shared_drive_access requires params')
         }
+        const allowedParamFields = ['auth_mode', 'drive_ids']
+        for (const key of Object.keys(params)) {
+            if (!allowedParamFields.includes(key)) {
+                throw error(400, `Unknown validate_shared_drive_access param: '${key}'`)
+            }
+        }
+        if ('auth_mode' in params) {
+            const paramAuthMode = params.auth_mode
+            if (
+                typeof paramAuthMode !== 'string' ||
+                !ALLOWED_AUTH_MODES.includes(paramAuthMode as GoogleAuthMode)
+            ) {
+                throw error(400, 'validate_shared_drive_access auth_mode is invalid')
+            }
+            if (paramAuthMode !== authMode) {
+                throw error(400, 'validate_shared_drive_access auth_mode conflicts with authMode')
+            }
+        }
         const driveIds = params.drive_ids
-        if (!Array.isArray(driveIds) || driveIds.length === 0) {
+        if (
+            !Array.isArray(driveIds) ||
+            driveIds.length === 0 ||
+            !driveIds.every(
+                (driveId): driveId is string =>
+                    typeof driveId === 'string' && driveId.trim().length > 0,
+            )
+        ) {
             throw error(400, 'validate_shared_drive_access requires a non-empty drive_ids array')
         }
         if (authMode !== 'service_account_direct') {
             throw error(
                 400,
                 'validate_shared_drive_access requires authMode=service_account_direct',
+            )
+        }
+    }
+    if (action === 'validate_sa_direct_group_access') {
+        if (authMode !== 'service_account_direct') {
+            throw error(
+                400,
+                'validate_sa_direct_group_access requires authMode=service_account_direct',
+            )
+        }
+        if (!params || typeof params !== 'object' || Array.isArray(params)) {
+            throw error(400, 'validate_sa_direct_group_access requires params')
+        }
+        for (const key of Object.keys(params)) {
+            if (key !== 'auth_mode') {
+                throw error(400, `Unknown validate_sa_direct_group_access param: '${key}'`)
+            }
+        }
+        if (params.auth_mode !== 'service_account_direct') {
+            throw error(400, 'validate_sa_direct_group_access auth_mode is invalid')
+        }
+        if (typeof domain !== 'string' || domain.trim().length === 0) {
+            throw error(
+                400,
+                'An organization domain is required to validate SA-direct group membership access',
             )
         }
     }
@@ -177,11 +256,18 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
         const config = getConfig()
         const connectorManagerUrl = config.services.connectorManagerUrl
 
-        // Build the transient credential config: SA-direct carries only the
-        // drive.readonly scope; DWD carries the domain for impersonation.
+        // Build the transient credential config. Group validation needs the
+        // Admin Directory scope and the Workspace domain; ordinary SA-direct
+        // Drive actions remain limited to Drive read access.
         const transientConfig: Record<string, unknown> = {}
         if (authMode === 'service_account_direct') {
-            transientConfig.scopes = ['https://www.googleapis.com/auth/drive.readonly']
+            transientConfig.scopes =
+                action === 'validate_sa_direct_group_access'
+                    ? GOOGLE_SA_DIRECT_SCOPES
+                    : GOOGLE_SA_DIRECT_DRIVE_SCOPES
+            if (action === 'validate_sa_direct_group_access') {
+                transientConfig.domain = domain.trim()
+            }
         } else {
             transientConfig.domain = domain
         }

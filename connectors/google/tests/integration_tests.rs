@@ -585,6 +585,14 @@ mod sa_direct_tests {
         event_bodies: Arc<Mutex<Vec<JsonValue>>>,
         /// Count of /drive/v3/files list calls (to detect uncut full traversal).
         file_list_calls: Arc<AtomicUsize>,
+        /// Query parameters captured for folder-discovery assertions.
+        file_list_queries: Arc<Mutex<Vec<HashMap<String, String>>>>,
+        /// Whether folder discovery responses should report an incomplete corpus search.
+        incomplete_search: Arc<AtomicBool>,
+        /// Whether folder discovery responses should paginate in 100-item pages.
+        folder_discovery_pagination: Arc<AtomicBool>,
+        /// Count of file metadata requests, used to detect ancestor loading.
+        file_metadata_calls: Arc<AtomicUsize>,
     }
 
     impl SaMockState {
@@ -609,6 +617,19 @@ mod sa_direct_tests {
         }
         fn file_list_calls(&self) -> usize {
             self.file_list_calls.load(Ordering::SeqCst)
+        }
+        fn file_list_queries(&self) -> Vec<HashMap<String, String>> {
+            self.file_list_queries.lock().unwrap().clone()
+        }
+        fn set_incomplete_search(&self, incomplete: bool) {
+            self.incomplete_search.store(incomplete, Ordering::SeqCst);
+        }
+        fn set_folder_discovery_pagination(&self, enabled: bool) {
+            self.folder_discovery_pagination
+                .store(enabled, Ordering::SeqCst);
+        }
+        fn file_metadata_calls(&self) -> usize {
+            self.file_metadata_calls.load(Ordering::SeqCst)
         }
         fn event_bodies(&self) -> Vec<JsonValue> {
             self.event_bodies.lock().unwrap().clone()
@@ -685,7 +706,26 @@ mod sa_direct_tests {
         }))
     }
 
-    async fn list_drives_mock() -> Json<JsonValue> {
+    async fn list_drives_mock(Query(query): Query<HashMap<String, String>>) -> Json<JsonValue> {
+        if query
+            .get("q")
+            .map(|q| q.contains("name contains 'shared'"))
+            .unwrap_or(false)
+        {
+            let drives = (0..101)
+                .map(|index| {
+                    json!({
+                        "id": format!("drive-{index}"),
+                        "name": if index == 1 {
+                            "Shared Policy Docs".to_string()
+                        } else {
+                            format!("Shared Drive {index}")
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            return Json(json!({ "drives": drives }));
+        }
         Json(json!({
             "drives": [
                 { "id": "drive-1", "name": "Policy Docs" },
@@ -694,7 +734,11 @@ mod sa_direct_tests {
         }))
     }
 
-    async fn get_file_mock(Query(query): Query<HashMap<String, String>>) -> Json<JsonValue> {
+    async fn get_file_mock(
+        State(state): State<SaMockState>,
+        Query(query): Query<HashMap<String, String>>,
+    ) -> Json<JsonValue> {
+        state.file_metadata_calls.fetch_add(1, Ordering::SeqCst);
         if query.get("alt").map(String::as_str) == Some("media") {
             return Json(json!("content for file"));
         }
@@ -733,6 +777,7 @@ mod sa_direct_tests {
         Query(query): Query<HashMap<String, String>>,
     ) -> Json<JsonValue> {
         state.file_list_calls.fetch_add(1, Ordering::SeqCst);
+        state.file_list_queries.lock().unwrap().push(query.clone());
         // trashed=true queries serve the trashed-file set for full-traversal
         // reconciliation; everything else serves the live file set.
         let is_trashed_query = query
@@ -772,7 +817,53 @@ mod sa_direct_tests {
         } else {
             files
         };
-        Json(json!({ "files": files }))
+
+        let files: Vec<JsonValue> = if is_folder_query {
+            let prefix = query
+                .get("q")
+                .and_then(|q| q.split_once("name contains '").map(|(_, rest)| rest))
+                .and_then(|rest| rest.split_once('\'').map(|(prefix, _)| prefix))
+                .map(str::to_lowercase);
+            files
+                .into_iter()
+                .filter(|file| {
+                    prefix
+                        .as_ref()
+                        .map(|prefix| {
+                            file["name"]
+                                .as_str()
+                                .map(|name| name.to_lowercase().starts_with(prefix))
+                                .unwrap_or(false)
+                        })
+                        .unwrap_or(true)
+                })
+                .collect()
+        } else {
+            files
+        };
+
+        let page_start = query
+            .get("pageToken")
+            .and_then(|token| token.strip_prefix("folder-page-"))
+            .and_then(|offset| offset.parse::<usize>().ok())
+            .unwrap_or(0);
+        let paginate = is_folder_query && state.folder_discovery_pagination.load(Ordering::SeqCst);
+        let page_end = if paginate {
+            (page_start + 100).min(files.len())
+        } else {
+            files.len()
+        };
+        let page_files = files.get(page_start..page_end).unwrap_or_default().to_vec();
+        let next_page = (page_end < files.len()).then(|| format!("folder-page-{page_end}"));
+        let mut response = if state.incomplete_search.load(Ordering::SeqCst) && is_folder_query {
+            json!({ "files": page_files, "incompleteSearch": true })
+        } else {
+            json!({ "files": page_files })
+        };
+        if let Some(next_page) = next_page {
+            response["nextPageToken"] = json!(next_page);
+        }
+        Json(response)
     }
 
     async fn start_page_token_mock() -> Json<JsonValue> {
@@ -952,7 +1043,7 @@ mod sa_direct_tests {
         let response = connector
             .execute_action(
                 "discover_folders",
-                json!({ "auth_mode": "service_account_direct" }),
+                json!({ "auth_mode": "service_account_direct", "query": "policy" }),
                 Some(creds),
                 None,
                 None,
@@ -985,6 +1076,167 @@ mod sa_direct_tests {
                 body
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dwd_folder_search_uses_all_drives_and_filters_before_limit() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        let mut folders: Vec<JsonValue> = (0..500)
+            .map(|index| {
+                json!({
+                    "id": format!("my-folder-{index}"),
+                    "name": format!("Shared Folder {index}"),
+                    "mimeType": "application/vnd.google-apps.folder"
+                })
+            })
+            .collect();
+        folders.insert(
+            0,
+            json!({
+                "id": "nested-folder",
+                "name": "Shared Nested Folder",
+                "mimeType": "application/vnd.google-apps.folder",
+                "driveId": "drive-1",
+                "parents": ["parent-folder"]
+            }),
+        );
+        folders.insert(
+            1,
+            json!({
+                "id": "drive-100",
+                "name": "Shared Drive 100",
+                "mimeType": "application/vnd.google-apps.folder",
+                "driveId": "drive-100"
+            }),
+        );
+        folders.push(json!({
+            "id": "shared-folder",
+            "name": "Shared Folder",
+            "mimeType": "application/vnd.google-apps.folder",
+            "driveId": "drive-1",
+            "parents": ["drive-1"]
+        }));
+        folders.push(json!({
+            "id": "drive-1",
+            "name": "Shared Drive",
+            "mimeType": "application/vnd.google-apps.folder",
+            "driveId": "drive-1"
+        }));
+        state.set_files(folders);
+        state.set_incomplete_search(true);
+        state.set_folder_discovery_pagination(true);
+
+        let connector = omni_google_connector::connector::GoogleConnector::new(
+            Arc::new(SyncManager::new(
+                Arc::new(AdminClient::new()),
+                SdkClient::new(&mock_base),
+                None,
+            )),
+            Arc::new(AdminClient::new()),
+        );
+
+        let mut creds = sa_credentials(&mock_base);
+        creds.principal_email = Some("user@example.com".to_string());
+        let response = connector
+            .execute_action(
+                "discover_folders",
+                json!({ "query": "shared" }),
+                Some(creds),
+                None,
+                None,
+            )
+            .await?;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        let status = response.status();
+        let body: JsonValue = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map(|bytes| serde_json::from_slice(&bytes).unwrap_or(json!({})))?;
+        assert_eq!(status, 200, "discovery should succeed: {}", body);
+        assert_eq!(
+            body["result"]["truncated"], true,
+            "incomplete search: {}",
+            body
+        );
+        let items = body["result"]["items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            items.iter().any(|item| item["id"] == "shared-folder"),
+            "shared-drive folders must survive My Drive filtering before the cap: {}",
+            body
+        );
+        assert!(
+            items.iter().any(|item| item["id"] == "nested-folder"),
+            "nested folders must remain selectable: {}",
+            body
+        );
+        let nested_path = items
+            .iter()
+            .find(|item| item["id"] == "nested-folder")
+            .and_then(|item| item["path"].as_str());
+        assert_eq!(
+            nested_path,
+            Some("/Shared Policy Docs (Shared Drive)/…/Shared Nested Folder"),
+            "searched nested folder paths must be visibly partial: {}",
+            body
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item["kind"] == "shared_drive_root")
+                .count(),
+            101,
+            "search discovery should allow roots beyond the initial 100-root cap: {}",
+            body
+        );
+        let drive_100 = items.iter().find(|item| item["id"] == "drive-100");
+        assert_eq!(
+            drive_100.and_then(|item| item["kind"].as_str()),
+            Some("shared_drive_root"),
+            "search roots beyond the initial root sample must remain roots: {}",
+            body
+        );
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item["id"] == "drive-100")
+                .count(),
+            1,
+            "search roots beyond the initial root sample must not reappear as folders: {}",
+            body
+        );
+        let file_queries = state.file_list_queries();
+        assert_eq!(
+            file_queries.len(),
+            6,
+            "search should paginate folders without per-drive child calls"
+        );
+        assert_eq!(
+            state.file_metadata_calls(),
+            0,
+            "search should not load folder ancestors"
+        );
+        assert!(
+            file_queries
+                .iter()
+                .all(|query| query.get("corpora").map(String::as_str) == Some("allDrives")),
+            "folder search must use the allDrives corpus"
+        );
         Ok(())
     }
 
@@ -1082,6 +1334,48 @@ mod sa_direct_tests {
             // TODO: Audit that the environment access only happens in single-threaded code.
             unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn scoped_dwd_full_sync_applies_shared_drive_acl() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        state.set_permissions(json!([
+            { "id": "p1", "type": "user", "emailAddress": "praveen@example.com", "domain": null, "role": "organizer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p2", "type": "user", "emailAddress": "sudhir@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p3", "type": "user", "emailAddress": "shahid@example.com", "domain": null, "role": "reader", "allowFileDiscovery": null, "permissionDetails": null }
+        ]));
+
+        let mut source = sa_source();
+        source.config["auth_mode"] = json!("domain_wide_delegation");
+        let mut credentials = sa_credentials(&mock_base);
+        credentials.principal_email = Some("praveen@example.com".to_string());
+
+        let sync_result = run_sa_sync(&mock_base, source, credentials, SyncType::Full).await;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        let perms_by_doc = created_users_by_doc(&state.event_bodies());
+        assert!(!perms_by_doc.is_empty(), "expected indexed documents");
+        for users in perms_by_doc.values() {
+            assert!(users.contains(&"praveen@example.com".to_string()));
+            assert!(users.contains(&"sudhir@example.com".to_string()));
+            assert!(users.contains(&"shahid@example.com".to_string()));
+        }
+
         Ok(())
     }
 
