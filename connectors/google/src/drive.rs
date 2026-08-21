@@ -1111,7 +1111,10 @@ impl DriveClient {
                 let url = format!("{}/files/{}", drive_api_base().as_str(), folder_id);
 
                 let params = vec![
-                    ("fields", "id,name,parents,mimeType"),
+                    (
+                        "fields",
+                        "id,name,parents,mimeType,driveId,inheritedPermissionsDisabled",
+                    ),
                     ("supportsAllDrives", "true"),
                 ];
 
@@ -1520,8 +1523,7 @@ impl DriveClient {
     ///
     /// Paginates fully (pageSize=100) and returns the complete member list.
     /// Requires a caller-provided bearer token (SA self-token or impersonated
-    /// DWD token). Works for any fileId — used for drive ACLs and, in the
-    /// SA-direct effective-permission model, for folder ACLs.
+    /// DWD token). Works for any fileId — used for drive ACLs and folder ACLs.
     pub async fn list_drive_permissions(
         &self,
         token: &str,

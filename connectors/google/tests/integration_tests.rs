@@ -1338,6 +1338,48 @@ mod sa_direct_tests {
     }
 
     #[tokio::test]
+    async fn scoped_dwd_full_sync_applies_shared_drive_acl() -> Result<()> {
+        let _guard = SA_ENV_LOCK.lock().await;
+        let (mock_base, state) = spawn_sa_mock().await?;
+        let previous_drive_base = std::env::var("GOOGLE_DRIVE_API_BASE").ok();
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", format!("{}/drive/v3", mock_base)) };
+
+        state.set_permissions(json!([
+            { "id": "p1", "type": "user", "emailAddress": "praveen@example.com", "domain": null, "role": "organizer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p2", "type": "user", "emailAddress": "sudhir@example.com", "domain": null, "role": "writer", "allowFileDiscovery": null, "permissionDetails": null },
+            { "id": "p3", "type": "user", "emailAddress": "shahid@example.com", "domain": null, "role": "reader", "allowFileDiscovery": null, "permissionDetails": null }
+        ]));
+
+        let mut source = sa_source();
+        source.config["auth_mode"] = json!("domain_wide_delegation");
+        let mut credentials = sa_credentials(&mock_base);
+        credentials.principal_email = Some("praveen@example.com".to_string());
+
+        let sync_result = run_sa_sync(&mock_base, source, credentials, SyncType::Full).await;
+
+        if let Some(value) = previous_drive_base {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::set_var("GOOGLE_DRIVE_API_BASE", value) };
+        } else {
+            // TODO: Audit that the environment access only happens in single-threaded code.
+            unsafe { std::env::remove_var("GOOGLE_DRIVE_API_BASE") };
+        }
+
+        sync_result?;
+
+        let perms_by_doc = created_users_by_doc(&state.event_bodies());
+        assert!(!perms_by_doc.is_empty(), "expected indexed documents");
+        for users in perms_by_doc.values() {
+            assert!(users.contains(&"praveen@example.com".to_string()));
+            assert!(users.contains(&"sudhir@example.com".to_string()));
+            assert!(users.contains(&"shahid@example.com".to_string()));
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn sa_direct_full_sync_applies_drive_acl() -> Result<()> {
         let _guard = SA_ENV_LOCK.lock().await;
         let (mock_base, state) = spawn_sa_mock().await?;

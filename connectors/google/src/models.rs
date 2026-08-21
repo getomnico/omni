@@ -363,7 +363,7 @@ pub struct GoogleSyncCheckpoint {
     /// so previously indexed unchanged documents get the new ACLs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drive_acl_fingerprints: Option<HashMap<String, String>>,
-    /// Per-folder access state for the SA-direct effective-permission model.
+    /// Per-folder access state for shared-drive effective-permission models.
     /// Only folders that are limited-access or carry direct grants are
     /// recorded; incremental syncs re-fetch their ACLs to detect changes that
     /// `changes.list` does not deliver for descendants.
@@ -381,7 +381,7 @@ pub struct GoogleSyncCheckpoint {
 /// `GoogleSyncCheckpoint::permission_model_version`.
 pub const SA_DIRECT_PERMISSION_MODEL_VERSION: &str = "effective-acl-v1";
 
-/// Run-local access metadata for a folder during an SA-direct sync. Folders
+/// Run-local access metadata for a folder during a shared-drive sync. Folders
 /// are discovered from the drive listing (parents + limited-access flag) and
 /// their directly-assigned ACLs are fetched lazily via `permissions.list`.
 #[derive(Debug, Clone, Default)]
@@ -450,9 +450,9 @@ pub struct GoogleChatSegmentCheckpoint {
 pub struct UserFile {
     pub user_email: Arc<String>,
     pub file: GoogleDriveFile,
-    /// Optional drive-level ACL override (SA-direct mode). When set, this is
-    /// used as the event's permissions instead of the file's own (empty for
-    /// shared-drive items) permission array.
+    /// Optional effective ACL override for shared-drive syncs. When set, this
+    /// is used as the event's permissions instead of the file's own (usually
+    /// empty for shared-drive items) permission array.
     pub permissions_override: Option<DocumentPermissions>,
 }
 
