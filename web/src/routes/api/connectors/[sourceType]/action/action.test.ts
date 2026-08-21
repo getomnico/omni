@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { GOOGLE_SA_DIRECT_DRIVE_SCOPES, GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
 
 // Mock server dependencies before importing the handler.
 vi.mock('$lib/server/config', () => ({
@@ -281,7 +282,7 @@ describe('POST /api/connectors/[sourceType]/action', () => {
                 credentials: {
                     service_account_key: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
                 },
-                config: { scopes: ['https://www.googleapis.com/auth/drive.readonly'] },
+                config: { scopes: GOOGLE_SA_DIRECT_DRIVE_SCOPES },
             },
         })
     })
@@ -315,6 +316,57 @@ describe('POST /api/connectors/[sourceType]/action', () => {
             action: 'validate_shared_drive_access',
             params: { drive_ids: ['d1', 'd2'], auth_mode: 'service_account_direct' },
         })
+    })
+
+    it('forwards SA-direct group access validation with the Workspace domain and Admin scope', async () => {
+        const connectorResponse = {
+            status: 'success',
+            result: { domain: 'example.com', groups: 2, memberships: 3 },
+        }
+        const connectorFetch = vi.fn().mockResolvedValue(
+            new Response(JSON.stringify(connectorResponse), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }),
+        )
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'validate_sa_direct_group_access',
+            serviceAccountJson: '{"client_email":"sa@example.iam.gserviceaccount.com"}',
+            authMode: 'service_account_direct',
+            domain: 'example.com',
+            params: { auth_mode: 'service_account_direct' },
+        })
+
+        expect(response.status).toBe(200)
+        const [, init] = connectorFetch.mock.calls[0] as [string, RequestInit]
+        const forwarded = JSON.parse(String(init.body)) as Record<string, unknown>
+        expect(forwarded).toMatchObject({
+            action: 'validate_sa_direct_group_access',
+            params: { auth_mode: 'service_account_direct' },
+            transient_credentials: {
+                config: {
+                    domain: 'example.com',
+                    scopes: GOOGLE_SA_DIRECT_SCOPES,
+                },
+            },
+        })
+    })
+
+    it('requires a domain for SA-direct group access validation', async () => {
+        const connectorFetch = vi.fn()
+        vi.stubGlobal('fetch', connectorFetch)
+
+        const response = await callPost({
+            action: 'validate_sa_direct_group_access',
+            serviceAccountJson: '{}',
+            authMode: 'service_account_direct',
+            params: { auth_mode: 'service_account_direct' },
+        })
+
+        expect(response.status).toBe(400)
+        expect(connectorFetch).not.toHaveBeenCalled()
     })
 
     it('rejects validate_shared_drive_access without drive ids or outside SA-direct', async () => {

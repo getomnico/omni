@@ -9,9 +9,12 @@
         domain?: string
         hasStoredKey?: boolean
         disabled?: boolean
-        // 'sa-direct' hides the admin-email/domain fields and shows
+        // 'sa-direct' hides the admin-email field and shows
         // non-impersonation guidance. Defaults to DWD behavior.
         mode?: 'dwd' | 'sa-direct'
+        // SA-direct group membership sync needs the Workspace domain but never
+        // impersonates an admin user.
+        showDomain?: boolean
         // Hide the SA-direct explanation paragraph when the surrounding page
         // already explains the mode (e.g. a banner on the settings page).
         showSaDirectInfo?: boolean
@@ -28,6 +31,7 @@
         hasStoredKey = false,
         disabled = false,
         mode = 'dwd',
+        showDomain = false,
         showSaDirectInfo = true,
         onCredentialsChange,
         onAccountDetailsChange,
@@ -64,6 +68,24 @@
                 <span class="font-medium">Content manager</span> or
                 <span class="font-medium">Manager</span>.
             </p>
+        {/if}
+        {#if showDomain}
+            <div class="space-y-2">
+                <Label for="sa-direct-domain">Organization Domain</Label>
+                <Input
+                    id="sa-direct-domain"
+                    name="domain"
+                    bind:value={domain}
+                    placeholder="yourdomain.com"
+                    type="text"
+                    {disabled}
+                    oninput={onAccountDetailsChange ?? onCredentialsChange}
+                    required />
+                <p class="text-muted-foreground text-sm">
+                    Used to validate and sync Google Workspace group memberships. This does not
+                    impersonate a Workspace user.
+                </p>
+            </div>
         {/if}
     {:else}
         <div class="space-y-2">

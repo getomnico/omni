@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types'
 import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 import { SourceType } from '$lib/types'
+import { GOOGLE_SA_DIRECT_DRIVE_SCOPES, GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
 
 /**
  * Invokes an action directly on a connector before a source exists.
@@ -11,12 +12,15 @@ import { SourceType } from '$lib/types'
  * endpoint and is never stored or returned.
  *
  * SECURITY: Strictly allowlisted — currently only google_drive's
- * discover_folders and validate_shared_drive_access actions with JWT
- * credentials are accepted. Unknown actions, fields, or auth modes fail
- * closed.
+ * discovery and setup-validation actions with JWT credentials are accepted.
+ * Unknown actions, fields, or auth modes fail closed.
  */
 
-const ALLOWED_ACTIONS = new Set(['discover_folders', 'validate_shared_drive_access'])
+const ALLOWED_ACTIONS = new Set([
+    'discover_folders',
+    'validate_shared_drive_access',
+    'validate_sa_direct_group_access',
+])
 const ALLOWED_AUTH_MODES = ['domain_wide_delegation', 'service_account_direct'] as const
 type GoogleAuthMode = (typeof ALLOWED_AUTH_MODES)[number]
 
@@ -192,6 +196,31 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
             )
         }
     }
+    if (action === 'validate_sa_direct_group_access') {
+        if (authMode !== 'service_account_direct') {
+            throw error(
+                400,
+                'validate_sa_direct_group_access requires authMode=service_account_direct',
+            )
+        }
+        if (!params || typeof params !== 'object' || Array.isArray(params)) {
+            throw error(400, 'validate_sa_direct_group_access requires params')
+        }
+        for (const key of Object.keys(params)) {
+            if (key !== 'auth_mode') {
+                throw error(400, `Unknown validate_sa_direct_group_access param: '${key}'`)
+            }
+        }
+        if (params.auth_mode !== 'service_account_direct') {
+            throw error(400, 'validate_sa_direct_group_access auth_mode is invalid')
+        }
+        if (typeof domain !== 'string' || domain.trim().length === 0) {
+            throw error(
+                400,
+                'An organization domain is required to validate SA-direct group membership access',
+            )
+        }
+    }
 
     // Transient credentials must be provided for preview (not optional).
     if (!serviceAccountJson) {
@@ -227,11 +256,18 @@ export const POST: RequestHandler = async ({ params: routeParams, request, local
         const config = getConfig()
         const connectorManagerUrl = config.services.connectorManagerUrl
 
-        // Build the transient credential config: SA-direct carries only the
-        // drive.readonly scope; DWD carries the domain for impersonation.
+        // Build the transient credential config. Group validation needs the
+        // Admin Directory scope and the Workspace domain; ordinary SA-direct
+        // Drive actions remain limited to Drive read access.
         const transientConfig: Record<string, unknown> = {}
         if (authMode === 'service_account_direct') {
-            transientConfig.scopes = ['https://www.googleapis.com/auth/drive.readonly']
+            transientConfig.scopes =
+                action === 'validate_sa_direct_group_access'
+                    ? GOOGLE_SA_DIRECT_SCOPES
+                    : GOOGLE_SA_DIRECT_DRIVE_SCOPES
+            if (action === 'validate_sa_direct_group_access') {
+                transientConfig.domain = domain.trim()
+            }
         } else {
             transientConfig.domain = domain
         }

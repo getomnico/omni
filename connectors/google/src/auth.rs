@@ -12,6 +12,42 @@ use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+pub const GOOGLE_DRIVE_READ_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
+pub const GOOGLE_DRIVE_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
+pub const GOOGLE_DOCS_SCOPE: &str = "https://www.googleapis.com/auth/documents";
+pub const GOOGLE_SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
+pub const GOOGLE_SLIDES_SCOPE: &str = "https://www.googleapis.com/auth/presentations";
+pub const GMAIL_READ_SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
+pub const GMAIL_SEND_SCOPE: &str = "https://www.googleapis.com/auth/gmail.send";
+pub const GMAIL_MODIFY_SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
+pub const GOOGLE_CHAT_SPACES_READ_SCOPE: &str =
+    "https://www.googleapis.com/auth/chat.spaces.readonly";
+pub const GOOGLE_CHAT_MEMBERSHIPS_READ_SCOPE: &str =
+    "https://www.googleapis.com/auth/chat.memberships.readonly";
+pub const GOOGLE_CHAT_ADMIN_MEMBERSHIPS_READ_SCOPE: &str =
+    "https://www.googleapis.com/auth/chat.admin.memberships.readonly";
+pub const GOOGLE_CHAT_MESSAGES_READ_SCOPE: &str =
+    "https://www.googleapis.com/auth/chat.messages.readonly";
+pub const GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE: &str =
+    "https://www.googleapis.com/auth/admin.directory.user.readonly";
+pub const GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE: &str =
+    "https://www.googleapis.com/auth/admin.directory.group.readonly";
+
+/// Scopes used by the Google Workspace CLI bridge when a JWT credential does
+/// not carry an explicit scope override.
+pub const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
+    GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE,
+    GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE,
+    GOOGLE_DRIVE_READ_SCOPE,
+    GOOGLE_DRIVE_WRITE_SCOPE,
+    GOOGLE_DOCS_SCOPE,
+    GOOGLE_SHEETS_SCOPE,
+    GOOGLE_SLIDES_SCOPE,
+    GMAIL_READ_SCOPE,
+    GMAIL_SEND_SCOPE,
+    GMAIL_MODIFY_SCOPE,
+];
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GoogleServiceAccountCredentials {
     pub service_account_key: String,
@@ -437,28 +473,26 @@ impl GoogleAuth {
 pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
     let mut scopes = vec![
         // Admin scopes needed to list users and groups
-        "https://www.googleapis.com/auth/admin.directory.user.readonly".to_string(),
-        "https://www.googleapis.com/auth/admin.directory.group.readonly".to_string(),
+        GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string(),
+        GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE.to_string(),
     ];
 
     match source_type {
         SourceType::GoogleDrive => {
-            scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
+            scopes.push(GOOGLE_DRIVE_READ_SCOPE.to_string());
         }
         SourceType::Gmail => {
-            scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
+            scopes.push(GMAIL_READ_SCOPE.to_string());
         }
         SourceType::GoogleChat => {
-            scopes.push("https://www.googleapis.com/auth/chat.spaces.readonly".to_string());
-            scopes.push("https://www.googleapis.com/auth/chat.memberships.readonly".to_string());
-            scopes.push(
-                "https://www.googleapis.com/auth/chat.admin.memberships.readonly".to_string(),
-            );
-            scopes.push("https://www.googleapis.com/auth/chat.messages.readonly".to_string());
+            scopes.push(GOOGLE_CHAT_SPACES_READ_SCOPE.to_string());
+            scopes.push(GOOGLE_CHAT_MEMBERSHIPS_READ_SCOPE.to_string());
+            scopes.push(GOOGLE_CHAT_ADMIN_MEMBERSHIPS_READ_SCOPE.to_string());
+            scopes.push(GOOGLE_CHAT_MESSAGES_READ_SCOPE.to_string());
         }
         _ => {
-            scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
-            scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
+            scopes.push(GOOGLE_DRIVE_READ_SCOPE.to_string());
+            scopes.push(GMAIL_READ_SCOPE.to_string());
         }
     }
 
@@ -468,26 +502,38 @@ pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
 /// Determine the required OAuth scopes for a source type (no admin directory scope)
 pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
     match source_type {
-        SourceType::GoogleDrive => {
-            vec!["https://www.googleapis.com/auth/drive.readonly".to_string()]
-        }
-        SourceType::Gmail => {
-            vec!["https://www.googleapis.com/auth/gmail.readonly".to_string()]
-        }
-        SourceType::GoogleChat => {
-            vec![
-                "https://www.googleapis.com/auth/chat.spaces.readonly".to_string(),
-                "https://www.googleapis.com/auth/chat.memberships.readonly".to_string(),
-                "https://www.googleapis.com/auth/chat.messages.readonly".to_string(),
-            ]
-        }
-        _ => {
-            vec![
-                "https://www.googleapis.com/auth/drive.readonly".to_string(),
-                "https://www.googleapis.com/auth/gmail.readonly".to_string(),
-            ]
-        }
+        SourceType::GoogleDrive => vec![GOOGLE_DRIVE_READ_SCOPE.to_string()],
+        SourceType::Gmail => vec![GMAIL_READ_SCOPE.to_string()],
+        SourceType::GoogleChat => vec![
+            GOOGLE_CHAT_SPACES_READ_SCOPE.to_string(),
+            GOOGLE_CHAT_MEMBERSHIPS_READ_SCOPE.to_string(),
+            GOOGLE_CHAT_MESSAGES_READ_SCOPE.to_string(),
+        ],
+        _ => vec![
+            GOOGLE_DRIVE_READ_SCOPE.to_string(),
+            GMAIL_READ_SCOPE.to_string(),
+        ],
     }
+}
+
+/// Return whether a service-account credential explicitly or implicitly carries a scope.
+pub fn has_service_account_scope(
+    creds: &ServiceCredential,
+    source_type: SourceType,
+    required_scope: &str,
+) -> bool {
+    let scopes = creds
+        .config
+        .get("scopes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| get_scopes_for_source_type(source_type));
+
+    scopes.iter().any(|scope| scope.as_str() == required_scope)
 }
 
 /// Build a `ServiceAccountAuth` from a `ServiceCredential` JWT row. Honors a
@@ -691,11 +737,9 @@ mod tests {
     fn test_get_scopes_for_google_drive() {
         let scopes = get_scopes_for_source_type(SourceType::GoogleDrive);
 
-        assert!(scopes.contains(
-            &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
-        ));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
-        assert!(!scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
+        assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string()));
+        assert!(scopes.contains(&GOOGLE_DRIVE_READ_SCOPE.to_string()));
+        assert!(!scopes.contains(&GMAIL_READ_SCOPE.to_string()));
         assert_eq!(scopes.len(), 3);
     }
 
@@ -703,14 +747,10 @@ mod tests {
     fn test_get_scopes_for_gmail() {
         let scopes = get_scopes_for_source_type(SourceType::Gmail);
 
-        assert!(scopes.contains(
-            &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
-        ));
-        assert!(scopes.contains(
-            &"https://www.googleapis.com/auth/admin.directory.group.readonly".to_string()
-        ));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
-        assert!(!scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
+        assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string()));
+        assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE.to_string()));
+        assert!(scopes.contains(&GMAIL_READ_SCOPE.to_string()));
+        assert!(!scopes.contains(&GOOGLE_DRIVE_READ_SCOPE.to_string()));
         assert_eq!(scopes.len(), 3);
     }
 
@@ -719,14 +759,10 @@ mod tests {
         let scopes = get_scopes_for_source_type(SourceType::LocalFiles);
 
         // For other source types, should include both drive and gmail scopes
-        assert!(scopes.contains(
-            &"https://www.googleapis.com/auth/admin.directory.user.readonly".to_string()
-        ));
-        assert!(scopes.contains(
-            &"https://www.googleapis.com/auth/admin.directory.group.readonly".to_string()
-        ));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/drive.readonly".to_string()));
-        assert!(scopes.contains(&"https://www.googleapis.com/auth/gmail.readonly".to_string()));
+        assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string()));
+        assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE.to_string()));
+        assert!(scopes.contains(&GOOGLE_DRIVE_READ_SCOPE.to_string()));
+        assert!(scopes.contains(&GMAIL_READ_SCOPE.to_string()));
         assert_eq!(scopes.len(), 4);
     }
 
@@ -795,7 +831,7 @@ mod tests {
         let claims = GoogleJwtClaims {
             iss: "sa@project.iam.gserviceaccount.com".to_string(),
             sub: None,
-            scope: "https://www.googleapis.com/auth/drive.readonly".to_string(),
+            scope: GOOGLE_DRIVE_READ_SCOPE.to_string(),
             aud: "https://oauth2.googleapis.com/token".to_string(),
             exp: 1_700_000_000,
             iat: 1_699_999_400,
@@ -813,7 +849,7 @@ mod tests {
         let claims = GoogleJwtClaims {
             iss: "sa@project.iam.gserviceaccount.com".to_string(),
             sub: Some("admin@example.com".to_string()),
-            scope: "https://www.googleapis.com/auth/drive.readonly".to_string(),
+            scope: GOOGLE_DRIVE_READ_SCOPE.to_string(),
             aud: "https://oauth2.googleapis.com/token".to_string(),
             exp: 1_700_000_000,
             iat: 1_699_999_400,

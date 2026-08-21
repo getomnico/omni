@@ -158,7 +158,14 @@
         }
 
         if (isSaDirect) {
-            // SA-direct: no admin email/domain; at least one whole shared drive.
+            // SA-direct does not impersonate an admin user, but group
+            // membership sync still requires the Workspace domain.
+            if (!domain.trim()) {
+                formErrors = [
+                    ...formErrors,
+                    'Organization domain is required for SA-direct group membership sync',
+                ]
+            }
             if (folderFilters.length === 0) {
                 formErrors = [...formErrors, 'At least one shared drive is required']
             }
@@ -261,7 +268,8 @@
             hasUnsavedChanges =
                 enabled !== originalEnabled ||
                 foldersChanged ||
-                serviceAccountJson.trim().length > 0
+                serviceAccountJson.trim().length > 0 ||
+                domain !== originalDomain
             return
         }
 
@@ -380,9 +388,11 @@
 
                         <GoogleServiceAccountForm
                             bind:serviceAccountJson
+                            bind:domain
                             mode="sa-direct"
                             hasStoredKey={data.hasStoredKey}
                             showSaDirectInfo={false}
+                            showDomain
                             onCredentialsChange={handleCredentialChange}
                             onAccountDetailsChange={handleAccountDetailsChange}
                             onCredentialReplacementStart={handleCredentialReplacementStart}

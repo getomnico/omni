@@ -3,15 +3,18 @@ use std::time::{Duration, Instant};
 
 use crate::admin::AdminClient;
 use crate::auth::{
+    GMAIL_MODIFY_SCOPE, GMAIL_READ_SCOPE, GMAIL_SEND_SCOPE,
+    GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE, GOOGLE_DOCS_SCOPE, GOOGLE_DRIVE_READ_SCOPE,
+    GOOGLE_DRIVE_WRITE_SCOPE, GOOGLE_SHEETS_SCOPE, GOOGLE_SLIDES_SCOPE, GOOGLE_WORKSPACE_SCOPES,
     GoogleCredentialPayload, GoogleOAuthCredentials, create_service_auth,
-    get_domain_from_credentials,
+    get_domain_from_credentials, has_service_account_scope,
 };
 use crate::drive::DriveClient;
 use crate::gmail::{MessageFormat, MessagePart};
 use crate::models::{
     DriveFolderDiscoveryEntry, DriveFolderDiscoveryResponse, GoogleAuthMode, GoogleDirectoryUser,
-    GoogleSourceConfig, GoogleSyncCheckpoint, SearchUsersResponse, SharedDriveAccessResponse,
-    SharedDriveAccessResult,
+    GoogleSourceConfig, GoogleSyncCheckpoint, SaDirectGroupAccessResponse, SearchUsersResponse,
+    SharedDriveAccessResponse, SharedDriveAccessResult,
 };
 use crate::sync::SyncManager;
 use anyhow::{Context, Result, anyhow};
@@ -39,26 +42,6 @@ const FOLDER_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 const GWS_SCHEMA_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const GWS_SCHEMA_CACHE_MAX_ENTRIES: usize = 256;
 const GOOGLE_WORKSPACE_CLI_TOKEN: &str = "GOOGLE_WORKSPACE_CLI_TOKEN";
-const GOOGLE_DRIVE_READ_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
-const GOOGLE_DRIVE_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/drive.file";
-const GOOGLE_DOCS_SCOPE: &str = "https://www.googleapis.com/auth/documents";
-const GOOGLE_SHEETS_SCOPE: &str = "https://www.googleapis.com/auth/spreadsheets";
-const GOOGLE_SLIDES_SCOPE: &str = "https://www.googleapis.com/auth/presentations";
-const GMAIL_READ_SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
-const GMAIL_SEND_SCOPE: &str = "https://www.googleapis.com/auth/gmail.send";
-const GMAIL_MODIFY_SCOPE: &str = "https://www.googleapis.com/auth/gmail.modify";
-const GOOGLE_WORKSPACE_SCOPES: &[&str] = &[
-    "https://www.googleapis.com/auth/admin.directory.user.readonly",
-    "https://www.googleapis.com/auth/admin.directory.group.readonly",
-    GOOGLE_DRIVE_READ_SCOPE,
-    GOOGLE_DRIVE_WRITE_SCOPE,
-    GOOGLE_DOCS_SCOPE,
-    GOOGLE_SHEETS_SCOPE,
-    GOOGLE_SLIDES_SCOPE,
-    GMAIL_READ_SCOPE,
-    GMAIL_SEND_SCOPE,
-    GMAIL_MODIFY_SCOPE,
-];
 
 #[derive(Debug, Deserialize)]
 struct GwsSchemaRequest {
@@ -174,6 +157,14 @@ struct ValidateSharedDriveAccessParams {
     auth_mode: Option<GoogleAuthMode>,
     #[serde(default)]
     drive_ids: Vec<String>,
+}
+
+/// Params for the `validate_sa_direct_group_access` connector action.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ValidateSaDirectGroupAccessParams {
+    #[serde(default)]
+    auth_mode: Option<GoogleAuthMode>,
 }
 
 fn parse_attachment_doc_id(composite: &str) -> Result<ParsedAttachmentDocId> {
@@ -1129,6 +1120,112 @@ impl GoogleConnector {
         let response = SharedDriveAccessResponse { drives: results };
         Ok(ActionResponse::success(serde_json::to_value(response)?).into_response())
     }
+
+    /// Validate that an SA-direct credential can enumerate Workspace groups and
+    /// their members before the source is created. Group membership events are
+    /// required for group-granted shared-drive documents to remain searchable.
+    async fn execute_validate_sa_direct_group_access(
+        &self,
+        params: JsonValue,
+        creds: &ServiceCredential,
+    ) -> Result<axum::response::Response> {
+        if creds.auth_type != AuthType::Jwt {
+            return Ok(ActionResponse::failure(
+                "validate_sa_direct_group_access requires JWT credentials".to_string(),
+            )
+            .into_response());
+        }
+
+        let params: ValidateSaDirectGroupAccessParams = serde_json::from_value(params)?;
+        if params.auth_mode != Some(GoogleAuthMode::ServiceAccountDirect) {
+            return Ok(ActionResponse::failure(
+                "validate_sa_direct_group_access requires auth_mode=service_account_direct"
+                    .to_string(),
+            )
+            .into_response());
+        }
+
+        let domain = match get_domain_from_credentials(creds) {
+            Ok(domain) if !domain.trim().is_empty() => domain.trim().to_string(),
+            Ok(_) | Err(_) => {
+                return Ok(ActionResponse::failure(
+                    "SA-direct group membership validation requires an organization domain"
+                        .to_string(),
+                )
+                .into_response());
+            }
+        };
+
+        if !has_service_account_scope(
+            creds,
+            SourceType::GoogleDrive,
+            GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE,
+        ) {
+            return Ok(ActionResponse::failure(format!(
+                "The service-account credential must include the {} scope to sync Google Workspace group memberships",
+                GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE
+            ))
+            .into_response());
+        }
+
+        let auth = match create_service_auth(creds, SourceType::GoogleDrive) {
+            Ok(auth) => auth,
+            Err(e) => {
+                return Ok(ActionResponse::failure(format!(
+                    "Invalid Google service-account credentials: {e}"
+                ))
+                .into_response());
+            }
+        };
+        let access_token = match auth.get_self_access_token().await {
+            Ok(token) => token,
+            Err(e) => {
+                return Ok(ActionResponse::failure(format!(
+                    "The service account could not obtain a token for Google Workspace group access: {e}"
+                ))
+                .into_response());
+            }
+        };
+
+        let groups = match self
+            .admin_client
+            .list_all_groups(&access_token, &domain)
+            .await
+        {
+            Ok(groups) => groups,
+            Err(e) => {
+                return Ok(ActionResponse::failure(format!(
+                    "The service account cannot list Google Workspace groups for {domain}: {e}"
+                ))
+                .into_response());
+            }
+        };
+
+        let mut memberships = 0;
+        for group in &groups {
+            match self
+                .admin_client
+                .list_all_group_members(&access_token, &group.email)
+                .await
+            {
+                Ok(members) => memberships += members.len(),
+                Err(e) => {
+                    return Ok(ActionResponse::failure(format!(
+                        "The service account cannot list members of Google Workspace group {}: {}",
+                        group.email, e
+                    ))
+                    .into_response());
+                }
+            }
+        }
+
+        let response = SaDirectGroupAccessResponse {
+            domain,
+            groups: groups.len(),
+            memberships,
+        };
+        Ok(ActionResponse::success(serde_json::to_value(response)?).into_response())
+    }
 }
 
 #[async_trait]
@@ -1310,6 +1407,27 @@ impl Connector for GoogleConnector {
                 hidden: true,
             },
             ActionDefinition {
+                name: "validate_sa_direct_group_access".to_string(),
+                description:
+                    "Validate that an SA-direct credential can enumerate Workspace groups and group members before setup."
+                        .to_string(),
+                mode: omni_connector_sdk::ActionMode::Read,
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "auth_mode": {
+                            "type": "string",
+                            "enum": ["service_account_direct"]
+                        }
+                    },
+                    "required": ["auth_mode"]
+                }),
+                required_scopes: None,
+                source_types: vec![SourceType::GoogleDrive],
+                admin_only: true,
+                hidden: true,
+            },
+            ActionDefinition {
                 name: "google_workspace_call".to_string(),
                 description: "Call a Google Workspace API through the installed gws CLI"
                     .to_string(),
@@ -1424,7 +1542,7 @@ impl Connector for GoogleConnector {
         scopes.insert(
             "google_drive".to_string(),
             OAuthScopeSet {
-                read: vec!["https://www.googleapis.com/auth/drive.readonly".to_string()],
+                read: vec![GOOGLE_DRIVE_READ_SCOPE.to_string()],
                 // drive.file scopes the grant to files the app creates/opens,
                 // which is the safe default for Drive write tools. Docs,
                 // Sheets, and Slides need their API-specific scopes for
@@ -1440,11 +1558,8 @@ impl Connector for GoogleConnector {
         scopes.insert(
             "gmail".to_string(),
             OAuthScopeSet {
-                read: vec!["https://www.googleapis.com/auth/gmail.readonly".to_string()],
-                write: vec![
-                    "https://www.googleapis.com/auth/gmail.send".to_string(),
-                    "https://www.googleapis.com/auth/gmail.modify".to_string(),
-                ],
+                read: vec![GMAIL_READ_SCOPE.to_string()],
+                write: vec![GMAIL_SEND_SCOPE.to_string(), GMAIL_MODIFY_SCOPE.to_string()],
             },
         );
 
@@ -1545,6 +1660,29 @@ impl Connector for GoogleConnector {
                             e
                         ))
                     })?;
+                } else {
+                    create_service_auth(creds, native_source_type).map_err(|e| {
+                        SyncRequestValidationError::BadRequest(format!(
+                            "Invalid Google service-account credentials: {}",
+                            e
+                        ))
+                    })?;
+                    get_domain_from_credentials(creds).map_err(|e| {
+                        SyncRequestValidationError::BadRequest(format!(
+                            "Invalid SA-direct service-account config: {}",
+                            e
+                        ))
+                    })?;
+                    if !has_service_account_scope(
+                        creds,
+                        native_source_type,
+                        GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE,
+                    ) {
+                        return Err(SyncRequestValidationError::BadRequest(format!(
+                            "SA-direct credentials must include the {} scope for group membership sync",
+                            GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE
+                        )));
+                    }
                 }
             }
         }
@@ -1589,6 +1727,10 @@ impl Connector for GoogleConnector {
             }
             "validate_shared_drive_access" => {
                 self.execute_validate_shared_drive_access(params, &creds)
+                    .await
+            }
+            "validate_sa_direct_group_access" => {
+                self.execute_validate_sa_direct_group_access(params, &creds)
                     .await
             }
             "google_workspace_schema" => self.execute_gws_schema(params).await,
@@ -1761,16 +1903,8 @@ mod tests {
 
         assert_eq!(creds.auth_type, AuthType::Jwt);
         let scopes = creds.config["scopes"].as_array().expect("scopes");
-        assert!(
-            scopes
-                .iter()
-                .any(|s| s == "https://www.googleapis.com/auth/drive.readonly")
-        );
-        assert!(
-            scopes
-                .iter()
-                .any(|s| s == "https://www.googleapis.com/auth/gmail.readonly")
-        );
+        assert!(scopes.iter().any(|s| s == GOOGLE_DRIVE_READ_SCOPE));
+        assert!(scopes.iter().any(|s| s == GMAIL_READ_SCOPE));
         assert!(scopes.iter().any(|s| s == GOOGLE_DOCS_SCOPE));
         assert!(scopes.iter().any(|s| s == GOOGLE_SHEETS_SCOPE));
         assert!(scopes.iter().any(|s| s == GOOGLE_SLIDES_SCOPE));

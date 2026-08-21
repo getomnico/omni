@@ -59,14 +59,14 @@ locals {
     "orgpolicy.googleapis.com"
   ]
 
-  oauth_scopes = var.include_gmail_scope ? [
-    "https://www.googleapis.com/auth/admin.directory.user.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/gmail.readonly"
-    ] : [
-    "https://www.googleapis.com/auth/admin.directory.user.readonly",
-    "https://www.googleapis.com/auth/drive.readonly"
-  ]
+  oauth_scopes = concat(
+    [
+      "https://www.googleapis.com/auth/admin.directory.user.readonly",
+      "https://www.googleapis.com/auth/admin.directory.group.readonly",
+      "https://www.googleapis.com/auth/drive.readonly"
+    ],
+    var.include_gmail_scope ? ["https://www.googleapis.com/auth/gmail.readonly"] : []
+  )
 }
 
 # Create the project

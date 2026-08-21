@@ -81,7 +81,7 @@ pub struct GoogleSourceConfig {
     /// Personal OAuth onboarding uses `pending` until the owner chooses a scope.
     #[serde(default)]
     pub index_scope: GoogleIndexScope,
-    /// Retained for existing source-config compatibility (DWD).
+    /// Workspace domain used for DWD impersonation or SA-direct group sync.
     #[serde(default)]
     pub domain: Option<String>,
     /// Selected shared drives (kind `shared_drive_root`) and optional folder
@@ -106,8 +106,9 @@ impl GoogleSourceConfig {
     /// - `Selected` requires at least one folder filter.
     /// - `ServiceAccountDirect` requires JWT/service-account credentials and is
     ///   valid only for Google Drive.
-    /// - `ServiceAccountDirect` requires a non-empty `folder_path_filters` list
-    ///   whose entries are all `SharedDriveRoot` (whole drives only in v1).
+    /// - `ServiceAccountDirect` requires a non-empty domain and
+    ///   `folder_path_filters` list whose entries are all `SharedDriveRoot`
+    ///   (whole drives only in v1).
     /// - `DomainWideDelegation` keeps the existing permissive behavior.
     pub fn validate(
         &self,
@@ -158,6 +159,16 @@ impl GoogleSourceConfig {
                 if self.folder_path_filters.is_empty() {
                     return Err(
                         "service_account_direct requires at least one shared drive in folder_path_filters"
+                            .to_string(),
+                    );
+                }
+                if self
+                    .domain
+                    .as_deref()
+                    .is_none_or(|domain| domain.trim().is_empty())
+                {
+                    return Err(
+                        "service_account_direct requires an organization domain for group membership sync"
                             .to_string(),
                     );
                 }
@@ -298,6 +309,15 @@ pub struct SharedDriveAccessResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct SharedDriveAccessResponse {
     pub drives: Vec<SharedDriveAccessResult>,
+}
+
+/// Result of validating SA-direct Google Workspace group membership access.
+/// Mirrors the web's `SaDirectGroupAccessResponse` type.
+#[derive(Debug, Clone, Serialize)]
+pub struct SaDirectGroupAccessResponse {
+    pub domain: String,
+    pub groups: usize,
+    pub memberships: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2546,6 +2566,7 @@ mod tests {
         // Valid SA-direct: JWT creds + Drive + root filter.
         let valid = GoogleSourceConfig {
             auth_mode: GoogleAuthMode::ServiceAccountDirect,
+            domain: Some("example.com".to_string()),
             folder_path_filters: vec![root.clone()],
             ..Default::default()
         };

@@ -17,6 +17,7 @@
     import GoogleServiceAccountForm from '$lib/components/google-service-account-form.svelte'
     import GoogleDriveFolderSelector from '$lib/components/google-drive-folder-selector.svelte'
     import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
+    import { GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
 
     interface Props {
         open: boolean
@@ -45,6 +46,20 @@
         drives: SharedDriveAccessResult[]
     }
 
+    interface SaDirectGroupAccessResponse {
+        domain: string
+        groups: number
+        memberships: number
+    }
+
+    interface GroupAccessStatus {
+        pending: boolean
+        ok: boolean
+        groups: number | null
+        memberships: number | null
+        error: string | null
+    }
+
     interface DriveAccessStatus {
         pending: boolean
         ok: boolean
@@ -69,6 +84,7 @@
 
     // SA-direct form state (kept separate so switching tabs preserves each)
     let saServiceAccountJson = $state('')
+    let saDomain = $state('')
     let saDriveFilters = $state<FolderPathFilter[]>([])
     let saSelectorRevision = $state(0)
     let saFiltersBeforeCredentialReplacement = $state<FolderPathFilter[] | null>(null)
@@ -77,6 +93,16 @@
     let isValidating = $state(false)
     let validationAbort: AbortController | null = null
     let validationGeneration = $state(0)
+    let groupAccessValidation = $state<GroupAccessStatus>({
+        pending: false,
+        ok: false,
+        groups: null,
+        memberships: null,
+        error: null,
+    })
+    let groupValidationAbort: AbortController | null = null
+    let groupValidationGeneration = $state(0)
+    let groupValidationTimer: ReturnType<typeof setTimeout> | undefined
 
     // Switch to SA-direct tab: force Drive-only. The tab value itself is
     // kept in sync by Tabs.Root's bind:value, so this only applies side
@@ -90,12 +116,30 @@
         }
     }
 
+    function invalidateGroupAccessValidation() {
+        groupValidationGeneration += 1
+        groupValidationAbort?.abort()
+        groupValidationAbort = null
+        if (groupValidationTimer) {
+            clearTimeout(groupValidationTimer)
+            groupValidationTimer = undefined
+        }
+        groupAccessValidation = {
+            pending: false,
+            ok: false,
+            groups: null,
+            memberships: null,
+            error: null,
+        }
+    }
+
     function invalidateSaValidation() {
         validationGeneration += 1
         validationAbort?.abort()
         validationAbort = null
         accessValidation = {}
         isValidating = false
+        invalidateGroupAccessValidation()
         isSubmitting = false
     }
 
@@ -138,6 +182,10 @@
         invalidateSaValidation()
     }
 
+    function handleSaAccountDetailsChange() {
+        scheduleGroupAccessValidation()
+    }
+
     // Event-driven SA-direct access validation. The drive selector reports
     // every selection change (add/remove) via onSelectedChange; validation
     // runs only when both a key and drives are present.
@@ -150,6 +198,102 @@
             validateAccess(saServiceAccountJson, filters)
         } else {
             invalidateSaValidation()
+        }
+        scheduleGroupAccessValidation()
+    }
+
+    function scheduleGroupAccessValidation() {
+        invalidateGroupAccessValidation()
+
+        if (!saServiceAccountJson.trim() || !saDomain.trim()) {
+            return
+        }
+
+        groupValidationTimer = setTimeout(() => {
+            groupValidationTimer = undefined
+            validateGroupAccess(saServiceAccountJson, saDomain)
+        }, 300)
+    }
+
+    async function validateGroupAccess(saJson: string, workspaceDomain: string) {
+        const generation = ++groupValidationGeneration
+        groupValidationAbort?.abort()
+        const controller = new AbortController()
+        groupValidationAbort = controller
+        groupAccessValidation = {
+            pending: true,
+            ok: false,
+            groups: null,
+            memberships: null,
+            error: null,
+        }
+
+        try {
+            const response = await fetch('/api/connectors/google_drive/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'validate_sa_direct_group_access',
+                    params: { auth_mode: 'service_account_direct' },
+                    serviceAccountJson: saJson,
+                    domain: workspaceDomain.trim(),
+                    authMode: 'service_account_direct',
+                }),
+                signal: controller.signal,
+            })
+            if (generation !== groupValidationGeneration) return
+
+            if (!response.ok) {
+                const errBody = (await response.json().catch(() => null)) as {
+                    error?: string
+                    message?: string
+                } | null
+                groupAccessValidation = {
+                    pending: false,
+                    ok: false,
+                    groups: null,
+                    memberships: null,
+                    error:
+                        errBody?.error ||
+                        errBody?.message ||
+                        'Failed to validate Workspace group access',
+                }
+                return
+            }
+
+            const body =
+                (await response.json()) as ConnectorActionResponse<SaDirectGroupAccessResponse>
+            if (body.status === 'success' && body.result) {
+                groupAccessValidation = {
+                    pending: false,
+                    ok: true,
+                    groups: body.result.groups,
+                    memberships: body.result.memberships,
+                    error: null,
+                }
+            } else {
+                groupAccessValidation = {
+                    pending: false,
+                    ok: false,
+                    groups: null,
+                    memberships: null,
+                    error: body.error || 'Workspace group access could not be verified',
+                }
+            }
+        } catch (err) {
+            if (generation !== groupValidationGeneration) return
+            if (err instanceof DOMException && err.name === 'AbortError') return
+            groupAccessValidation = {
+                pending: false,
+                ok: false,
+                groups: null,
+                memberships: null,
+                error: 'Network error while validating Workspace group access',
+            }
+        } finally {
+            if (generation === groupValidationGeneration) {
+                groupValidationAbort = null
+            }
         }
     }
 
@@ -253,6 +397,13 @@
             }),
     )
 
+    const groupAccessValidated = $derived(
+        saServiceAccountJson.trim().length > 0 &&
+            saDomain.trim().length > 0 &&
+            !groupAccessValidation.pending &&
+            groupAccessValidation.ok,
+    )
+
     const validationInProgress = $derived(
         saDriveFilters.some((f) => accessValidation[f.driveId]?.pending),
     )
@@ -281,6 +432,9 @@
         if (!saServiceAccountJson.trim()) {
             throw new Error('Service account JSON is required')
         }
+        if (!saDomain.trim()) {
+            throw new Error('Organization domain is required for group membership sync')
+        }
         try {
             JSON.parse(saServiceAccountJson)
         } catch {
@@ -294,9 +448,16 @@
                 'Wait for every selected shared drive to pass access validation (Content manager or Manager required)',
             )
         }
+        if (!groupAccessValidated) {
+            throw new Error(
+                groupAccessValidation.error ||
+                    'Wait for Workspace group membership access validation to pass',
+            )
+        }
 
         const driveConfig: GoogleSourceConfig = {
             auth_mode: 'service_account_direct',
+            domain: saDomain.trim(),
             folder_path_filters: saDriveFilters,
         }
 
@@ -320,7 +481,8 @@
         const driveSource = await driveSourceResponse.json()
 
         const credConfig: Record<string, unknown> = {
-            scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+            domain: saDomain.trim(),
+            scopes: GOOGLE_SA_DIRECT_SCOPES,
         }
         const credentialsResponse = await fetch('/api/service-credentials', {
             method: 'POST',
@@ -518,6 +680,7 @@
         driveSelectorRevision += 1
         driveFiltersBeforeCredentialReplacement = null
         saServiceAccountJson = ''
+        saDomain = ''
         saDriveFilters = []
         saSelectorRevision += 1
         saFiltersBeforeCredentialReplacement = null
@@ -617,10 +780,47 @@
             <Tabs.Content value="service_account_direct" class="space-y-4 pt-4">
                 <GoogleServiceAccountForm
                     bind:serviceAccountJson={saServiceAccountJson}
+                    bind:domain={saDomain}
                     mode="sa-direct"
+                    showDomain
                     onCredentialsChange={handleSaCredentialsChange}
+                    onAccountDetailsChange={handleSaAccountDetailsChange}
                     onCredentialReplacementStart={handleSaCredentialReplacementStart}
                     onCredentialReplacementCancel={handleSaCredentialReplacementCancel} />
+
+                {#if saServiceAccountJson.trim()}
+                    {#if groupAccessValidation.pending}
+                        <Alert.Root>
+                            <Loader2 class="h-4 w-4 animate-spin" />
+                            <Alert.Title>Checking Workspace group access</Alert.Title>
+                            <Alert.Description>
+                                Verifying that this service account can list groups and group
+                                members.
+                            </Alert.Description>
+                        </Alert.Root>
+                    {:else if groupAccessValidation.ok}
+                        <Alert.Root>
+                            <CheckCircle2 class="h-4 w-4 text-green-600" />
+                            <Alert.Title>Workspace group access verified</Alert.Title>
+                            <Alert.Description>
+                                Found {groupAccessValidation.groups} groups and
+                                {groupAccessValidation.memberships} active memberships. Group membership
+                                events will be emitted during sync.
+                            </Alert.Description>
+                        </Alert.Root>
+                    {:else}
+                        <Alert.Root variant="destructive">
+                            <AlertCircle class="h-4 w-4" />
+                            <Alert.Title>Workspace group access required</Alert.Title>
+                            <Alert.Description>
+                                {groupAccessValidation.error ??
+                                    'Enter your Workspace domain to validate group membership access.'}
+                                The service account must be able to list Workspace groups and group members
+                                before this source can be created.
+                            </Alert.Description>
+                        </Alert.Root>
+                    {/if}
+                {/if}
 
                 {#if saDriveFilters.length > 0 && !allDrivesValidated}
                     <Alert.Root>
@@ -700,7 +900,10 @@
                 onclick={handleSubmit}
                 disabled={isSubmitting ||
                     (activeTab === 'service_account_direct' &&
-                        (!allDrivesValidated || validationInProgress))}
+                        (!allDrivesValidated ||
+                            !groupAccessValidated ||
+                            validationInProgress ||
+                            groupAccessValidation.pending))}
                 class="cursor-pointer">
                 {#if isSubmitting}
                     <Loader2 class="mr-2 h-4 w-4 animate-spin" />
