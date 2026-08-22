@@ -1,0 +1,16 @@
+# Use the locally built enterprise image instead of the hot-reload web service.
+# Usage from the Omni checkout:
+#   docker compose -f docker/docker-compose.yml \
+#     -f docker/docker-compose.dev.yml \
+#     -f docker/docker-compose.enterprise.yml \
+#     --env-file .env up -d
+
+services:
+  web:
+    image: omni-web-enterprise:dev
+    pull_policy: never
+    build: !reset null
+    volumes: !reset []
+    command: !reset null
+    environment:
+      NODE_ENV: production
