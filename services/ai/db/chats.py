@@ -2,7 +2,7 @@ from typing import Optional
 from ulid import ULID
 from asyncpg import Pool
 
-from .models import Chat
+from .models import Chat, ChatSearchHit
 from .connection import get_db_pool
 
 
@@ -60,6 +60,123 @@ class ChatsRepository:
         if row:
             return Chat.from_row(dict(row))
         return None
+
+    async def search(
+        self,
+        user_id: str,
+        query: str,
+        limit: int,
+        exclude_chat_id: str | None = None,
+    ) -> list[ChatSearchHit]:
+        """Search a user's non-deleted chats by title or message content."""
+        pool = await self._get_pool()
+
+        search_query = """
+            WITH title_matches AS (
+                SELECT
+                    c.id,
+                    c.title,
+                    c.updated_at,
+                    NULL::varchar AS matched_message_id,
+                    preview.content_text AS snippet,
+                    (
+                        SELECT COUNT(*)::integer
+                        FROM chat_messages count_cm
+                        WHERE count_cm.chat_id = c.id
+                    ) AS message_count,
+                    pdb.score(c.id) AS score,
+                    'title'::text AS source
+                FROM chats c
+                LEFT JOIN LATERAL (
+                    SELECT cm.content_text
+                    FROM chat_messages cm
+                    WHERE cm.chat_id = c.id
+                      AND cm.content_text IS NOT NULL
+                      AND btrim(cm.content_text) <> ''
+                    ORDER BY cm.message_seq_num ASC
+                    LIMIT 1
+                ) preview ON TRUE
+                WHERE c.title IS NOT NULL
+                  AND c.title ||| $2
+                  AND c.user_id = $1
+                  AND c.is_deleted = FALSE
+                  AND ($3::varchar IS NULL OR c.id <> $3::varchar)
+            ),
+            message_matches AS (
+                SELECT DISTINCT ON (c.id)
+                    c.id,
+                    c.title,
+                    c.updated_at,
+                    cm.id AS matched_message_id,
+                    cm.content_text AS snippet,
+                    (
+                        SELECT COUNT(*)::integer
+                        FROM chat_messages count_cm
+                        WHERE count_cm.chat_id = c.id
+                    ) AS message_count,
+                    pdb.score(cm.id) AS score,
+                    'message'::text AS source
+                FROM chat_messages cm
+                JOIN chats c ON c.id = cm.chat_id
+                WHERE cm.content_text IS NOT NULL
+                  AND cm.content_text ||| $2
+                  AND c.user_id = $1
+                  AND c.is_deleted = FALSE
+                  AND ($3::varchar IS NULL OR c.id <> $3::varchar)
+                ORDER BY c.id, score DESC, cm.id
+            ),
+            ranked_matches AS (
+                SELECT DISTINCT ON (id)
+                    id,
+                    title,
+                    updated_at,
+                    matched_message_id,
+                    snippet,
+                    message_count,
+                    score,
+                    source
+                FROM (
+                    SELECT * FROM title_matches
+                    UNION ALL
+                    SELECT * FROM message_matches
+                ) AS all_matches
+                ORDER BY id, score DESC
+            )
+            SELECT
+                ranked.id,
+                ranked.title,
+                ranked.updated_at,
+                COALESCE(ranked.matched_message_id, message.matched_message_id)
+                    AS matched_message_id,
+                left(
+                    CASE
+                        WHEN message.matched_message_id IS NOT NULL
+                            THEN message.snippet
+                        ELSE ranked.snippet
+                    END,
+                    500
+                ) AS snippet,
+                ranked.message_count,
+                CASE
+                    WHEN message.matched_message_id IS NOT NULL THEN 'message'
+                    ELSE ranked.source
+                END AS source
+            FROM ranked_matches ranked
+            LEFT JOIN message_matches message ON message.id = ranked.id
+            ORDER BY ranked.score DESC, ranked.updated_at DESC, ranked.id
+            LIMIT $4
+        """
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                search_query,
+                user_id,
+                query,
+                exclude_chat_id,
+                limit,
+            )
+
+        return [ChatSearchHit.from_row(dict(row)) for row in rows]
 
     async def update_title(self, chat_id: str, title: str) -> Optional[Chat]:
         """Update the title of a chat"""

@@ -95,6 +95,7 @@ from streaming.run import (
     stream_key,
 )
 from tools import (
+    ChatHistoryToolHandler,
     ConnectorToolHandler,
     DocumentToolHandler,
     PeopleSearchHandler,
@@ -342,6 +343,13 @@ async def _build_registry(
     registry.register(people_handler)
     always_on_handlers.append(people_handler)
 
+    chat_history_handler = ChatHistoryToolHandler(
+        chats_repo=ChatsRepository(),
+        messages_repo=MessagesRepository(),
+    )
+    registry.register(chat_history_handler)
+    always_on_handlers.append(chat_history_handler)
+
     content_storage = getattr(request.app.state, "content_storage", None)
     document_handler = DocumentToolHandler(
         content_storage=content_storage,
@@ -449,6 +457,13 @@ async def _build_agent_chat_registry(
     people_handler = PeopleSearchHandler(searcher_tool=request.app.state.searcher_tool)
     registry.register(people_handler)
     always_on_handlers.append(people_handler)
+
+    chat_history_handler = ChatHistoryToolHandler(
+        chats_repo=ChatsRepository(),
+        messages_repo=MessagesRepository(),
+    )
+    registry.register(chat_history_handler)
+    always_on_handlers.append(chat_history_handler)
 
     content_storage = getattr(request.app.state, "content_storage", None)
     document_handler = DocumentToolHandler(
