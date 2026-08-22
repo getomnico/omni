@@ -371,6 +371,31 @@ class Chat:
         }
 
 
+@dataclass(frozen=True)
+class ChatSearchHit:
+    """Compact result returned by the user-scoped chat history search."""
+
+    chat_id: str
+    title: str | None
+    updated_at: datetime
+    message_count: int
+    snippet: str | None
+    source: str
+    matched_message_id: str | None = None
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, object]) -> "ChatSearchHit":
+        return cls(
+            chat_id=cast(str, row["id"]),
+            title=cast(str | None, row.get("title")),
+            updated_at=cast(datetime, row["updated_at"]),
+            message_count=cast(int, row["message_count"]),
+            snippet=cast(str | None, row.get("snippet")),
+            source=cast(str, row["source"]),
+            matched_message_id=cast(str | None, row.get("matched_message_id")),
+        )
+
+
 @dataclass
 class ModelRecord:
     id: str

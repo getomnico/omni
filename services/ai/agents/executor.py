@@ -40,7 +40,12 @@ from config import (
     DEFAULT_MAX_TOKENS,
     SANDBOX_URL,
 )
-from db import CompactionsRepository, SkillsRepository
+from db import (
+    ChatsRepository,
+    CompactionsRepository,
+    MessagesRepository,
+    SkillsRepository,
+)
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.groups import GroupRepository
@@ -55,6 +60,7 @@ from services.compaction import ConversationCompactor
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
 from state import AppState
 from tools import (
+    ChatHistoryToolHandler,
     DocumentToolHandler,
     PeopleSearchHandler,
     SearchToolHandler,
@@ -262,6 +268,13 @@ async def _build_agent_registry(
     people_handler = PeopleSearchHandler(searcher_tool=app_state.searcher_tool)
     registry.register(people_handler)
     always_on_handlers.append(people_handler)
+
+    chat_history_handler = ChatHistoryToolHandler(
+        chats_repo=ChatsRepository(),
+        messages_repo=MessagesRepository(),
+    )
+    registry.register(chat_history_handler)
+    always_on_handlers.append(chat_history_handler)
 
     content_storage = app_state.content_storage
     document_handler = DocumentToolHandler(

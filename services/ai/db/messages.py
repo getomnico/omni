@@ -206,41 +206,81 @@ class MessagesRepository:
 
         return [ChatMessage.from_row(dict(row)) for row in rows]
 
-    async def get_active_path(self, chat_id: str) -> List[ChatMessage]:
-        """Get the active branch path (path from root to the leaf with the highest message_seq_num).
+    async def get_active_path(
+        self, chat_id: str, message_id: Optional[str] = None
+    ) -> List[ChatMessage]:
+        """Get a root-to-leaf path, optionally anchored at a specific message.
 
-        Finds the latest leaf (message with no children and highest seq num),
-        then walks up via parent_id to root, and returns in root-to-leaf order.
+        Without ``message_id``, this preserves the existing behavior and finds
+        the leaf with the highest sequence number. When an anchor is supplied,
+        the highest-sequence descendant leaf under that message is selected, so
+        callers receive the full branch after a matching message.
         """
         pool = await self._get_pool()
 
         query = """
-            WITH RECURSIVE walk_up AS (
-                -- Start from the latest leaf (no children, highest seq num)
-                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.error, cm.created_at
-                FROM (
-                    SELECT *
-                    FROM chat_messages
-                    WHERE chat_id = $1
-                    AND id NOT IN (
-                        SELECT DISTINCT parent_id FROM chat_messages
-                        WHERE chat_id = $1 AND parent_id IS NOT NULL
-                    )
-                    ORDER BY message_seq_num DESC
-                    LIMIT 1
-                ) cm
+            WITH RECURSIVE
+            descendants AS (
+                SELECT cm.*
+                FROM chat_messages cm
+                WHERE cm.chat_id = $1
+                  AND $2::varchar IS NOT NULL
+                  AND cm.id = $2::varchar
 
                 UNION ALL
 
-                -- Walk up to root via parent_id
-                SELECT cm.id, cm.chat_id, cm.message_seq_num, cm.message, cm.parent_id, cm.error, cm.created_at
+                SELECT child.*
+                FROM chat_messages child
+                JOIN descendants parent ON child.parent_id = parent.id
+                WHERE child.chat_id = $1
+            ),
+            anchored_leaf AS (
+                SELECT descendant.*
+                FROM descendants descendant
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM chat_messages child
+                    WHERE child.chat_id = $1
+                      AND child.parent_id = descendant.id
+                )
+                ORDER BY descendant.message_seq_num DESC
+                LIMIT 1
+            ),
+            active_leaf AS (
+                SELECT cm.*
                 FROM chat_messages cm
-                JOIN walk_up wu ON cm.id = wu.parent_id
+                WHERE cm.chat_id = $1
+                  AND $2::varchar IS NULL
+                  AND cm.id NOT IN (
+                      SELECT DISTINCT parent_id
+                      FROM chat_messages
+                      WHERE chat_id = $1 AND parent_id IS NOT NULL
+                  )
+                ORDER BY cm.message_seq_num DESC
+                LIMIT 1
+            ),
+            seed AS (
+                SELECT * FROM anchored_leaf
+                UNION ALL
+                SELECT * FROM active_leaf
+            ),
+            walk_up AS (
+                SELECT seed.id, seed.chat_id, seed.message_seq_num, seed.message,
+                       seed.parent_id, seed.error, seed.created_at
+                FROM seed
+
+                UNION ALL
+
+                SELECT parent.id, parent.chat_id, parent.message_seq_num, parent.message,
+                       parent.parent_id, parent.error, parent.created_at
+                FROM chat_messages parent
+                JOIN walk_up child ON parent.id = child.parent_id
+                WHERE parent.chat_id = $1
             )
             SELECT * FROM walk_up ORDER BY message_seq_num
         """
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch(query, chat_id)
+            rows = await conn.fetch(query, chat_id, message_id)
 
         return [ChatMessage.from_row(dict(row)) for row in rows]
