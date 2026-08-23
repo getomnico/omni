@@ -8,7 +8,7 @@ from .embedding_queue import EmbeddingQueueItem, EmbeddingQueueRepository, Queue
 from .embeddings import Embedding, EmbeddingsRepository
 from .messages import MessagesRepository
 from .model_providers import ModelProviderRecord, ModelProvidersRepository, ModelsRepository
-from .models import Chat, ChatMessage, ModelRecord, Source, User
+from .models import Chat, ChatMessage, ChatSearchHit, ModelRecord, Source, User
 from .skills import Skill, SkillsRepository
 from .tool_approvals import (
     ToolApproval,
@@ -27,6 +27,7 @@ __all__ = [
     "User",
     "Chat",
     "ChatMessage",
+    "ChatSearchHit",
     "UsersRepository",
     "ChatsRepository",
     "MessagesRepository",
