@@ -34,7 +34,10 @@ async def test_chat_search_scopes_results_and_supports_title_and_message_matches
     )
     await messages.create(
         matching_chat.id,
-        {"role": "user", "content": "We decided the xylophone launch should happen in March."},
+        {
+            "role": "user",
+            "content": "We decided the xylophone launch should happen in March.",
+        },
     )
 
     title_only_chat = await chats.create(
@@ -58,7 +61,9 @@ async def test_chat_search_scopes_results_and_supports_title_and_message_matches
         {"role": "user", "content": "Launch details that should be hidden."},
     )
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE chats SET is_deleted = TRUE WHERE id = $1", deleted_chat.id)
+        await conn.execute(
+            "UPDATE chats SET is_deleted = TRUE WHERE id = $1", deleted_chat.id
+        )
 
     message_hits = await chats.search(
         history_user.id,
@@ -83,6 +88,7 @@ async def test_chat_search_scopes_results_and_supports_title_and_message_matches
     )
     assert [hit.chat_id for hit in title_hits] == [title_only_chat.id]
     assert title_hits[0].source == "title"
+    assert title_hits[0].snippet == "A short unrelated note."
 
 
 @pytest.mark.asyncio
@@ -109,7 +115,9 @@ async def test_chat_search_deduplicates_messages_before_limiting(db_pool, histor
 
 
 @pytest.mark.asyncio
-async def test_get_active_path_can_read_an_older_branch_by_anchor(db_pool, history_user):
+async def test_get_active_path_can_read_an_older_branch_by_anchor(
+    db_pool, history_user
+):
     chats = ChatsRepository(pool=db_pool)
     messages = MessagesRepository(pool=db_pool)
     chat = await chats.create(history_user.id, title="Branching chat")

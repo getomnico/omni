@@ -78,7 +78,7 @@ class ChatsRepository:
                     c.title,
                     c.updated_at,
                     NULL::varchar AS matched_message_id,
-                    preview.content_text AS snippet,
+                    NULL::text AS snippet,
                     (
                         SELECT COUNT(*)::integer
                         FROM chat_messages count_cm
@@ -87,15 +87,6 @@ class ChatsRepository:
                     pdb.score(c.id) AS score,
                     'title'::text AS source
                 FROM chats c
-                LEFT JOIN LATERAL (
-                    SELECT cm.content_text
-                    FROM chat_messages cm
-                    WHERE cm.chat_id = c.id
-                      AND cm.content_text IS NOT NULL
-                      AND btrim(cm.content_text) <> ''
-                    ORDER BY cm.message_seq_num ASC
-                    LIMIT 1
-                ) preview ON TRUE
                 WHERE c.title IS NOT NULL
                   AND c.title ||| $2
                   AND c.user_id = $1
@@ -152,7 +143,7 @@ class ChatsRepository:
                     CASE
                         WHEN message.matched_message_id IS NOT NULL
                             THEN message.snippet
-                        ELSE ranked.snippet
+                        ELSE COALESCE(preview.preview_snippet, ranked.snippet)
                     END,
                     500
                 ) AS snippet,
@@ -163,6 +154,16 @@ class ChatsRepository:
                 END AS source
             FROM ranked_matches ranked
             LEFT JOIN message_matches message ON message.id = ranked.id
+            LEFT JOIN LATERAL (
+                SELECT cm.content_text AS preview_snippet
+                FROM chat_messages cm
+                WHERE ranked.source = 'title'
+                  AND cm.chat_id = ranked.id
+                  AND cm.content_text IS NOT NULL
+                  AND btrim(cm.content_text) <> ''
+                ORDER BY cm.message_seq_num ASC
+                LIMIT 1
+            ) preview ON TRUE
             ORDER BY ranked.score DESC, ranked.updated_at DESC, ranked.id
             LIMIT $4
         """

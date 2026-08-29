@@ -185,18 +185,9 @@ export class ChatRepository {
         const results = await this.db.execute<ChatSearchSqlRow>(sql`
             WITH title_matches AS (
                 SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.is_deleted, c.created_at, c.updated_at,
-                       preview.message_id, preview.content_text,
+                       NULL::varchar AS message_id, NULL::text AS content_text,
                        pdb.score(c.id) AS score, 'title'::text AS source
                 FROM chats c
-                LEFT JOIN LATERAL (
-                    SELECT cm.id AS message_id, cm.content_text
-                    FROM chat_messages cm
-                    WHERE cm.chat_id = c.id
-                      AND cm.content_text IS NOT NULL
-                      AND btrim(cm.content_text) <> ''
-                    ORDER BY cm.message_seq_num ASC
-                    LIMIT 1
-                ) preview ON TRUE
                 WHERE c.title ||| ${query}
                   AND c.user_id = ${userId}
                   AND c.is_deleted = FALSE
@@ -253,22 +244,32 @@ export class ChatRepository {
                        plainto_tsquery(${TEXT_SEARCH_CONFIG}::regconfig, ${query}),
                        ${TITLE_HEADLINE_OPTIONS}
                    ) AS "titleHeadline",
-                   message_id AS "snippetMessageId",
-                   source AS "snippetSource",
+                   COALESCE(final_candidates.message_id, preview.preview_message_id) AS "snippetMessageId",
+                   final_candidates.source AS "snippetSource",
                    CASE
-                       WHEN source = 'message' THEN ts_headline(
+                       WHEN final_candidates.source = 'message' THEN ts_headline(
                            ${TEXT_SEARCH_CONFIG}::regconfig,
-                           COALESCE(content_text, ''),
+                           COALESCE(final_candidates.content_text, ''),
                            plainto_tsquery(${TEXT_SEARCH_CONFIG}::regconfig, ${query}),
                            ${SNIPPET_HEADLINE_OPTIONS}
                        )
                        ELSE NULLIF(
-                           left(regexp_replace(COALESCE(content_text, ''), '[[:space:]]+', ' ', 'g'), 180),
+                           left(regexp_replace(COALESCE(preview.preview_content_text, ''), '[[:space:]]+', ' ', 'g'), 180),
                            ''
                        )
                    END AS "snippetHeadline"
             FROM final_candidates
-            ORDER BY score DESC
+            LEFT JOIN LATERAL (
+                SELECT cm.id AS preview_message_id, cm.content_text AS preview_content_text
+                FROM chat_messages cm
+                WHERE final_candidates.source = 'title'
+                  AND cm.chat_id = final_candidates.id
+                  AND cm.content_text IS NOT NULL
+                  AND btrim(cm.content_text) <> ''
+                ORDER BY cm.message_seq_num ASC
+                LIMIT 1
+            ) preview ON TRUE
+            ORDER BY final_candidates.score DESC
         `)
 
         return results.map((row) => {
