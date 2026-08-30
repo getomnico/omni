@@ -64,3 +64,29 @@ if [[ -n "$pg_search_version" ]] && version_ge "$pg_search_version" "0.24.0" && 
 fi
 
 sqlx migrate run --source "$MIGRATIONS_DIR"
+
+# Core services must not connect as the migration/table-owner role because owners and
+# superusers bypass RLS. Migration 112 creates omni_user and omni_system as LOGIN roles and
+# grants their table privileges; this step only provisions their passwords. User-facing
+# services log in as omni_user, background services as omni_system, and omni_user holds no
+# membership in omni_system, so there is no path to escalate to the privileged role.
+USER_RUNTIME_USERNAME=${DATABASE_RUNTIME_USERNAME:-omni_user}
+USER_RUNTIME_PASSWORD=${DATABASE_RUNTIME_PASSWORD:-$DATABASE_PASSWORD}
+SYSTEM_RUNTIME_USERNAME=${DATABASE_SYSTEM_USERNAME:-omni_system}
+SYSTEM_RUNTIME_PASSWORD=${DATABASE_SYSTEM_PASSWORD:-$DATABASE_PASSWORD}
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+    -v user_runtime_username="$USER_RUNTIME_USERNAME" \
+    -v user_runtime_password="$USER_RUNTIME_PASSWORD" \
+    -v system_runtime_username="$SYSTEM_RUNTIME_USERNAME" \
+    -v system_runtime_password="$SYSTEM_RUNTIME_PASSWORD" <<'SQL'
+SELECT format(
+    'ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    :'user_runtime_username', :'user_runtime_password'
+)
+\gexec
+SELECT format(
+    'ALTER ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD %L',
+    :'system_runtime_username', :'system_runtime_password'
+)
+\gexec
+SQL

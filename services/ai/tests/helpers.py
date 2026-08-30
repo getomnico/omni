@@ -360,6 +360,12 @@ def create_mock_llm(
     provider = AsyncMock()
     provider.stream_response = stream_response
     provider.health_check.return_value = True
+    from providers import ContextWindowInfo
+
+    async def _context_window():
+        return ContextWindowInfo(tokens=128000, source="mock")
+
+    provider.get_context_window_tokens = _context_window
     return provider
 
 
@@ -390,6 +396,12 @@ def create_mock_llm_multi(
     provider = AsyncMock()
     provider.stream_response = stream_response
     provider.health_check.return_value = True
+    from providers import ContextWindowInfo
+
+    async def _context_window():
+        return ContextWindowInfo(tokens=128000, source="mock")
+
+    provider.get_context_window_tokens = _context_window
     return provider
 
 

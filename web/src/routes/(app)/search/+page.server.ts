@@ -30,6 +30,9 @@ export const load = async ({ url, fetch, locals }) => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...(env.OMNI_INTERNAL_SERVICE_TOKEN
+                        ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                        : {}),
                 },
                 body: JSON.stringify({
                     query: query.trim(),
@@ -47,6 +50,9 @@ export const load = async ({ url, fetch, locals }) => {
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...(env.OMNI_INTERNAL_SERVICE_TOKEN
+                        ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                        : {}),
                 },
             }),
         ])

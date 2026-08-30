@@ -8,6 +8,7 @@ import { ulid } from 'ulid'
 import { createLogger } from '$lib/server/logger.js'
 import { getUserConfiguration } from '$lib/server/db/userConfiguration.js'
 import type { UserConfiguration, UserMemoryMode } from '$lib/types/configuration'
+import { parseApiKeyScope, type ApiKeyScope } from './apiKeyScope'
 
 const API_KEY_PREFIX = 'omni_'
 const MAX_KEYS_PER_USER = 25
@@ -32,7 +33,7 @@ export async function validateApiKey(key: string): Promise<{
         'id' | 'email' | 'role' | 'isActive' | 'mustChangePassword'
     > & { configuration: UserConfiguration; memoryMode: UserMemoryMode | null }
     allowedSources: string[] | null
-    scope: 'public' | 'user' | 'admin'
+    scope: ApiKeyScope
 } | null> {
     const hash = hashApiKey(key)
 
@@ -88,11 +89,8 @@ export async function validateApiKey(key: string): Promise<{
         })
 
     const allowedSources = result.apiKey.allowedSources as string[] | null
-    const rawScope = result.apiKey.scope
-    const scope = (rawScope === 'admin' ? 'admin' : rawScope === 'user' ? 'user' : 'public') as
-        | 'public'
-        | 'user'
-        | 'admin'
+    const scope = parseApiKeyScope(result.apiKey.scope)
+    if (!scope) return null
     const configuration = await getUserConfiguration(result.user.id)
     const user = {
         ...result.user,
@@ -116,7 +114,7 @@ export async function createApiKey(
     name: string,
     expiresAt?: Date,
     allowedSources?: string[] | null,
-    scope?: 'public' | 'user' | 'admin',
+    scope?: ApiKeyScope,
 ): Promise<{ id: string; key: string; prefix: string }> {
     // Check per-user key count limit
     const existing = await db

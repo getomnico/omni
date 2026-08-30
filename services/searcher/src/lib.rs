@@ -10,14 +10,13 @@ pub mod typeahead;
 
 use anyhow::Result as AnyhowResult;
 use axum::{
-    middleware,
+    Router, middleware,
     routing::{get, post},
-    Router,
 };
 use redis::Client as RedisClient;
 use shared::{
-    telemetry::{self, TelemetryConfig},
     AIClient, DatabasePool, ObjectStorage, SearcherConfig, StorageFactory,
+    telemetry::{self, TelemetryConfig},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -131,7 +130,7 @@ pub async fn run_server() -> AnyhowResult<()> {
     let ai_client = AIClient::new(config.ai_service_url.clone());
     info!("AI client initialized");
 
-    let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
+    let content_storage = StorageFactory::from_env(db_pool.system_pool().clone()).await?;
     info!("Storage initialized");
 
     let suggested_questions_generator = Arc::new(SuggestedQuestionsGenerator::new(

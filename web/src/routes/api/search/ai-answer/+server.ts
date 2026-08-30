@@ -27,6 +27,9 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                ...(env.OMNI_INTERNAL_SERVICE_TOKEN
+                    ? { 'x-omni-internal-token': env.OMNI_INTERNAL_SERVICE_TOKEN }
+                    : {}),
             },
             body: JSON.stringify({
                 query: searchRequest.query.trim(),

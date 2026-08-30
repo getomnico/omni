@@ -91,6 +91,7 @@ def searcher_container(searcher_image, initialized_db, redis_container):
         .with_env("REDIS_URL", f"redis://host.docker.internal:{redis_port}")
         .with_env("PORT", "8002")
         .with_env("AI_SERVICE_URL", "http://localhost:9999")
+        .with_env("OMNI_INTERNAL_SERVICE_TOKEN", "test-internal-token")
     )
     container._kwargs = {"extra_hosts": {"host.docker.internal": "host-gateway"}}
 
@@ -131,14 +132,29 @@ def searcher_url(searcher_container):
 
 async def create_test_agent(db_pool, user_id: str, agent_type: str = "user") -> str:
     agent_id = str(ULID())
+    provider_id = str(ULID())
+    model_id = str(ULID())
     async with db_pool.acquire() as conn:
         await conn.execute(
+            "INSERT INTO model_providers (id, name, provider_type, config) VALUES ($1, $2, $3, $4::jsonb)",
+            provider_id,
+            "Test Provider",
+            "openai",
+            "{}",
+        )
+        await conn.execute(
+            "INSERT INTO models (id, model_provider_id, model_id, display_name, is_default, is_deleted) VALUES ($1, $2, $3, $3, false, false)",
+            model_id,
+            provider_id,
+            "mock-model",
+        )
+        await conn.execute(
             """INSERT INTO agents (id, user_id, name, instructions, agent_type,
-                                   schedule_type, schedule_value,
+                                   schedule_type, schedule_value, model_id,
                                    allowed_sources, allowed_actions,
                                    is_enabled, is_deleted,
                                    created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, 'interval', '60',
+               VALUES ($1, $2, $3, $4, $5, 'interval', '60', $6,
                        '[]'::jsonb, '[]'::jsonb,
                        true, false,
                        NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '2 minutes')""",
@@ -147,6 +163,7 @@ async def create_test_agent(db_pool, user_id: str, agent_type: str = "user") -> 
             f"Test {agent_type} Agent",
             "Search for recent documents and summarize the findings.",
             agent_type,
+            model_id,
         )
     return agent_id
 
@@ -164,8 +181,9 @@ def _patch_db_pool(db_pool, monkeypatch):
 
 @pytest.fixture
 def _patch_env(monkeypatch):
-    """Disable sandbox to simplify the test."""
+    """Disable sandbox and configure the internal service token for system-scope searches."""
     monkeypatch.setenv("SANDBOX_URL", "")
+    monkeypatch.setenv("OMNI_INTERNAL_SERVICE_TOKEN", "test-internal-token")
 
 
 def _build_app_state(mock_llm, searcher_tool) -> AppState:

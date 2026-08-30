@@ -57,7 +57,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     let documentCounts: Record<string, number> = {}
     if (userSourceIds.length > 0) {
-        const counts = await db
+        const counts = await locals.db
             .select({
                 sourceId: documents.sourceId,
                 count: count(),

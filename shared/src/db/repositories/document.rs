@@ -1,3 +1,4 @@
+use crate::db::pool::{begin_document_system_on, begin_document_user_on};
 use crate::{
     SourceType,
     db::error::DatabaseError,
@@ -50,6 +51,32 @@ impl DocumentRepository {
         Ok(document)
     }
 
+    pub async fn find_by_id_for_access(
+        &self,
+        id: &str,
+        user_email: Option<&str>,
+        public_only: bool,
+    ) -> Result<Option<Document>, DatabaseError> {
+        let mut tx = match user_email {
+            Some(email) => begin_document_user_on(&self.pool, email, public_only).await?,
+            None => begin_document_system_on(&self.pool).await?,
+        };
+        let document = sqlx::query_as::<_, Document>(
+            r#"
+            SELECT id, source_id, external_id, title, content_id, content_type,
+                   file_size, file_extension, url,
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+            FROM documents
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(document)
+    }
+
     pub async fn find_by_ids(&self, ids: &[String]) -> Result<Vec<Document>, DatabaseError> {
         if ids.is_empty() {
             return Ok(vec![]);
@@ -68,6 +95,35 @@ impl DocumentRepository {
         .fetch_all(&self.pool)
         .await?;
 
+        Ok(documents)
+    }
+
+    pub async fn find_by_ids_for_access(
+        &self,
+        ids: &[String],
+        user_email: Option<&str>,
+        public_only: bool,
+    ) -> Result<Vec<Document>, DatabaseError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut tx = match user_email {
+            Some(email) => begin_document_user_on(&self.pool, email, public_only).await?,
+            None => begin_document_system_on(&self.pool).await?,
+        };
+        let documents = sqlx::query_as::<_, Document>(
+            r#"
+            SELECT id, source_id, external_id, title, content_id, content_type,
+                   file_size, file_extension, url,
+                   metadata, permissions, attributes, created_at, updated_at, last_indexed_at
+            FROM documents
+            WHERE id = ANY($1)
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(documents)
     }
 
@@ -130,6 +186,7 @@ impl DocumentRepository {
         }
 
         if let Some(cursor) = after_id {
+            let mut tx = begin_document_system_on(&self.pool).await?;
             let entries = sqlx::query_as::<_, TitleEntry>(
                 r#"
                 SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
@@ -145,10 +202,12 @@ impl DocumentRepository {
             .bind(content_types)
             .bind(cursor)
             .bind(page_size)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
+            tx.commit().await?;
             Ok(entries)
         } else {
+            let mut tx = begin_document_system_on(&self.pool).await?;
             let entries = sqlx::query_as::<_, TitleEntry>(
                 r#"
                 SELECT d.id, d.title, d.url, d.source_id, s.source_type, d.content_type
@@ -162,8 +221,9 @@ impl DocumentRepository {
             )
             .bind(content_types)
             .bind(page_size)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
+            tx.commit().await?;
             Ok(entries)
         }
     }
@@ -193,6 +253,8 @@ impl DocumentRepository {
             return Ok(Vec::new());
         }
 
+        let public_only = user_email == PUBLIC_ONLY_PERMISSION_IDENTITY;
+        let mut tx = begin_document_user_on(&self.pool, user_email, public_only).await?;
         let perm_filter = generate_permission_filter(user_email, user_groups);
 
         let rows = sqlx::query_scalar::<_, String>(&format!(
@@ -207,8 +269,9 @@ impl DocumentRepository {
             perm_filter
         ))
         .bind(candidate_ids)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
 
         let allowed: std::collections::HashSet<String> = rows.into_iter().collect();
         Ok(candidate_ids
@@ -233,6 +296,7 @@ impl DocumentRepository {
         // documents the caller has already consumed, so repeated random draws don't
         // return duplicates. An empty slice excludes nothing, since `ANY('{}')` never
         // matches and `<> ALL('{}')` is always true.
+        let mut tx = begin_document_user_on(&self.pool, user_email, false).await?;
         let query = format!(
             r#"
             SELECT *
@@ -256,8 +320,9 @@ impl DocumentRepository {
             .bind(count as i32)
             .bind(excluded_source_types)
             .bind(excluded_document_ids)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
+        tx.commit().await?;
 
         Ok(documents)
     }
@@ -768,7 +833,13 @@ impl DocumentRepository {
 /// BM25 index instead of as JSONB heap filters. The permissions field must be
 /// indexed with the literal tokenizer; otherwise ACL values such as emails can
 /// be tokenized into partial matches.
+pub const PUBLIC_ONLY_PERMISSION_IDENTITY: &str = "__omni_public_only__";
+
 pub fn generate_permission_filter(user_email: &str, user_groups: &[String]) -> String {
+    if user_email == PUBLIC_ONLY_PERMISSION_IDENTITY {
+        return "permissions @@@ 'public:true'".to_string();
+    }
+
     let mut terms = vec![
         "public:true".to_string(),
         format!("users:{}", quote_permission_query_value(user_email)),
@@ -806,5 +877,37 @@ fn json_value_to_term_string(value: &JsonValue) -> String {
         JsonValue::Null => "null".to_string(),
         // For arrays and objects, serialize to JSON string
         _ => value.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod permission_filter_tests {
+    use super::*;
+
+    #[test]
+    fn public_scope_cannot_inherit_user_or_group_permissions() {
+        assert_eq!(
+            generate_permission_filter(
+                PUBLIC_ONLY_PERMISSION_IDENTITY,
+                &["engineering@example.com".to_string()],
+            ),
+            "permissions @@@ 'public:true'"
+        );
+    }
+
+    #[test]
+    fn user_scope_preserves_public_direct_domain_and_group_semantics() {
+        let filter = generate_permission_filter(
+            "alice@example.com",
+            &["engineering@example.com".to_string()],
+        );
+        for expected in [
+            "public:true",
+            "users:\"alice@example.com\"",
+            "groups:\"example.com\"",
+            "groups:\"engineering@example.com\"",
+        ] {
+            assert!(filter.contains(expected), "missing {expected} in {filter}");
+        }
     }
 }

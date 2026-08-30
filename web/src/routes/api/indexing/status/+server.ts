@@ -1,5 +1,7 @@
-import { db } from '$lib/server/db/index.js'
+import { db as systemDb, documentRlsClient } from '$lib/server/db/index.js'
 import { documents } from '$lib/server/db/schema.js'
+import * as schema from '$lib/server/db/schema.js'
+import { drizzle } from 'drizzle-orm/postgres-js'
 import { sql, type SQL } from 'drizzle-orm'
 import { error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
@@ -19,6 +21,7 @@ const DOCUMENT_COUNT_CACHE_TTL = 30000 // 30 seconds
 async function getDocumentCounts(
     sourceFilter: SQL,
     cacheKey: string,
+    userEmail: string,
 ): Promise<Record<SourceId, number>> {
     const now = Date.now()
     const cached = documentCountCache.get(cacheKey)
@@ -27,16 +30,21 @@ async function getDocumentCounts(
     }
 
     try {
-        const counts = await db.execute(sql`
-            SELECT
-                d.source_id AS "sourceId",
-                COUNT(*)::int AS count
-            FROM ${documents} d
-            JOIN sources s ON s.id = d.source_id
-            WHERE s.is_deleted = false
-            ${sourceFilter}
-            GROUP BY d.source_id
-        `)
+        const counts = await documentRlsClient.begin(async (transaction) => {
+            await transaction`SET LOCAL ROLE omni_user`
+            await transaction`SELECT set_config('omni.document_user_email', ${userEmail}, true)`
+            await transaction`SELECT set_config('omni.document_access_scope', 'user', true)`
+            return drizzle(transaction, { schema }).execute(sql`
+                SELECT
+                    d.source_id AS "sourceId",
+                    COUNT(*)::int AS count
+                FROM ${documents} d
+                JOIN sources s ON s.id = d.source_id
+                WHERE s.is_deleted = false
+                ${sourceFilter}
+                GROUP BY d.source_id
+            `)
+        })
 
         const countMap: Record<SourceId, number> = {}
         for (const row of counts) {
@@ -58,6 +66,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
     const isAdmin = locals.user.role === 'admin'
     const userId = locals.user.id
+    const userEmail = locals.user.email
     const requestedScope = url.searchParams.get('scope')
     if (requestedScope && !['org', 'user', 'all'].includes(requestedScope)) {
         throw error(400, 'scope must be "org", "user", or "all"')
@@ -74,7 +83,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             : statusScope === 'user'
               ? sql`AND s.scope = 'user' AND s.created_by = ${userId}`
               : sql``
-    const documentCountCacheKey = statusScope === 'user' ? `user:${userId}` : statusScope
+    const documentCountCacheKey = `${statusScope}:${userId}`
 
     const encoder = new TextEncoder()
     let isClosed = false
@@ -120,7 +129,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                 isFetching = true
                 try {
                     // Get the latest sync run for each connected source
-                    const result = await db.execute(sql`
+                    const result = await systemDb.execute(sql`
                         SELECT DISTINCT ON (s.id)
                             sr.id,
                             s.id AS "sourceId",
@@ -146,6 +155,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
                     const documentCounts = await getDocumentCounts(
                         sourceFilter,
                         documentCountCacheKey,
+                        userEmail,
                     )
 
                     const statusData = {

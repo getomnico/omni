@@ -1,9 +1,29 @@
 x-db-config: &db-config
   DATABASE_HOST: ${DATABASE_HOST}
   DATABASE_PORT: ${DATABASE_PORT}
+  DATABASE_USERNAME: ${DATABASE_RUNTIME_USERNAME:-omni_user}
+  DATABASE_PASSWORD: ${DATABASE_RUNTIME_PASSWORD:-${DATABASE_PASSWORD}}
+  DATABASE_NAME: ${DATABASE_NAME}
+
+# Privileged background services (indexer, connector-manager) connect with the
+# system runtime login so they can perform document writes across the corpus.
+x-system-db-config: &system-db-config
+  DATABASE_HOST: ${DATABASE_HOST}
+  DATABASE_PORT: ${DATABASE_PORT}
+  DATABASE_USERNAME: ${DATABASE_SYSTEM_USERNAME:-omni_system}
+  DATABASE_PASSWORD: ${DATABASE_SYSTEM_PASSWORD:-${DATABASE_PASSWORD}}
+  DATABASE_NAME: ${DATABASE_NAME}
+
+x-migrator-db-config: &migrator-db-config
+  DATABASE_HOST: ${DATABASE_HOST}
+  DATABASE_PORT: ${DATABASE_PORT}
   DATABASE_USERNAME: ${DATABASE_USERNAME}
   DATABASE_PASSWORD: ${DATABASE_PASSWORD}
   DATABASE_NAME: ${DATABASE_NAME}
+  DATABASE_RUNTIME_USERNAME: ${DATABASE_RUNTIME_USERNAME:-omni_user}
+  DATABASE_RUNTIME_PASSWORD: ${DATABASE_RUNTIME_PASSWORD:-${DATABASE_PASSWORD}}
+  DATABASE_SYSTEM_USERNAME: ${DATABASE_SYSTEM_USERNAME:-omni_system}
+  DATABASE_SYSTEM_PASSWORD: ${DATABASE_SYSTEM_PASSWORD:-${DATABASE_PASSWORD}}
 
 x-db-pool-config: &db-pool-config
   DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
@@ -109,7 +129,7 @@ services:
     mem_limit: ${OMNI_MIGRATOR_MEMORY:-256m}
     container_name: omni-migrator
     environment:
-      <<: *db-config
+      <<: *migrator-db-config
     networks:
       - omni-network
     depends_on:
@@ -133,6 +153,9 @@ services:
       PORT: ${SEARCHER_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
       SEMANTIC_SEARCH_TIMEOUT_MS: ${SEMANTIC_SEARCH_TIMEOUT_MS}
+      OMNI_INTERNAL_SERVICE_TOKEN: ${OMNI_INTERNAL_SERVICE_TOKEN}
+      DATABASE_SYSTEM_USERNAME: ${DATABASE_SYSTEM_USERNAME:-omni_system}
+      DATABASE_SYSTEM_PASSWORD: ${DATABASE_SYSTEM_PASSWORD:-${DATABASE_PASSWORD}}
     networks:
       - omni-network
     depends_on:
@@ -154,7 +177,7 @@ services:
     expose:
       - "${INDEXER_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
+      <<: [*system-db-config, *db-pool-config, *redis-config, *otel-config, *storage-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${INDEXER_PORT}
       AI_SERVICE_URL: ${AI_SERVICE_URL}
@@ -188,6 +211,9 @@ services:
       AI_WORKERS: ${AI_WORKERS:-1}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
       SEARCHER_URL: ${SEARCHER_URL}
+      OMNI_INTERNAL_SERVICE_TOKEN: ${OMNI_INTERNAL_SERVICE_TOKEN}
+      DATABASE_SYSTEM_USERNAME: ${DATABASE_SYSTEM_USERNAME:-omni_system}
+      DATABASE_SYSTEM_PASSWORD: ${DATABASE_SYSTEM_PASSWORD:-${DATABASE_PASSWORD}}
       AWS_REGION: ${AWS_REGION:-}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       SANDBOX_URL: ${SANDBOX_URL:-}
@@ -259,7 +285,7 @@ services:
     expose:
       - "${CONNECTOR_MANAGER_PORT}"
     environment:
-      <<: [*db-config, *db-pool-config, *redis-config, *otel-config, *docling-config]
+      <<: [*system-db-config, *db-pool-config, *redis-config, *otel-config, *docling-config]
       RUST_LOG: ${RUST_LOG}
       PORT: ${CONNECTOR_MANAGER_PORT}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}

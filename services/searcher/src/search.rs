@@ -1,5 +1,6 @@
 use crate::models::{
-    RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse, SearchResult,
+    DocumentAccessScope, RecentSearchesResponse, SearchMode, SearchRequest, SearchResponse,
+    SearchResult,
 };
 use crate::operator_registry::OperatorRegistry;
 use crate::query_parser;
@@ -9,6 +10,7 @@ use redis::{AsyncCommands, Client as RedisClient};
 use shared::SourceType;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
+    document::PUBLIC_ONLY_PERMISSION_IDENTITY,
 };
 use shared::models::{ChunkResult, Document, Facet, FacetValue};
 use shared::utils::safe_str_slice;
@@ -44,7 +46,7 @@ impl SearchEngine {
         config: SearcherConfig,
         operator_registry: Arc<OperatorRegistry>,
     ) -> Result<Self> {
-        let content_storage = StorageFactory::from_env(db_pool.pool().clone()).await?;
+        let content_storage = StorageFactory::from_env(db_pool.system_pool().clone()).await?;
         let person_repo = PersonRepository::new(db_pool.pool());
 
         Ok(Self {
@@ -125,46 +127,61 @@ impl SearchEngine {
         request.user_email = request.user_email.filter(|s| !s.trim().is_empty());
         request.user_id = request.user_id.filter(|s| !s.trim().is_empty());
 
-        // In case the request contains only user_id, populate user_email for permission filtering
         let user_repo = UserRepository::new(self.db_pool.pool());
-        let mut request = match (&request.user_id, &request.user_email) {
-            (Some(user_id), None) => {
-                info!(
-                    "Search request has user_id but no email, fetching email from DB for user ID: {}",
-                    user_id
-                );
-                let res = user_repo.find_by_id(user_id.clone()).await;
-                info!("Fetched user: {:?}", res);
-                if let Ok(Some(user)) = res {
-                    info!(
-                        "Fetched user email: {} for user ID: {}",
-                        user.email, user_id
-                    );
-                    let mut new_request = request.clone();
-                    new_request.user_email = Some(user.email);
-                    new_request
-                } else {
-                    info!("Failed to fetch user email for user ID: {}", user_id);
-                    request
-                }
+        match request.document_access_scope {
+            DocumentAccessScope::Public => {
+                request.user_email = Some(PUBLIC_ONLY_PERMISSION_IDENTITY.to_string());
             }
-            _ => request,
-        };
+            DocumentAccessScope::User => {
+                let user_id = request
+                    .user_id
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("A user ID is required for document access"))?;
+                let user = user_repo
+                    .find_by_id(user_id.clone())
+                    .await?
+                    .filter(|user| user.is_active)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown or inactive user identity"))?;
+                if request
+                    .user_email
+                    .as_ref()
+                    .is_some_and(|email| !email.eq_ignore_ascii_case(&user.email))
+                {
+                    return Err(anyhow::anyhow!(
+                        "User identity does not match authenticated user"
+                    ));
+                }
+                request.user_email = Some(user.email);
+            }
+            DocumentAccessScope::System => {
+                request.user_email = None;
+                request.user_id = None;
+            }
+        }
 
-        // Resolve user's group memberships for permission filtering
-        let user_groups = if let Some(email) = request.user_email() {
+        let user_groups = if matches!(request.document_access_scope, DocumentAccessScope::User) {
+            let email = request.user_email().expect("validated user email");
             let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
+            group_repo.find_groups_for_user(email).await?
         } else {
             vec![]
         };
 
-        // Handle document_id filter for read_document tool
         if let Some(document_id) = &request.document_id {
             info!("Document ID filter detected: {}", document_id);
+            if !matches!(request.document_access_scope, DocumentAccessScope::System) {
+                let email = request.user_email().expect("validated document identity");
+                let allowed = DocumentRepository::new(self.db_pool.pool())
+                    .filter_accessible_titles(
+                        std::slice::from_ref(document_id),
+                        email,
+                        &user_groups,
+                    )
+                    .await?;
+                if allowed.is_empty() {
+                    return Err(anyhow::anyhow!("Document not found: {}", document_id));
+                }
+            }
             return self.read_document_by_id(document_id, &request).await;
         }
 
@@ -240,7 +257,11 @@ impl SearchEngine {
         }
 
         let repo = DocumentRepository::new(self.db_pool.pool());
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(
+            &self.db_pool,
+            request.user_email().map(String::as_str),
+            matches!(request.document_access_scope, DocumentAccessScope::Public),
+        );
 
         // Empty query is allowed ONLY if some narrowing filter will scope the
         // result set. Otherwise `filter_only_search` would scan the entire
@@ -561,7 +582,11 @@ impl SearchEngine {
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
 
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(
+            &self.db_pool,
+            request.user_email().map(String::as_str),
+            matches!(request.document_access_scope, DocumentAccessScope::Public),
+        );
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
 
         let sources = request.source_types.as_deref();
@@ -593,7 +618,13 @@ impl SearchEngine {
             .into_iter()
             .collect();
 
-        let documents = doc_repo.find_by_ids(&document_ids).await?;
+        let documents = doc_repo
+            .find_by_ids_for_access(
+                &document_ids,
+                request.user_email().map(String::as_str),
+                matches!(request.document_access_scope, DocumentAccessScope::Public),
+            )
+            .await?;
         let documents_map: HashMap<String, _> = documents
             .into_iter()
             .map(|doc| (doc.id.clone(), doc))
@@ -695,7 +726,11 @@ impl SearchEngine {
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
         let doc = doc_repo
-            .find_by_id(document_id)
+            .find_by_id_for_access(
+                document_id,
+                request.user_email().map(String::as_str),
+                matches!(request.document_access_scope, DocumentAccessScope::Public),
+            )
             .await?
             .ok_or_else(|| anyhow::anyhow!("Document not found: {}", document_id))?;
 
@@ -853,7 +888,11 @@ impl SearchEngine {
         let results = if !request.query.trim().is_empty() {
             // Query provided: do hybrid search within document
             info!("Query provided, hybrid search within document");
-            let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+            let search_repo = SearchDocumentRepository::new(
+                &self.db_pool,
+                request.user_email().map(String::as_str),
+                matches!(request.document_access_scope, DocumentAccessScope::Public),
+            );
             let tantivy_query = search_repo.build_query_text(&request.query).await?;
             let (results, _total_count) = self
                 .hybrid_search(request, &user_groups, tantivy_query.as_deref())
@@ -936,7 +975,11 @@ impl SearchEngine {
         );
 
         let query_embedding = self.generate_query_embedding(&request.query).await?;
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(
+            &self.db_pool,
+            request.user_email().map(String::as_str),
+            matches!(request.document_access_scope, DocumentAccessScope::Public),
+        );
         let embedding_repo = EmbeddingRepository::new(self.db_pool.pool());
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
 
@@ -970,7 +1013,13 @@ impl SearchEngine {
 
         // Get documents
         let document_ids: Vec<String> = document_chunks.keys().cloned().collect();
-        let documents = doc_repo.find_by_ids(&document_ids).await?;
+        let documents = doc_repo
+            .find_by_ids_for_access(
+                &document_ids,
+                request.user_email().map(String::as_str),
+                matches!(request.document_access_scope, DocumentAccessScope::Public),
+            )
+            .await?;
         let documents_map: HashMap<String, _> = documents
             .into_iter()
             .map(|doc| (doc.id.clone(), doc))
@@ -1056,7 +1105,11 @@ impl SearchEngine {
         let start_time = Instant::now();
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(
+            &self.db_pool,
+            request.user_email().map(String::as_str),
+            matches!(request.document_access_scope, DocumentAccessScope::Public),
+        );
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
@@ -1329,7 +1382,11 @@ impl SearchEngine {
         };
 
         let doc_repo = DocumentRepository::new(self.db_pool.pool());
-        let search_repo = SearchDocumentRepository::new(self.db_pool.pool());
+        let search_repo = SearchDocumentRepository::new(
+            &self.db_pool,
+            request.user_email().map(String::as_str),
+            matches!(request.document_access_scope, DocumentAccessScope::Public),
+        );
         let source_ids = doc_repo
             .fetch_active_source_ids(request.source_types.as_deref())
             .await?;
