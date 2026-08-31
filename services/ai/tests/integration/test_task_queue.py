@@ -5,7 +5,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from ulid import ULID
 
-from db.task_queue import ClaimOptions, NewTask, TaskQueueRepository, TaskStatus
+from db.task_queue import (
+    ClaimOptions,
+    EnqueueTaskRequest,
+    TaskQueueRepository,
+    TaskStatus,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -24,7 +29,7 @@ async def test_enqueue_round_trip_generated_id_and_idempotent_retry(db_pool):
 
     created = await repo.enqueue_bulk(
         [
-            NewTask(
+            EnqueueTaskRequest(
                 id=explicit_id,
                 task_type=explicit_type,
                 payload={"nested": {"enabled": True}, "items": [1, "two"]},
@@ -35,7 +40,7 @@ async def test_enqueue_round_trip_generated_id_and_idempotent_retry(db_pool):
                 concurrency_key="partition-1",
                 max_attempts=5,
             ),
-            NewTask(task_type=generated_type, payload={"generated": True}),
+            EnqueueTaskRequest(task_type=generated_type, payload={"generated": True}),
         ]
     )
 
@@ -56,7 +61,9 @@ async def test_enqueue_round_trip_generated_id_and_idempotent_retry(db_pool):
     assert generated.payload == {"generated": True}
 
     retried = await repo.enqueue(
-        NewTask(id=explicit_id, task_type=explicit_type, payload={"replacement": True})
+        EnqueueTaskRequest(
+            id=explicit_id, task_type=explicit_type, payload={"replacement": True}
+        )
     )
     assert retried.id == explicit_id
     assert retried.payload == explicit.payload
@@ -67,7 +74,9 @@ async def test_enqueue_round_trip_generated_id_and_idempotent_retry(db_pool):
 async def test_claim_uses_provided_transaction(db_pool):
     repo = TaskQueueRepository(pool=db_pool)
     task_type = _unique_task_type("claim_transaction")
-    task = await repo.enqueue(NewTask(task_type=task_type, payload={"n": 1}))
+    task = await repo.enqueue(
+        EnqueueTaskRequest(task_type=task_type, payload={"n": 1})
+    )
 
     async with db_pool.acquire() as connection:
         transaction = connection.transaction()
@@ -96,7 +105,9 @@ async def test_claim_uses_provided_transaction(db_pool):
 async def test_claim_heartbeat_and_complete_lifecycle(db_pool):
     repo = TaskQueueRepository(pool=db_pool)
     task_type = _unique_task_type("complete_lifecycle")
-    task = await repo.enqueue(NewTask(task_type=task_type, payload={"n": 1}))
+    task = await repo.enqueue(
+        EnqueueTaskRequest(task_type=task_type, payload={"n": 1})
+    )
 
     claim = await repo.claim(
         task_type,
@@ -125,7 +136,7 @@ async def test_retry_and_dead_letter_lifecycle(db_pool):
     repo = TaskQueueRepository(pool=db_pool)
     task_type = _unique_task_type("fail_lifecycle")
     task = await repo.enqueue(
-        NewTask(task_type=task_type, payload={"n": 1}, max_attempts=2)
+        EnqueueTaskRequest(task_type=task_type, payload={"n": 1}, max_attempts=2)
     )
 
     first_claim = await repo.claim(task_type, "worker-fail", ClaimOptions())
@@ -159,7 +170,7 @@ async def test_recover_expired_maps_real_rows(db_pool):
     repo = TaskQueueRepository(pool=db_pool)
     task_type = _unique_task_type("recover_expired")
     task = await repo.enqueue(
-        NewTask(task_type=task_type, payload={"n": 1}, max_attempts=2)
+        EnqueueTaskRequest(task_type=task_type, payload={"n": 1}, max_attempts=2)
     )
     claim = await repo.claim(task_type, "worker-recover", ClaimOptions())
     assert len(claim.tasks) == 1
@@ -183,8 +194,12 @@ async def test_recover_expired_maps_real_rows(db_pool):
 async def test_stats_and_cleanup(db_pool):
     repo = TaskQueueRepository(pool=db_pool)
     task_type = _unique_task_type("stats_cleanup")
-    first = await repo.enqueue(NewTask(task_type=task_type, payload={"n": 1}))
-    second = await repo.enqueue(NewTask(task_type=task_type, payload={"n": 2}))
+    first = await repo.enqueue(
+        EnqueueTaskRequest(task_type=task_type, payload={"n": 1})
+    )
+    second = await repo.enqueue(
+        EnqueueTaskRequest(task_type=task_type, payload={"n": 2})
+    )
 
     claim = await repo.claim(task_type, "worker-stats", ClaimOptions(limit=1))
     completed_id = claim.tasks[0].id

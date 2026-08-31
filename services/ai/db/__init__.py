@@ -12,7 +12,7 @@ from .models import Chat, ChatMessage, ChatSearchHit, ModelRecord, Source, User
 from .skills import Skill, SkillsRepository
 from .task_queue import (
     ClaimOptions,
-    NewTask,
+    EnqueueTaskRequest,
     Task,
     TaskClaim,
     TaskQueueRepository,
@@ -72,7 +72,7 @@ __all__ = [
     "SkillsRepository",
     "Skill",
     "ClaimOptions",
-    "NewTask",
+    "EnqueueTaskRequest",
     "Task",
     "TaskClaim",
     "TaskQueueRepository",

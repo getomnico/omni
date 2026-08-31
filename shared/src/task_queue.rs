@@ -51,7 +51,7 @@ impl std::str::FromStr for TaskStatus {
 
 /// A full row from the `tasks` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskRow {
+pub struct Task {
     pub id: String,
     pub task_type: String,
     pub payload: serde_json::Value,
@@ -73,7 +73,7 @@ pub struct TaskRow {
     pub completed_at: Option<OffsetDateTime>,
 }
 
-impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for TaskRow {
+impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for Task {
     fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
 
@@ -85,7 +85,7 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for TaskRow {
                 source: e.into(),
             })?;
 
-        Ok(TaskRow {
+        Ok(Task {
             id: row.try_get("id")?,
             task_type: row.try_get("task_type")?,
             payload: row.try_get("payload")?,
@@ -112,7 +112,7 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for TaskRow {
 /// A task to enqueue. `id` defaults to a fresh ULID; producers that need
 /// idempotent retries must set it explicitly and reuse it.
 #[derive(Debug, Clone)]
-pub struct NewTask {
+pub struct EnqueueTaskRequest {
     pub id: String,
     pub task_type: String,
     pub payload: serde_json::Value,
@@ -124,7 +124,7 @@ pub struct NewTask {
     pub max_attempts: i32,
 }
 
-impl NewTask {
+impl EnqueueTaskRequest {
     pub fn new(task_type: impl Into<String>, payload: serde_json::Value) -> Self {
         Self {
             id: generate_ulid(),
@@ -177,7 +177,7 @@ impl Default for ClaimOptions {
 #[derive(Debug, Clone)]
 pub struct TaskClaim {
     pub claim_token: String,
-    pub tasks: Vec<TaskRow>,
+    pub tasks: Vec<Task>,
 }
 
 /// Status statistics grouped by (task_type, status).
@@ -204,12 +204,12 @@ impl TaskQueue {
     /// Enqueue tasks, returning only the rows that were actually inserted.
     /// Re-enqueueing an existing id is a no-op, which is what makes producer
     /// retries idempotent.
-    pub async fn enqueue_bulk(&self, tasks: &[NewTask]) -> Result<Vec<TaskRow>> {
+    pub async fn enqueue_bulk(&self, tasks: &[EnqueueTaskRequest]) -> Result<Vec<Task>> {
         if tasks.is_empty() {
             return Ok(Vec::new());
         }
         for task in tasks {
-            validate_new_task(task)?;
+            validate_enqueue_task_request(task)?;
         }
 
         let ids: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
@@ -223,7 +223,7 @@ impl TaskQueue {
             tasks.iter().map(|t| t.concurrency_key.clone()).collect();
         let max_attempts: Vec<i32> = tasks.iter().map(|t| t.max_attempts).collect();
 
-        let rows = sqlx::query_as::<_, TaskRow>(
+        let rows = sqlx::query_as::<_, Task>(
             "SELECT * FROM task_enqueue_bulk($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(&ids)
@@ -243,12 +243,12 @@ impl TaskQueue {
 
     /// Convenience wrapper around [`TaskQueue::enqueue_bulk`]. Re-enqueueing
     /// an existing id is idempotent and returns the already-stored task.
-    pub async fn enqueue(&self, task: NewTask) -> Result<TaskRow> {
+    pub async fn enqueue(&self, task: EnqueueTaskRequest) -> Result<Task> {
         let created = self.enqueue_bulk(std::slice::from_ref(&task)).await?;
         if let Some(row) = created.into_iter().next() {
             return Ok(row);
         }
-        let existing = sqlx::query_as::<_, TaskRow>("SELECT * FROM tasks WHERE id = $1")
+        let existing = sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = $1")
             .bind(&task.id)
             .fetch_optional(&self.pool)
             .await?;
@@ -278,7 +278,7 @@ impl TaskQueue {
         validate_claim_options(options)?;
 
         let claim_token = generate_ulid();
-        let rows = sqlx::query_as::<_, TaskRow>(
+        let rows = sqlx::query_as::<_, Task>(
             "SELECT * FROM task_claim_bulk($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(task_type)
@@ -385,8 +385,8 @@ impl TaskQueue {
     /// requeued as pending, exhausted tasks become dead_letter. Returns every
     /// recovered row so adapters that mirror queue state into domain tables
     /// can synchronize.
-    pub async fn recover_expired(&self) -> Result<Vec<TaskRow>> {
-        let rows = sqlx::query_as::<_, TaskRow>("SELECT * FROM task_recover_expired()")
+    pub async fn recover_expired(&self) -> Result<Vec<Task>> {
+        let rows = sqlx::query_as::<_, Task>("SELECT * FROM task_recover_expired()")
             .fetch_all(&self.pool)
             .await?;
         Ok(rows)
@@ -426,7 +426,7 @@ fn to_epoch_ms(odt: OffsetDateTime) -> i64 {
     odt.unix_timestamp() * 1000 + i64::from(odt.millisecond())
 }
 
-fn validate_new_task(task: &NewTask) -> Result<()> {
+fn validate_enqueue_task_request(task: &EnqueueTaskRequest) -> Result<()> {
     if task.id.len() != 26 {
         bail!("task id must be a 26-char ULID, got {:?}", task.id);
     }

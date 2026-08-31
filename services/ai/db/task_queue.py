@@ -15,7 +15,7 @@ Contract notes:
 - Claim result order is not guaranteed by ``UPDATE ... RETURNING``; consumers
   that need order must sort the returned tasks.
 - Enqueue idempotency is per task id: producers retrying must reuse the same
-  ``NewTask.id``. There is no generic deduplication key; logical work
+  ``EnqueueTaskRequest.id``. There is no generic deduplication key; logical work
   coalescing is workload policy (enforced with task-specific indexes in the
   workload migrations).
 - A non-null ``concurrency_key`` only serializes execution: multiple tasks may
@@ -79,7 +79,7 @@ class Task:
 
 
 @dataclass
-class NewTask:
+class EnqueueTaskRequest:
     """A task to enqueue. ``id`` defaults to a fresh ULID; producers that
     need idempotent retries must set it explicitly and reuse it."""
 
@@ -148,7 +148,7 @@ class TaskQueueRepository:
         row = await pool.fetchrow("SELECT * FROM tasks WHERE id = $1", task_id)
         return Task.from_row(row) if row else None
 
-    async def enqueue(self, task: NewTask) -> Task:
+    async def enqueue(self, task: EnqueueTaskRequest) -> Task:
         """Enqueue one task. Re-enqueueing an existing id is idempotent and
         returns the already-stored task."""
         created = await self.enqueue_bulk([task])
@@ -161,13 +161,13 @@ class TaskQueueRepository:
             raise RuntimeError(f"task {task.id} was not enqueued")
         return existing
 
-    async def enqueue_bulk(self, tasks: list[NewTask]) -> list[Task]:
+    async def enqueue_bulk(self, tasks: list[EnqueueTaskRequest]) -> list[Task]:
         """Enqueue tasks, returning only the rows actually inserted."""
         if not tasks:
             return []
 
         for task in tasks:
-            self._validate_new_task(task)
+            self._validate_enqueue_task_request(task)
 
         ids = [task.id or str(ULID()) for task in tasks]
         task_types = [task.task_type for task in tasks]
@@ -331,7 +331,7 @@ class TaskQueueRepository:
         return int(deleted)
 
     @staticmethod
-    def _validate_new_task(task: NewTask) -> None:
+    def _validate_enqueue_task_request(task: EnqueueTaskRequest) -> None:
         if task.id is not None and len(task.id) != 26:
             raise ValueError(f"task id must be a 26-char ULID, got {task.id!r}")
         if not task.task_type.strip():

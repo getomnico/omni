@@ -1,5 +1,5 @@
 use futures_util::future::join_all;
-use shared::task_queue::{ClaimOptions, NewTask, TaskQueue, TaskStatus};
+use shared::task_queue::{ClaimOptions, EnqueueTaskRequest, TaskQueue, TaskStatus};
 use shared::test_environment::TestEnvironment;
 use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
@@ -11,9 +11,9 @@ async fn new_queue() -> (TestEnvironment, PgPool, TaskQueue) {
     (env, pool, queue)
 }
 
-fn enqueue_tasks(task_type: &str, count: usize) -> Vec<NewTask> {
+fn enqueue_tasks(task_type: &str, count: usize) -> Vec<EnqueueTaskRequest> {
     (0..count)
-        .map(|i| NewTask::new(task_type, serde_json::json!({ "n": i })))
+        .map(|i| EnqueueTaskRequest::new(task_type, serde_json::json!({ "n": i })))
         .collect()
 }
 
@@ -103,7 +103,7 @@ async fn test_enqueue_bulk_and_caller_id_idempotency() {
     assert_eq!(claimed_ids, ids);
 
     // A partial batch with one duplicate and one new task only inserts the new one.
-    let mut new_task = NewTask::new("test", serde_json::json!({ "n": 99 }));
+    let mut new_task = EnqueueTaskRequest::new("test", serde_json::json!({ "n": 99 }));
     new_task.id = "01J00000000000000000000000".to_string();
     let partial = queue
         .enqueue_bulk(&[tasks[0].clone(), new_task])
@@ -117,7 +117,7 @@ async fn test_enqueue_bulk_and_caller_id_idempotency() {
 async fn test_enqueue_single_is_idempotent() {
     let (_env, _pool, queue) = new_queue().await;
 
-    let task = NewTask::new("test", serde_json::json!({}));
+    let task = EnqueueTaskRequest::new("test", serde_json::json!({}));
     let first = queue.enqueue(task.clone()).await.unwrap();
     let second = queue.enqueue(task.clone()).await.unwrap();
 
@@ -129,22 +129,22 @@ async fn test_enqueue_single_is_idempotent() {
 async fn test_enqueue_validation() {
     let (_env, _pool, queue) = new_queue().await;
 
-    let mut bad_id = NewTask::new("test", serde_json::json!({}));
+    let mut bad_id = EnqueueTaskRequest::new("test", serde_json::json!({}));
     bad_id.id = "short".to_string();
     assert!(queue.enqueue_bulk(&[bad_id]).await.is_err());
 
-    let bad_type = NewTask::new("  ", serde_json::json!({}));
+    let bad_type = EnqueueTaskRequest::new("  ", serde_json::json!({}));
     assert!(queue.enqueue_bulk(&[bad_type]).await.is_err());
 
-    let mut bad_payload = NewTask::new("test", serde_json::json!("not an object"));
+    let mut bad_payload = EnqueueTaskRequest::new("test", serde_json::json!("not an object"));
     bad_payload.payload = serde_json::json!("nope");
     assert!(queue.enqueue_bulk(&[bad_payload]).await.is_err());
 
-    let mut bad_weight = NewTask::new("test", serde_json::json!({}));
+    let mut bad_weight = EnqueueTaskRequest::new("test", serde_json::json!({}));
     bad_weight.weight = -1;
     assert!(queue.enqueue_bulk(&[bad_weight]).await.is_err());
 
-    let mut bad_attempts = NewTask::new("test", serde_json::json!({}));
+    let mut bad_attempts = EnqueueTaskRequest::new("test", serde_json::json!({}));
     bad_attempts.max_attempts = 0;
     assert!(queue.enqueue_bulk(&[bad_attempts]).await.is_err());
 }
@@ -182,9 +182,9 @@ async fn test_claim_fifo_by_ulid() {
 async fn test_claim_orders_by_priority() {
     let (_env, pool, queue) = new_queue().await;
 
-    let mut low = NewTask::new("test", serde_json::json!({ "p": 5 }));
+    let mut low = EnqueueTaskRequest::new("test", serde_json::json!({ "p": 5 }));
     low.priority = 5;
-    let mut high = NewTask::new("test", serde_json::json!({ "p": 10 }));
+    let mut high = EnqueueTaskRequest::new("test", serde_json::json!({ "p": 10 }));
     high.priority = 10;
     queue.enqueue_bulk(&[low, high]).await.unwrap();
 
@@ -205,7 +205,7 @@ async fn test_claim_orders_by_priority() {
 async fn test_delayed_availability_blocks_claim() {
     let (_env, pool, queue) = new_queue().await;
 
-    let mut later = NewTask::new("test", serde_json::json!({}));
+    let mut later = EnqueueTaskRequest::new("test", serde_json::json!({}));
     later.available_at = OffsetDateTime::now_utc() + Duration::hours(1);
     queue.enqueue_bulk(&[later]).await.unwrap();
 
@@ -258,7 +258,7 @@ async fn test_weighted_batch_admits_first_even_over_cap() {
     assert_eq!(claimed_ids, expected_ids);
 
     // A single task heavier than the cap is still admitted (row 1 rule).
-    let mut heavy = NewTask::new("test", serde_json::json!({}));
+    let mut heavy = EnqueueTaskRequest::new("test", serde_json::json!({}));
     heavy.weight = 100;
     queue.enqueue_bulk(&[heavy]).await.unwrap();
 
@@ -652,7 +652,7 @@ async fn test_lease_expiry_recovery() {
 async fn test_fail_retries_then_dead_letters() {
     let (_env, pool, queue) = new_queue().await;
 
-    let mut task = NewTask::new("test", serde_json::json!({}));
+    let mut task = EnqueueTaskRequest::new("test", serde_json::json!({}));
     task.max_attempts = 3;
     queue.enqueue_bulk(&[task.clone()]).await.unwrap();
 
@@ -915,7 +915,7 @@ async fn test_constraints_reject_invalid_lifecycle_states() {
 async fn test_recover_expired_exhausted_attempts_dead_letters() {
     let (_env, pool, queue) = new_queue().await;
 
-    let mut task = NewTask::new("test", serde_json::json!({}));
+    let mut task = EnqueueTaskRequest::new("test", serde_json::json!({}));
     task.max_attempts = 1;
     queue.enqueue_bulk(&[task.clone()]).await.unwrap();
 

@@ -4,7 +4,14 @@ from datetime import UTC, datetime
 
 import pytest
 
-from db.task_queue import ClaimOptions, NewTask, Task, TaskQueueRepository, TaskStatus, _to_epoch_ms
+from db.task_queue import (
+    ClaimOptions,
+    EnqueueTaskRequest,
+    Task,
+    TaskQueueRepository,
+    TaskStatus,
+    _to_epoch_ms,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -58,17 +65,27 @@ async def test_enqueue_validation_raises_before_database_access():
     repo = TaskQueueRepository()
 
     with pytest.raises(ValueError, match="26-char"):
-        await repo.enqueue_bulk([NewTask(task_type="test", payload={}, id="short")])
+        await repo.enqueue_bulk(
+            [EnqueueTaskRequest(task_type="test", payload={}, id="short")]
+        )
     with pytest.raises(ValueError, match="task_type"):
-        await repo.enqueue_bulk([NewTask(task_type="  ", payload={})])
+        await repo.enqueue_bulk([EnqueueTaskRequest(task_type="  ", payload={})])
     with pytest.raises(ValueError, match="payload"):
-        await repo.enqueue_bulk([NewTask(task_type="test", payload="nope")])  # type: ignore
+        await repo.enqueue_bulk(
+            [EnqueueTaskRequest(task_type="test", payload="nope")]  # type: ignore
+        )
     with pytest.raises(ValueError, match="weight"):
-        await repo.enqueue_bulk([NewTask(task_type="test", payload={}, weight=-1)])
+        await repo.enqueue_bulk(
+            [EnqueueTaskRequest(task_type="test", payload={}, weight=-1)]
+        )
     with pytest.raises(ValueError, match="max_attempts"):
-        await repo.enqueue_bulk([NewTask(task_type="test", payload={}, max_attempts=0)])
+        await repo.enqueue_bulk(
+            [EnqueueTaskRequest(task_type="test", payload={}, max_attempts=0)]
+        )
     with pytest.raises(ValueError, match="payload_version"):
-        await repo.enqueue_bulk([NewTask(task_type="test", payload={}, payload_version=0)])
+        await repo.enqueue_bulk(
+            [EnqueueTaskRequest(task_type="test", payload={}, payload_version=0)]
+        )
 
 
 @pytest.mark.asyncio

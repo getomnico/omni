@@ -41,7 +41,9 @@ pub use storage::{
     ContentMetadata as StorageContentMetadata, ObjectStorage, StorageError,
     factory::{StorageBackend, StorageFactory},
 };
-pub use task_queue::{ClaimOptions, NewTask, TaskClaim, TaskQueue, TaskRow, TaskStats, TaskStatus};
+pub use task_queue::{
+    ClaimOptions, EnqueueTaskRequest, Task, TaskClaim, TaskQueue, TaskStats, TaskStatus,
+};
 pub use traits::Repository;
 
 pub fn init() {
