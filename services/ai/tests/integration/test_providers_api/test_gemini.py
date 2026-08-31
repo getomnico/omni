@@ -7,12 +7,12 @@ import re
 import pytest
 from anthropic.types import MessageParam
 
+from providers.gemini import GeminiProvider
 from tests.integration.test_providers_api.conftest import (
+    report_usage,
     require_env,
     stream_usage,
-    report_usage,
 )
-from providers.gemini import GeminiProvider
 
 pytestmark = pytest.mark.real_llm
 
@@ -153,6 +153,14 @@ class TestGemini:
         ]
         assert events2[-1].type == "message_stop"
 
+        # Usage must actually flow through the streamed events — Gemini
+        # reports real token counts on the final ``message_delta``, and the
+        # chat pipeline's UsageTracker reads exactly that.  Regression guard:
+        # if the API stops reporting usage_metadata (or the provider stops
+        # forwarding it), tracking silently records nothing.
         u = stream_usage(events) or stream_usage(events2)
-        if u:
-            report_usage("Gemini.stream", u[0], u[1])
+        assert u is not None, (
+            "Gemini stream carried no usage on message_delta; "
+            "token usage tracking would silently record nothing"
+        )
+        report_usage("Gemini.stream", u[0], u[1])

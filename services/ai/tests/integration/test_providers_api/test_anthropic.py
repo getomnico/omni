@@ -6,13 +6,13 @@ import re
 import pytest
 from anthropic.types import MessageParam, ToolUseBlockParam
 
-from tests.integration.test_providers_api.conftest import (
-    require_env,
-    stream_usage,
-    report_usage,
-)
 from providers.anthropic import AnthropicProvider
 from streaming.persist import parse_tool_call_inputs
+from tests.integration.test_providers_api.conftest import (
+    report_usage,
+    require_env,
+    stream_usage,
+)
 
 pytestmark = pytest.mark.real_llm
 
@@ -210,6 +210,13 @@ class TestAnthropic:
         ]
         assert events2[-1].type == "message_stop"
 
+        # Usage must actually flow through the streamed events — the chat
+        # pipeline's UsageTracker reads message_start/message_delta usage.
+        # Regression guard: if the API stops reporting usage (or the provider
+        # stops forwarding it), tracking silently records nothing.
         u = stream_usage(events) or stream_usage(events2)
-        if u:
-            report_usage("Anthropic.stream", u[0], u[1])
+        assert u is not None, (
+            "Anthropic stream carried no usage on message_delta; "
+            "token usage tracking would silently record nothing"
+        )
+        report_usage("Anthropic.stream", u[0], u[1])

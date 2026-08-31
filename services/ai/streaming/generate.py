@@ -150,8 +150,6 @@ async def event_stream_with_context_retry(
             async for wrapped_event in processed_stream:
                 emitted_event = True
                 yield wrapped_event
-            tracker.save()
-            return
         except ProviderError as e:
             if e.is_context_overflow and llm_attempt == 0 and not emitted_event:
                 logger.warning(
@@ -174,6 +172,13 @@ async def event_stream_with_context_retry(
                     yield CompactionEnd()
                 continue
             raise
+        finally:
+            # The agent loop (stream_generator) stops consuming this generator
+            # at message_stop instead of exhausting it, so save() must run in
+            # `finally`: an early close unwinds the generator through here and
+            # would otherwise drop the captured usage on every turn.
+            tracker.save()
+        return
 
 
 # ---------------------------------------------------------------------------
