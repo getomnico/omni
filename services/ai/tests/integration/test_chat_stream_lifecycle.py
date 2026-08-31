@@ -19,10 +19,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from unittest.mock import AsyncMock
 
+import asyncpg
 import pytest
-from anthropic.types import MessageParam
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
@@ -30,7 +31,6 @@ from ulid import ULID
 import db.connection
 import routers.chat as chat_module
 from db import ChatsRepository, MessagesRepository, UsersRepository
-from db.documents import DocumentsRepository
 from db.tool_approvals import (
     ToolApprovalsRepository,
     ToolApprovalStatus,
@@ -46,7 +46,6 @@ from tests.helpers import (
     stream_sse,
 )
 from tools import SearchResponse, SearchResult, ToolRegistry, ToolResult
-from tools.document_handler import DocumentToolHandler
 from tools.omni_tool_result import OAuthRequiredPayload
 from tools.searcher_client import Document
 from tools.searcher_tool import SearcherTool
@@ -180,9 +179,22 @@ async def seeded_chat(
     try:
         yield (chat_id, user.id, model_id)
     finally:
-        async with db_pool.acquire() as conn:
-            await conn.execute("DELETE FROM chat_messages WHERE chat_id = $1", chat_id)
-            await conn.execute("DELETE FROM chats WHERE id = $1", chat_id)
+        # Usage persistence is fire-and-forget (asyncio task): the row can
+        # land a moment after the run ends, racing this delete. Retry the
+        # delete briefly until the usage row shows up and is removed.
+        for _ in range(50):
+            async with db_pool.acquire() as conn:
+                try:
+                    await conn.execute(
+                        "DELETE FROM model_usage WHERE chat_id = $1", chat_id
+                    )
+                    await conn.execute(
+                        "DELETE FROM chat_messages WHERE chat_id = $1", chat_id
+                    )
+                    await conn.execute("DELETE FROM chats WHERE id = $1", chat_id)
+                    break
+                except asyncpg.ForeignKeyViolationError:
+                    await asyncio.sleep(0.1)
         async with db_pool.acquire() as conn:
             await conn.execute("DELETE FROM models WHERE id = $1", model_id)
             await conn.execute("DELETE FROM model_providers WHERE id = $1", provider_id)
@@ -320,12 +332,18 @@ class TestBaseline:
 
     @pytest.mark.asyncio
     async def test_happy_path_streams_text_and_persists_assistant(
-        self, seeded_chat, redis_client, redis_keys
+        self, seeded_chat, db_pool, redis_client, redis_keys
     ):
         """E2E: stream a text response → DB has persisted assistant row;
         consumer events have strictly increasing ``id:`` lines; no duplicate
-        writes."""
-        chat_id, _user_id, model_id = seeded_chat
+        writes.
+
+        Also asserts the turn's token usage lands in ``model_usage`` —
+        regression: the agent loop stops consuming the provider stream at
+        ``message_stop``, so ``UsageTracker.save()`` must run on generator
+        close (``finally``), not on exhaustion.
+        """
+        chat_id, user_id, model_id = seeded_chat
         llm = GatedRecordingLLM([("text", "This is a test response.")], model_id)
 
         app = _build_chat_app(llm, redis_client, model_id)
@@ -360,6 +378,29 @@ class TestBaseline:
         stream_key = f"chat:stream:{chat_id}"
         exists = await redis_client.exists(stream_key)
         assert exists == 1, "Stream key should exist after run completes (within TTL)"
+
+        # The chat turn's token usage must be persisted.  save() is
+        # fire-and-forget (an asyncio task), so poll briefly for the row.
+        deadline = time.monotonic() + 5.0
+        usage_row = None
+        while time.monotonic() < deadline:
+            async with db_pool.acquire() as conn:
+                usage_row = await conn.fetchrow(
+                    "SELECT purpose, model_id, user_id, call_count, "
+                    "input_tokens, output_tokens FROM model_usage "
+                    "WHERE chat_id = $1",
+                    chat_id,
+                )
+            if usage_row is not None:
+                break
+            await asyncio.sleep(0.05)
+        assert usage_row is not None, "No model_usage row persisted for the chat turn"
+        assert usage_row["purpose"] == "chat"
+        assert usage_row["model_id"] == model_id
+        assert usage_row["user_id"] == user_id
+        assert usage_row["call_count"] == 1
+        assert usage_row["input_tokens"] == 10
+        assert usage_row["output_tokens"] == 10
 
     @pytest.mark.asyncio
     async def test_message_start_id_matches_db_row(
