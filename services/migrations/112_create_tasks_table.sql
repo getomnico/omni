@@ -112,9 +112,9 @@ COMMENT ON COLUMN tasks.priority IS
 COMMENT ON COLUMN tasks.available_at IS
     'Earliest claim time; also the scheduled retry time after a failure.';
 COMMENT ON COLUMN tasks.weight IS
-    'Non-negative claim cost. Connector tasks use payload plus content bytes; other initial task types use 1.';
+    'Non-negative claim cost used by task_claim_bulk for cumulative batch limits. The first eligible task is admitted even if it exceeds p_max_weight. Planned values: connector tasks use JSON payload plus referenced content bytes; embeddings and agent runs use 1.';
 COMMENT ON COLUMN tasks.concurrency_key IS
-    'Optional serialization partition. Tasks of one task_type sharing a key execute one at a time in oldest-task order.';
+    'Optional execution-serialization partition. For a given task_type, only the oldest unresolved task sharing a key is claimable and at most one matching task may be running; NULL disables per-key serialization. This does not deduplicate enqueue requests; reuse id for that.';
 COMMENT ON COLUMN tasks.attempt_count IS
     'Number of claims, including the initial attempt; incremented atomically when claimed.';
 COMMENT ON COLUMN tasks.max_attempts IS
