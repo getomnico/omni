@@ -10,11 +10,20 @@ from .messages import MessagesRepository
 from .model_providers import ModelProviderRecord, ModelProvidersRepository, ModelsRepository
 from .models import Chat, ChatMessage, ChatSearchHit, ModelRecord, Source, User
 from .skills import Skill, SkillsRepository
+from .task_queue import (
+    ClaimOptions,
+    EnqueueTaskRequest,
+    Task,
+    TaskClaim,
+    TaskQueueRepository,
+    TaskStats,
+    TaskStatus,
+)
 from .tool_approvals import (
     ToolApproval,
+    ToolApprovalsRepository,
     ToolApprovalStatus,
     ToolApprovalType,
-    ToolApprovalsRepository,
 )
 from .usage import UsageRepository, UsageSummary
 from .users import UsersRepository
@@ -62,4 +71,11 @@ __all__ = [
     "ToolApprovalsRepository",
     "SkillsRepository",
     "Skill",
+    "ClaimOptions",
+    "EnqueueTaskRequest",
+    "Task",
+    "TaskClaim",
+    "TaskQueueRepository",
+    "TaskStats",
+    "TaskStatus",
 ]
