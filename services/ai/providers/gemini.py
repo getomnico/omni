@@ -431,7 +431,7 @@ class GeminiProvider(LLMProvider):
                             )
 
             if last_usage_metadata:
-                input_tokens = (
+                prompt_tokens = (
                     getattr(last_usage_metadata, "prompt_token_count", 0) or 0
                 )
                 output_tokens = (
@@ -444,7 +444,11 @@ class GeminiProvider(LLMProvider):
                     type="message_delta",
                     delta=Delta(stop_reason="end_turn"),
                     usage=MessageDeltaUsage(
-                        input_tokens=input_tokens,
+                        # prompt_token_count is the TOTAL prompt size and
+                        # includes the cached portion; report only the
+                        # uncached input so cached tokens are not double
+                        # counted against cache_read_input_tokens.
+                        input_tokens=max(prompt_tokens - cached_tokens, 0),
                         output_tokens=output_tokens,
                         cache_read_input_tokens=cached_tokens,
                     ),
@@ -485,10 +489,15 @@ class GeminiProvider(LLMProvider):
             usage = TokenUsage()
             if hasattr(response, "usage_metadata") and response.usage_metadata:
                 um = response.usage_metadata
+                prompt_tokens = getattr(um, "prompt_token_count", 0) or 0
+                cached_tokens = getattr(um, "cached_content_token_count", 0) or 0
                 usage = TokenUsage(
-                    input_tokens=getattr(um, "prompt_token_count", 0) or 0,
+                    # prompt_token_count includes the cached portion; report
+                    # only the uncached input (same accounting as the stream
+                    # path above).
+                    input_tokens=max(prompt_tokens - cached_tokens, 0),
                     output_tokens=getattr(um, "candidates_token_count", 0) or 0,
-                    cache_read_tokens=getattr(um, "cached_content_token_count", 0) or 0,
+                    cache_read_tokens=cached_tokens,
                 )
 
             if not response.text:
