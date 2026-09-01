@@ -26,7 +26,12 @@
 
 1. Configure environment:
    ```bash
-   cp .env.example .env
+   [ -f .env ] || cp .env.example .env
+   keystore="${OMNI_DEV_KEYSTORE:-$HOME/.config/omni/dev-encryption.env}"
+   mkdir -p "$(dirname "$keystore")"
+   [ -f "$keystore" ] || { umask 077; printf 'ENCRYPTION_KEY=%s\nENCRYPTION_SALT=%s\n' "$(openssl rand -base64 48)" "$(openssl rand -hex 16)" > "$keystore"; }
+   sed -i '/^ENCRYPTION_KEY=/d; /^ENCRYPTION_SALT=/d' .env
+   cat "$keystore" >> .env
    ```
 
 2. Start the development environment:
@@ -39,6 +44,7 @@
 ### Development Workflow
 
 - `omni-web` (SvelteKit) and `omni-ai` (Python/FastAPI) hot-reload when you edit source files
+- To point the stack at another worktree, plain `up -d` from there is enough; rebuild only services your branch changed (include `migrator` if it adds migrations)
 - Rust services need to be rebuilt after changes:
   ```bash
   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up -d --build searcher

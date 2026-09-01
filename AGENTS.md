@@ -69,11 +69,22 @@ Some core development principles that should be kept in mind when developing Omn
 
   ```bash
   [ -f .env ] || cp .env.example .env
+  keystore="${OMNI_DEV_KEYSTORE:-$HOME/.config/omni/dev-encryption.env}"
+  mkdir -p "$(dirname "$keystore")"
+  [ -f "$keystore" ] || { umask 077; printf 'ENCRYPTION_KEY=%s\nENCRYPTION_SALT=%s\n' "$(openssl rand -base64 48)" "$(openssl rand -hex 16)" > "$keystore"; }
+  sed -i '/^ENCRYPTION_KEY=/d; /^ENCRYPTION_SALT=/d' .env
+  cat "$keystore" >> .env
   docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
     --env-file .env up -d --build
   ```
 
+  `.env.example` carries placeholder encryption material; the bootstrap replaces it with values generated once per machine (never committed), so credentials stored in the shared dev database stay decryptable when switching between worktrees.
+
   The web and AI services hot-reload. Their default URLs are http://localhost:3000 and http://localhost:3003; ports can be changed in `.env`. Fixed container names and host ports mean only one local stack can run at a time. To stop it, run the same command with `down` in place of `up -d --build`.
+
+  The dev stack is a single shared instance. Run the compose command above from this worktree to point it here; layer caching means only services whose code differs from the last build actually recompile.
+
+  If the migrator fails with a sqlx "previously applied but modified/missing" error, a conflicting migration version was already applied to the shared dev DB. Roll it back via psql in the omni-postgres container (see the applied copy: `git show <branch>:services/migrations/<file>`), delete its `_sqlx_migrations` rows from the first mismatch on, then re-run: `docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml --env-file .env up --force-recreate migrator`.
 
   For host-side frontend tooling in a fresh checkout, run `cd web && npm ci`.
 - Wherever possible, add imports at the top of the source file, instead of using fully-qualified names in the middle of the file
