@@ -498,41 +498,6 @@
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
     let drawerOpenByKey = $state<Record<string, boolean>>({})
 
-    function hashString(value: string): string {
-        let hash = 2166136261
-        for (let i = 0; i < value.length; i++) {
-            hash ^= value.charCodeAt(i)
-            hash = Math.imul(hash, 16777619)
-        }
-        return (hash >>> 0).toString(36)
-    }
-
-    function messageContentRenderKey(content: MessageContent): string {
-        // This is an invalidation signature for remounting ToolCallsGroup, not a
-        // globally unique message identity. Keep it readable and bounded: hash
-        // potentially large tool inputs, and let text/citation updates flow
-        // through props without forcing a full group remount.
-        return content
-            .map((block, index) => {
-                if (block.type === 'text') return `t:${index}`
-
-                if (block.type === 'tool') {
-                    const inputHash = hashString(JSON.stringify(block.toolUse.input ?? {}))
-                    const toolState = block.oauthRequired
-                        ? `o:${block.oauthRequired.status}`
-                        : block.actionResult
-                          ? `a:${block.actionResult.isError ? 1 : 0}`
-                          : block.toolResult
-                            ? `r:${block.toolResult.content.length}`
-                            : 'p'
-                    return `u:${index}:${block.toolUse.id}:${inputHash}:${toolState}`
-                }
-
-                return `${block.type}:${index}`
-            })
-            .join('|')
-    }
-
     async function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content
             .map((block) => {
@@ -2575,15 +2540,12 @@
                             class="group mt-8 flex w-full min-w-0 flex-col gap-1">
                             <div
                                 class="prose prose-sm md:prose-base prose-p:my-3 prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-code:text-foreground prose-a:text-primary dark:prose-invert max-w-none min-w-0 overflow-visible">
-                                {#key `${message.renderKey}:${messageContentRenderKey(message.content)}`}
-                                    <ToolCallsGroup
-                                        content={message.content}
-                                        isStreaming={isStreaming &&
-                                            i === processedMessages.length - 1}
-                                        {stripThinkingContent}
-                                        isAdmin={data.user.role === 'admin'}
-                                        onOAuthComplete={() => streamResponse(data.chat.id)} />
-                                {/key}
+                                <ToolCallsGroup
+                                    content={message.content}
+                                    isStreaming={isStreaming && i === processedMessages.length - 1}
+                                    {stripThinkingContent}
+                                    isAdmin={data.user.role === 'admin'}
+                                    onOAuthComplete={() => streamResponse(data.chat.id)} />
                             </div>
                             {#if message.error}
                                 <div class="flex px-2">

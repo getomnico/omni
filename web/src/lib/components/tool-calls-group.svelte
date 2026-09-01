@@ -51,10 +51,10 @@
     )
 
     function blockRenderKey(block: MessageContent[number]): string {
-        // Streamed text blocks keep the same numeric id while their markdown grows.
-        // Remount just that markdown subtree so a partial parsed render cannot stay stale.
+        // Keep streamed text mounted so its incremental renderer can preserve
+        // previously committed DOM nodes while the source grows.
         if (block.type === 'text') {
-            return `text:${block.id}:${block.text.length}:${block.citations?.length ?? 0}`
+            return `text:${block.id}`
         }
 
         return `${block.type}:${block.id}`
@@ -103,7 +103,8 @@
                     <div class="min-w-0 overflow-x-auto">
                         <MarkdownMessage
                             content={stripThinkingContent(block.text, 'thinking')}
-                            citations={block.citations} />
+                            citations={block.citations}
+                            {isStreaming} />
                     </div>
                 {:else if block.type === 'tool'}
                     <div class="mb-1">
@@ -134,7 +135,8 @@
         <div class="min-w-0 overflow-x-auto">
             <MarkdownMessage
                 content={stripThinkingContent(block.text, 'thinking')}
-                citations={block.citations} />
+                citations={block.citations}
+                {isStreaming} />
         </div>
     {:else if block.type === 'tool'}
         <div in:fly={{ y: 4, duration: 300 }} class="mb-1">
