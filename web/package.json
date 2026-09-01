@@ -13,6 +13,7 @@
         "format": "prettier --write .",
         "lint": "prettier --check . && eslint .",
         "test:e2e": "playwright test",
+        "test:markdown": "playwright test --config playwright.markdown.config.ts",
         "test:integ": "vitest run --config vitest.config.ts",
         "test": "npm run test:e2e",
         "db:start": "docker compose up",

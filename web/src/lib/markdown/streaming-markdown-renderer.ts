@@ -1,4 +1,10 @@
-import { Marked, type Token, type Tokens } from 'marked'
+import { Marked, Parser, TextRenderer, type Token, type Tokens } from 'marked'
+import {
+    createMarkdownParser,
+    encodeMarkdownUrl,
+    MARKDOWN_LINK_REL,
+    MARKDOWN_LINK_TARGET,
+} from './marked'
 
 export type StreamingMarkdownSnapshot = {
     source: string
@@ -14,6 +20,22 @@ type Slot = {
 
 const KIND_ATTRIBUTE = 'data-omni-markdown-kind'
 const TEXT_KIND = 'text'
+const VOID_HTML_ELEMENTS = new Set([
+    'area',
+    'base',
+    'br',
+    'col',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+])
 
 /**
  * Renders successive complete Markdown snapshots into one owned DOM tree.
@@ -22,6 +44,9 @@ const TEXT_KIND = 'text'
  */
 export class StreamingMarkdownRenderer {
     private readonly marked: Marked
+    private readonly inlineMarked = createMarkdownParser()
+    private readonly textParser = new Parser()
+    private readonly textRenderer = new TextRenderer()
     private readonly textValues = new WeakMap<HTMLElement, string>()
     private pendingSnapshot: StreamingMarkdownSnapshot | null = null
     private animationFrame: number | null = null
@@ -152,13 +177,6 @@ export class StreamingMarkdownRenderer {
         target.append(chunk)
     }
 
-    private createManagedText(text: string, animate: boolean): HTMLElement {
-        const target = this.createElement('span', TEXT_KIND)
-        this.textValues.set(target, text)
-        this.appendText(target, text, animate)
-        return target
-    }
-
     private patchText(parent: Element, index: number, text: string, animate: boolean): number {
         const slot = this.ensureElement(parent, index, 'span', TEXT_KIND)
         const target = slot.element
@@ -190,7 +208,7 @@ export class StreamingMarkdownRenderer {
 
             if (token.type === 'paragraph') {
                 const slot = this.ensureElement(parent, outputIndex, 'p', 'paragraph')
-                this.patchInline(
+                this.patchInlineContents(
                     slot.element,
                     token.tokens as Token[],
                     slot.created ? animate : animate && !slot.replaced,
@@ -201,7 +219,7 @@ export class StreamingMarkdownRenderer {
 
             if (token.type === 'heading') {
                 const slot = this.ensureElement(parent, outputIndex, `h${token.depth}`, 'heading')
-                this.patchInline(
+                this.patchInlineContents(
                     slot.element,
                     token.tokens as Token[],
                     slot.created ? animate : animate && !slot.replaced,
@@ -269,7 +287,7 @@ export class StreamingMarkdownRenderer {
             }
 
             if (token.type === 'html') {
-                this.patchRawHtml(parent, outputIndex, token)
+                this.patchRawHtml(parent, outputIndex, token.raw)
                 outputIndex++
                 continue
             }
@@ -277,14 +295,14 @@ export class StreamingMarkdownRenderer {
             if (token.type === 'text') {
                 if (top) {
                     const slot = this.ensureElement(parent, outputIndex, 'p', 'implicit-paragraph')
-                    this.patchInline(
+                    this.patchInlineContents(
                         slot.element,
                         (token.tokens ?? [token]) as Token[],
                         slot.created ? animate : animate && !slot.replaced,
                     )
                     outputIndex++
                 } else {
-                    outputIndex = this.patchInline(
+                    outputIndex = this.patchInlineRange(
                         parent,
                         (token.tokens ?? [token]) as Token[],
                         animate,
@@ -294,14 +312,25 @@ export class StreamingMarkdownRenderer {
                 continue
             }
 
-            throw new Error('Unsupported block token')
+            throw new Error(`Unsupported block token: ${token.type}`)
         }
 
         this.trimChildren(parent, outputIndex)
         return outputIndex
     }
 
-    private patchInline(
+    private patchInlineContents(
+        parent: Element,
+        tokens: Token[],
+        animate: boolean,
+        startIndex = 0,
+    ): number {
+        const outputIndex = this.patchInlineRange(parent, tokens, animate, startIndex)
+        this.trimChildren(parent, outputIndex)
+        return outputIndex
+    }
+
+    private patchInlineRange(
         parent: Element,
         tokens: Token[],
         animate: boolean,
@@ -309,10 +338,12 @@ export class StreamingMarkdownRenderer {
     ): number {
         let outputIndex = startIndex
 
-        for (const token of tokens) {
+        for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+            const token = tokens[tokenIndex]
+
             if (token.type === 'text' || token.type === 'escape') {
                 if (token.type === 'text' && token.tokens) {
-                    outputIndex = this.patchInline(parent, token.tokens, animate, outputIndex)
+                    outputIndex = this.patchInlineRange(parent, token.tokens, animate, outputIndex)
                 } else {
                     outputIndex = this.patchText(parent, outputIndex, token.text, animate)
                 }
@@ -321,7 +352,7 @@ export class StreamingMarkdownRenderer {
 
             if (token.type === 'strong' || token.type === 'em' || token.type === 'del') {
                 const slot = this.ensureElement(parent, outputIndex, token.type, token.type)
-                this.patchInline(
+                this.patchInlineContents(
                     slot.element,
                     token.tokens as Token[],
                     slot.created ? animate : animate && !slot.replaced,
@@ -344,13 +375,24 @@ export class StreamingMarkdownRenderer {
             }
 
             if (token.type === 'link') {
+                const href = encodeMarkdownUrl(token.href)
+                if (href === null) {
+                    outputIndex = this.patchInlineRange(
+                        parent,
+                        token.tokens as Token[],
+                        animate,
+                        outputIndex,
+                    )
+                    continue
+                }
+
                 const slot = this.ensureElement(parent, outputIndex, 'a', 'link')
-                slot.element.setAttribute('href', token.href)
-                slot.element.setAttribute('target', '_blank')
-                slot.element.setAttribute('rel', 'noopener noreferrer')
+                slot.element.setAttribute('href', href)
+                slot.element.setAttribute('target', MARKDOWN_LINK_TARGET)
+                slot.element.setAttribute('rel', MARKDOWN_LINK_REL)
                 if (token.title) slot.element.setAttribute('title', token.title)
                 else slot.element.removeAttribute('title')
-                this.patchInline(
+                this.patchInlineContents(
                     slot.element,
                     token.tokens as Token[],
                     slot.created ? animate : animate && !slot.replaced,
@@ -360,9 +402,16 @@ export class StreamingMarkdownRenderer {
             }
 
             if (token.type === 'image') {
+                const alt = this.textParser.parseInline(token.tokens as Token[], this.textRenderer)
+                const href = encodeMarkdownUrl(token.href)
+                if (href === null) {
+                    outputIndex = this.patchText(parent, outputIndex, alt, animate)
+                    continue
+                }
+
                 const slot = this.ensureElement(parent, outputIndex, 'img', 'image')
-                slot.element.setAttribute('src', token.href)
-                slot.element.setAttribute('alt', token.text)
+                slot.element.setAttribute('src', href)
+                slot.element.setAttribute('alt', alt)
                 if (token.title) slot.element.setAttribute('title', token.title)
                 else slot.element.removeAttribute('title')
                 outputIndex++
@@ -376,16 +425,58 @@ export class StreamingMarkdownRenderer {
             }
 
             if (token.type === 'html') {
-                this.patchRawHtml(parent, outputIndex, token)
+                const groupEnd = this.inlineHtmlGroupEnd(tokens, tokenIndex)
+                const raw = tokens
+                    .slice(tokenIndex, groupEnd)
+                    .map((groupToken) => groupToken.raw)
+                    .join('')
+                const html = this.inlineMarked.parseInline(raw, { async: false })
+                this.patchRawHtml(parent, outputIndex, raw, html)
                 outputIndex++
+                tokenIndex = groupEnd - 1
                 continue
             }
 
-            throw new Error('Unsupported inline token')
+            throw new Error(`Unsupported inline token: ${token.type}`)
         }
 
-        this.trimChildren(parent, outputIndex)
         return outputIndex
+    }
+
+    private inlineHtmlGroupEnd(tokens: Token[], startIndex: number): number {
+        const token = tokens[startIndex]
+        if (token.type !== 'html') return startIndex + 1
+
+        const openingTag = /^<([a-z][a-z0-9:-]*)(?=[\s/>])/i.exec(token.raw.trim())
+        if (!openingTag || token.raw.trimEnd().endsWith('/>')) return startIndex + 1
+
+        const tagName = openingTag[1].toLowerCase()
+        if (VOID_HTML_ELEMENTS.has(tagName)) return startIndex + 1
+
+        let depth = 1
+        for (let index = startIndex + 1; index < tokens.length; index++) {
+            const candidate = tokens[index]
+            if (candidate.type !== 'html') continue
+
+            const raw = candidate.raw.trim()
+            const closingTag = /^<\/([a-z][a-z0-9:-]*)\s*>/i.exec(raw)
+            if (closingTag?.[1].toLowerCase() === tagName) {
+                depth--
+                if (depth === 0) return index + 1
+                continue
+            }
+
+            const nestedOpeningTag = /^<([a-z][a-z0-9:-]*)(?=[\s/>])/i.exec(raw)
+            if (
+                nestedOpeningTag?.[1].toLowerCase() === tagName &&
+                !raw.endsWith('/>') &&
+                !VOID_HTML_ELEMENTS.has(tagName)
+            ) {
+                depth++
+            }
+        }
+
+        return tokens.length
     }
 
     private patchList(parent: HTMLElement, token: Tokens.List, animate: boolean): void {
@@ -423,7 +514,7 @@ export class StreamingMarkdownRenderer {
             const paragraphSlot = this.ensureElement(parent, 0, 'p', 'paragraph')
             this.patchCheckbox(paragraphSlot.element, 0, token.checked === true)
             this.patchStaticSpace(paragraphSlot.element, 1)
-            this.patchInline(paragraphSlot.element, first.tokens as Token[], animate, 2)
+            this.patchInlineContents(paragraphSlot.element, first.tokens as Token[], animate, 2)
             startIndex = 1
             this.patchBlocks(parent, token.tokens.slice(1), animate, true, startIndex)
         } else {
@@ -479,7 +570,7 @@ export class StreamingMarkdownRenderer {
             const slot = this.ensureElement(row, index, tagName, kind)
             if (cellToken.align) slot.element.setAttribute('align', cellToken.align)
             else slot.element.removeAttribute('align')
-            this.patchInline(
+            this.patchInlineContents(
                 slot.element,
                 cellToken.tokens,
                 slot.created ? animate : animate && !slot.replaced,
@@ -488,14 +579,14 @@ export class StreamingMarkdownRenderer {
         this.trimChildren(row, cells.length)
     }
 
-    private patchRawHtml(parent: Element, index: number, token: { raw: string }): void {
+    private patchRawHtml(parent: Element, index: number, raw: string, html = raw): void {
         const slot = this.ensureElement(parent, index, 'span', 'raw-html')
-        if (slot.element.dataset.omniRawHtml === token.raw) return
+        if (slot.element.dataset.omniRawHtml === raw) return
 
         const template = document.createElement('template')
-        template.innerHTML = token.raw
+        template.innerHTML = html
         slot.element.replaceChildren(...Array.from(template.content.childNodes))
-        slot.element.dataset.omniRawHtml = token.raw
+        slot.element.dataset.omniRawHtml = raw
         slot.element.style.display = 'contents'
     }
 }

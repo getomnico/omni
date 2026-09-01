@@ -156,6 +156,34 @@ function finalAssistantTextSse(text: string): string {
     ].join('')
 }
 
+function nestedMarkdownSse(): string {
+    const chunks = [
+        '*   **High-Quality Feedback Loops**\n    *   The Hacker News audience is',
+        ' notoriously technical and detail-oriented. You will often receive constructive feedback.',
+    ]
+
+    return [
+        assistantStart(),
+        sseMessage({
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+        }),
+        ...chunks.flatMap((text, index) => [
+            sseMessage({
+                type: 'content_block_delta',
+                index: 0,
+                delta: { type: 'text_delta', text },
+            }),
+            ...(index < chunks.length - 1 ? ['event: test_sleep\ndata: 1000\n\n'] : []),
+        ]),
+        sseMessage({ type: 'content_block_stop', index: 0 }),
+        sseMessage({ type: 'message_stop' }),
+        `event: message_id\ndata: ${ulid()}\n\n`,
+        'event: end_of_stream\ndata: {}\n\n',
+    ].join('')
+}
+
 type ApprovalPauseFixture = {
     approvalId: string
     toolCallId: string
@@ -552,6 +580,76 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
         await expect(page.getByText('search(query, limit, document_id?)')).toBeVisible()
         await expect(page.getByText('Read a document')).toBeVisible()
     } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('chat preserves nested streamed Markdown nodes', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `nested-markdown-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+        await writeFile(fixturePath, nestedMarkdownSse())
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Stream nested Markdown')
+        await page.keyboard.press('Enter')
+
+        const nestedItem = page
+            .locator('[data-testid^="chat-message-"]')
+            .filter({ hasText: 'High-Quality Feedback Loops' })
+            .last()
+            .locator('ul ul > li')
+        await expect(nestedItem).toContainText('The Hacker News audience is')
+        await nestedItem.evaluate((item) => {
+            const list = item.parentElement
+            const text = item.querySelector<HTMLElement>('[data-omni-markdown-kind="text"]')
+            const chunk = text?.firstElementChild
+            if (!list || !text || !chunk) throw new Error('Nested Markdown nodes were not rendered')
+            if (text.children.length !== 1) {
+                throw new Error('The second Markdown chunk arrived before references were captured')
+            }
+            ;(
+                window as Window & { nestedMarkdownRefs?: Record<string, Element> }
+            ).nestedMarkdownRefs = {
+                list,
+                item,
+                text,
+                chunk,
+            }
+        })
+
+        await expect(nestedItem).toContainText('notoriously technical')
+        const result = await nestedItem.evaluate((item) => {
+            const refs = (
+                window as Window & {
+                    nestedMarkdownRefs: Record<string, Element>
+                }
+            ).nestedMarkdownRefs
+            const list = item.parentElement
+            const text = item.querySelector<HTMLElement>('[data-omni-markdown-kind="text"]')
+            const chunks = text ? Array.from(text.children) : []
+            return {
+                listPreserved: list === refs.list,
+                itemPreserved: item === refs.item,
+                textPreserved: text === refs.text,
+                firstChunkPreserved: chunks[0] === refs.chunk,
+                suffixFades: chunks[1]?.classList.contains('omni-streaming-chunk') ?? false,
+            }
+        })
+        expect(result).toEqual({
+            listPreserved: true,
+            itemPreserved: true,
+            textPreserved: true,
+            firstChunkPreserved: true,
+            suffixFades: true,
+        })
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
         await cleanupChat(seeded)
     }
 })

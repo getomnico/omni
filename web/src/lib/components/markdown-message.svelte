@@ -1,10 +1,11 @@
 <script lang="ts">
-    import { Marked, type Tokens, type RendererObject } from 'marked'
     import { mount, onDestroy, tick, unmount } from 'svelte'
     import { SvelteMap } from 'svelte/reactivity'
     import LinkHoverCard from './reflink-hover-card.svelte'
     import type { TextCitationParam } from '@anthropic-ai/sdk/resources'
     import { normalizeCitation, citationIdFromCitation } from '$lib/utils/citations'
+    import { preprocessCitationPlaceholders } from '$lib/markdown/citations'
+    import { createMarkdownParser } from '$lib/markdown/marked'
     import { StreamingMarkdownRenderer } from '$lib/markdown/streaming-markdown-renderer'
 
     type Props = {
@@ -25,47 +26,51 @@
         { component: ReturnType<typeof mount>; signature: string }
     >()
 
-    // Custom renderer only handles ordinary markdown links; citation placeholders
-    // are pre-processed into inert spans before marked runs.
-    const renderer: RendererObject = {
-        link({ href, tokens }: Tokens.Link): string {
-            const text = this.parser.parseInline(tokens)
-            return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`
-        },
-    }
-    const staticMarked = new Marked({ renderer })
-
-    // Pre-process content: replace {omni-cit:SOURCE} placeholders with inert
-    // <span> elements carrying a safe numeric index. The source identity is
-    // URI-encoded so it survives text coalescing; we decode it here and find
-    // the citation's position in the citations array.
-    function preprocessContent(text: string, citationValues?: TextCitationParam[]): string {
-        return text.replace(/\{omni-cit:([^}]+)\}/g, (_match, encodedId) => {
-            let targetId: string
-            try {
-                targetId = decodeURIComponent(encodedId)
-            } catch {
-                return _match
-            }
-            const citationIdx =
-                citationValues?.findIndex(
-                    (citation) => citationIdFromCitation(citation) === targetId,
-                ) ?? -1
-            if (citationIdx >= 0) {
-                return `<span class="omni-reflink" data-citation-idx="${citationIdx}"></span>`
-            }
-            return _match
-        })
-    }
+    // Citation placeholders are pre-processed into inert spans before Marked runs.
+    const staticMarked = createMarkdownParser()
 
     let useStreamingRenderer = $derived(isStreaming || hasStreamed)
     let renderedHtml = $derived(
         useStreamingRenderer
             ? ''
-            : (staticMarked.parse(preprocessContent(content, citations), {
+            : (staticMarked.parse(preprocessCitationPlaceholders(content, citations), {
                   async: false,
               }) as string),
     )
+
+    function citationForPlaceholder(
+        placeholder: Element,
+        citationValues?: TextCitationParam[],
+    ): TextCitationParam | undefined {
+        const rawIndex = placeholder.getAttribute('data-citation-idx')
+        if (rawIndex === null || !/^\d+$/.test(rawIndex)) return undefined
+
+        const index = Number(rawIndex)
+        return Number.isSafeInteger(index) ? citationValues?.[index] : undefined
+    }
+
+    function citationCardProps(citation?: TextCitationParam) {
+        const normalized = citation ? normalizeCitation(citation) : undefined
+        return {
+            href: normalized?.href ?? null,
+            title: normalized?.title ?? '',
+            snippet: normalized?.citedText,
+            iconHint: normalized?.iconHint ?? null,
+            sourceName: normalized?.sourceName ?? 'Files',
+            locationLabel: normalized?.locationLabel ?? null,
+        }
+    }
+
+    function mountCitationCard(
+        placeholder: Element,
+        citation?: TextCitationParam,
+    ): ReturnType<typeof mount> {
+        return mount(LinkHoverCard, {
+            target: placeholder.parentNode as Element,
+            anchor: placeholder,
+            props: citationCardProps(citation),
+        })
+    }
 
     function mountStaticCitationCards(
         container: HTMLElement,
@@ -76,22 +81,8 @@
 
         const placeholders = Array.from(container.querySelectorAll('.omni-reflink'))
         for (const placeholder of placeholders) {
-            const citationIdx = placeholder.getAttribute('data-citation-idx')
-            const raw = citationIdx ? citationValues?.[Number.parseInt(citationIdx, 10)] : undefined
-            const normalized = raw ? normalizeCitation(raw) : undefined
             staticCards.push(
-                mount(LinkHoverCard, {
-                    target: placeholder.parentNode as Element,
-                    anchor: placeholder,
-                    props: {
-                        href: normalized?.href ?? null,
-                        title: normalized?.title ?? '',
-                        snippet: normalized?.citedText ?? undefined,
-                        iconHint: normalized?.iconHint ?? null,
-                        sourceName: normalized?.sourceName ?? 'Files',
-                        locationLabel: normalized?.locationLabel ?? null,
-                    },
-                }),
+                mountCitationCard(placeholder, citationForPlaceholder(placeholder, citationValues)),
             )
         }
 
@@ -124,9 +115,7 @@
         for (const placeholder of Array.from(
             container.querySelectorAll<HTMLElement>('.omni-reflink'),
         )) {
-            const rawIndex = placeholder.getAttribute('data-citation-idx')
-            if (rawIndex === null) continue
-            const citation = citationValues?.[Number.parseInt(rawIndex, 10)]
+            const citation = citationForPlaceholder(placeholder, citationValues)
             if (!citation) continue
 
             const signature = citationIdFromCitation(citation)
@@ -137,19 +126,7 @@
                 streamingCards.delete(placeholder)
             }
 
-            const normalized = normalizeCitation(citation)
-            const component = mount(LinkHoverCard, {
-                target: placeholder.parentNode as Element,
-                anchor: placeholder,
-                props: {
-                    href: normalized.href,
-                    title: normalized.title,
-                    snippet: normalized.citedText,
-                    iconHint: normalized.iconHint,
-                    sourceName: normalized.sourceName,
-                    locationLabel: normalized.locationLabel,
-                },
-            })
+            const component = mountCitationCard(placeholder, citation)
             streamingCards.set(placeholder, { component, signature })
         }
     }
@@ -200,7 +177,7 @@
 
         const citationValues = citations ? [...citations] : undefined
         renderer.enqueue({
-            source: preprocessContent(content, citationValues),
+            source: preprocessCitationPlaceholders(content, citationValues),
             isStreaming: isStreaming || hasStreamed,
             onCommit: () => syncStreamingCitationCards(container, citationValues),
         })
