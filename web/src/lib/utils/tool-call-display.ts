@@ -74,7 +74,11 @@ export function groupToolCallContent(content: MessageContent): ToolCallDisplayIt
 }
 
 export function isToolCallComplete(message: ToolMessageContent): boolean {
-    return Boolean(message.completed || message.toolResult || message.actionResult)
+    return message.status !== 'running'
+}
+
+export function isToolCallFailed(message: ToolMessageContent): boolean {
+    return message.status === 'failed'
 }
 
 export function formatDuration(start: Date | undefined, end: Date | undefined): string {

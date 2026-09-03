@@ -51,16 +51,21 @@ export type OAuthRequired = {
     status: OAuthRequiredStatus
 }
 
+export type ToolCallStatus = 'running' | 'completed' | 'failed'
+
+export type ToolActionResult = {
+    toolUseId: string
+    text: string
+}
+
 export type ToolMessageContent = {
     id: number
     type: 'tool'
     // The assistant message that emitted this tool call. Used only to group
     // calls that were emitted together in one model iteration.
     batchId?: string
-    // Explicitly set when a tool_result has been received. Some tools return
-    // an empty result, so the presence of result payload is not sufficient.
-    completed?: boolean
-    failed?: boolean
+    // A single discriminant prevents contradictory completion and failure flags.
+    status: ToolCallStatus
     toolUse: {
         id: string
         name: string
@@ -75,11 +80,7 @@ export type ToolMessageContent = {
         }[]
     }
     // For connector action tools
-    actionResult?: {
-        toolUseId: string
-        text: string
-        isError: boolean
-    }
+    actionResult?: ToolActionResult
     // Approval state for write actions
     approval?: ToolApproval
     // OAuth-required state when a connector tool surfaces needs_user_auth

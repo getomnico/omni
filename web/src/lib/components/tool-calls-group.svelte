@@ -8,6 +8,7 @@
         formatDuration,
         groupToolCallContent,
         isToolCallComplete,
+        isToolCallFailed,
         splitToolCallContent,
         type ToolCallDisplayItem,
     } from '$lib/utils/tool-call-display'
@@ -70,9 +71,7 @@
     let allToolsComplete = $derived(
         toolBlocks.length > 0 && toolBlocks.every((block) => isToolCallComplete(block)),
     )
-    let hasToolError = $derived(
-        toolBlocks.some((block) => block.failed || block.actionResult?.isError === true),
-    )
+    let hasToolError = $derived(toolBlocks.some(isToolCallFailed))
     let canCollapseWork = $derived(
         !isStreaming &&
             !hasError &&

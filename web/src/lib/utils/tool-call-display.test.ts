@@ -4,6 +4,7 @@ import {
     formatDuration,
     groupToolCallContent,
     isToolCallComplete,
+    isToolCallFailed,
     splitToolCallContent,
 } from './tool-call-display'
 
@@ -16,6 +17,7 @@ function tool(
     return {
         id: 0,
         type: 'tool',
+        status: 'running',
         batchId,
         toolUse: { id, name, input },
     }
@@ -64,7 +66,14 @@ describe('tool call display helpers', () => {
     it('recognizes empty tool results as complete', () => {
         const message = tool('search-1', 'search', 'assistant-1')
         expect(isToolCallComplete(message)).toBe(false)
-        expect(isToolCallComplete({ ...message, completed: true })).toBe(true)
+        expect(isToolCallComplete({ ...message, status: 'completed' })).toBe(true)
+        expect(isToolCallComplete({ ...message, status: 'failed' })).toBe(true)
+    })
+
+    it('uses failed as the only failure state', () => {
+        const message = tool('search-1', 'search', 'assistant-1')
+        expect(isToolCallFailed(message)).toBe(false)
+        expect(isToolCallFailed({ ...message, status: 'failed' })).toBe(true)
     })
 
     it('formats elapsed work time compactly', () => {

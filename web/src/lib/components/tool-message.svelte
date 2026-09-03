@@ -21,7 +21,7 @@
     import { ToolApprovalStatus } from '$lib/types/message'
     import OAuthRequiredCard from '$lib/components/oauth-integrations/oauth-required-card.svelte'
     import { cn } from '$lib/utils'
-    import { isToolCallComplete } from '$lib/utils/tool-call-display'
+    import { isToolCallComplete, isToolCallFailed } from '$lib/utils/tool-call-display'
     import {
         getIconFromSearchResult,
         getSourceIconPath,
@@ -108,9 +108,7 @@
     let accordionKey = $derived(groupKey ?? `tool:${primaryMessage.toolUse.id}`)
     let selectedItem = $state<string>()
     let isComplete = $derived(messages.every(isToolCallComplete))
-    let hasError = $derived(
-        messages.some((message) => message.failed || message.actionResult?.isError === true),
-    )
+    let hasError = $derived(messages.some(isToolCallFailed))
     let needsAuth = $derived(messages.some((message) => Boolean(message.oauthRequired)))
     let isRunning = $derived(isStreaming && !needsAuth && !hasError && !isComplete)
     let isSearch = $derived(
@@ -403,7 +401,7 @@
                                     <pre
                                         class={cn(
                                             'text-foreground max-h-48 overflow-auto rounded-md p-3 text-xs leading-relaxed whitespace-pre-wrap',
-                                            message.actionResult.isError
+                                            isToolCallFailed(message)
                                                 ? 'bg-destructive/10 text-destructive'
                                                 : 'bg-muted/50',
                                         )}>{message.actionResult.text}</pre>
@@ -466,7 +464,7 @@
                                             </span>
                                         {/if}
                                     </div>
-                                {:else if message.failed || message.actionResult?.isError}
+                                {:else if isToolCallFailed(message)}
                                     <div class="text-destructive text-xs">
                                         {message.actionResult?.text ?? 'Search failed.'}
                                     </div>
@@ -490,11 +488,11 @@
                                     <pre
                                         class={cn(
                                             'text-foreground max-h-48 overflow-auto rounded-md p-3 text-xs leading-relaxed whitespace-pre-wrap',
-                                            message.actionResult.isError
+                                            isToolCallFailed(message)
                                                 ? 'bg-destructive/10 text-destructive'
                                                 : 'bg-muted/50',
                                         )}>{message.actionResult.text}</pre>
-                                {:else if message.failed}
+                                {:else if isToolCallFailed(message)}
                                     <div class="text-destructive text-xs">
                                         People search failed.
                                     </div>
@@ -518,7 +516,7 @@
                                     <pre
                                         class={cn(
                                             'text-foreground max-h-48 overflow-auto rounded-md p-3 text-xs leading-relaxed whitespace-pre-wrap',
-                                            message.actionResult.isError
+                                            isToolCallFailed(message)
                                                 ? 'bg-destructive/10 text-destructive'
                                                 : 'bg-muted/50',
                                         )}>{message.actionResult.text}</pre>

@@ -957,9 +957,7 @@
         const updateToolResults = (toolResult: ToolMessageContent['toolResult']) => {
             if (!toolResult) return
             updateToolBlock(toolResult.toolUseId, (block) =>
-                SEARCH_TOOLS.has(block.toolUse.name)
-                    ? { ...block, toolResult, completed: true }
-                    : block,
+                SEARCH_TOOLS.has(block.toolUse.name) ? { ...block, toolResult } : block,
             )
         }
 
@@ -968,10 +966,11 @@
             text: string
             isError: boolean
         }) => {
+            const { isError, ...result } = actionResult
             updateToolBlock(actionResult.toolUseId, (block) => ({
                 ...block,
-                actionResult,
-                completed: true,
+                actionResult: result,
+                status: isError ? 'failed' : 'completed',
                 oauthRequired: undefined,
             }))
         }
@@ -1117,6 +1116,7 @@
                             const toolMsgContent: ToolMessageContent = {
                                 id: 0,
                                 type: 'tool',
+                                status: 'running',
                                 batchId: chatMsg.id,
                                 toolUse: {
                                     id: block.id,
@@ -1155,10 +1155,6 @@
                             processedMessage.content.push(toolMsgContent)
                         } else if (block.type === 'tool_result') {
                             const toolUseId = block.tool_use_id
-                            updateToolBlock(toolUseId, (toolBlock) => ({
-                                ...toolBlock,
-                                failed: Boolean(block.is_error),
-                            }))
                             const searchResults = Array.isArray(block.content)
                                 ? (block.content.filter(
                                       (b: any) => b.type === 'search_result',
@@ -1237,7 +1233,7 @@
                             } else if (!promptHandled) {
                                 updateToolBlock(toolUseId, (toolBlock) => ({
                                     ...toolBlock,
-                                    completed: true,
+                                    status: block.is_error ? 'failed' : 'completed',
                                 }))
                             }
                         }
