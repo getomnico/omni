@@ -61,6 +61,8 @@
         run_python: { loading: 'Running', loaded: 'Ran' },
         present_artifact: { loading: 'Presenting', loaded: 'Presented' },
         search_people: { loading: 'Searching people', loaded: 'Searched people' },
+        search_chats: { loading: 'Searching chats', loaded: 'Searched chats' },
+        read_chat: { loading: 'Reading chat', loaded: 'Read chat' },
         tool_search: { loading: 'Searching tools', loaded: 'Searched tools' },
         load_tool: { loading: 'Loading tool', loaded: 'Loaded tool' },
         load_tool_set: { loading: 'Loading tool set', loaded: 'Loaded tool set' },
@@ -81,6 +83,8 @@
         run_python: 'code',
         present_artifact: 'title',
         search_people: 'query',
+        search_chats: 'query',
+        read_chat: 'chat_id',
         tool_search: 'query',
         load_tool: 'tool_name',
         skill_search: 'query',
@@ -340,12 +344,16 @@
                             class="omni-logo-dark h-4 w-4 shrink-0 rounded-sm" />
                     {:else if isSearch}
                         <Search class="h-4 w-4 shrink-0" />
+                    {:else if toolName === 'search_chats'}
+                        <Search class="h-4 w-4 shrink-0" />
                     {:else if toolName === 'run_python'}
                         <FileCode class="h-4 w-4 shrink-0 text-blue-600" />
                     {:else if toolName === 'run_bash'}
                         <Terminal class="h-4 w-4 shrink-0 text-green-600" />
                     {:else if toolName === 'read_document'}
                         <TextSearch class="h-4 w-4 shrink-0" />
+                    {:else if toolName === 'read_chat'}
+                        <BookOpen class="h-4 w-4 shrink-0" />
                     {:else if toolName === 'search_people'}
                         <Users class="h-4 w-4 shrink-0 text-blue-600" />
                     {:else if toolName === 'write_file'}
