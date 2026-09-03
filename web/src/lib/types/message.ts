@@ -51,9 +51,21 @@ export type OAuthRequired = {
     status: OAuthRequiredStatus
 }
 
+export type ToolCallStatus = 'running' | 'completed' | 'failed'
+
+export type ToolActionResult = {
+    toolUseId: string
+    text: string
+}
+
 export type ToolMessageContent = {
     id: number
     type: 'tool'
+    // The assistant message that emitted this tool call. Used only to group
+    // calls that were emitted together in one model iteration.
+    batchId?: string
+    // A single discriminant prevents contradictory completion and failure flags.
+    status: ToolCallStatus
     toolUse: {
         id: string
         name: string
@@ -68,11 +80,7 @@ export type ToolMessageContent = {
         }[]
     }
     // For connector action tools
-    actionResult?: {
-        toolUseId: string
-        text: string
-        isError: boolean
-    }
+    actionResult?: ToolActionResult
     // Approval state for write actions
     approval?: ToolApproval
     // OAuth-required state when a connector tool surfaces needs_user_auth
@@ -155,6 +163,10 @@ export type ProcessedMessage = {
     siblingIds?: string[]
     siblingIndex?: number
     createdAt?: Date
+    // Bounds of the raw messages merged into this display message. These are
+    // used to show how long a completed tool-assisted response took.
+    startedAt?: Date
+    completedAt?: Date
     // Present when the assistant turn failed; rendered as an inline error alert.
     error?: ChatStreamError | null
 }

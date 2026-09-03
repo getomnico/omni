@@ -15,94 +15,65 @@
         Mail,
         PackageSearch,
         ToolCase,
+        Globe,
     } from '@lucide/svelte'
     import type { ToolMessageContent, ToolName } from '$lib/types/message'
     import { ToolApprovalStatus } from '$lib/types/message'
     import OAuthRequiredCard from '$lib/components/oauth-integrations/oauth-required-card.svelte'
     import { cn } from '$lib/utils'
+    import { isToolCallComplete, isToolCallFailed } from '$lib/utils/tool-call-display'
     import {
         getIconFromSearchResult,
         getSourceIconPath,
         getSourceDisplayName,
     } from '$lib/utils/icons'
     import { SourceType } from '$lib/types'
+    import { themeStore } from '$lib/themes/store.svelte'
 
     type Props = {
-        message: ToolMessageContent
+        messages: ToolMessageContent[]
+        groupKey?: string
+        isStreaming?: boolean
         isAdmin?: boolean
         onOAuthComplete?: () => void
         showOAuthCard?: boolean
     }
 
+    type SearchResult = NonNullable<ToolMessageContent['toolResult']>['content'][number]
+
+    type ArtifactData = {
+        key: string
+        url: string
+        title: string
+        content_type: string
+        size_bytes: number
+    }
+
     const ToolIndicators: Record<string, { loading: string; loaded: string }> = {
-        search: {
-            loading: 'searching',
-            loaded: 'searched',
-        },
-        web_search: {
-            loading: 'searching web',
-            loaded: 'searched web',
-        },
-        fetch_web_page: {
-            loading: 'fetching web page',
-            loaded: 'fetched web page',
-        },
-        read_document: {
-            loading: 'fetching',
-            loaded: 'fetched',
-        },
-        write_file: {
-            loading: 'writing',
-            loaded: 'wrote',
-        },
-        read_file: {
-            loading: 'reading',
-            loaded: 'read',
-        },
-        run_bash: {
-            loading: 'running',
-            loaded: 'ran',
-        },
-        run_python: {
-            loading: 'running',
-            loaded: 'ran',
-        },
-        present_artifact: {
-            loading: 'presenting',
-            loaded: 'presented',
-        },
-        search_people: {
-            loading: 'searching people',
-            loaded: 'searched people',
-        },
-        tool_search: {
-            loading: 'searching tools',
-            loaded: 'searched tools',
-        },
-        load_tool: {
-            loading: 'loading tool',
-            loaded: 'loaded tool',
-        },
-        load_tool_set: {
-            loading: 'loading tool set',
-            loaded: 'loaded tool set',
-        },
-        skill_search: {
-            loading: 'searching skills',
-            loaded: 'searched skills',
-        },
-        load_skill: {
-            loading: 'loading skill',
-            loaded: 'loaded skill',
-        },
-        send_email: {
-            loading: 'sending email',
-            loaded: 'sent email',
-        },
+        search: { loading: 'Searching', loaded: 'Searched' },
+        search_documents: { loading: 'Searching', loaded: 'Searched' },
+        web_search: { loading: 'Searching web', loaded: 'Searched web' },
+        fetch_web_page: { loading: 'Fetching web page', loaded: 'Fetched web page' },
+        read_document: { loading: 'Fetching', loaded: 'Fetched' },
+        write_file: { loading: 'Writing', loaded: 'Wrote' },
+        read_file: { loading: 'Reading', loaded: 'Read' },
+        run_bash: { loading: 'Running', loaded: 'Ran' },
+        run_python: { loading: 'Running', loaded: 'Ran' },
+        present_artifact: { loading: 'Presenting', loaded: 'Presented' },
+        search_people: { loading: 'Searching people', loaded: 'Searched people' },
+        search_chats: { loading: 'Searching chats', loaded: 'Searched chats' },
+        read_chat: { loading: 'Reading chat', loaded: 'Read chat' },
+        tool_search: { loading: 'Searching tools', loaded: 'Searched tools' },
+        load_tool: { loading: 'Loading tool', loaded: 'Loaded tool' },
+        load_tool_set: { loading: 'Loading tool set', loaded: 'Loaded tool set' },
+        skill_search: { loading: 'Searching skills', loaded: 'Searched skills' },
+        load_skill: { loading: 'Loading skill', loaded: 'Loaded skill' },
+        send_email: { loading: 'Sending email', loaded: 'Sent email' },
     }
 
     const ToolInputKey: Record<string, string> = {
         search: 'query',
+        search_documents: 'query',
         web_search: 'query',
         fetch_web_page: 'url',
         read_document: 'name',
@@ -112,6 +83,8 @@
         run_python: 'code',
         present_artifact: 'title',
         search_people: 'query',
+        search_chats: 'query',
+        read_chat: 'chat_id',
         tool_search: 'query',
         load_tool: 'tool_name',
         skill_search: 'query',
@@ -119,37 +92,37 @@
         send_email: 'subject',
     }
 
-    const ToolApprovalColors: Record<
-        ToolApprovalStatus,
-        { borderColor: string; bgColor: string; color: string }
-    > = {
-        [ToolApprovalStatus.Pending]: {
-            borderColor: 'border-warning',
-            bgColor: 'bg-warning',
-            color: 'text-warning-foreground',
-        },
-        [ToolApprovalStatus.Approved]: {
-            borderColor: 'border-success',
-            bgColor: 'bg-success',
-            color: 'text-success-foreground',
-        },
-        [ToolApprovalStatus.Denied]: {
-            borderColor: 'border-destructive/30',
-            bgColor: 'bg-destructive/10',
-            color: 'text-destructive',
-        },
+    const ToolApprovalColors: Record<ToolApprovalStatus, string> = {
+        [ToolApprovalStatus.Pending]: 'text-warning-foreground',
+        [ToolApprovalStatus.Approved]: 'text-success-foreground',
+        [ToolApprovalStatus.Denied]: 'text-destructive',
     }
 
     let {
-        message,
+        messages,
+        groupKey,
+        isStreaming = false,
         isAdmin = false,
         onOAuthComplete = () => {},
         showOAuthCard = true,
     }: Props = $props()
-    let toolName = $derived(message.toolUse.name as ToolName)
 
-    // Determine if this is a connector action (contains __)
+    let primaryMessage = $derived(messages[0])
+    let toolName = $derived(primaryMessage.toolUse.name as ToolName)
+    let accordionKey = $derived(groupKey ?? `tool:${primaryMessage.toolUse.id}`)
+    let selectedItem = $state<string>()
+    let isComplete = $derived(messages.every(isToolCallComplete))
+    let hasError = $derived(messages.some(isToolCallFailed))
+    let needsAuth = $derived(messages.some((message) => Boolean(message.oauthRequired)))
+    let isRunning = $derived(isStreaming && !needsAuth && !hasError && !isComplete)
+    let isSearch = $derived(
+        toolName === 'search' || toolName === 'search_documents' || toolName === 'web_search',
+    )
+    let isPeopleSearch = $derived(toolName === 'search_people')
+    let isScript = $derived(toolName === 'run_python' || toolName === 'run_bash')
     let isConnectorAction = $derived(toolName.includes('__'))
+    let isMetaTool = $derived(['tool_search', 'load_tool', 'load_tool_set'].includes(toolName))
+    let isSkillTool = $derived(['skill_search', 'load_skill'].includes(toolName))
     let connectorSourceType = $derived(isConnectorAction ? toolName.split('__')[0] : null)
     let connectorIconPath = $derived(
         connectorSourceType ? getSourceIconPath(connectorSourceType) : null,
@@ -157,359 +130,483 @@
     let connectorDisplayName = $derived(
         isConnectorAction ? toolName.replace('__', ' > ') : toolName,
     )
+    let toolInputKey = $derived(ToolInputKey[toolName] || (isConnectorAction ? null : 'query'))
 
-    let statusIndicator = $derived(
-        message.oauthRequired
-            ? 'needs auth'
-            : message.actionResult?.isError
-              ? 'failed'
-              : message.toolResult || message.actionResult
-                ? ToolIndicators[toolName]?.loaded || 'completed'
-                : ToolIndicators[toolName]?.loading || 'running',
-    )
-
-    let toolInputKey = $derived(ToolInputKey[toolName] || (isConnectorAction ? '' : 'query'))
-
-    let sources = $derived<string[]>(message.toolUse.input?.sources || [])
-
-    const summarizeValue = (value: unknown, maxLength = 80): string => {
-        if (value === null || value === undefined) return ''
-        const encoded = typeof value === 'string' ? value : JSON.stringify(value)
-        const text = encoded ?? String(value)
-        return text.length > maxLength ? text.substring(0, maxLength) + '...' : text
+    function inputRecord(message: ToolMessageContent): Record<string, unknown> {
+        const input: unknown = message.toolUse.input
+        if (typeof input !== 'object' || input === null || Array.isArray(input)) return {}
+        return input as Record<string, unknown>
     }
 
-    // Get a short summary of the tool input for display
-    let inputSummary = $derived(() => {
+    function inputValue(message: ToolMessageContent, key: string | null): unknown {
+        if (!key) return null
+        return inputRecord(message)[key]
+    }
+
+    function stringInput(message: ToolMessageContent, key: string | null): string | null {
+        const value = inputValue(message, key)
+        return typeof value === 'string' ? value : null
+    }
+
+    function summarizeValue(value: unknown, maxLength = 80): string | null {
+        if (value === null || value === undefined) return null
+        const encoded = typeof value === 'string' ? value : JSON.stringify(value)
+        const text = encoded ?? String(value)
+        return text.length > maxLength ? `${text.substring(0, maxLength)}...` : text
+    }
+
+    function inputSummary(message: ToolMessageContent): string | null {
         if (toolName === 'load_tool_set') {
-            return summarizeValue(message.toolUse.input?.source_type)
+            return summarizeValue(inputValue(message, 'source_type'))
         }
-        if (toolInputKey && message.toolUse.input?.[toolInputKey]) {
-            return summarizeValue(message.toolUse.input[toolInputKey])
-        }
-        const params = Object.entries(message.toolUse.input || {})
-        if (params.length === 0) return ''
+        const directValue = summarizeValue(inputValue(message, toolInputKey))
+        if (directValue) return directValue
+
+        const params = Object.entries(inputRecord(message))
+        if (params.length === 0) return null
         return params
             .slice(0, 2)
-            .map(([k, v]) => `${k}: ${summarizeValue(v, 40)}`)
+            .map(([key, value]) => `${key}: ${summarizeValue(value, 40) ?? 'missing'}`)
             .join(', ')
+    }
+
+    const MAX_VISIBLE_RESULT_SOURCES = 3
+    let resultSources = $derived(
+        Array.from(
+            new Set(
+                messages.flatMap((message) =>
+                    (message.toolResult?.content ?? [])
+                        .map((result) => result.source_type)
+                        .filter((source): source is string => Boolean(source)),
+                ),
+            ),
+        ).slice(0, MAX_VISIBLE_RESULT_SOURCES),
+    )
+    let resultCount = $derived(
+        messages.reduce((count, message) => count + (message.toolResult?.content.length ?? 0), 0),
+    )
+    const MAX_VISIBLE_SEARCH_RESULTS = 5
+    let statusIndicator = $derived(
+        needsAuth
+            ? 'Needs auth'
+            : hasError
+              ? 'Failed'
+              : isComplete
+                ? ToolIndicators[toolName]?.loaded || 'Completed'
+                : ToolIndicators[toolName]?.loading || 'Running',
+    )
+
+    let summary = $derived.by(() => {
+        if (toolName === 'run_python') {
+            if (hasError) return 'Failed to run script'
+            return isComplete ? 'Wrote script' : 'Writing script'
+        }
+        if (toolName === 'run_bash') {
+            if (hasError) return 'Failed to run command'
+            return isComplete ? 'Ran command' : 'Running command'
+        }
+
+        if (isSearch) {
+            const verb = hasError
+                ? 'Failed'
+                : isComplete
+                  ? toolName === 'web_search'
+                      ? 'Searched web'
+                      : 'Searched'
+                  : toolName === 'web_search'
+                    ? 'Searching web'
+                    : 'Searching'
+            if (messages.length > 1) return `${verb} ${messages.length} queries`
+            return `${verb}: ${stringInput(primaryMessage, 'query') ?? 'missing query'}`
+        }
+
+        const detail = isConnectorAction ? connectorDisplayName : inputSummary(primaryMessage)
+        if (!detail) return statusIndicator
+        if (isConnectorAction) return `${statusIndicator}: ${detail}`
+        return selectedItem === accordionKey ? `${statusIndicator} (${detail})` : statusIndicator
     })
 
-    let selectedItem = $state<string>()
+    function scriptText(message: ToolMessageContent): string | null {
+        return stringInput(message, toolName === 'run_python' ? 'code' : 'command')
+    }
 
-    const getSearchResultIconPath = (result: { source: string; source_type?: string | null }) => {
+    function getSearchResultIconPath(result: SearchResult): string | null {
         if (result.source_type) {
             return getSourceIconPath(result.source_type) ?? getIconFromSearchResult(result.source)
         }
         return getIconFromSearchResult(result.source)
     }
 
-    // Determine if this is a sandbox tool
-    let isSandboxTool = $derived(
-        ['write_file', 'read_file', 'run_bash', 'run_python', 'present_artifact'].includes(
-            toolName,
-        ),
-    )
+    function searchResultLabel(result: SearchResult): string {
+        if (toolName === 'web_search') {
+            try {
+                return new URL(result.source).hostname
+            } catch {
+                return result.title
+            }
+        }
+        return result.title
+    }
 
-    let isMetaTool = $derived(['tool_search', 'load_tool', 'load_tool_set'].includes(toolName))
-    let isSkillTool = $derived(['skill_search', 'load_skill'].includes(toolName))
-
-    // Parse artifact data for present_artifact tool
-    let artifactData = $derived.by(() => {
+    function parseArtifact(message: ToolMessageContent): Omit<ArtifactData, 'key'> | null {
         if (toolName !== 'present_artifact' || !message.actionResult?.text) return null
         try {
-            return JSON.parse(message.actionResult.text) as {
-                url: string
-                title: string
-                content_type: string
-                size_bytes: number
+            const parsed: unknown = JSON.parse(message.actionResult.text)
+            if (typeof parsed !== 'object' || parsed === null) return null
+            const candidate = parsed as Record<string, unknown>
+            if (
+                typeof candidate.url !== 'string' ||
+                typeof candidate.title !== 'string' ||
+                typeof candidate.content_type !== 'string' ||
+                typeof candidate.size_bytes !== 'number'
+            ) {
+                return null
+            }
+            return {
+                url: candidate.url,
+                title: candidate.title,
+                content_type: candidate.content_type,
+                size_bytes: candidate.size_bytes,
             }
         } catch {
             return null
         }
-    })
+    }
+
+    let artifactData = $derived(
+        messages
+            .map((message, index) => {
+                const artifact = parseArtifact(message)
+                return artifact ? { ...artifact, key: `${message.toolUse.id}:${index}` } : null
+            })
+            .filter((artifact): artifact is ArtifactData => artifact !== null),
+    )
+
+    let isArtifact = $derived(toolName === 'present_artifact' && artifactData.length > 0)
 </script>
 
-{#if toolName === 'search_people'}
-    <div
-        class={cn(
-            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex min-w-0 flex-1 items-center gap-2">
-                <Users class="h-5 w-5 shrink-0 text-blue-600" />
-                <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {inputSummary()}
-                </div>
-            </div>
-        </div>
-    </div>
-{:else if toolName === 'read_document'}
-    <div
-        class={cn(
-            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex min-w-0 flex-1 items-center gap-2">
-                <TextSearch class="h-5 w-5 shrink-0" />
-                <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {inputSummary()}
-                </div>
-            </div>
-        </div>
-    </div>
-{:else if isSandboxTool}
-    {#if toolName === 'present_artifact' && artifactData}
+{#if isArtifact}
+    {#each artifactData as artifact (artifact.key)}
         <div class="mt-2">
-            {#if artifactData.content_type.startsWith('image/')}
+            {#if artifact.content_type.startsWith('image/')}
                 <figure class="border-border rounded-lg border p-2">
-                    <img
-                        src={artifactData.url}
-                        alt={artifactData.title}
-                        class="!m-0 max-w-full rounded" />
+                    <img src={artifact.url} alt={artifact.title} class="!m-0 max-w-full rounded" />
                     <figcaption class="text-muted-foreground mt-1 text-center text-xs">
-                        {artifactData.title}
+                        {artifact.title}
                     </figcaption>
                 </figure>
             {:else}
                 <a
-                    href={artifactData.url}
+                    href={artifact.url}
                     download
+                    rel="external"
                     class="border-border hover:bg-muted text-foreground inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm no-underline">
                     <Download class="h-4 w-4" />
-                    <span>{artifactData.title}</span>
+                    <span>{artifact.title}</span>
                     <span class="text-muted-foreground text-xs">
-                        ({Math.round(artifactData.size_bytes / 1024)} KB)
+                        ({Math.round(artifact.size_bytes / 1024)} KB)
                     </span>
                 </a>
             {/if}
         </div>
-    {:else}
-        <div
-            class={cn(
-                'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-            )}>
-            <div class="flex w-full items-center justify-between">
-                <div class="flex min-w-0 flex-1 items-center gap-2">
-                    {#if toolName === 'present_artifact'}
-                        <Image class="h-5 w-5 shrink-0 text-violet-600" />
-                    {:else if toolName === 'run_python'}
-                        <FileCode class="h-5 w-5 shrink-0 text-blue-600" />
-                    {:else if toolName === 'run_bash'}
-                        <Terminal class="h-5 w-5 shrink-0 text-green-600" />
-                    {:else if toolName === 'write_file'}
-                        <Pencil class="h-5 w-5 shrink-0 text-amber-600" />
-                    {:else}
-                        <FileText class="h-5 w-5 shrink-0" />
-                    {/if}
-                    <div class="min-w-0 truncate text-sm font-normal">
-                        {statusIndicator}: {inputSummary()}
-                    </div>
-                </div>
-            </div>
-        </div>
-    {/if}
-{:else if isSkillTool}
-    <div
-        class={cn(
-            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex min-w-0 flex-1 items-center gap-2">
-                <BookOpen class="h-5 w-5 shrink-0 text-indigo-600" />
-                <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {inputSummary()}
-                </div>
-            </div>
-        </div>
-    </div>
-{:else if isConnectorAction}
-    <div
-        class={cn(
-            'border-border flex w-full min-w-0 cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
-            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex min-w-0 flex-1 items-center gap-2">
-                {#if connectorIconPath}
-                    <img
-                        src={connectorIconPath}
-                        alt={connectorSourceType}
-                        class="!m-0 h-5 w-5 shrink-0" />
-                {:else}
-                    <Play class="h-5 w-5 shrink-0 text-purple-600" />
-                {/if}
-                <div class="min-w-0 truncate text-sm font-normal">
-                    {statusIndicator}: {connectorDisplayName}
-                    {#if inputSummary()}
-                        <span class="text-muted-foreground"> ({inputSummary()})</span>
-                    {/if}
-                </div>
-            </div>
-            {#if message.approval}
-                <div
-                    class={cn(
-                        'text-xs font-medium',
-                        ToolApprovalColors[message.approval.status]?.color,
-                    )}>
-                    {message.approval.status}
-                </div>
-            {/if}
-        </div>
-    </div>
-    {#if showOAuthCard && message.oauthRequired}
-        <div class="mt-2">
-            <OAuthRequiredCard
-                oauthRequired={message.oauthRequired}
-                {toolName}
-                {isAdmin}
-                onComplete={onOAuthComplete} />
-        </div>
-    {/if}
-{:else if isMetaTool || toolName === 'send_email'}
-    <div
-        class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
-            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex min-w-0 items-center gap-2">
-                {#if toolName === 'send_email'}
-                    <Mail class="h-5 w-5 text-rose-600" />
-                {:else if toolName === 'tool_search'}
-                    <PackageSearch class="h-5 w-5 text-purple-600" />
-                {:else}
-                    <ToolCase class="h-5 w-5 text-purple-600" />
-                {/if}
-                <div class="max-w-screen-md truncate text-sm font-normal">
-                    {statusIndicator}{#if inputSummary()}: {inputSummary()}{/if}
-                </div>
-            </div>
-            {#if message.approval}
-                <div
-                    class={cn(
-                        'text-xs font-medium',
-                        ToolApprovalColors[message.approval.status]?.color,
-                    )}>
-                    {message.approval.status}
-                </div>
-            {/if}
-        </div>
-    </div>
-{:else if toolName === 'search' || toolName === 'web_search'}
-    <Accordion.Root type="single" bind:value={selectedItem}>
-        <Accordion.Item value={message.toolUse.id}>
+    {/each}
+{:else}
+    <Accordion.Root type="single" bind:value={selectedItem} class="tool-message-accordion">
+        <Accordion.Item value={accordionKey} class="border-0 [&>h3]:m-0">
             <Accordion.Trigger
-                class={cn(
-                    'border-border flex w-full min-w-0 cursor-pointer items-center justify-between border px-3 py-3 text-sm hover:no-underline',
-                    selectedItem === message.toolUse.id && 'bg-card rounded-b-none border-b-0',
-                )}>
-                <div class="flex w-full items-center justify-between">
-                    <div class="flex min-w-0 flex-1 items-center gap-2">
-                        {#if sources.length > 0}
-                            <div class="flex shrink-0 items-center gap-1">
-                                {#each sources as source}
-                                    {#if getSourceIconPath(source)}
-                                        <img
-                                            src={getSourceIconPath(source)}
-                                            alt={getSourceDisplayName(source as SourceType) ||
-                                                source}
-                                            title={getSourceDisplayName(source as SourceType) ||
-                                                source}
-                                            class="!m-0 h-4 w-4" />
-                                    {/if}
-                                {/each}
-                            </div>
+                class="text-muted-foreground hover:text-foreground inline-flex !h-8 !w-fit max-w-full flex-none cursor-pointer !items-center justify-start !gap-1.5 border-0 px-0 !py-1.5 text-sm font-normal whitespace-nowrap hover:no-underline [&:hover>svg]:opacity-100 [&>svg]:opacity-0{isRunning
+                    ? ' tool-row-shimmer'
+                    : ''}">
+                <div class="flex min-w-0 flex-1 items-center gap-2">
+                    {#if isSearch && toolName === 'web_search'}
+                        <Globe class="h-4 w-4 shrink-0" />
+                    {:else if isSearch && resultSources.length > 0}
+                        <div class="flex shrink-0 items-center gap-1">
+                            {#each resultSources as source (source)}
+                                {@const sourceIcon = getSourceIconPath(source)}
+                                {#if sourceIcon}
+                                    <img
+                                        src={sourceIcon}
+                                        alt={getSourceDisplayName(source as SourceType) || source}
+                                        title={getSourceDisplayName(source as SourceType) || source}
+                                        class="!m-0 h-4 w-4 shrink-0" />
+                                {/if}
+                            {/each}
+                        </div>
+                    {:else if isSearch && (toolName === 'search' || toolName === 'search_documents')}
+                        <img
+                            src={themeStore.current.omniLogoLight}
+                            alt="Omni"
+                            class="omni-logo-light h-4 w-4 shrink-0 rounded-sm" />
+                        <img
+                            src={themeStore.current.omniLogoDark}
+                            alt="Omni"
+                            class="omni-logo-dark h-4 w-4 shrink-0 rounded-sm" />
+                    {:else if isSearch}
+                        <Search class="h-4 w-4 shrink-0" />
+                    {:else if toolName === 'search_chats'}
+                        <Search class="h-4 w-4 shrink-0" />
+                    {:else if toolName === 'run_python'}
+                        <FileCode class="h-4 w-4 shrink-0 text-blue-600" />
+                    {:else if toolName === 'run_bash'}
+                        <Terminal class="h-4 w-4 shrink-0 text-green-600" />
+                    {:else if toolName === 'read_document'}
+                        <TextSearch class="h-4 w-4 shrink-0" />
+                    {:else if toolName === 'read_chat'}
+                        <BookOpen class="h-4 w-4 shrink-0" />
+                    {:else if toolName === 'search_people'}
+                        <Users class="h-4 w-4 shrink-0 text-blue-600" />
+                    {:else if toolName === 'write_file'}
+                        <Pencil class="h-4 w-4 shrink-0 text-amber-600" />
+                    {:else if toolName === 'present_artifact'}
+                        <Image class="h-4 w-4 shrink-0 text-violet-600" />
+                    {:else if isSkillTool}
+                        <BookOpen class="h-4 w-4 shrink-0 text-indigo-600" />
+                    {:else if toolName === 'send_email'}
+                        <Mail class="h-4 w-4 shrink-0 text-rose-600" />
+                    {:else if toolName === 'tool_search'}
+                        <PackageSearch class="h-4 w-4 shrink-0 text-purple-600" />
+                    {:else if isMetaTool}
+                        <ToolCase class="h-4 w-4 shrink-0 text-purple-600" />
+                    {:else if isConnectorAction}
+                        {#if connectorIconPath}
+                            <img
+                                src={connectorIconPath}
+                                alt={connectorSourceType}
+                                class="!m-0 h-4 w-4 shrink-0" />
                         {:else}
-                            <Search class="h-4 w-4 shrink-0" />
+                            <Play class="h-4 w-4 shrink-0 text-purple-600" />
                         {/if}
-                        <div class="min-w-0 truncate text-sm font-normal">
-                            {#if sources.length > 0}
-                                {statusIndicator}
-                                {sources
-                                    .map((s) => getSourceDisplayName(s as SourceType) || s)
-                                    .join(', ')}: {message.toolUse.input[toolInputKey]}
-                            {:else}
-                                {statusIndicator}: {message.toolUse.input[toolInputKey]}
-                            {/if}
-                        </div>
-                    </div>
-                    {#if message.toolResult}
-                        <div class="text-muted-foreground text-xs">
-                            {message.toolResult.content.length} results
-                        </div>
+                    {:else}
+                        <FileText class="h-4 w-4 shrink-0" />
+                    {/if}
+                    <span class="min-w-0 truncate text-left">{summary}</span>
+                    {#if isSearch && resultCount > 0}
+                        <span class="text-muted-foreground shrink-0 text-xs">
+                            {resultCount}
+                            {resultCount === 1 ? 'result' : 'results'}
+                        </span>
                     {/if}
                 </div>
             </Accordion.Trigger>
-            {#if message.toolResult && message.toolResult.content.length > 0}
-                <Accordion.Content
-                    class="bg-card border-border max-h-48 overflow-y-auto rounded-b-md border border-t-0">
-                    <div class="px-4 py-2">
-                        <div class="flex flex-col gap-2">
-                            {#each message.toolResult.content as result}
-                                <div class="flex min-w-0 items-center gap-2">
-                                    {#if getSearchResultIconPath(result)}
-                                        <img
-                                            src={getSearchResultIconPath(result)}
-                                            alt=""
-                                            class="!m-0 h-4 w-4 flex-shrink-0" />
-                                    {:else}
-                                        <FileText
-                                            class="text-muted-foreground h-4 w-4 flex-shrink-0" />
-                                    {/if}
-                                    {#if result.source?.startsWith('http://') || result.source?.startsWith('https://')}
-                                        <a
-                                            href={result.source.split('#')[0]}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            class="block min-w-0 flex-1 truncate font-normal no-underline hover:underline">
-                                            {result.title}
-                                        </a>
-                                    {:else}
-                                        <span class="block min-w-0 flex-1 truncate font-normal">
-                                            {result.title}
-                                        </span>
-                                    {/if}
-                                </div>
-                            {/each}
-                        </div>
+            <Accordion.Content class={cn('border-0 px-0', isSearch && 'pt-2')}>
+                {#if isScript}
+                    <div class="space-y-3 pl-6">
+                        {#each messages as message (message.toolUse.id)}
+                            <div class="space-y-1">
+                                {#if messages.length > 1}
+                                    <div class="text-muted-foreground text-xs">
+                                        {toolName === 'run_python'
+                                            ? 'Python script'
+                                            : 'Bash command'}
+                                    </div>
+                                {/if}
+                                <pre
+                                    class="bg-muted/50 max-h-64 overflow-auto rounded-md p-3 text-xs leading-relaxed"><code
+                                        >{scriptText(message) ??
+                                            'Missing script input.'}</code></pre>
+                                {#if message.actionResult}
+                                    <pre
+                                        class={cn(
+                                            'text-foreground max-h-48 overflow-auto rounded-md p-3 text-xs leading-relaxed whitespace-pre-wrap',
+                                            isToolCallFailed(message)
+                                                ? 'bg-destructive/10 text-destructive'
+                                                : 'bg-muted/50',
+                                        )}>{message.actionResult.text}</pre>
+                                {/if}
+                            </div>
+                        {/each}
                     </div>
-                </Accordion.Content>
-            {:else}
-                <Accordion.Content class="bg-card border-border rounded-b-md border border-t-0">
-                    <div class="px-4 py-2 text-center text-sm">No results found</div>
-                </Accordion.Content>
-            {/if}
+                {:else if isSearch}
+                    <div class="space-y-3 pl-6">
+                        {#each messages as message (message.toolUse.id)}
+                            <div class="space-y-2">
+                                {#if messages.length > 1}
+                                    <div class="text-muted-foreground text-xs">
+                                        {stringInput(message, 'query') ?? 'Missing query.'}
+                                    </div>
+                                {/if}
+                                {#if message.toolResult && message.toolResult.content.length > 0}
+                                    {@const results = message.toolResult.content}
+                                    {@const visibleResults = results.slice(
+                                        0,
+                                        MAX_VISIBLE_SEARCH_RESULTS,
+                                    )}
+                                    <div class="flex flex-wrap gap-1.5">
+                                        {#each visibleResults as result, resultIndex (`${message.toolUse.id}:${resultIndex}`)}
+                                            {@const resultIcon = getSearchResultIconPath(result)}
+                                            {@const resultLabel = searchResultLabel(result)}
+                                            {#if result.source.startsWith('http://') || result.source.startsWith('https://')}
+                                                <a
+                                                    href={result.source.split('#')[0]}
+                                                    target="_blank"
+                                                    rel="external noopener noreferrer"
+                                                    title={result.title}
+                                                    class="bg-muted/50 hover:bg-muted text-muted-foreground inline-flex max-w-56 items-center gap-1 rounded-full px-2 py-1 text-xs no-underline transition-colors">
+                                                    {#if resultIcon}
+                                                        <img
+                                                            src={resultIcon}
+                                                            alt=""
+                                                            class="!m-0 h-3.5 w-3.5 shrink-0 rounded-full" />
+                                                    {/if}
+                                                    <span class="truncate">{resultLabel}</span>
+                                                </a>
+                                            {:else}
+                                                <span
+                                                    title={result.title}
+                                                    class="bg-muted/50 text-muted-foreground inline-flex max-w-56 items-center gap-1 rounded-full px-2 py-1 text-xs">
+                                                    {#if resultIcon}
+                                                        <img
+                                                            src={resultIcon}
+                                                            alt=""
+                                                            class="!m-0 h-3.5 w-3.5 shrink-0 rounded-full" />
+                                                    {/if}
+                                                    <span class="truncate">{resultLabel}</span>
+                                                </span>
+                                            {/if}
+                                        {/each}
+                                        {#if results.length > visibleResults.length}
+                                            <span
+                                                class="bg-muted/50 text-muted-foreground inline-flex items-center rounded-full px-2 py-1 text-xs">
+                                                and {results.length - visibleResults.length} more
+                                            </span>
+                                        {/if}
+                                    </div>
+                                {:else if isToolCallFailed(message)}
+                                    <div class="text-destructive text-xs">
+                                        {message.actionResult?.text ?? 'Search failed.'}
+                                    </div>
+                                {:else if isToolCallComplete(message)}
+                                    <div class="text-muted-foreground text-xs">
+                                        No results found
+                                    </div>
+                                {:else}
+                                    <div class="text-muted-foreground text-xs">
+                                        Waiting for results...
+                                    </div>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {:else if isPeopleSearch}
+                    <div class="space-y-3 pl-6">
+                        {#each messages as message (message.toolUse.id)}
+                            <div class="space-y-1 text-sm">
+                                {#if message.actionResult}
+                                    <pre
+                                        class={cn(
+                                            'text-foreground max-h-48 overflow-auto rounded-md p-3 text-xs leading-relaxed whitespace-pre-wrap',
+                                            isToolCallFailed(message)
+                                                ? 'bg-destructive/10 text-destructive'
+                                                : 'bg-muted/50',
+                                        )}>{message.actionResult.text}</pre>
+                                {:else if isToolCallFailed(message)}
+                                    <div class="text-destructive text-xs">
+                                        People search failed.
+                                    </div>
+                                {:else if isToolCallComplete(message)}
+                                    <div class="text-muted-foreground text-xs">
+                                        No people found matching the query.
+                                    </div>
+                                {:else}
+                                    <div class="text-muted-foreground text-xs">
+                                        Waiting for results...
+                                    </div>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {:else}
+                    <div class="space-y-3 pl-6">
+                        {#each messages as message (message.toolUse.id)}
+                            <div class="space-y-1 text-sm">
+                                {#if message.actionResult}
+                                    <pre
+                                        class={cn(
+                                            'text-foreground max-h-48 overflow-auto rounded-md p-3 text-xs leading-relaxed whitespace-pre-wrap',
+                                            isToolCallFailed(message)
+                                                ? 'bg-destructive/10 text-destructive'
+                                                : 'bg-muted/50',
+                                        )}>{message.actionResult.text}</pre>
+                                {/if}
+                                {#if message.approval}
+                                    <div
+                                        class={cn(
+                                            'text-xs font-medium',
+                                            ToolApprovalColors[message.approval.status],
+                                        )}>
+                                        {message.approval.status}
+                                    </div>
+                                {/if}
+                            </div>
+                        {/each}
+                    </div>
+                {/if}
+            </Accordion.Content>
         </Accordion.Item>
     </Accordion.Root>
-{:else}
-    <div
-        class={cn(
-            'border-border flex cursor-pointer items-center justify-between rounded-md border px-3 py-3 text-sm hover:no-underline',
-            message.approval && ToolApprovalColors[message.approval.status]?.borderColor,
-            message.approval && ToolApprovalColors[message.approval.status]?.bgColor,
-        )}>
-        <div class="flex w-full items-center justify-between">
-            <div class="flex min-w-0 items-center gap-2">
-                <Play class="h-5 w-5 text-purple-600" />
-                <div class="max-w-screen-md truncate text-sm font-normal">
-                    {statusIndicator}: {connectorDisplayName}
-                    {#if inputSummary()}
-                        <span class="text-muted-foreground"> ({inputSummary()})</span>
-                    {/if}
-                </div>
-            </div>
-            {#if message.approval}
-                <div
-                    class={cn(
-                        'text-xs font-medium',
-                        ToolApprovalColors[message.approval.status]?.color,
-                    )}>
-                    {message.approval.status}
-                </div>
-            {/if}
-        </div>
-    </div>
 {/if}
+
+{#if showOAuthCard}
+    {#each messages as message (message.toolUse.id)}
+        {#if message.oauthRequired}
+            <div class="mt-2">
+                <OAuthRequiredCard
+                    oauthRequired={message.oauthRequired}
+                    {toolName}
+                    {isAdmin}
+                    onComplete={onOAuthComplete} />
+            </div>
+        {/if}
+    {/each}
+{/if}
+
+<style>
+    :global(.tool-message-accordion [data-slot='accordion-content'][data-state='closed']) {
+        display: none;
+    }
+
+    :global {
+        /* A running tool call stands in for the standalone loading indicator,
+           so it gets the same shine sweep while it is in progress. */
+        .tool-row-shimmer {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .tool-row-shimmer::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 50%;
+            height: 100%;
+            background: linear-gradient(
+                120deg,
+                transparent 0%,
+                rgba(255, 255, 255, 0.6) 50%,
+                transparent 100%
+            );
+            animation: tool-row-shine-sweep 2s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+        .dark .tool-row-shimmer::after {
+            background: linear-gradient(
+                120deg,
+                transparent 0%,
+                rgba(255, 255, 255, 0.3) 50%,
+                transparent 100%
+            );
+        }
+
+        @keyframes tool-row-shine-sweep {
+            0% {
+                left: -100%;
+            }
+            100% {
+                left: 200%;
+            }
+        }
+    }
+</style>

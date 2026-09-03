@@ -54,6 +54,7 @@
                         const toolMsg: ToolMessageContent = {
                             id: 0,
                             type: 'tool',
+                            status: 'running',
                             toolUse: {
                                 id: block.id,
                                 name: block.name,
@@ -74,6 +75,7 @@
                         const searchResults = resultContent.filter(
                             (b: any) => b.type === 'search_result',
                         )
+                        toolMsg.status = block.is_error ? 'failed' : 'completed'
                         if (
                             toolMsg.toolUse.name === 'search' ||
                             toolMsg.toolUse.name === 'web_search'
@@ -94,7 +96,6 @@
                             toolMsg.actionResult = {
                                 toolUseId,
                                 text: textBlocks.map((b: any) => b.text).join('\n'),
-                                isError: block.is_error || false,
                             }
                         }
 
@@ -188,7 +189,7 @@
                                     </button>
                                 {/if}
                             {:else if block.type === 'tool'}
-                                <ToolMessage message={block.content} />
+                                <ToolMessage messages={[block.content]} />
                             {/if}
                         {/each}
                     </div>
