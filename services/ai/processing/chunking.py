@@ -18,8 +18,12 @@ _chunking_executor = ThreadPoolExecutor(
 class Chunker:
 
     @staticmethod
-    def chunk_sentences_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
-        """Chunk text by sentences, keeping chunks under max_chars (character-based)."""
+    def sentence_spans(text: str) -> list[tuple[int, int]]:
+        """Split text into contiguous sentence spans.
+
+        A sentence ends at terminal punctuation followed by whitespace, so each
+        returned span starts where the previous one ended and covers all text.
+        """
         sentence_pattern = r"[.!?]+[\s]+"
         sentences = []
         last_end = 0
@@ -33,8 +37,82 @@ class Chunker:
         if last_end < len(text):
             sentences.append((last_end, len(text)))
 
-        if not sentences:
-            return Chunker.chunk_by_chars(text, max_chars) or [(0, len(text))]
+        return sentences
+
+    @staticmethod
+    def window_spans(text: str, window_size: int) -> list[tuple[int, int]]:
+        """Split long text into sentence-aligned sub-chunk windows.
+
+        Each window starts and ends on a sentence boundary of ``text``, so
+        sentence-chunking a window never produces chunks that begin or end
+        mid-sentence in the original text. A window may exceed ``window_size``
+        only when it contains a single sentence longer than the limit.
+        """
+        if not text or window_size < 1:
+            return []
+
+        windows = []
+        window_start = 0
+        for sent_start, sent_end in Chunker.sentence_spans(text):
+            if (
+                sent_start > window_start
+                and sent_end - window_start > window_size
+            ):
+                windows.append((window_start, sent_start))
+                window_start = sent_start
+
+        if window_start < len(text):
+            windows.append((window_start, len(text)))
+
+        return windows
+
+    @staticmethod
+    def _split_long_sentence(
+        text: str, start: int, end: int, max_chars: int
+    ) -> list[tuple[int, int]]:
+        """Split a single sentence longer than max_chars into smaller pieces.
+
+        Cuts prefer the last word start at or before the hard character limit so
+        words are not split and no piece begins with the separating whitespace.
+        Pieces that end up containing only punctuation or whitespace are folded
+        into the previous piece so stray characters are not embedded on their
+        own.
+        """
+        pieces = []
+        pos = start
+        while pos < end:
+            limit = min(pos + max_chars, end)
+            if limit >= end:
+                pieces.append((pos, end))
+                break
+
+            # Prefer to cut at the last word start at or before the limit.
+            cut = limit
+            while cut > pos:
+                if not text[cut].isspace() and text[cut - 1].isspace():
+                    break
+                cut -= 1
+            if cut == pos:
+                cut = limit  # no word boundary in range; hard cut required
+
+            pieces.append((pos, cut))
+            pos = cut
+
+        cleaned = []
+        for piece in pieces:
+            if cleaned and not any(ch.isalnum() for ch in text[piece[0] : piece[1]]):
+                cleaned[-1] = (cleaned[-1][0], piece[1])
+            else:
+                cleaned.append(piece)
+        return cleaned
+
+    @staticmethod
+    def chunk_sentences_by_chars(text: str, max_chars: int) -> list[tuple[int, int]]:
+        """Chunk text by sentences, keeping chunks under max_chars (character-based)."""
+        if not text or max_chars < 1:
+            return []
+
+        sentences = Chunker.sentence_spans(text)
 
         chunks = []
         chunk_start = 0
@@ -52,17 +130,12 @@ class Chunker:
         if chunk_start < len(text):
             chunks.append((chunk_start, len(text)))
 
-        if not chunks:
-            return [(0, len(text))]
-
         final_chunks = []
         for start, end in chunks:
             if end - start > max_chars:
-                pos = start
-                while pos < end:
-                    chunk_end = min(pos + max_chars, end)
-                    final_chunks.append((pos, chunk_end))
-                    pos = chunk_end
+                final_chunks.extend(
+                    Chunker._split_long_sentence(text, start, end, max_chars)
+                )
             else:
                 final_chunks.append((start, end))
 

@@ -2016,7 +2016,7 @@ async fn insert_public_document_with_embedding(
     )
     .bind(Ulid::new().to_string())
     .bind(&doc_id)
-    .bind(content.len() as i32)
+    .bind(content.chars().count() as i32)
     .bind(&embedding)
     .execute(pool)
     .await?;

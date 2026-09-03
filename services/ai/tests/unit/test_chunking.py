@@ -2,6 +2,8 @@
 """
 Unit tests for the chunking functions.
 """
+import re
+
 import pytest
 from transformers import AutoTokenizer
 from processing import Chunker
@@ -240,6 +242,144 @@ class TestCharacterBasedChunking:
 
         reconstructed = "".join(chunks)
         assert reconstructed == text
+
+    def test_chunk_sentences_by_chars_never_strands_terminal_punctuation(self):
+        """When an over-long unbroken run is split by the char fallback, its
+        terminal punctuation must stay attached to the text instead of being
+        emitted as a punctuation-only chunk."""
+        text = "Lead sentence. " + ("x" * 200) + "."
+        max_chars = 100
+        spans = Chunker.chunk_sentences_by_chars(text, max_chars)
+
+        chunks = [text[start:end] for start, end in spans]
+
+        # Sanity: the over-long run had to be hard-split into several chunks.
+        assert len(chunks) >= 3
+
+        for chunk in chunks:
+            stripped = chunk.strip()
+            assert stripped, f"chunk is whitespace only: {chunk!r}"
+            assert not re.fullmatch(r"[.!?]+", stripped), (
+                f"terminal punctuation stranded in its own chunk: {chunk!r}"
+            )
+
+    def test_chunk_sentences_by_chars_boundaries_do_not_split_words(self):
+        """Char fallback splits of an over-long run should fall between words
+        when the text has word boundaries, and should not leave a chunk that
+        starts with the separator whitespace."""
+        run = "lorem ipsum dolor sit amet consectetur adipiscing elit " * 40
+        text = "Short intro sentence. " + run  # over-long run with word boundaries
+        max_chars = 500
+        spans = Chunker.chunk_sentences_by_chars(text, max_chars)
+
+        for start, end in spans:
+            if start > 0:
+                assert not text[start].isspace(), (
+                    f"chunk begins with separator whitespace at {start}: "
+                    f"{text[start:end][:40]!r}"
+                )
+                assert not (text[start - 1].isalnum() and text[start].isalnum()), (
+                    f"chunk boundary splits a word at {start}: "
+                    f"{text[start - 20 : start + 20]!r}"
+                )
+            if end < len(text):
+                assert not (text[end - 1].isalnum() and text[end].isalnum()), (
+                    f"chunk boundary splits a word at {end}: "
+                    f"{text[end - 20 : end + 20]!r}"
+                )
+
+
+@pytest.mark.unit
+class TestLongDocumentTwoLevelChunking:
+    """Covers the two-level chunking used for long documents.
+
+    Level 1 splits the document into sentence-aligned windows
+    (Chunker.window_spans, as used by EmbeddingBatchProcessor). Level 2
+    sentence-chunks each window via chunk_sentences_by_chars. The
+    piece-relative chunk spans are then translated back into document offsets
+    (offset + span) and stored; retrieval later slices the source document at
+    those saved offsets. These tests check that the translated offsets point at
+    clean boundaries in the source text.
+    """
+
+    SENTENCES = [
+        "The quick brown fox jumps over the lazy dog near the riverbank.",
+        "Pack my box with five dozen liquor jugs of various sizes.",
+        "How vexingly quick daft zebras jump when provoked by loud noises!",
+        "Sphinx of black quartz, judge my vow and then decide.",
+        "The five boxing wizards jump quickly while eating pancakes.",
+        "Jackdaws love my big sphinx of quartz, a truly odd sight.",
+        "Grumpy wizards make toxic brew for the evil Queen and Jack.",
+        "Amazingly few discotheques provide jukeboxes these days, sadly.",
+    ]
+
+    # Mirrors the batch processor constants (window_size = EMBEDDING_MAX_MODEL_LEN
+    # * 3), scaled down so the test stays fast.
+    WINDOW_SIZE = 600
+    MAX_CHARS = 250
+
+    @staticmethod
+    def _two_level_spans(text: str) -> list[tuple[int, int]]:
+        """Translate window chunk spans back to document offsets, exactly like
+        EmbeddingBatchProcessor does before storing chunk_start/end offsets."""
+        max_chars = TestLongDocumentTwoLevelChunking.MAX_CHARS
+
+        spans: list[tuple[int, int]] = []
+        for offset, window_end in Chunker.window_spans(
+            text, TestLongDocumentTwoLevelChunking.WINDOW_SIZE
+        ):
+            piece = text[offset:window_end]
+            for start, end in Chunker.chunk_sentences_by_chars(piece, max_chars):
+                spans.append((offset + start, offset + end))
+        return spans
+
+    def test_translated_spans_are_consistent_with_window_chunking(self):
+        """Control: each translated span must slice the same text the window
+        chunker embedded. The offset arithmetic itself is not the bug."""
+        text = " ".join(s for _ in range(4) for s in self.SENTENCES)
+
+        for offset, window_end in Chunker.window_spans(
+            text, self.WINDOW_SIZE
+        ):
+            piece = text[offset:window_end]
+            window_spans = Chunker.chunk_sentences_by_chars(piece, self.MAX_CHARS)
+            for start, end in window_spans:
+                assert text[offset + start : offset + end] == piece[start:end]
+
+    def test_long_document_chunk_offsets_point_at_sentence_boundaries(self):
+        """Chunk content is later recovered by slicing the source document at the
+        saved start/end offsets, so each chunk must begin and end at a sentence
+        boundary of the original text (not mid-word inside a sentence)."""
+        text = " ".join(s for _ in range(4) for s in self.SENTENCES)
+        spans = self._two_level_spans(text)
+
+        assert len(spans) >= 6  # sanity: document spans multiple windows
+
+        for start, end in spans:
+            if start > 0:
+                assert text[:start].rstrip().endswith((".", "!", "?")), (
+                    f"chunk starts mid-sentence at {start}: {text[start:start + 40]!r}"
+                )
+            if end < len(text):
+                assert text[:end].rstrip().endswith((".", "!", "?")), (
+                    f"chunk ends mid-sentence at {end}: ...{text[end - 40 : end]!r}"
+                )
+
+    def test_long_document_chunk_offsets_do_not_split_words(self):
+        """Window seams must not cut through a word in the source document, since
+        the saved offsets are used verbatim to slice chunk content on retrieval."""
+        text = " ".join(s for _ in range(4) for s in self.SENTENCES)
+        spans = self._two_level_spans(text)
+
+        for start, end in spans:
+            if start > 0:
+                assert not (text[start - 1].isalnum() and text[start].isalnum()), (
+                    f"chunk starts mid-word at {start}: {text[start - 20 : start + 20]!r}"
+                )
+            if end < len(text):
+                assert not (text[end - 1].isalnum() and text[end].isalnum()), (
+                    f"chunk ends mid-word at {end}: {text[end - 20 : end + 20]!r}"
+                )
 
 
 if __name__ == "__main__":

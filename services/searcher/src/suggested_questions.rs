@@ -1,6 +1,6 @@
 use crate::models::{SuggestedQuestion, SuggestedQuestionsResponse};
 use crate::{Result as SearcherResult, SearcherError};
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use dashmap::DashSet;
 use futures_util::StreamExt;
 use redis::AsyncCommands;
@@ -378,10 +378,10 @@ impl SuggestedQuestionsGenerator {
         prompt_template: &str,
         expect_question_mark: bool,
     ) -> Result<String> {
-        let excerpt = if content.len() > 2000 {
+        let excerpt = if content.chars().count() > 2000 {
             debug!(
                 "Truncating content from {} to 2000 chars for document {}",
-                content.len(),
+                content.chars().count(),
                 document_id
             );
             safe_str_slice(content, 0, 2000)

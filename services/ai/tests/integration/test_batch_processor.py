@@ -260,7 +260,7 @@ async def test_online_handles_empty_content(
 
 
 @pytest.fixture
-async def online_processor_with_sliding_window(
+async def online_processor_with_sentence_aligned_windows(
     db_pool,
     documents_repo,
     queue_repo,
@@ -287,14 +287,14 @@ async def online_processor_with_sliding_window(
 
 
 @pytest.mark.integration
-async def test_online_processes_large_document_with_sliding_window(
+async def test_online_processes_large_document_with_sentence_aligned_windows(
     db_pool,
-    online_processor_with_sliding_window,
+    online_processor_with_sentence_aligned_windows,
     queue_repo,
     embeddings_repo,
     monkeypatch,
 ):
-    """Large documents are split via sliding window and each window is embedded."""
+    """Large documents are split into sentence-aligned windows, each embedded."""
     import embeddings.batch_processor as bp
 
     monkeypatch.setattr(bp, "EMBEDDING_MAX_MODEL_LEN", 33)
@@ -302,13 +302,15 @@ async def test_online_processes_large_document_with_sliding_window(
     user_id = await create_test_user(db_pool)
     source_id = await create_test_source(db_pool, user_id)
 
-    # 500 chars -> window_size=100, overlap=25, stride=75
-    # Windows at offsets: 0, 75, 150, 225, 300, 375, 450
+    # 20 x 25-char sentences = 500 chars. Each window holds up to
+    # window_size = 33 * 3 = 99 chars and starts/ends on a sentence boundary,
+    # so the windows tile the document without overlap:
+    # (0,75), (75,150), (150,225), (225,300), (300,375), (375,450), (450,500)
     large_content = "This is a test sentence. " * 20  # 500 chars
     doc_id = await create_test_document(db_pool, source_id, large_content)
     queue_id = await enqueue_document(db_pool, doc_id)
 
-    await online_processor_with_sliding_window._process_online_batch()
+    await online_processor_with_sentence_aligned_windows._process_online_batch()
 
     queue_item = await queue_repo.get_by_id(queue_id)
     assert queue_item.status == "completed"
@@ -317,12 +319,12 @@ async def test_online_processes_large_document_with_sliding_window(
     assert len(embeddings) == 7
 
     expected_spans = [
-        (0, 99),
-        (75, 174),
-        (150, 249),
-        (225, 324),
-        (300, 399),
-        (375, 474),
+        (0, 75),
+        (75, 150),
+        (150, 225),
+        (225, 300),
+        (300, 375),
+        (375, 450),
         (450, 500),
     ]
     actual_spans = [(e.chunk_start_offset, e.chunk_end_offset) for e in embeddings]
@@ -331,7 +333,7 @@ async def test_online_processes_large_document_with_sliding_window(
     for emb in embeddings:
         assert len(emb.embedding) == 1024
 
-    provider = online_processor_with_sliding_window.embedding_provider
+    provider = online_processor_with_sentence_aligned_windows.embedding_provider
     assert provider.generate_embeddings.call_count == 7
 
 

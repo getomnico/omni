@@ -22,6 +22,7 @@ from db import (
     QueueStatus,
     get_db_pool,
 )
+from processing import Chunker
 from state import AppState
 
 from . import Chunk
@@ -258,18 +259,20 @@ class EmbeddingBatchProcessor:
                 self._docs_failed += 1
                 return
 
-            # Generate embeddings using sliding window over the document
+            # Generate embeddings over sentence-aligned windows of the document.
+            # Each window starts and ends at a sentence boundary, so chunk spans
+            # produced inside a window never start or end mid-sentence in the
+            # source text, and windows do not re-embed overlapping content.
             try:
                 window_size = (
                     EMBEDDING_MAX_MODEL_LEN * 3
                 )  # TODO: address 3 chars per token assumption here
-                overlap = window_size // 4
-                stride = window_size - overlap
 
                 all_chunks = []
-                offset = 0
-                while offset < len(content_text):
-                    piece = content_text[offset : offset + window_size]
+                for offset, window_end in Chunker.window_spans(
+                    content_text, window_size
+                ):
+                    piece = content_text[offset:window_end]
                     t0 = time.monotonic()
                     chunk_results = await self.embedding_provider.generate_embeddings(
                         text=piece,
@@ -292,8 +295,6 @@ class EmbeddingBatchProcessor:
                                 offset + chunk.span[1],
                             )
                             all_chunks.append(Chunk(adjusted_span, chunk.embedding))
-
-                    offset += stride
 
                 chunks = all_chunks
 

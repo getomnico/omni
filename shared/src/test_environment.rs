@@ -379,7 +379,7 @@ impl MockAIServer {
                 let embedding = generate_test_embedding(text);
                 embeddings.push(vec![embedding]);
                 chunks_count.push(1);
-                chunks.push(vec![(0, text.len() as i32)]);
+                chunks.push(vec![(0, text.chars().count() as i32)]);
             }
 
             Json(EmbeddingResponse {

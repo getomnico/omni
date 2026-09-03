@@ -12,50 +12,47 @@ pub fn generate_ulid() -> String {
         .to_string()
 }
 
-/// Safely slices a string at the given byte positions, adjusting to char boundaries.
+/// Safely slices a string at the given CHARACTER positions, clamping to the
+/// string's bounds.
+///
+/// Chunk start/end offsets are character offsets (the Python chunker measures
+/// them with `len()`, i.e. characters). Interpreting them as byte positions
+/// mis-slices any text containing multi-byte UTF-8 characters, so this helper
+/// converts the character range to byte positions before slicing.
 ///
 /// # Arguments
 /// * `content` - The string to slice
-/// * `start` - Start byte position (will be adjusted to char boundary if needed)
-/// * `end` - End byte position (will be adjusted to char boundary if needed)
+/// * `start` - Start character position
+/// * `end` - End character position
 ///
 /// # Returns
-/// A string slice from the adjusted start to adjusted end
+/// A string slice from the character at `start` to the character before `end`
 pub fn safe_str_slice(content: &str, start: usize, end: usize) -> &str {
-    if start >= content.len() {
-        panic!(
-            "safe_str_slice: start ({}) >= content length ({})",
-            start,
-            content.len()
-        );
+    if start > end {
+        panic!("safe_str_slice: start ({}) > end ({})", start, end);
     }
     if start == end {
         return "";
     }
 
-    if start > end {
-        panic!("safe_str_slice: start ({}) >= end ({})", start, end);
+    let char_count = content.chars().count();
+    if start >= char_count {
+        return "";
     }
+    let end = end.min(char_count);
 
-    let mut adjusted_start = start.min(content.len());
-    let mut adjusted_end = end.min(content.len());
+    let start_byte = content
+        .char_indices()
+        .nth(start)
+        .map(|(byte, _)| byte)
+        .unwrap_or(content.len());
+    let end_byte = content
+        .char_indices()
+        .nth(end)
+        .map(|(byte, _)| byte)
+        .unwrap_or(content.len());
 
-    while adjusted_start > 0 && !content.is_char_boundary(adjusted_start) {
-        adjusted_start -= 1;
-    }
-
-    while adjusted_end < content.len() && !content.is_char_boundary(adjusted_end) {
-        adjusted_end += 1;
-    }
-
-    if adjusted_start >= adjusted_end {
-        panic!(
-            "safe_str_slice: adjusted bounds invalid - start ({}) >= end ({})",
-            adjusted_start, adjusted_end
-        );
-    }
-
-    &content[adjusted_start..adjusted_end]
+    &content[start_byte..end_byte]
 }
 
 /// Normalizes whitespace in text content for clean storage and indexing.
@@ -146,21 +143,21 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_str_slice_multibyte_adjusted_to_boundary() {
-        // \u{1F600} is 4 bytes: bytes 0..4
+    fn test_safe_str_slice_multibyte_char_offsets() {
+        // \u{1F600} is 4 bytes, so byte-based slicing would shift the window.
+        // Offsets are character positions and must ignore the byte width.
         let content = "\u{1F600}abc";
-        // Slicing at byte 2 (mid-emoji) should adjust start back to 0
-        let result = safe_str_slice(content, 0, 4);
-        assert_eq!(result, "\u{1F600}");
+        assert_eq!(safe_str_slice(content, 0, 1), "\u{1F600}");
+        assert_eq!(safe_str_slice(content, 1, 3), "ab");
+        assert_eq!(safe_str_slice(content, 1, 4), "abc");
     }
 
     #[test]
-    fn test_safe_str_slice_end_mid_char_adjusts_forward() {
-        // \u{00E9} (é) is 2 bytes
-        let content = "caf\u{00E9}!";
-        // byte 4 is mid-char for é (which spans bytes 3..5), end should adjust to 5
-        let result = safe_str_slice(content, 0, 4);
-        assert_eq!(result, "caf\u{00E9}");
+    fn test_safe_str_slice_accented_text() {
+        // \u{00E9} (é) is 2 bytes; offsets are characters so [0,4) is "café".
+        let content = "caf\u{00E9} au lait";
+        assert_eq!(safe_str_slice(content, 0, 4), "caf\u{00E9}");
+        assert_eq!(safe_str_slice(content, 4, 7), " au");
     }
 
     #[test]
@@ -176,9 +173,24 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "start")]
-    fn test_safe_str_slice_start_past_end_panics() {
-        safe_str_slice("hello", 10, 15);
+    fn test_safe_str_slice_offsets_are_character_positions() {
+        // The embedding pipeline stores chunk start/end offsets as CHARACTER
+        // offsets (Python len()), and retrieval slices chunk content back out of
+        // the source text with them. Slicing at the same numeric positions as
+        // BYTES must not shift the window: for "😀😀hello world" chars [2,7)
+        // is "hello".
+        let content = "\u{1F600}\u{1F600}hello world";
+        let start = 2;
+        let end = 7;
+        let expected: String = content.chars().skip(start).take(end - start).collect();
+        assert_eq!(expected, "hello");
+        assert_eq!(safe_str_slice(content, start, end), expected);
+    }
+
+    #[test]
+    fn test_safe_str_slice_start_beyond_length_returns_empty() {
+        let content = "hello";
+        assert_eq!(safe_str_slice(content, 10, 15), "");
     }
 
     #[test]
