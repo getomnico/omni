@@ -54,6 +54,13 @@ export type OAuthRequired = {
 export type ToolMessageContent = {
     id: number
     type: 'tool'
+    // The assistant message that emitted this tool call. Used only to group
+    // calls that were emitted together in one model iteration.
+    batchId?: string
+    // Explicitly set when a tool_result has been received. Some tools return
+    // an empty result, so the presence of result payload is not sufficient.
+    completed?: boolean
+    failed?: boolean
     toolUse: {
         id: string
         name: string
@@ -155,6 +162,10 @@ export type ProcessedMessage = {
     siblingIds?: string[]
     siblingIndex?: number
     createdAt?: Date
+    // Bounds of the raw messages merged into this display message. These are
+    // used to show how long a completed tool-assisted response took.
+    startedAt?: Date
+    completedAt?: Date
     // Present when the assistant turn failed; rendered as an inline error alert.
     error?: ChatStreamError | null
 }

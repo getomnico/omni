@@ -969,7 +969,7 @@ test('chat renders citation chips and Sources drawer', async ({ page }) => {
     }
 })
 
-test('branched chat renders streamed tool calls from the SSE stream endpoint', async ({ page }) => {
+test('branched chat groups tool calls and collapses completed work', async ({ page }) => {
     let seeded: SeededChat | null = null
     try {
         seeded = await seedChatFromTemplateFixture()
@@ -982,16 +982,23 @@ test('branched chat renders streamed tool calls from the SSE stream endpoint', a
         await page.keyboard.press('Enter')
 
         await expect(page.getByText('Replay the failing stream')).toBeVisible()
-        await expect(
-            page.getByText("I'll search for more documents related to Nepanagar and NEPA."),
-        ).toBeVisible()
         await expect(page.locator('.thinking-container')).toBeVisible()
 
-        const earlierStepsButton = page.getByRole('button', { name: /earlier steps?/ })
-        await expect(earlierStepsButton).toBeVisible({ timeout: 10_000 })
-        await earlierStepsButton.click()
-        await expect(page.getByText('searched: Nepanagar NEPA mill township')).toBeVisible()
-        await expect(page.getByText(/search for more documents related to Nepanagar/)).toBeVisible()
+        await expect(page.getByRole('button', { name: /earlier steps?/ })).toHaveCount(0)
+        const workedButton = page.getByRole('button', { name: /Worked for/ }).last()
+        await expect(workedButton).toBeVisible({ timeout: 10_000 })
+        await expect(
+            page.getByText('The document appears to be in a binary format.', { exact: false }),
+        ).toBeVisible()
+
+        // The three searches emitted by the first model iteration become one row,
+        // and their individual queries/results are available on expansion.
+        await workedButton.click()
+        const groupedSearchButton = page.getByRole('button', { name: /searched 3 queries/ })
+        await expect(groupedSearchButton).toBeVisible()
+        await groupedSearchButton.click()
+        await expect(page.getByText('Nepanagar NEPA mill township')).toBeVisible()
+        await expect(page.getByText('National Environment Protection Authority')).toBeVisible()
     } finally {
         await cleanupChat(seeded)
     }
@@ -1034,6 +1041,9 @@ test('branched chat keeps the second streamed assistant response on delayed tool
             )
         await page.keyboard.press('Enter')
 
+        const workedButton = page.getByRole('button', { name: /Worked for/ }).last()
+        await expect(workedButton).toBeVisible()
+        await workedButton.click()
         await expect(
             page.getByText('searched: synthetic recent project status in:team-channel'),
         ).toBeVisible()

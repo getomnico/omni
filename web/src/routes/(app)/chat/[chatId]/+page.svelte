@@ -52,7 +52,6 @@
     import type { MentionedDocument } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
-    import ToolMessage from '$lib/components/tool-message.svelte'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { cn } from '$lib/utils'
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
@@ -276,6 +275,7 @@
 
     const toolVerbMap: Record<string, string[]> = {
         search: ['Searching', 'Looking it up', 'Digging through results'],
+        search_documents: ['Searching', 'Looking it up', 'Digging through results'],
         web_search: ['Searching the web', 'Checking public sources'],
         fetch_web_page: ['Fetching web page', 'Reading web page'],
         read_document: ['Reading document', 'Reviewing document'],
@@ -496,6 +496,22 @@
 
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
+    // The streaming assistant message doubles as its own progress indicator once
+    // it has anything visible (a tool call row or response text). Only show the
+    // standalone loader while a response is starting and there is nothing to
+    // display yet.
+    let streamingContentVisible = $derived.by(() => {
+        if (!isStreaming) return false
+        const lastMessage = processedMessages[processedMessages.length - 1]
+        if (!lastMessage || lastMessage.role !== 'assistant') return false
+        return lastMessage.content.some((block) => {
+            if (block.type === 'tool') return true
+            if (block.type === 'text') {
+                return stripThinkingContent(block.text, 'thinking').trim().length > 0
+            }
+            return false
+        })
+    })
     let drawerOpenByKey = $state<Record<string, boolean>>({})
 
     async function copyMessageToClipboard(message: ProcessedMessage) {
@@ -822,12 +838,14 @@
                     ? {
                           ...lastMessage,
                           sourceMessageIds,
-                          renderKey: sourceMessageIds.join('+'),
+                          renderKey: lastMessage.renderKey,
                           origMessageId: message.origMessageId,
                           parentMessageId: message.parentMessageId,
                           siblingIds: message.siblingIds,
                           siblingIndex: message.siblingIndex,
                           createdAt: message.createdAt,
+                          startedAt: lastMessage.startedAt ?? lastMessage.createdAt,
+                          completedAt: message.completedAt ?? message.createdAt,
                           content: [...lastMessage.content],
                           // A later error row that merges into this display
                           // message (e.g. after a tool-call turn) must not lose
@@ -837,7 +855,7 @@
                     : {
                           id: result.length,
                           sourceMessageIds,
-                          renderKey: sourceMessageIds.join('+'),
+                          renderKey: sourceMessageIds[0],
                           origMessageId: message.origMessageId,
                           role: message.role,
                           content: [] as MessageContent,
@@ -845,6 +863,8 @@
                           siblingIds: message.siblingIds,
                           siblingIndex: message.siblingIndex,
                           createdAt: message.createdAt,
+                          startedAt: message.startedAt ?? message.createdAt,
+                          completedAt: message.completedAt ?? message.createdAt,
                           error: message.error ?? null,
                       }
 
@@ -900,7 +920,7 @@
         // pulled from `search_result` content blocks). Search tools render that
         // shape; everything else surfaces output via actionResult / oauthRequired
         // and should stay as a compact status row.
-        const SEARCH_TOOLS = new Set(['search', 'web_search'])
+        const SEARCH_TOOLS = new Set(['search', 'search_documents', 'web_search'])
         const updateToolBlock = (
             toolUseId: string,
             updateBlock: (block: ToolMessageContent) => ToolMessageContent,
@@ -937,7 +957,9 @@
         const updateToolResults = (toolResult: ToolMessageContent['toolResult']) => {
             if (!toolResult) return
             updateToolBlock(toolResult.toolUseId, (block) =>
-                SEARCH_TOOLS.has(block.toolUse.name) ? { ...block, toolResult } : block,
+                SEARCH_TOOLS.has(block.toolUse.name)
+                    ? { ...block, toolResult, completed: true }
+                    : block,
             )
         }
 
@@ -949,6 +971,7 @@
             updateToolBlock(actionResult.toolUseId, (block) => ({
                 ...block,
                 actionResult,
+                completed: true,
                 oauthRequired: undefined,
             }))
         }
@@ -1026,6 +1049,14 @@
                         chatMsg.createdAt instanceof Date
                             ? chatMsg.createdAt
                             : new Date(chatMsg.createdAt),
+                    startedAt:
+                        chatMsg.createdAt instanceof Date
+                            ? chatMsg.createdAt
+                            : new Date(chatMsg.createdAt),
+                    completedAt:
+                        chatMsg.createdAt instanceof Date
+                            ? chatMsg.createdAt
+                            : new Date(chatMsg.createdAt),
                 }
 
                 addMessage(processedUserMessage)
@@ -1042,6 +1073,14 @@
                     siblingIds: info?.siblingIds,
                     siblingIndex: info?.siblingIndex,
                     createdAt:
+                        chatMsg.createdAt instanceof Date
+                            ? chatMsg.createdAt
+                            : new Date(chatMsg.createdAt),
+                    startedAt:
+                        chatMsg.createdAt instanceof Date
+                            ? chatMsg.createdAt
+                            : new Date(chatMsg.createdAt),
+                    completedAt:
                         chatMsg.createdAt instanceof Date
                             ? chatMsg.createdAt
                             : new Date(chatMsg.createdAt),
@@ -1078,6 +1117,7 @@
                             const toolMsgContent: ToolMessageContent = {
                                 id: 0,
                                 type: 'tool',
+                                batchId: chatMsg.id,
                                 toolUse: {
                                     id: block.id,
                                     name: block.name,
@@ -1115,6 +1155,10 @@
                             processedMessage.content.push(toolMsgContent)
                         } else if (block.type === 'tool_result') {
                             const toolUseId = block.tool_use_id
+                            updateToolBlock(toolUseId, (toolBlock) => ({
+                                ...toolBlock,
+                                failed: Boolean(block.is_error),
+                            }))
                             const searchResults = Array.isArray(block.content)
                                 ? (block.content.filter(
                                       (b: any) => b.type === 'search_result',
@@ -1190,6 +1234,11 @@
                                     text,
                                     isError: block.is_error || false,
                                 })
+                            } else if (!promptHandled) {
+                                updateToolBlock(toolUseId, (toolBlock) => ({
+                                    ...toolBlock,
+                                    completed: true,
+                                }))
                             }
                         }
                     }
@@ -1700,6 +1749,10 @@
                             }
                         }
                     } else if (data.type == 'tool_result') {
+                        // The tool has finished; the next visible content will be
+                        // the model's follow-up. Reset the loader verb so the
+                        // transition never echoes the completed tool.
+                        updateThinkingForText()
                         collectStreamingResponse(data)
                     }
 
@@ -2545,6 +2598,10 @@
                                     isStreaming={isStreaming && i === processedMessages.length - 1}
                                     {stripThinkingContent}
                                     isAdmin={data.user.role === 'admin'}
+                                    hasError={Boolean(message.error) ||
+                                        (Boolean(error) && i === processedMessages.length - 1)}
+                                    startedAt={message.startedAt}
+                                    completedAt={message.completedAt}
                                     onOAuthComplete={() => streamResponse(data.chat.id)} />
                             </div>
                             {#if message.error}
@@ -2835,7 +2892,7 @@
                 {/if}
 
                 <!-- Streaming AI Response -->
-                {#if isStreaming || (error && processedMessages[processedMessages.length - 1]?.role !== 'assistant')}
+                {#if (isStreaming && !streamingContentVisible) || (error && processedMessages[processedMessages.length - 1]?.role !== 'assistant')}
                     <div class="flex px-2">
                         {#if error}
                             <Alert.Root variant="destructive" title={error}>

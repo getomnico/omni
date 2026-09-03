@@ -74,6 +74,8 @@
                         const searchResults = resultContent.filter(
                             (b: any) => b.type === 'search_result',
                         )
+                        toolMsg.completed = true
+                        toolMsg.failed = Boolean(block.is_error)
                         if (
                             toolMsg.toolUse.name === 'search' ||
                             toolMsg.toolUse.name === 'web_search'
@@ -188,7 +190,7 @@
                                     </button>
                                 {/if}
                             {:else if block.type === 'tool'}
-                                <ToolMessage message={block.content} />
+                                <ToolMessage messages={[block.content]} />
                             {/if}
                         {/each}
                     </div>
