@@ -89,7 +89,7 @@ class DocumentsRepository:
 
         pool = await self._get_pool()
         rows = await pool.fetch(
-            f"SELECT {_COLUMNS} FROM documents WHERE id = ANY($1)",
+            f"SELECT {_COLUMNS} FROM documents d WHERE d.id = ANY($1)",
             document_ids,
         )
 
