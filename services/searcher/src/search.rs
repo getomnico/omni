@@ -673,14 +673,13 @@ impl SearchEngine {
         start_offset: i32,
         end_offset: i32,
     ) -> String {
-        let start = start_offset as usize;
-        let end = end_offset as usize;
-
-        if start >= content.len() || end > content.len() || start >= end {
+        // Offsets are character offsets into the stored content (see the
+        // chunking pipeline); safe_str_slice clamps out-of-range ranges.
+        if start_offset < 0 || end_offset < 0 || start_offset >= end_offset {
             return String::new();
         }
 
-        safe_str_slice(content, start, end).to_string()
+        safe_str_slice(content, start_offset as usize, end_offset as usize).to_string()
     }
 
     /// Read a specific document by ID, returning full content for small documents

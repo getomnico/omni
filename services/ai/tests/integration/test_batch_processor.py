@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import ulid
 
+from embeddings import Chunk
 from embeddings.batch_processor import EmbeddingBatchProcessor
+from processing import Chunker
 from state import AppState
 from tests.helpers import (
     create_test_document as create_document_record,
@@ -51,6 +53,29 @@ def _build_app_state(
     state.embedding_provider_type = provider_type
     state.content_storage = content_storage
     return state
+
+
+def _embedding_dimensions(embedding) -> int:
+    """Return the vector dimension; DB reads may return pgvector.Vector."""
+    to_list = getattr(embedding, "to_list", None)
+    return len(to_list()) if to_list else len(embedding)
+
+
+class _CharSentenceChunkingProvider:
+    """Mimics the OpenAI/Cohere sentence-mode providers: chunk each input text
+    with the real char-based sentence chunker and return one Chunk per span."""
+
+    def __init__(self, chunk_max_chars: int):
+        self.chunk_max_chars = chunk_max_chars
+
+    def get_model_name(self) -> str:
+        return "test-embedding-model"
+
+    async def generate_embeddings(
+        self, text: str, task: str, chunk_size: int | None, chunking_mode: str
+    ) -> list[Chunk]:
+        spans = Chunker.chunk_sentences_by_chars(text, self.chunk_max_chars)
+        return [Chunk((start, end), [0.1] * 8) for start, end in spans]
 
 
 # =============================================================================
@@ -96,7 +121,7 @@ async def test_online_processes_document_end_to_end(
 
     embeddings = await embeddings_repo.get_for_document(doc_id)
     assert len(embeddings) >= 1
-    assert len(embeddings[0].embedding) == 1024
+    assert _embedding_dimensions(embeddings[0].embedding) == 1024
 
     queue_item = await queue_repo.get_by_id(queue_id)
     assert queue_item.status == "completed"
@@ -230,7 +255,7 @@ async def test_online_does_not_clone_from_donor_with_unresolved_embedding_work(
     assert queue_item.status == "completed"
     target_embeddings = await embeddings_repo.get_for_document(target_doc_id)
     assert len(target_embeddings) == 1
-    assert len(target_embeddings[0].embedding) == 1024
+    assert _embedding_dimensions(target_embeddings[0].embedding) == 1024
     mock_embedding_provider.generate_embeddings.assert_called_once()
 
 
@@ -260,7 +285,7 @@ async def test_online_handles_empty_content(
 
 
 @pytest.fixture
-async def online_processor_with_sliding_window(
+async def online_processor_with_sentence_aligned_windows(
     db_pool,
     documents_repo,
     queue_repo,
@@ -287,14 +312,14 @@ async def online_processor_with_sliding_window(
 
 
 @pytest.mark.integration
-async def test_online_processes_large_document_with_sliding_window(
+async def test_online_processes_large_document_with_sentence_aligned_windows(
     db_pool,
-    online_processor_with_sliding_window,
+    online_processor_with_sentence_aligned_windows,
     queue_repo,
     embeddings_repo,
     monkeypatch,
 ):
-    """Large documents are split via sliding window and each window is embedded."""
+    """Large documents are split into sentence-aligned windows, each embedded."""
     import embeddings.batch_processor as bp
 
     monkeypatch.setattr(bp, "EMBEDDING_MAX_MODEL_LEN", 33)
@@ -302,13 +327,15 @@ async def test_online_processes_large_document_with_sliding_window(
     user_id = await create_test_user(db_pool)
     source_id = await create_test_source(db_pool, user_id)
 
-    # 500 chars -> window_size=100, overlap=25, stride=75
-    # Windows at offsets: 0, 75, 150, 225, 300, 375, 450
+    # 20 x 25-char sentences = 500 chars. Each window holds up to
+    # window_size = 33 * 3 = 99 chars and starts/ends on a sentence boundary,
+    # so the windows tile the document without overlap:
+    # (0,75), (75,150), (150,225), (225,300), (300,375), (375,450), (450,500)
     large_content = "This is a test sentence. " * 20  # 500 chars
     doc_id = await create_test_document(db_pool, source_id, large_content)
     queue_id = await enqueue_document(db_pool, doc_id)
 
-    await online_processor_with_sliding_window._process_online_batch()
+    await online_processor_with_sentence_aligned_windows._process_online_batch()
 
     queue_item = await queue_repo.get_by_id(queue_id)
     assert queue_item.status == "completed"
@@ -317,22 +344,110 @@ async def test_online_processes_large_document_with_sliding_window(
     assert len(embeddings) == 7
 
     expected_spans = [
-        (0, 99),
-        (75, 174),
-        (150, 249),
-        (225, 324),
-        (300, 399),
-        (375, 474),
+        (0, 75),
+        (75, 150),
+        (150, 225),
+        (225, 300),
+        (300, 375),
+        (375, 450),
         (450, 500),
     ]
     actual_spans = [(e.chunk_start_offset, e.chunk_end_offset) for e in embeddings]
     assert actual_spans == expected_spans
 
     for emb in embeddings:
-        assert len(emb.embedding) == 1024
+        assert _embedding_dimensions(emb.embedding) == 1024
 
-    provider = online_processor_with_sliding_window.embedding_provider
+    provider = online_processor_with_sentence_aligned_windows.embedding_provider
     assert provider.generate_embeddings.call_count == 7
+
+
+@pytest.fixture
+async def online_processor_with_char_chunker(
+    db_pool,
+    documents_repo,
+    queue_repo,
+    embeddings_repo,
+):
+    """Processor whose provider chunks each window with the real char-based
+    sentence chunker, like the OpenAI/Cohere sentence-mode providers do."""
+    provider = _CharSentenceChunkingProvider(chunk_max_chars=250)
+
+    return EmbeddingBatchProcessor(
+        documents_repo=documents_repo,
+        queue_repo=queue_repo,
+        embeddings_repo=embeddings_repo,
+        app_state=_build_app_state(db_pool, provider),
+    )
+
+
+@pytest.mark.integration
+async def test_online_stores_clean_char_chunks_for_large_document(
+    db_pool,
+    online_processor_with_char_chunker,
+    queue_repo,
+    embeddings_repo,
+    monkeypatch,
+):
+    """Long documents are chunked by the real sentence chunker inside
+    sentence-aligned windows; the offsets persisted to Postgres must slice the
+    source text into whole sentences that tile the document with no overlap or
+    gaps."""
+    import embeddings.batch_processor as bp
+
+    monkeypatch.setattr(bp, "EMBEDDING_MAX_MODEL_LEN", 200)  # window_size = 600
+
+    user_id = await create_test_user(db_pool)
+    source_id = await create_test_source(db_pool, user_id)
+
+    sentences = [
+        "The quick brown fox jumps over the lazy dog near the riverbank.",
+        "Pack my box with five dozen liquor jugs of various sizes.",
+        "How vexingly quick daft zebras jump when provoked by loud noises!",
+        "Voilà un café délicieux et très chaud.",
+        "今日はとても良い天気ですね。",
+        "Sphinx of black quartz, judge my vow and then decide.",
+        "The five boxing wizards jump quickly while eating pancakes.",
+        "Jackdaws love my big sphinx of quartz, a truly odd sight.",
+        "Grumpy wizards make toxic brew for the evil Queen and Jack.",
+        "Amazingly few discotheques provide jukeboxes these days, sadly.",
+    ]
+    content = " ".join(s for _ in range(4) for s in sentences)
+
+    doc_id = await create_test_document(db_pool, source_id, content)
+    queue_id = await enqueue_document(db_pool, doc_id)
+
+    await online_processor_with_char_chunker._process_online_batch()
+
+    queue_item = await queue_repo.get_by_id(queue_id)
+    assert queue_item.status == "completed"
+
+    embeddings = await embeddings_repo.get_for_document(doc_id)
+    assert len(embeddings) > 1
+
+    spans = [(e.chunk_start_offset, e.chunk_end_offset) for e in embeddings]
+    # Windows are sentence-aligned and each window tiles its span, so the stored
+    # chunks must tile the document: contiguous, non-overlapping, full coverage.
+    assert spans[0][0] == 0
+    assert spans[-1][1] == len(content)
+    for i in range(len(spans) - 1):
+        assert spans[i][1] == spans[i + 1][0], (
+            f"chunks overlap or gap: {spans[i]} then {spans[i + 1]}"
+        )
+        assert spans[i][0] < spans[i][1]
+
+    chunk_texts = [content[start:end] for start, end in spans]
+    assert "".join(chunk_texts) == content
+
+    for text in chunk_texts:
+        assert text.rstrip().endswith((".", "!", "?", "。")), (
+            f"stored chunk does not end at a sentence boundary: {text[-60:]!r}"
+        )
+        assert len(text) <= 250
+
+    for emb in embeddings:
+        assert emb.model_name == "test-embedding-model"
+        assert _embedding_dimensions(emb.embedding) == 8
 
 
 # =============================================================================

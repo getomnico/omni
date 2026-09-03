@@ -488,7 +488,7 @@ pub async fn create_test_documents_with_embeddings(pool: &PgPool) -> Result<Vec<
         .bind(doc_id)
         .bind(0) // chunk_index
         .bind(0) // chunk_start_offset
-        .bind(docs[i].content.len() as i32) // chunk_end_offset
+        .bind(docs[i].content.chars().count() as i32) // chunk_end_offset
         .bind(&embedding)
         .bind("test-model") // model_name — matches mock AI server
         .bind(1024_i16) // dimensions

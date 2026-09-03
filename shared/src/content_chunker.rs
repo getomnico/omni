@@ -3,13 +3,19 @@ use crate::models::DocumentChunk;
 pub struct ContentChunker;
 
 impl ContentChunker {
-    /// Chunk document content into smaller pieces for embedding generation
+    /// Chunk document content into smaller pieces for embedding generation.
+    ///
+    /// Positions and `max_chunk_size` are measured in characters, consistent
+    /// with the Python chunker, so cuts never land inside a multi-byte UTF-8
+    /// character.
     pub fn chunk_content(content: &str, max_chunk_size: usize) -> Vec<DocumentChunk> {
-        if content.is_empty() {
+        let chars: Vec<char> = content.chars().collect();
+        let char_count = chars.len();
+
+        if char_count == 0 {
             return vec![];
         }
-
-        if content.len() <= max_chunk_size {
+        if max_chunk_size == 0 || char_count <= max_chunk_size {
             return vec![DocumentChunk {
                 text: content.to_string(),
                 index: 0,
@@ -20,42 +26,38 @@ impl ContentChunker {
         let mut current_pos = 0;
         let mut chunk_index = 0;
 
-        while current_pos < content.len() {
-            let end_pos = std::cmp::min(current_pos + max_chunk_size, content.len());
+        while current_pos < char_count {
+            let end_pos = std::cmp::min(current_pos + max_chunk_size, char_count);
 
             // Try to break at sentence boundaries for better semantic coherence
-            let chunk_text = if end_pos < content.len() {
+            let chunk_end = if end_pos < char_count {
                 // Look for sentence endings within the last 100 characters
                 let search_start = std::cmp::max(current_pos, end_pos.saturating_sub(100));
-                let search_slice = &content[search_start..end_pos];
+                let search_window = &chars[search_start..end_pos];
 
-                if let Some(sentence_end) = search_slice.rfind('.') {
-                    let actual_end = search_start + sentence_end + 1;
-                    content[current_pos..actual_end].to_string()
-                } else if let Some(paragraph_end) = search_slice.rfind('\n') {
-                    let actual_end = search_start + paragraph_end + 1;
-                    content[current_pos..actual_end].to_string()
+                if let Some(sentence_end) = search_window.iter().rposition(|&c| c == '.') {
+                    search_start + sentence_end + 1
+                } else if let Some(paragraph_end) = search_window.iter().rposition(|&c| c == '\n') {
+                    search_start + paragraph_end + 1
                 } else {
-                    // Fallback to character boundary
-                    content[current_pos..end_pos].to_string()
+                    end_pos
                 }
             } else {
-                content[current_pos..end_pos].to_string()
+                char_count
             };
 
-            let chunk_end = current_pos + chunk_text.len();
+            let chunk_text: String = chars[current_pos..chunk_end].iter().collect();
             chunks.push(DocumentChunk {
                 text: chunk_text,
                 index: chunk_index,
             });
 
-            current_pos = chunk_end;
-            chunk_index += 1;
-
-            // Prevent infinite loops
-            if current_pos >= content.len() {
+            if chunk_end <= current_pos {
+                // Prevent infinite loops on degenerate inputs
                 break;
             }
+            current_pos = chunk_end;
+            chunk_index += 1;
         }
 
         chunks
@@ -175,5 +177,31 @@ mod tests {
         let indices: Vec<i32> = chunks.iter().map(|c| c.index).collect();
         let expected: Vec<i32> = (0..chunks.len() as i32).collect();
         assert_eq!(indices, expected);
+    }
+
+    #[test]
+    fn test_chunk_multibyte_cut_never_panics() {
+        // Cut positions are byte-based, so a chunk boundary can land inside a
+        // multi-byte UTF-8 character (accented text, emoji, CJK). Slicing must
+        // not panic and must still reproduce the source text exactly.
+        let content = "H\u{e9}llo world! ".repeat(10);
+        let chunks = ContentChunker::chunk_content(&content, 30);
+
+        let reconstructed: String = chunks.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(reconstructed, content);
+    }
+
+    #[test]
+    fn test_chunk_size_limit_is_character_based() {
+        // The Python chunker sizes chunks in characters. The Rust chunker must
+        // use the same unit, so that a max_chunk_size chunk holds up to
+        // max_chunk_size characters rather than bytes.
+        let content = "H\u{e9}llo world! ".repeat(10);
+        let chunks = ContentChunker::chunk_content(&content, 30);
+
+        assert!(chunks.len() > 1);
+        for chunk in &chunks[..chunks.len() - 1] {
+            assert_eq!(chunk.text.chars().count(), 30);
+        }
     }
 }
