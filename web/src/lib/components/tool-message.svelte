@@ -168,15 +168,17 @@
             .join(', ')
     }
 
-    function sourceValues(message: ToolMessageContent): string[] {
-        const value = inputValue(message, 'sources')
-        return Array.isArray(value)
-            ? value.filter((source): source is string => typeof source === 'string')
-            : []
-    }
-
-    let sources = $derived(
-        Array.from(new Set(messages.flatMap((message) => sourceValues(message)))),
+    const MAX_VISIBLE_RESULT_SOURCES = 3
+    let resultSources = $derived(
+        Array.from(
+            new Set(
+                messages.flatMap((message) =>
+                    (message.toolResult?.content ?? [])
+                        .map((result) => result.source_type)
+                        .filter((source): source is string => Boolean(source)),
+                ),
+            ),
+        ).slice(0, MAX_VISIBLE_RESULT_SOURCES),
     )
     let resultCount = $derived(
         messages.reduce((count, message) => count + (message.toolResult?.content.length ?? 0), 0),
@@ -314,7 +316,22 @@
                     ? ' tool-row-shimmer'
                     : ''}">
                 <div class="flex min-w-0 flex-1 items-center gap-2">
-                    {#if isSearch && (toolName === 'search' || toolName === 'search_documents')}
+                    {#if isSearch && toolName === 'web_search'}
+                        <Globe class="h-4 w-4 shrink-0" />
+                    {:else if isSearch && resultSources.length > 0}
+                        <div class="flex shrink-0 items-center gap-1">
+                            {#each resultSources as source (source)}
+                                {@const sourceIcon = getSourceIconPath(source)}
+                                {#if sourceIcon}
+                                    <img
+                                        src={sourceIcon}
+                                        alt={getSourceDisplayName(source as SourceType) || source}
+                                        title={getSourceDisplayName(source as SourceType) || source}
+                                        class="!m-0 h-4 w-4 shrink-0" />
+                                {/if}
+                            {/each}
+                        </div>
+                    {:else if isSearch && (toolName === 'search' || toolName === 'search_documents')}
                         <img
                             src={themeStore.current.omniLogoLight}
                             alt="Omni"
@@ -323,20 +340,6 @@
                             src={themeStore.current.omniLogoDark}
                             alt="Omni"
                             class="omni-logo-dark h-4 w-4 shrink-0 rounded-sm" />
-                    {:else if isSearch && toolName === 'web_search'}
-                        <Globe class="h-4 w-4 shrink-0" />
-                    {:else if isSearch && sources.length > 0}
-                        <div class="flex shrink-0 items-center gap-1">
-                            {#each sources as source (source)}
-                                {#if getSourceIconPath(source)}
-                                    <img
-                                        src={getSourceIconPath(source)}
-                                        alt={getSourceDisplayName(source as SourceType) || source}
-                                        title={getSourceDisplayName(source as SourceType) || source}
-                                        class="!m-0 h-4 w-4" />
-                                {/if}
-                            {/each}
-                        </div>
                     {:else if isSearch}
                         <Search class="h-4 w-4 shrink-0" />
                     {:else if toolName === 'run_python'}
