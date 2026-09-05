@@ -156,6 +156,96 @@ function finalAssistantTextSse(text: string): string {
     ].join('')
 }
 
+/**
+ * One agent round: narration text, a search tool call, the persisted assistant
+ * row id, the tool result (flushed by the next message_id), and an optional
+ * pause that opens a deterministic waiting-indicator window in the UI.
+ */
+function agentRoundSse(round: number, narration: string, query: string, gapMs: number): string[] {
+    const toolUseId = `toolu_long_run_${round}`
+    const toolIndex = narration ? 1 : 0
+    return [
+        assistantStart(),
+        ...(narration
+            ? [
+                  sseMessage({
+                      type: 'content_block_start',
+                      index: 0,
+                      content_block: { type: 'text', text: '' },
+                  }),
+                  sseMessage({
+                      type: 'content_block_delta',
+                      index: 0,
+                      delta: { type: 'text_delta', text: narration },
+                  }),
+                  sseMessage({ type: 'content_block_stop', index: 0 }),
+              ]
+            : []),
+        ...assistantSearchToolEvents(toolIndex, toolUseId, query),
+        searchToolResult(toolUseId),
+        `event: message_id\ndata: ${ulid()}\n\n`,
+        gapMs > 0 ? `event: test_sleep\ndata: ${gapMs}\n\n` : '',
+    ]
+}
+
+function longAgentRunSse(gapMs = 8000): string {
+    return [
+        ...agentRoundSse(
+            1,
+            'First, I will search for background context.',
+            'round one query',
+            gapMs,
+        ),
+        ...agentRoundSse(
+            2,
+            'The first results look relevant; searching for details.',
+            'round two query',
+            gapMs,
+        ),
+        ...agentRoundSse(
+            3,
+            'Let me narrow this down with one more search.',
+            'round three query',
+            0,
+        ),
+        ...agentRoundSse(4, 'One more pass over the remaining sources.', 'round four query', 0),
+        ...agentRoundSse(5, 'Almost there, checking the final detail.', 'round five query', 0),
+        ...agentRoundSse(6, '', 'round six query', gapMs),
+        finalAssistantTextSse('Synthetic final answer after six rounds.'),
+        'event: end_of_stream\ndata: {}\n\n',
+    ].join('')
+}
+
+function writeFileToolSse(): string {
+    const toolUseId = `toolu_write_file_${ulid()}`
+
+    return [
+        assistantStart(),
+        sseMessage({
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+                type: 'tool_use',
+                id: toolUseId,
+                name: 'write_file',
+                input: {},
+            },
+        }),
+        sseMessage({
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+                type: 'input_json_delta',
+                partial_json: JSON.stringify({ path: 'result.py', content: 'print(42)' }),
+            },
+        }),
+        sseMessage({ type: 'content_block_stop', index: 0 }),
+        sseMessage({ type: 'message_stop' }),
+        `event: message_id\ndata: ${ulid()}\n\n`,
+        'event: test_sleep\ndata: 2000\n\n',
+    ].join('')
+}
+
 function nestedMarkdownSse(): string {
     const chunks = [
         '*   **High-Quality Feedback Loops**\n    *   The Hacker News audience is',
@@ -584,6 +674,90 @@ test('chat page renders streamed assistant markdown from the SSE stream endpoint
     }
 })
 
+test('streaming write-file calls remain visible while they are running', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `write-file-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+        await writeFile(fixturePath, writeFileToolSse())
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Write a file')
+        await page.keyboard.press('Enter')
+
+        await expect(page.getByRole('button', { name: 'Writing' })).toBeVisible()
+        await expect
+            .poll(async () =>
+                page
+                    .getByTestId('chat-content')
+                    .evaluate((element) =>
+                        Number.parseFloat(getComputedStyle(element).paddingBottom),
+                    ),
+            )
+            .toBeGreaterThan(0)
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
+        await cleanupChat(seeded)
+    }
+})
+
+test('long agent runs fold older steps and show a waiting indicator between rounds', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    const fixtureName = `long-agent-run-${ulid()}.sse`
+    const fixturePath = new URL(`./fixtures/${fixtureName}`, import.meta.url)
+
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, fixtureName)
+        await writeFile(fixturePath, longAgentRunSse())
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Run the long agent journey')
+        await page.keyboard.press('Enter')
+
+        // Once six rounds have completed, only the three latest steps stay
+        // expanded; the older finished rows fold into "3 previous steps".
+        const stepsTrigger = page.getByRole('button', { name: /3 previous steps/ })
+        await expect(stepsTrigger).toBeVisible({ timeout: 20_000 })
+        await expect(
+            page.getByRole('button', { name: /Searched: round one query/ }),
+        ).not.toBeVisible()
+        await expect(
+            page.getByRole('button', { name: /Searched: round three query/ }),
+        ).not.toBeVisible()
+        await expect(page.getByRole('button', { name: /Searched: round four query/ })).toBeVisible()
+        await expect(page.getByRole('button', { name: /Searched: round six query/ })).toBeVisible()
+
+        // In the gap after the last tool result, the shine/rotating-verb
+        // indicator keeps the chat from looking frozen.
+        await expect(page.getByTestId('thinking-indicator')).toBeVisible()
+
+        // Expanding reveals the folded rows.
+        await stepsTrigger.click()
+        await expect(page.getByRole('button', { name: /Searched: round one query/ })).toBeVisible()
+
+        // Once the final response completes, the timeline collapses into the
+        // existing "Worked for X seconds" section instead.
+        await expect(page.getByText('Synthetic final answer after six rounds.')).toBeVisible({
+            timeout: 20_000,
+        })
+        const workedButton = page.getByRole('button', { name: /Worked for/ }).last()
+        await expect(workedButton).toBeVisible({ timeout: 20_000 })
+        await expect(page.getByRole('button', { name: /previous steps/ })).toHaveCount(0)
+        await expect(page.getByTestId('thinking-indicator')).toHaveCount(0)
+    } finally {
+        await unlink(fixturePath).catch(() => undefined)
+        await cleanupChat(seeded)
+    }
+})
+
 test('chat preserves nested streamed Markdown nodes', async ({ page }) => {
     let seeded: SeededChat | null = null
     const fixtureName = `nested-markdown-${ulid()}.sse`
@@ -982,7 +1156,10 @@ test('branched chat groups tool calls and collapses completed work', async ({ pa
         await page.keyboard.press('Enter')
 
         await expect(page.getByText('Replay the failing stream')).toBeVisible()
-        await expect(page.locator('.thinking-container')).toBeVisible()
+        // Once the first tool block arrives it replaces the standalone thinking indicator.
+        await expect(
+            page.getByRole('button', { name: /Searching|Searched|Running|Ran/ }).first(),
+        ).toBeVisible()
 
         await expect(page.getByRole('button', { name: /earlier steps?/ })).toHaveCount(0)
         const workedButton = page.getByRole('button', { name: /Worked for/ }).last()
@@ -994,11 +1171,14 @@ test('branched chat groups tool calls and collapses completed work', async ({ pa
         // The three searches emitted by the first model iteration become one row,
         // and their individual queries/results are available on expansion.
         await workedButton.click()
-        const groupedSearchButton = page.getByRole('button', { name: /searched 3 queries/ })
+        await expect(page.getByRole('button', { name: /Read: Nepanagar/ })).toBeVisible()
+        const groupedSearchButton = page.getByRole('button', { name: /Ran 3 searches/ })
         await expect(groupedSearchButton).toBeVisible()
         await groupedSearchButton.click()
         await expect(page.getByText('Nepanagar NEPA mill township')).toBeVisible()
-        await expect(page.getByText('National Environment Protection Authority')).toBeVisible()
+        await expect(
+            page.getByText('National Environment Protection Authority', { exact: true }),
+        ).toBeVisible()
     } finally {
         await cleanupChat(seeded)
     }
@@ -1045,10 +1225,14 @@ test('branched chat keeps the second streamed assistant response on delayed tool
         await expect(workedButton).toBeVisible()
         await workedButton.click()
         await expect(
-            page.getByText('searched: synthetic recent project status in:team-channel'),
+            page.getByRole('button', {
+                name: /Searched: synthetic recent project status in:team-channel/,
+            }),
         ).toBeVisible()
         await expect(
-            page.getByText('searched: synthetic stakeholder update in:team-channel'),
+            page.getByRole('button', {
+                name: /Searched: synthetic stakeholder update in:team-channel/,
+            }),
         ).toBeVisible()
         await expect(
             page.getByRole('heading', {

@@ -54,7 +54,7 @@
         search_documents: { loading: 'Searching', loaded: 'Searched' },
         web_search: { loading: 'Searching web', loaded: 'Searched web' },
         fetch_web_page: { loading: 'Fetching web page', loaded: 'Fetched web page' },
-        read_document: { loading: 'Fetching', loaded: 'Fetched' },
+        read_document: { loading: 'Reading', loaded: 'Read' },
         write_file: { loading: 'Writing', loaded: 'Wrote' },
         read_file: { loading: 'Reading', loaded: 'Read' },
         run_bash: { loading: 'Running', loaded: 'Ran' },
@@ -216,13 +216,19 @@
                   : toolName === 'web_search'
                     ? 'Searching web'
                     : 'Searching'
-            if (messages.length > 1) return `${verb} ${messages.length} queries`
+            if (messages.length > 1) {
+                if (hasError) return `Failed after ${messages.length} searches`
+                if (isComplete && resultCount > 0) return `Ran ${messages.length} searches ·`
+                if (isComplete) return `Ran ${messages.length} searches`
+                return `Running ${messages.length} searches`
+            }
             return `${verb}: ${stringInput(primaryMessage, 'query') ?? 'missing query'}`
         }
 
         const detail = isConnectorAction ? connectorDisplayName : inputSummary(primaryMessage)
         if (!detail) return statusIndicator
         if (isConnectorAction) return `${statusIndicator}: ${detail}`
+        if (toolName === 'read_document') return `${statusIndicator}: ${detail}`
         return selectedItem === accordionKey ? `${statusIndicator} (${detail})` : statusIndicator
     })
 
@@ -337,11 +343,11 @@
                         <img
                             src={themeStore.current.omniLogoLight}
                             alt="Omni"
-                            class="omni-logo-light h-4 w-4 shrink-0 rounded-sm" />
+                            class="omni-logo-light !m-0 h-4 w-4 shrink-0 rounded-sm" />
                         <img
                             src={themeStore.current.omniLogoDark}
                             alt="Omni"
-                            class="omni-logo-dark h-4 w-4 shrink-0 rounded-sm" />
+                            class="omni-logo-dark !m-0 h-4 w-4 shrink-0 rounded-sm" />
                     {:else if isSearch}
                         <Search class="h-4 w-4 shrink-0" />
                     {:else if toolName === 'search_chats'}

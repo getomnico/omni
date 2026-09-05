@@ -5,7 +5,9 @@ import {
     groupToolCallContent,
     isToolCallComplete,
     isToolCallFailed,
+    partitionStreamingWork,
     splitToolCallContent,
+    type ToolCallDisplayItem,
 } from './tool-call-display'
 
 function tool(
@@ -81,5 +83,112 @@ describe('tool call display helpers', () => {
         expect(formatDuration(start, new Date('2026-01-01T00:00:01.000Z'))).toBe('1s')
         expect(formatDuration(start, new Date('2026-01-01T00:01:10.000Z'))).toBe('1m 10s')
         expect(formatDuration(start, new Date('2026-01-01T01:00:00.000Z'))).toBe('1h')
+    })
+})
+
+describe('partitionStreamingWork', () => {
+    function groupItem(
+        id: string,
+        name: string,
+        status: ToolMessageContent['status'] = 'completed',
+    ): Extract<ToolCallDisplayItem, { type: 'tools' }> {
+        return {
+            type: 'tools',
+            group: {
+                key: `${id}:${name}`,
+                toolName: name,
+                messages: [{ ...tool(id, name, `assistant-${id}`, {}), status }],
+            },
+        }
+    }
+
+    function textItem(text: string): Extract<ToolCallDisplayItem, { type: 'text' }> {
+        return { type: 'text', block: { id: 0, type: 'text', text } }
+    }
+
+    it('does not collapse while there are up to four tool groups', () => {
+        const items = [
+            groupItem('g1', 'search'),
+            groupItem('g2', 'read_document'),
+            groupItem('g3', 'search'),
+            groupItem('g4', 'run_bash'),
+        ]
+
+        const partition = partitionStreamingWork(items, true)
+
+        expect(partition.collapseActive).toBe(false)
+        expect(partition.visible).toBe(items)
+        expect(partition.collapsed).toHaveLength(0)
+        expect(partition.previousStepsCount).toBe(0)
+    })
+
+    it('collapses everything before the three latest steps, counting completed groups', () => {
+        const items = [
+            textItem('First narration.'),
+            groupItem('g1', 'search'),
+            textItem('Between one and two.'),
+            groupItem('g2', 'search'),
+            groupItem('g3', 'read_document'),
+            textItem('Leading into the final rounds.'),
+            groupItem('g4', 'search'),
+            groupItem('g5', 'run_bash'),
+            groupItem('g6', 'search'),
+        ]
+
+        const partition = partitionStreamingWork(items, true)
+
+        expect(partition.collapseActive).toBe(true)
+        expect(partition.previousStepsCount).toBe(3)
+        expect(partition.collapsed).toEqual([
+            textItem('First narration.'),
+            groupItem('g1', 'search'),
+            textItem('Between one and two.'),
+            groupItem('g2', 'search'),
+            groupItem('g3', 'read_document'),
+            textItem('Leading into the final rounds.'),
+        ])
+        expect(partition.visible).toEqual([
+            groupItem('g4', 'search'),
+            groupItem('g5', 'run_bash'),
+            groupItem('g6', 'search'),
+        ])
+    })
+
+    it('keeps narrations of the latest steps visible alongside the running group', () => {
+        const items = [
+            groupItem('g1', 'search'),
+            groupItem('g2', 'search'),
+            groupItem('g3', 'search'),
+            groupItem('g4', 'read_document'),
+            textItem('Checking the file now.'),
+            groupItem('g5', 'read_file', 'running'),
+        ]
+
+        const partition = partitionStreamingWork(items, true)
+
+        expect(partition.collapseActive).toBe(true)
+        expect(partition.previousStepsCount).toBe(2)
+        expect(partition.collapsed).toEqual([groupItem('g1', 'search'), groupItem('g2', 'search')])
+        expect(partition.visible).toEqual([
+            groupItem('g3', 'search'),
+            groupItem('g4', 'read_document'),
+            textItem('Checking the file now.'),
+            groupItem('g5', 'read_file', 'running'),
+        ])
+    })
+
+    it('never collapses output when the stream is not active', () => {
+        const items = [
+            groupItem('g1', 'search'),
+            groupItem('g2', 'search'),
+            groupItem('g3', 'search'),
+            groupItem('g4', 'search'),
+            groupItem('g5', 'search'),
+        ]
+
+        const partition = partitionStreamingWork(items, false)
+
+        expect(partition.collapseActive).toBe(false)
+        expect(partition.visible).toBe(items)
     })
 })

@@ -53,6 +53,7 @@
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
+    import ThinkingIndicator from '$lib/components/thinking-indicator.svelte'
     import { cn } from '$lib/utils'
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
     import * as Tooltip from '$lib/components/ui/tooltip'
@@ -84,7 +85,6 @@
     import MarkdownMessage from '$lib/components/markdown-message.svelte'
     import ImapCitationSource from '$lib/components/search-results/imap-citation-source.svelte'
     import * as Drawer from '$lib/components/ui/drawer'
-    import { themeStore } from '$lib/themes/store.svelte'
     import { formatChatTimestamp } from '$lib/utils/datetime'
 
     let { data }: PageProps = $props()
@@ -492,7 +492,10 @@
     let activeStreamingMessageId = $state<string | null>(null)
     let isAwayFromBottom = $state(false)
     let showTopShadow = $state(false)
-    let bottomPadding = $state(80)
+    // The Tailwind class supplies the minimum. A numeric override is used only when
+    // the scroll position requires more room than the composer spacing provides.
+    let minChatBottomPadding = $state<number | null>(null)
+    let bottomPadding = $state<number | null>(null)
 
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
@@ -954,10 +957,15 @@
             }
         }
 
-        const updateToolResults = (toolResult: ToolMessageContent['toolResult']) => {
+        const updateToolResults = (
+            toolResult: ToolMessageContent['toolResult'],
+            isError: boolean,
+        ) => {
             if (!toolResult) return
             updateToolBlock(toolResult.toolUseId, (block) =>
-                SEARCH_TOOLS.has(block.toolUse.name) ? { ...block, toolResult } : block,
+                SEARCH_TOOLS.has(block.toolUse.name)
+                    ? { ...block, toolResult, status: isError ? 'failed' : 'completed' }
+                    : block,
             )
         }
 
@@ -1089,6 +1097,12 @@
                 const contentBlocks = Array.isArray(message.content)
                     ? message.content
                     : [{ type: 'text', text: message.content } as TextBlockParam]
+                const hasToolResult = contentBlocks.some((block) => block.type === 'tool_result')
+
+                // Tool-result rows carry completion data for tool blocks rendered by an
+                // earlier assistant row. Add the empty display row first so those blocks
+                // are available to the result update callbacks below.
+                if (hasToolResult) addMessage(processedMessage)
 
                 for (let blockIdx = 0; blockIdx < contentBlocks.length; blockIdx++) {
                     const block = contentBlocks[blockIdx]
@@ -1160,14 +1174,17 @@
                                       (b: any) => b.type === 'search_result',
                                   ) as SearchResultBlockParam[])
                                 : []
-                            updateToolResults({
-                                toolUseId,
-                                content: searchResults.map((r) => ({
-                                    title: r.title,
-                                    source: r.source,
-                                    source_type: (r as any).source_type ?? null,
-                                })),
-                            })
+                            updateToolResults(
+                                {
+                                    toolUseId,
+                                    content: searchResults.map((r) => ({
+                                        title: r.title,
+                                        source: r.source,
+                                        source_type: (r as any).source_type ?? null,
+                                    })),
+                                },
+                                Boolean(block.is_error),
+                            )
 
                             // Extract text content for non-search tool results (e.g., present_artifact)
                             const textBlocks: TextBlockParam[] = Array.isArray(block.content)
@@ -1240,7 +1257,7 @@
                     }
                 }
 
-                addMessage(processedMessage)
+                if (!hasToolResult) addMessage(processedMessage)
             }
         }
 
@@ -1267,13 +1284,18 @@
     }
 
     function recalcBottomPadding() {
-        if (!lastUserMessageRef || !chatContainerRef) return
+        if (!lastUserMessageRef || !chatContainerRef || !chatContentRef) return
         const containerHeight = chatContainerRef.clientHeight
         const userMsgTop = lastUserMessageRef.offsetTop - chatContainerRef.offsetTop - 24
-        const contentHeight = chatContainerRef.scrollHeight - bottomPadding
+        minChatBottomPadding ??= Number.parseFloat(getComputedStyle(chatContentRef).paddingBottom)
+        if (!Number.isFinite(minChatBottomPadding)) {
+            throw new Error('Chat bottom padding is not a valid computed value')
+        }
+        const currentPadding = bottomPadding ?? minChatBottomPadding
+        const contentHeight = chatContainerRef.scrollHeight - currentPadding
         // Pad so that max scroll aligns the last user message near the top of the viewport (with some breathing room).
-        // Minimum 48px so the final assistant response doesn't sit flush against the input box.
-        bottomPadding = Math.max(48, userMsgTop + containerHeight - contentHeight)
+        const requiredPadding = userMsgTop + containerHeight - contentHeight
+        bottomPadding = requiredPadding > minChatBottomPadding ? requiredPadding : null
     }
 
     function updateScrollState() {
@@ -1354,6 +1376,10 @@
         let streamCompleted = false
         let messageEventsReceived = 0
         let pauseEventReceived = false
+        const pendingToolResults: Array<{
+            block: ToolResultBlockParam
+            targetMessageId: string | null
+        }> = []
         reconnectAttempts = 0
 
         const missingStreamMessageId = (reason: string) => {
@@ -1371,8 +1397,12 @@
                 | ToolResultBlockParam
                 | CitationsDelta,
             blockIdx?: number, // This should be defined for all block types above except ToolResultBlockParam (since this one doesn't come from the LLM)
+            targetMessageIdOverride?: string | null,
         ) => {
-            let targetMessageId = activeStreamingMessageId
+            const targetMessageId =
+                targetMessageIdOverride === undefined
+                    ? activeStreamingMessageId
+                    : targetMessageIdOverride
             let targetMessageIndex = targetMessageId
                 ? chatMessages.findIndex((message) => message.id === targetMessageId)
                 : -1
@@ -1530,12 +1560,48 @@
                     const messageId = (block as ToolResultBlockParam & { message_id?: string })
                         .message_id
                     if (!messageId) {
-                        missingStreamMessageId('tool-result-message')
+                        pendingToolResults.push({
+                            block,
+                            targetMessageId: activeStreamingMessageId,
+                        })
                         return
                     }
                     const displayPath = getDisplayPath(chatMessages)
                     const toolParentId =
-                        displayPath.length > 0 ? displayPath[displayPath.length - 1].id : undefined
+                        targetMessageId ??
+                        (displayPath.length > 0
+                            ? displayPath[displayPath.length - 1].id
+                            : undefined)
+                    const existingToolResultIndex = chatMessages.findIndex(
+                        (message) => message.id === messageId,
+                    )
+                    const targetIsActive = targetMessageId === activeStreamingMessageId
+                    if (existingToolResultIndex !== -1) {
+                        const existingToolResult = chatMessages[existingToolResultIndex]
+                        if (
+                            existingToolResult.message.role !== 'user' ||
+                            !Array.isArray(existingToolResult.message.content)
+                        ) {
+                            throw new Error(`Message id ${messageId} is not a tool-result message`)
+                        }
+                        chatMessages = [
+                            ...chatMessages.slice(0, existingToolResultIndex),
+                            {
+                                ...existingToolResult,
+                                message: {
+                                    ...existingToolResult.message,
+                                    content: [...existingToolResult.message.content, block],
+                                },
+                            },
+                            ...chatMessages.slice(existingToolResultIndex + 1),
+                        ]
+                        if (targetIsActive) {
+                            activeStreamingMessageId = existingToolResult.id
+                            selectBranch(existingToolResult.parentId, existingToolResult.id)
+                        }
+                        return
+                    }
+
                     const toolResultMessage: ChatMessage = {
                         id: messageId,
                         chatId,
@@ -1550,8 +1616,28 @@
                         createdAt: new Date(),
                     }
                     chatMessages = [...chatMessages, toolResultMessage]
-                    activeStreamingMessageId = toolResultMessage.id
-                    selectBranch(toolResultMessage.parentId, toolResultMessage.id)
+                    if (targetIsActive) {
+                        activeStreamingMessageId = toolResultMessage.id
+                        selectBranch(toolResultMessage.parentId, toolResultMessage.id)
+                    } else {
+                        // A follow-up assistant message may have started before the
+                        // previous tool-result id arrived. Reparent that in-flight
+                        // response beneath the newly materialized tool-result row.
+                        const activeMessage = activeStreamingMessageId
+                            ? chatMessages.find(
+                                  (message) => message.id === activeStreamingMessageId,
+                              )
+                            : undefined
+                        if (activeMessage?.parentId === targetMessageId) {
+                            chatMessages = chatMessages.map((message) =>
+                                message.id === activeMessage.id
+                                    ? { ...message, parentId: toolResultMessage.id }
+                                    : message,
+                            )
+                            selectBranch(toolResultMessage.parentId, toolResultMessage.id)
+                            selectBranch(toolResultMessage.id, activeMessage.id)
+                        }
+                    }
                 }
 
                 return
@@ -1590,6 +1676,17 @@
                 streamLastEventId = event.lastEventId || streamLastEventId
                 lastStreamEventAt = Date.now()
                 reconnectAttempts = 0
+
+                const messageId = (event as MessageEvent<string>).data.trim()
+                if (!messageId || pendingToolResults.length === 0) return
+                const pending = pendingToolResults.splice(0)
+                for (const { block, targetMessageId } of pending) {
+                    collectStreamingResponse(
+                        { ...block, message_id: messageId } as ToolResultBlockParam,
+                        undefined,
+                        targetMessageId,
+                    )
+                }
             })
 
             eventSource.addEventListener('not_resumable', () => {
@@ -2541,8 +2638,9 @@
             class="flex h-full w-full flex-col overflow-x-hidden overflow-y-auto px-4 pt-6">
             <div
                 bind:this={chatContentRef}
-                class="mx-auto flex w-full max-w-4xl min-w-0 flex-1 flex-col gap-1"
-                style:padding-bottom="{bottomPadding}px">
+                data-testid="chat-content"
+                class="mx-auto flex w-full max-w-4xl min-w-0 flex-1 flex-col gap-1 pb-20"
+                style:padding-bottom={bottomPadding !== null ? `${bottomPadding}px` : undefined}>
                 {#if data.agent}
                     <div
                         class="bg-muted/50 mb-4 flex items-center justify-between rounded-lg border px-4 py-2">
@@ -2598,7 +2696,10 @@
                                         (Boolean(error) && i === processedMessages.length - 1)}
                                     startedAt={message.startedAt}
                                     completedAt={message.completedAt}
-                                    onOAuthComplete={() => streamResponse(data.chat.id)} />
+                                    onOAuthComplete={() => streamResponse(data.chat.id)}
+                                    {thinkingText}
+                                    isPaused={(Boolean(pendingApproval) || oauthBlockerActive) &&
+                                        i === processedMessages.length - 1} />
                             </div>
                             {#if message.error}
                                 <div class="flex px-2">
@@ -2632,7 +2733,7 @@
                                     .slice(1)
                                     .join('__')}
                                 {@const connectorIcon = getSourceIconPath(connectorName)}
-                                <Card.Root class="gap-0 overflow-hidden py-0">
+                                <Card.Root class="mt-3 gap-0 overflow-hidden py-0">
                                     <!-- Header -->
                                     <Card.Header
                                         class="flex items-center gap-3 border-b px-5 py-3 [.border-b]:py-3">
@@ -2779,9 +2880,6 @@
                                     i !== processedMessages.length - 1 &&
                                         'opacity-0 transition-opacity group-hover:opacity-100',
                                 )}>
-                                {#if message.siblingIds && message.siblingIds.length > 1}
-                                    {@render branchNavigation(message)}
-                                {/if}
                                 {#if !(isStreaming && i === processedMessages.length - 1) && !(error && i === processedMessages.length - 1)}
                                     {@render messageControls(message)}
                                 {/if}
@@ -2794,7 +2892,7 @@
                     {@const connectorName = pendingApproval.tool_name.split('__')[0]}
                     {@const actionName = pendingApproval.tool_name.split('__').slice(1).join('__')}
                     {@const connectorIcon = getSourceIconPath(connectorName)}
-                    <Card.Root class="gap-0 overflow-hidden py-0">
+                    <Card.Root class="mt-3 gap-0 overflow-hidden py-0">
                         <Card.Header
                             class="flex items-center gap-3 border-b px-5 py-3 [.border-b]:py-3">
                             {#if connectorIcon}
@@ -2899,20 +2997,8 @@
                                 {/if}
                             </Alert.Root>
                         {:else if isStreaming}
-                            <span class="thinking-container mt-2 flex items-center gap-1.5">
-                                <img
-                                    src={themeStore.current.omniLogoLight}
-                                    alt="Thinking"
-                                    class="omni-logo-light thinking-logo rounded opacity-60"
-                                    width="20"
-                                    height="20" />
-                                <img
-                                    src={themeStore.current.omniLogoDark}
-                                    alt="Thinking"
-                                    class="omni-logo-dark thinking-logo rounded opacity-60"
-                                    width="20"
-                                    height="20" />
-                                <span class="text-muted-foreground text-sm">{thinkingText}...</span>
+                            <span class="mt-2">
+                                <ThinkingIndicator text={thinkingText} />
                             </span>
                         {/if}
                     </div>
@@ -2987,45 +3073,3 @@
         </div>
     </div>
 </div>
-
-<style>
-    @keyframes shine-sweep {
-        0% {
-            left: -100%;
-        }
-        100% {
-            left: 200%;
-        }
-    }
-
-    .thinking-container {
-        position: relative;
-        overflow: hidden;
-    }
-
-    .thinking-container::after {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 50%;
-        height: 100%;
-        background: linear-gradient(
-            120deg,
-            transparent 0%,
-            rgba(255, 255, 255, 0.6) 50%,
-            transparent 100%
-        );
-        animation: shine-sweep 2s ease-in-out infinite;
-        pointer-events: none;
-    }
-
-    :global(.dark) .thinking-container::after {
-        background: linear-gradient(
-            120deg,
-            transparent 0%,
-            rgba(255, 255, 255, 0.3) 50%,
-            transparent 100%
-        );
-    }
-</style>
