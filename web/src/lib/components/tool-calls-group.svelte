@@ -94,7 +94,6 @@
     let canCollapseWork = $derived(
         !isStreaming &&
             !hasError &&
-            !hasToolError &&
             hasFinalResponse &&
             allToolsComplete &&
             hasCollapsibleWork,
