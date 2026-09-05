@@ -107,7 +107,7 @@ class ModelsRepository:
                    mp.provider_type, mp.config, mp.updated_at AS provider_updated_at
             FROM models m
             JOIN model_providers mp ON m.model_provider_id = mp.id
-            WHERE m.id = $1
+            WHERE m.id = $1 AND mp.is_deleted = FALSE
         """
         async with pool.acquire() as conn:
             row = await conn.fetchrow(query, model_id)

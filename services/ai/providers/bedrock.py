@@ -2,6 +2,7 @@
 AWS Bedrock Provider for Claude models.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -9,7 +10,7 @@ from collections.abc import AsyncIterator
 from typing import Any, ClassVar, cast
 
 import boto3
-from anthropic import APIStatusError, AnthropicBedrock
+from anthropic import APIStatusError, AsyncAnthropicBedrock as AnthropicBedrock
 from anthropic.types import (
     MessageParam,
     Message,
@@ -46,6 +47,16 @@ from .anthropic_message_adapter import (
 from .types import ProviderError, ProviderType
 
 logger = logging.getLogger(__name__)
+
+_STREAM_END = object()
+
+
+def _next_stream_item(iterator: Any) -> Any:
+    """Read one sync stream item without propagating StopIteration via a Future."""
+    try:
+        return next(iterator)
+    except StopIteration:
+        return _STREAM_END
 
 
 def sanitize_document_name(name: str) -> str:
@@ -500,9 +511,12 @@ class BedrockProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int | None = None,
         system_prompt: str | None = None,
+        *,
+        model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from AWS Bedrock models."""
         try:
+            active_model = model or self.model_id
             if self.model_family == "anthropic":
                 msg_list = (
                     build_messages_for_anthropic_api(cast(list[MessageParam], messages))
@@ -512,7 +526,7 @@ class BedrockProvider(LLMProvider):
 
                 # Prepare the request body for Claude models
                 request_params: dict[str, Any] = {
-                    "model": self.model_id,
+                    "model": active_model,
                     "messages": msg_list,
                     "max_tokens": max_tokens or 4096,
                     "stream": True,
@@ -528,7 +542,7 @@ class BedrockProvider(LLMProvider):
                     logger.info(f"[BEDROCK] Sending request without tools")
 
                 logger.info(
-                    f"[BEDROCK] Model: {self.model_id}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
+                    f"[BEDROCK] Model: {active_model}, Messages: {len(msg_list)}, Max tokens: {request_params['max_tokens']}"
                 )
                 logger.debug(
                     f"[BEDROCK] Full request body: {json.dumps({k: v for k, v in request_params.items() if k != 'messages'}, indent=2)}"
@@ -537,19 +551,19 @@ class BedrockProvider(LLMProvider):
 
                 # Invoke with streaming response
                 logger.info(
-                    f"[BEDROCK] Invoking model {self.model_id} with streaming response"
+                    f"[BEDROCK] Invoking model {active_model} with streaming response"
                 )
 
                 if system_prompt:
                     request_params["system"] = system_prompt
 
-                stream = self.client.messages.create(**request_params)
+                stream = await self.client.messages.create(**request_params)
 
                 logger.info(
                     f"[BEDROCK] Stream created successfully, starting to process events"
                 )
                 event_count = 0
-                for event in stream:
+                async for event in stream:
                     event_count += 1
                     logger.debug(f"[ANTHROPIC] Event {event_count}: {event.type}")
                     if event.type == "content_block_start":
@@ -622,11 +636,18 @@ class BedrockProvider(LLMProvider):
                 if tools:
                     request_params["toolConfig"] = {"tools": tools}
 
-                response = self.client.converse_stream(**request_params)
+                response = await asyncio.to_thread(
+                    self.client.converse_stream,
+                    **request_params,
+                )
 
                 logger.info(f"[BEDROCK-AMAZON] Stream created, processing chunks")
                 chunk_count = 0
-                for chunk in response["stream"]:
+                iterator = iter(response["stream"])
+                while True:
+                    chunk = await asyncio.to_thread(_next_stream_item, iterator)
+                    if chunk is _STREAM_END:
+                        break
                     chunk_count += 1
                     logger.debug(
                         f"[BEDROCK-AMAZON] Chunk {chunk_count}: {list(chunk.keys())}"
@@ -683,7 +704,7 @@ class BedrockProvider(LLMProvider):
                 }
 
                 # Invoke the model
-                message = self.client.messages.create(**request_params)
+                message = await self.client.messages.create(**request_params)
 
                 usage = TokenUsage(
                     input_tokens=message.usage.input_tokens,
@@ -708,7 +729,8 @@ class BedrockProvider(LLMProvider):
             elif self.model_family == "amazon":
                 conversation = [{"role": "user", "content": [{"text": prompt}]}]
 
-                response = self.client.converse(
+                response = await asyncio.to_thread(
+                    self.client.converse,
                     modelId=active_model,
                     messages=conversation,
                     inferenceConfig={
@@ -744,19 +766,24 @@ class BedrockProvider(LLMProvider):
         """Check if AWS Bedrock service is accessible."""
         try:
             active_model = model or self.model_id
-            # Try a minimal request to check service accessibility
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "Hello"}],
-            }
-
-            response = self.client.invoke_model(
-                modelId=active_model,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
-            )
+            # Use the same async/synchronous client path as normal requests.
+            if self.model_family == "anthropic":
+                await self.client.messages.create(
+                    model=active_model,
+                    messages=[{"role": "user", "content": "Hello"}],
+                    max_tokens=1,
+                )
+            elif self.model_family == "amazon":
+                await asyncio.to_thread(
+                    self.client.converse,
+                    modelId=active_model,
+                    messages=[
+                        {"role": "user", "content": [{"text": "Hello"}]}
+                    ],
+                    inferenceConfig={"maxTokens": 1},
+                )
+            else:
+                return False
             return True
         except Exception:
             return False
