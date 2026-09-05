@@ -39,14 +39,39 @@ class _RecordingMessagesClient:
     def __init__(self) -> None:
         self.request_params = None
 
-    def create(self, **kwargs):
+    async def create(self, **kwargs):
         self.request_params = kwargs
-        return []
+
+        async def empty_stream():
+            if False:
+                yield None
+
+        return empty_stream()
 
 
 class _RecordingAnthropicBedrockClient:
     def __init__(self) -> None:
         self.messages = _RecordingMessagesClient()
+
+
+class _RecordingAmazonBedrockClient:
+    def __init__(self) -> None:
+        self.request_params = None
+
+    def converse_stream(self, **kwargs):
+        self.request_params = kwargs
+        return {
+            "stream": iter(
+                [
+                    {
+                        "contentBlockDelta": {
+                            "contentBlockIndex": 0,
+                            "delta": {"text": "hello"},
+                        }
+                    }
+                ]
+            )
+        }
 
 
 @pytest.mark.asyncio
@@ -78,6 +103,19 @@ async def test_anthropic_stream_sanitizes_search_result_extras_without_mutating_
     internal_search_result = messages[0]["content"][0]["content"][0]
     assert internal_search_result["source_type"] == "jira"
     assert internal_search_result["internal_extra"] == "must-not-be-sent"
+
+
+@pytest.mark.asyncio
+async def test_amazon_stream_bridges_synchronous_bedrock_iterator():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    provider.model_id = "amazon.nova-lite-v1:0"
+    provider.model_family = "amazon"
+    provider.client = _RecordingAmazonBedrockClient()
+
+    events = [event async for event in provider.stream_response(prompt="hello")]
+
+    assert [event.delta.text for event in events] == ["hello"]
+    assert provider.client.request_params["modelId"] == "amazon.nova-lite-v1:0"
 
 
 def test_amazon_message_adapter_does_not_forward_search_result_extras():

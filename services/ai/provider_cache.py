@@ -3,23 +3,21 @@
 Replaces the old in-memory ``app_state.models`` dict that could silently
 drift from the database.  On every request we read the model record (and
 its provider row) from the DB.  The SDK client instance (httpx connection
-pool) is cached by ``model_provider_id`` and reused across requests.
+pool) is cached by model record and reused across requests.
 
-Staleness: the cached entry stores the provider row's ``updated_at``
-timestamp.  If the DB row is newer (admin edited config / rotated key),
-the cached client is discarded and rebuilt automatically.
+Staleness: the cached entry stores the model and provider ``updated_at``
+timestamps. If either DB row is newer, the cached client is discarded and
+rebuilt automatically.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
-from providers import LLMProvider, ProviderType
-from providers.types import ProviderError
+from providers import LLMProvider
 from db.model_providers import ModelsRepository, ModelRecord
 
 logger = logging.getLogger(__name__)
@@ -29,8 +27,7 @@ logger = logging.getLogger(__name__)
 class ResolvedModel:
     """Result of resolving a model record to a provider client.
 
-    ``provider`` — the cached SDK client (connection pool), shared across
-    all model records under the same provider config.
+    ``provider`` — the cached SDK client for this model record.
     ``model_record_id`` — the ``models.id`` to use in usage tracking.
     ``model_name`` — the wire model string (e.g. ``"claude-haiku-4-5"``)
     to pass into ``stream_response(…, model=…)``.
@@ -44,11 +41,13 @@ class ResolvedModel:
 @dataclass
 class _CachedEntry:
     provider: LLMProvider
+    model_provider_id: str
     provider_updated_at: datetime | None
+    model_updated_at: datetime
 
 
 class ProviderCache:
-    """Cache of LLMProvider SDK clients, keyed by ``model_provider_id``.
+    """Cache of LLMProvider SDK clients, keyed by model record ID.
 
     The database is the source of truth for *which models exist* and *which*
     model to use.  This cache only prevents re-building the httpx connection
@@ -60,7 +59,7 @@ class ProviderCache:
         self._lock = asyncio.Lock()
 
     def _cache_key(self, record: ModelRecord) -> str:
-        return record.model_provider_id
+        return record.id
 
     async def resolve_for_model(self, model_record_id: str) -> ResolvedModel | None:
         """Resolve a model record id to a ``ResolvedModel``.
@@ -116,10 +115,9 @@ class ProviderCache:
     async def _get_or_build(self, record: ModelRecord) -> LLMProvider | None:
         """Return a cached or freshly-built provider for a model record.
 
-        Thread-safe: concurrent callers for the same provider id will
-        serialise on ``_lock`` (intended for burst startup, not steady
-        state — the first call builds the client; subsequent calls find
-        a fresh-enough entry and skip the lock).
+        Thread-safe: concurrent callers for the same model will serialise
+        on ``_lock`` (intended for burst startup, not steady state — the
+        first call builds the client; subsequent calls find a fresh entry).
         """
         key = self._cache_key(record)
 
@@ -140,7 +138,9 @@ class ProviderCache:
 
             self._cache[key] = _CachedEntry(
                 provider=provider,
+                model_provider_id=record.model_provider_id,
                 provider_updated_at=record.provider_updated_at,
+                model_updated_at=record.updated_at,
             )
             logger.info(
                 "Cached provider %s (type=%s, model=%s)",
@@ -149,8 +149,14 @@ class ProviderCache:
             return provider
 
     def invalidate(self, model_provider_id: str) -> None:
-        """Explicitly drop a cached entry (e.g. after admin config edit)."""
-        self._cache.pop(model_provider_id, None)
+        """Drop all cached models belonging to a provider configuration."""
+        keys = [
+            key
+            for key, entry in self._cache.items()
+            if entry.model_provider_id == model_provider_id
+        ]
+        for key in keys:
+            self._cache.pop(key)
 
     def clear(self) -> None:
         """Drop all cached providers (e.g. on full reload)."""
@@ -162,7 +168,10 @@ def _entry_is_fresh(entry: _CachedEntry, record: ModelRecord) -> bool:
     if entry.provider_updated_at is None or record.provider_updated_at is None:
         # No timestamps available — assume stale and rebuild.
         return False
-    return entry.provider_updated_at == record.provider_updated_at
+    return (
+        entry.provider_updated_at == record.provider_updated_at
+        and entry.model_updated_at == record.updated_at
+    )
 
 
 def _build_provider_from_record(record: ModelRecord) -> LLMProvider | None:
