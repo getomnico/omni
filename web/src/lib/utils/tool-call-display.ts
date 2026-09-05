@@ -77,6 +77,53 @@ export function isToolCallComplete(message: ToolMessageContent): boolean {
     return message.status !== 'running'
 }
 
+export type StreamingWorkPartition = {
+    collapseActive: boolean
+    collapsed: ToolCallDisplayItem[]
+    visible: ToolCallDisplayItem[]
+    previousStepsCount: number
+}
+
+function isGroupComplete(group: ToolCallDisplayGroup): boolean {
+    return group.messages.every((message) => isToolCallComplete(message))
+}
+
+/**
+ * While a multi-round agent run is live (streaming, or paused on an
+ * approval/OAuth card that keeps the run open), keep only the newest steps
+ * expanded and fold older completed work into a "N previous steps" section.
+ * Once the run finishes the caller switches to the single "Worked for X
+ * seconds" collapse instead.
+ */
+export function partitionStreamingWork(
+    items: ToolCallDisplayItem[],
+    isLive: boolean,
+): StreamingWorkPartition {
+    const noCollapse: StreamingWorkPartition = {
+        collapseActive: false,
+        collapsed: [],
+        visible: items,
+        previousStepsCount: 0,
+    }
+    if (!isLive) return noCollapse
+
+    const toolGroupIndexes = items
+        .map((item, index) => (item.type === 'tools' ? index : -1))
+        .filter((index) => index !== -1)
+    // Keep up to four completed steps visible before folding older work, and
+    // leave the three latest steps expanded once folding starts.
+    if (toolGroupIndexes.length <= 4) return noCollapse
+
+    const visibleStart = toolGroupIndexes[toolGroupIndexes.length - 3]
+    const collapsed = items.slice(0, visibleStart)
+    const visible = items.slice(visibleStart)
+    const previousStepsCount = collapsed.filter(
+        (item): item is Extract<ToolCallDisplayItem, { type: 'tools' }> =>
+            item.type === 'tools' && isGroupComplete(item.group),
+    ).length
+    return { collapseActive: true, collapsed, visible, previousStepsCount }
+}
+
 export function isToolCallFailed(message: ToolMessageContent): boolean {
     return message.status === 'failed'
 }
