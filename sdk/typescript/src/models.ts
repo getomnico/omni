@@ -198,7 +198,7 @@ export const OAuthManifestConfigSchema = z.object({
   provider: z.string(),
   auth_endpoint: z.string(),
   token_endpoint: z.string(),
-  userinfo_endpoint: z.string(),
+  userinfo_endpoint: z.string().optional(),
   userinfo_email_field: z.string().default('email'),
   identity_scopes: z.array(z.string()).default([]),
   scopes: z.record(OAuthScopeSetSchema).default({}),

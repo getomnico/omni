@@ -63,6 +63,10 @@ export class McpAdapter {
     );
   }
 
+  hasCachedAction(name: string): boolean {
+    return this.cachedActions?.some((action) => action.name === name) ?? false;
+  }
+
   clearCachedCatalog(): void {
     this.cachedActions = null;
     this.cachedResources = null;
@@ -135,6 +139,17 @@ export class McpAdapter {
         `${catalog.resources.length} resources, ` +
         `${catalog.prompts.length} prompts`
     );
+  }
+
+  async getActionDefinitionsLive(
+    env?: Record<string, string>,
+    headers?: Record<string, string>
+  ): Promise<ActionDefinition[]> {
+    const actions = await this.withSession(env, headers, (c) =>
+      this.fetchActions(c)
+    );
+    this.cachedActions = actions;
+    return actions;
   }
 
   async getActionDefinitions(

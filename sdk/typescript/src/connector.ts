@@ -145,8 +145,16 @@ export abstract class Connector<
       return manualActions;
     }
     const mcpActions = await adapter.getActionDefinitions();
+    const inheritedActions = mcpActions.map((action) =>
+      action.source_types.length === 0
+        ? { ...action, source_types: this.sourceTypes }
+        : action
+    );
     const manualNames = new Set(manualActions.map((a) => a.name));
-    return [...manualActions, ...mcpActions.filter((a) => !manualNames.has(a.name))];
+    return [
+      ...manualActions,
+      ...inheritedActions.filter((a) => !manualNames.has(a.name)),
+    ];
   }
 
   async getManifest(connectorUrl: string): Promise<ConnectorManifest> {
@@ -218,12 +226,28 @@ export abstract class Connector<
   ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
     if (adapter) {
-      const { env, headers } = this.prepareMcpAuth(credentials);
-      const mcpActions = await adapter.getActionDefinitions(env, headers);
-      const mcpToolNames = new Set(mcpActions.map((a) => a.name));
-      if (mcpToolNames.has(action)) {
-        const response = await adapter.executeTool(action, params, env, headers);
-        return response.toResponse();
+      try {
+        const { env, headers } = this.prepareMcpAuth(credentials);
+        const mcpActions = await adapter.getActionDefinitionsLive(env, headers);
+        const mcpAction = mcpActions.find((definition) => definition.name === action);
+        if (mcpAction) {
+          const sourceReadOnly = source?.config?.read_only === true;
+          if (sourceReadOnly && mcpAction.mode === 'write') {
+            return ActionResponse.failure(
+              `Action '${action}' is not allowed: source is read-only`
+            ).toResponse(400);
+          }
+          const response = await adapter.executeTool(action, params, env, headers);
+          return response.toResponse();
+        }
+      } catch (err) {
+        if (adapter.hasCachedAction(action)) {
+          const message = err instanceof Error ? err.message : String(err);
+          return ActionResponse.failure(
+            `MCP action '${action}' could not be validated: ${message}`
+          ).toResponse(400);
+        }
+        logger.warn({ err }, `MCP action lookup failed for ${action}`);
       }
     }
     return ActionResponse.notSupported(action).toResponse(404);

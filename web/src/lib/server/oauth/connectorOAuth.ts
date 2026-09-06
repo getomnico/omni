@@ -31,7 +31,7 @@ export interface OAuthManifestConfig {
     provider: string
     auth_endpoint: string
     token_endpoint: string
-    userinfo_endpoint: string
+    userinfo_endpoint?: string
     userinfo_email_field: string
     identity_scopes: string[]
     scopes: Record<string, { read: string[]; write: string[] }>
@@ -273,7 +273,8 @@ async function readCredentialText(_provider: string, response: Response): Promis
 async function validateRemoteMcpOAuthConfigUrls(config: OAuthManifestConfig): Promise<void> {
     if (!isAdminConfiguredEndpointProvider(config.provider)) return
     const internalOrigin = windshiftInternalOrigin(config)
-    const endpoints = [config.auth_endpoint, config.token_endpoint, config.userinfo_endpoint]
+    const endpoints = [config.auth_endpoint, config.token_endpoint]
+    if (config.userinfo_endpoint) endpoints.push(config.userinfo_endpoint)
     if (config.registration_endpoint) endpoints.push(config.registration_endpoint)
     if (config.resource) endpoints.push(config.resource)
     if (config.protected_resource_metadata_url) {
@@ -354,7 +355,7 @@ export function dynamicRegistrationPayload(provider: string, redirectUri: string
         client_name: `Omni ${providerName} MCP`,
         redirect_uris: [redirectUri],
         grant_types:
-            provider === 'windshift'
+            provider === 'windshift' || provider === 'atlassian'
                 ? ['authorization_code', 'refresh_token']
                 : ['authorization_code'],
         response_types: ['code'],
@@ -785,6 +786,12 @@ export async function exchangeCodeAndIdentify(
             flow: state.metadata.flow.type,
         })
         return { tokens, state, config, principalEmail: principalEmailOverride, clientCreds: creds }
+    }
+
+    if (!config.userinfo_endpoint) {
+        throw new Error(
+            `OAuth provider ${config.provider} does not advertise userinfo; a trusted principal identity override is required`,
+        )
     }
 
     const userinfoResp = await remoteMcpCredentialFetch(

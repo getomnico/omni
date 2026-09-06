@@ -1571,7 +1571,7 @@ impl Connector for GoogleConnector {
             provider: "google".to_string(),
             auth_endpoint: "https://accounts.google.com/o/oauth2/v2/auth".to_string(),
             token_endpoint: "https://oauth2.googleapis.com/token".to_string(),
-            userinfo_endpoint: "https://www.googleapis.com/oauth2/v3/userinfo".to_string(),
+            userinfo_endpoint: Some("https://www.googleapis.com/oauth2/v3/userinfo".to_string()),
             userinfo_email_field: "email".to_string(),
             identity_scopes: vec!["email".to_string(), "profile".to_string()],
             scopes,

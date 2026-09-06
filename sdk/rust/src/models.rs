@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 pub use shared::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials, PromptRequest,
     ResourceRequest, SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
@@ -20,9 +21,11 @@ pub struct OAuthManifestConfig {
     pub provider: String,
     pub auth_endpoint: String,
     pub token_endpoint: String,
-    /// GET endpoint that returns a JSON object with the authenticated user's
-    /// email at `userinfo_email_field`.
-    pub userinfo_endpoint: String,
+    /// Optional GET endpoint that returns the authenticated user's email at
+    /// `userinfo_email_field`. Providers without a userinfo endpoint must use
+    /// an explicit trusted identity binding in the OAuth callback.
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
     #[serde(default = "default_email_field")]
     pub userinfo_email_field: String,
     /// Identity-only scopes always added to every authorization request
@@ -77,6 +80,20 @@ pub struct OAuthScopeSet {
     pub read: Vec<String>,
     #[serde(default)]
     pub write: Vec<String>,
+}
+
+/// Notification sent by connector-manager after a user OAuth credential is
+/// stored. Native MCP connectors use it to perform authenticated discovery
+/// and return a refreshed manifest.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialReadyRequest {
+    pub source_id: String,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    pub provider: String,
+    pub flow: String,
+    #[serde(default)]
+    pub credentials: JsonValue,
 }
 
 fn default_email_field() -> String {

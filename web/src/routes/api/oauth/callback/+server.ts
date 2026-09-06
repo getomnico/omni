@@ -70,6 +70,9 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         exchange = await exchangeCodeAndIdentify(code, stateToken, {
             principalEmailOverrides: {
                 clickup: user.email,
+                // Rovo has no userinfo endpoint. This value is the signed-in
+                // Omni user's identity, not callback-provided provider data.
+                atlassian: user.email,
                 ...(pendingProvider?.startsWith('remote_mcp:')
                     ? { [pendingProvider]: user.email }
                     : {}),

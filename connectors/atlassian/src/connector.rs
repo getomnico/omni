@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionMode, ActionResponse, Connector, SearchOperator, ServiceCredential,
-    Source, SourceType, SyncContext, SyncType,
+    ActionDefinition, ActionMode, ActionResponse, Connector, HttpMcpServer, McpCredentials,
+    McpServer, OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod, SearchOperator,
+    ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use tracing::info;
 
 use crate::auth::{AtlassianCredentials, AuthManager};
@@ -21,8 +23,70 @@ pub struct AtlassianConnector {
 }
 
 impl AtlassianConnector {
+    pub const ROVO_MCP_URL: &'static str = "https://mcp.atlassian.com/v1/mcp";
+    pub const ROVO_AUTH_URL: &'static str = "https://mcp.atlassian.com/v1/authorize";
+    pub const ROVO_TOKEN_URL: &'static str = "https://mcp.atlassian.com/v1/token";
+    pub const ROVO_REGISTER_URL: &'static str = "https://mcp.atlassian.com/v1/register";
+    pub const ROVO_PROVIDER: &'static str = "atlassian";
+
     pub fn new(sync_manager: Arc<SyncManager>) -> Self {
         Self { sync_manager }
+    }
+
+    fn rovo_scopes() -> HashMap<String, OAuthScopeSet> {
+        HashMap::from([
+            (
+                "confluence".to_string(),
+                OAuthScopeSet {
+                    read: vec!["read:confluence-content.all".to_string()],
+                    write: vec![
+                        "read:confluence-content.all".to_string(),
+                        "write:confluence-content".to_string(),
+                    ],
+                },
+            ),
+            (
+                "jira".to_string(),
+                OAuthScopeSet {
+                    read: vec!["read:jira-work".to_string()],
+                    write: vec!["read:jira-work".to_string(), "write:jira-work".to_string()],
+                },
+            ),
+        ])
+    }
+
+    fn rovo_oauth_config() -> OAuthManifestConfig {
+        OAuthManifestConfig {
+            provider: Self::ROVO_PROVIDER.to_string(),
+            auth_endpoint: Self::ROVO_AUTH_URL.to_string(),
+            token_endpoint: Self::ROVO_TOKEN_URL.to_string(),
+            userinfo_endpoint: None,
+            userinfo_email_field: "email".to_string(),
+            identity_scopes: vec![],
+            scopes: Self::rovo_scopes(),
+            extra_auth_params: HashMap::from([(
+                "resource".to_string(),
+                Self::ROVO_MCP_URL.to_string(),
+            )]),
+            scope_separator: " ".to_string(),
+            enrich_endpoint: None,
+            registration_endpoint: Some(Self::ROVO_REGISTER_URL.to_string()),
+            token_endpoint_auth_method: OAuthTokenEndpointAuthMethod::None,
+            resource: Some(Self::ROVO_MCP_URL.to_string()),
+        }
+    }
+
+    fn rovo_headers(credentials: &McpCredentials) -> Result<HashMap<String, String>> {
+        let access_token = credentials
+            .credentials
+            .get("access_token")
+            .and_then(|value| value.as_str())
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| anyhow!("Rovo MCP requires a per-user OAuth access_token"))?;
+        Ok(HashMap::from([(
+            "Authorization".to_string(),
+            format!("Bearer {access_token}"),
+        )]))
     }
 }
 
@@ -54,6 +118,21 @@ impl Connector for AtlassianConnector {
 
     fn sync_modes(&self) -> Vec<SyncType> {
         vec![SyncType::Full, SyncType::Incremental]
+    }
+
+    fn mcp_server(&self) -> Option<McpServer> {
+        Some(McpServer::Http(HttpMcpServer::new(Self::ROVO_MCP_URL)))
+    }
+
+    async fn prepare_mcp_headers(
+        &self,
+        credentials: &McpCredentials,
+    ) -> Result<HashMap<String, String>> {
+        AtlassianConnector::rovo_headers(credentials)
+    }
+
+    fn oauth_config(&self) -> Option<OAuthManifestConfig> {
+        Some(Self::rovo_oauth_config())
     }
 
     fn actions(&self) -> Vec<ActionDefinition> {
@@ -238,5 +317,54 @@ pub async fn handle_search_spaces(
             "Invalid type: {}. Must be 'confluence' or 'jira'",
             search_type
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rovo_oauth_uses_direct_public_client_endpoints() {
+        let config = AtlassianConnector::rovo_oauth_config();
+        assert_eq!(config.provider, "atlassian");
+        assert_eq!(config.auth_endpoint, AtlassianConnector::ROVO_AUTH_URL);
+        assert_eq!(config.token_endpoint, AtlassianConnector::ROVO_TOKEN_URL);
+        assert_eq!(
+            config.registration_endpoint.as_deref(),
+            Some(AtlassianConnector::ROVO_REGISTER_URL)
+        );
+        assert_eq!(
+            config.resource.as_deref(),
+            Some(AtlassianConnector::ROVO_MCP_URL)
+        );
+        assert_eq!(config.userinfo_endpoint, None);
+        assert_eq!(
+            config.token_endpoint_auth_method,
+            OAuthTokenEndpointAuthMethod::None
+        );
+        assert_eq!(
+            config.extra_auth_params.get("resource").map(String::as_str),
+            Some(AtlassianConnector::ROVO_MCP_URL)
+        );
+    }
+
+    #[test]
+    fn rovo_headers_require_only_the_per_user_access_token() {
+        let headers = AtlassianConnector::rovo_headers(&McpCredentials {
+            credentials: json!({"access_token": "user-token", "sa_token": "must-not-be-used"}),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(headers.get("Authorization").unwrap(), "Bearer user-token");
+        assert!(
+            AtlassianConnector::rovo_headers(&McpCredentials {
+                credentials: json!({"sa_token": "service-token"}),
+                ..Default::default()
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("per-user OAuth access_token")
+        );
     }
 }

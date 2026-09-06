@@ -127,6 +127,18 @@ describe('OAuth connector helpers', () => {
             client_name: 'Omni ClickUp MCP',
             grant_types: ['authorization_code'],
         })
+
+        expect(
+            dynamicRegistrationPayload(
+                'atlassian',
+                'https://omni.example/api/oauth/callback',
+                'read:jira-work',
+            ),
+        ).toMatchObject({
+            client_name: 'Omni Atlassian MCP',
+            grant_types: ['authorization_code', 'refresh_token'],
+            token_endpoint_auth_method: 'none',
+        })
     })
 
     it('checks configured state based on token endpoint auth method', () => {

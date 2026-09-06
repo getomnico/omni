@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use rmcp::ServiceExt;
 use rmcp::model::{
     CallToolRequestParams, GetPromptRequestParams, PaginatedRequestParams, PromptMessageContent,
     RawContent, ReadResourceRequestParams, ResourceContents,
@@ -10,7 +11,6 @@ use rmcp::model::{
 use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
-use rmcp::ServiceExt;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ActionMode, McpPromptArgument, McpPromptDefinition, McpResourceDefinition,
@@ -90,9 +90,34 @@ type RmcpClient = RunningService<rmcp::RoleClient, ()>;
 
 impl McpAdapter {
     pub fn has_cached_catalog(&self) -> bool {
-        self.cached_actions.blocking_read().is_some()
-            || self.cached_resources.blocking_read().is_some()
-            || self.cached_prompts.blocking_read().is_some()
+        self.cached_actions
+            .try_read()
+            .map(|catalog| catalog.is_some())
+            .unwrap_or(false)
+            || self
+                .cached_resources
+                .try_read()
+                .map(|catalog| catalog.is_some())
+                .unwrap_or(false)
+            || self
+                .cached_prompts
+                .try_read()
+                .map(|catalog| catalog.is_some())
+                .unwrap_or(false)
+    }
+
+    pub async fn clear_cached_catalog(&self) {
+        *self.cached_actions.write().await = None;
+        *self.cached_resources.write().await = None;
+        *self.cached_prompts.write().await = None;
+    }
+
+    pub async fn has_cached_action(&self, name: &str) -> bool {
+        self.cached_actions
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|actions| actions.iter().any(|action| action.name == name))
     }
 
     pub fn new(server: McpServer) -> Self {
@@ -186,6 +211,18 @@ impl McpAdapter {
         *self.cached_resources.write().await = Some(resources);
         *self.cached_prompts.write().await = Some(prompts);
         Ok(())
+    }
+
+    pub async fn get_action_definitions_live(
+        &self,
+        env: Option<HashMap<String, String>>,
+        headers: Option<HashMap<String, String>>,
+    ) -> Result<Vec<ActionDefinition>> {
+        let client = self.connect(env, headers).await?;
+        let actions = fetch_actions(&client).await?;
+        let _ = client.cancel().await;
+        *self.cached_actions.write().await = Some(actions.clone());
+        Ok(actions)
     }
 
     pub async fn get_action_definitions(

@@ -242,6 +242,9 @@ describe('Connector MCP integration', () => {
     const actionNames = manifest.actions.map((a) => a.name);
     expect(actionNames).toContain('greet');
     expect(actionNames).toContain('add');
+    expect(manifest.actions.find((action) => action.name === 'greet')?.source_types).toEqual([
+      'mcp_test',
+    ]);
     expect(manifest.resources).toHaveLength(1);
     expect(manifest.prompts).toHaveLength(1);
   });

@@ -3,8 +3,9 @@ use crate::connector::{Connector, SyncRequestValidationError};
 use crate::context::SyncContext;
 use crate::mcp_adapter::{McpAdapter, McpServer};
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials, PromptRequest,
-    ResourceRequest, SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials,
+    OAuthCredentialReadyRequest, PromptRequest, ResourceRequest, SkillRequest, SkillResponse,
+    SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -179,6 +180,7 @@ where
         .route("/sync", post(trigger_sync::<C>))
         .route("/sync/:sync_run_id", get(sync_status::<C>))
         .route("/cancel", post(cancel_sync::<C>))
+        .route("/oauth/credential-ready", post(oauth_credential_ready::<C>))
         .route("/action", post(execute_action::<C>))
         .route("/resource", post(read_resource::<C>))
         .route("/prompt", post(get_prompt::<C>))
@@ -307,7 +309,16 @@ where
             Ok(mcp_actions) => {
                 let manual: std::collections::HashSet<String> =
                     manifest.actions.iter().map(|a| a.name.clone()).collect();
-                for action in mcp_actions {
+                for mut action in mcp_actions {
+                    if action.source_types.is_empty() {
+                        action.source_types = manifest
+                            .source_types
+                            .iter()
+                            .filter_map(|source_type| {
+                                SourceType::try_from(source_type.as_str()).ok()
+                            })
+                            .collect();
+                    }
                     if !manual.contains(&action.name) {
                         manifest.actions.push(action);
                     }
@@ -568,6 +579,47 @@ where
     )
 }
 
+async fn oauth_credential_ready<C>(
+    State(state): State<Arc<ServerState<C>>>,
+    Json(request): Json<OAuthCredentialReadyRequest>,
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)>
+where
+    C: Connector,
+{
+    let Some(adapter) = state.mcp_adapter() else {
+        return Ok((StatusCode::NO_CONTENT, "").into_response());
+    };
+
+    let credentials: McpCredentials =
+        serde_json::from_value(request.credentials).map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("Invalid MCP OAuth credentials: {error}")
+                })),
+            )
+        })?;
+    let (env, headers) = build_mcp_auth(&*state.connector, &credentials)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+        })?;
+
+    if let Err(error) = adapter.discover(env, headers).await {
+        adapter.clear_cached_catalog().await;
+        warn!("OAuth credential-ready MCP discovery failed: {error:#}");
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        ));
+    }
+
+    Ok(Json(build_manifest_with_mcp(&state).await).into_response())
+}
+
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<ActionRequest>,
@@ -597,21 +649,48 @@ where
             }
         };
         match adapter
-            .get_action_definitions(env.clone(), headers.clone())
+            .get_action_definitions_live(env.clone(), headers.clone())
             .await
         {
-            Ok(actions) if actions.iter().any(|a| a.name == request.action) => {
-                let response = adapter
-                    .execute_tool(&request.action, request.params.clone(), env, headers)
-                    .await;
-                let status = match response.status.as_str() {
-                    "success" => StatusCode::OK,
-                    _ => StatusCode::BAD_REQUEST,
-                };
-                return Ok(response.into_response_with_status(status));
+            Ok(actions) => {
+                if let Some(action) = actions.iter().find(|a| a.name == request.action) {
+                    let source_read_only = request
+                        .source
+                        .as_ref()
+                        .and_then(|source| source.config.get("read_only"))
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false);
+                    if (state.connector.read_only() || source_read_only)
+                        && action.mode == shared::models::ActionMode::Write
+                    {
+                        return Ok(ActionResponse::failure(format!(
+                            "Action '{}' is not allowed: source is read-only",
+                            request.action
+                        ))
+                        .into_response_with_status(StatusCode::BAD_REQUEST));
+                    }
+                    let response = adapter
+                        .execute_tool(&request.action, request.params.clone(), env, headers)
+                        .await;
+                    let status = match response.status.as_str() {
+                        "success" => StatusCode::OK,
+                        _ => StatusCode::BAD_REQUEST,
+                    };
+                    return Ok(response.into_response_with_status(status));
+                }
             }
-            Ok(_) => { /* not an MCP tool — fall through */ }
-            Err(e) => warn!("MCP action lookup failed; falling back to connector: {}", e),
+            Err(e) => {
+                // Never execute a cached MCP action after live validation fails.
+                // Falling through is safe only for connector-defined actions.
+                if adapter.has_cached_action(&request.action).await {
+                    return Ok(ActionResponse::failure(format!(
+                        "MCP action '{}' could not be validated: {}",
+                        request.action, e
+                    ))
+                    .into_response_with_status(StatusCode::BAD_REQUEST));
+                }
+                warn!("MCP action lookup failed; falling back to connector: {}", e);
+            }
         }
     }
 

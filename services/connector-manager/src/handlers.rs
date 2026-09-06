@@ -609,6 +609,16 @@ pub async fn execute_action(
         let action_admin_only = action_def.admin_only;
         let action_mode = action_def.mode;
 
+        // Native MCP tools are always user-authorized. Keep admin-only
+        // connector actions (such as Atlassian indexing helpers) on their
+        // existing org-credential path, but never dispatch an MCP action with
+        // an org service-account credential when there is no actor.
+        if manifest.mcp_enabled && !action_admin_only && request.user_id.is_none() {
+            return Err(ApiError::BadRequest(
+                "user_id is required for native MCP actions".to_string(),
+            ));
+        }
+
         // Generic read_only enforcement — the source config is the authority.
         let source_read_only = db_source
             .config
@@ -1201,17 +1211,61 @@ pub async fn read_resource(
             ))
         })?;
 
-    let cred_service = CredentialService::new(state.db_pool.clone());
-    let creds = cred_service
-        .get_owner_credential(&source)
+    let native_manifest = get_registered_manifests(&state.redis_client)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Credentials not found for source: {}",
-                request.source_id
-            ))
-        })?;
+        .into_iter()
+        .find(|manifest| {
+            manifest.integration_type == IntegrationType::Connector
+                && manifest.source_types.contains(&source.source_type)
+        });
+    let native_mcp = native_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.mcp_enabled);
+    if native_mcp && request.user_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "user_id is required for native MCP resources".to_string(),
+        ));
+    }
+
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = if native_mcp {
+        match resolve_credentials(
+            &cred_service,
+            &source.id,
+            request.user_id.as_deref(),
+            false,
+            true,
+        )
+        .await?
+        {
+            CredentialResolution::Resolved(credentials) => credentials,
+            CredentialResolution::NeedsUserAuth { provider } => {
+                return Err(ApiError::PreconditionFailedJson(json!({
+                    "error": "needs_user_auth",
+                    "source_id": source.id,
+                    "source_type": source.source_type,
+                    "provider": provider,
+                })));
+            }
+            CredentialResolution::NoCredentials => {
+                return Err(ApiError::NotFound(format!(
+                    "Credentials not found for source: {}",
+                    request.source_id
+                )));
+            }
+        }
+    } else {
+        cred_service
+            .get_owner_credential(&source)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Credentials not found for source: {}",
+                    request.source_id
+                ))
+            })?
+    };
 
     let client = ConnectorClient::new();
     let resource_request = ResourceRequest {
@@ -1286,17 +1340,61 @@ pub async fn get_prompt(
             ))
         })?;
 
-    let cred_service = CredentialService::new(state.db_pool.clone());
-    let creds = cred_service
-        .get_owner_credential(&source)
+    let native_manifest = get_registered_manifests(&state.redis_client)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?
-        .ok_or_else(|| {
-            ApiError::NotFound(format!(
-                "Credentials not found for source: {}",
-                request.source_id
-            ))
-        })?;
+        .into_iter()
+        .find(|manifest| {
+            manifest.integration_type == IntegrationType::Connector
+                && manifest.source_types.contains(&source.source_type)
+        });
+    let native_mcp = native_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.mcp_enabled);
+    if native_mcp && request.user_id.is_none() {
+        return Err(ApiError::BadRequest(
+            "user_id is required for native MCP prompts".to_string(),
+        ));
+    }
+
+    let cred_service = CredentialService::new(state.db_pool.clone());
+    let creds = if native_mcp {
+        match resolve_credentials(
+            &cred_service,
+            &source.id,
+            request.user_id.as_deref(),
+            false,
+            true,
+        )
+        .await?
+        {
+            CredentialResolution::Resolved(credentials) => credentials,
+            CredentialResolution::NeedsUserAuth { provider } => {
+                return Err(ApiError::PreconditionFailedJson(json!({
+                    "error": "needs_user_auth",
+                    "source_id": source.id,
+                    "source_type": source.source_type,
+                    "provider": provider,
+                })));
+            }
+            CredentialResolution::NoCredentials => {
+                return Err(ApiError::NotFound(format!(
+                    "Credentials not found for source: {}",
+                    request.source_id
+                )));
+            }
+        }
+    } else {
+        cred_service
+            .get_owner_credential(&source)
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!(
+                    "Credentials not found for source: {}",
+                    request.source_id
+                ))
+            })?
+    };
 
     let client = ConnectorClient::new();
     let prompt_request = PromptRequest {
@@ -1816,6 +1914,60 @@ fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> R
     Ok(())
 }
 
+async fn preserve_native_mcp_catalog(
+    conn: &mut redis::aio::MultiplexedConnection,
+    manifest: ConnectorManifest,
+) -> Result<ConnectorManifest, ApiError> {
+    if !manifest.mcp_enabled || manifest.mcp_catalog_loaded {
+        return Ok(manifest);
+    }
+
+    let key = format!("connector:manifest:{}", manifest.connector_id);
+    let Some(existing_json) = conn
+        .get::<_, Option<String>>(&key)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis read error: {}", e)))?
+    else {
+        return Ok(manifest);
+    };
+    let Ok(existing) = serde_json::from_str::<ConnectorManifest>(&existing_json) else {
+        return Ok(manifest);
+    };
+    if existing.integration_type != IntegrationType::Connector
+        || !existing.mcp_catalog_loaded
+        || existing.connector_id != manifest.connector_id
+    {
+        return Ok(manifest);
+    }
+
+    Ok(merge_native_mcp_catalog(manifest, existing))
+}
+
+fn merge_native_mcp_catalog(
+    mut manifest: ConnectorManifest,
+    existing: ConnectorManifest,
+) -> ConnectorManifest {
+    let names: std::collections::HashSet<String> = manifest
+        .actions
+        .iter()
+        .map(|action| action.name.clone())
+        .collect();
+    manifest.actions.extend(
+        existing
+            .actions
+            .into_iter()
+            .filter(|action| !names.contains(&action.name)),
+    );
+    if manifest.resources.is_empty() {
+        manifest.resources = existing.resources;
+    }
+    if manifest.prompts.is_empty() {
+        manifest.prompts = existing.prompts;
+    }
+    manifest.mcp_catalog_loaded = true;
+    manifest
+}
+
 pub async fn sdk_register(
     State(state): State<AppState>,
     Json(manifest): Json<ConnectorManifest>,
@@ -1841,7 +1993,17 @@ pub async fn sdk_register(
         )));
     }
 
-    let connector_id = &manifest.connector_id;
+    // Native MCP discovery needs per-user OAuth. On connector restart the
+    // first unauthenticated heartbeat is necessarily catalog-less; retain a
+    // previously authenticated catalog until live discovery replaces it.
+    let needs_mcp_catalog_recovery = manifest.mcp_enabled && !manifest.mcp_catalog_loaded;
+    let mut preserve_conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    let manifest = preserve_native_mcp_catalog(&mut preserve_conn, manifest).await?;
+    let connector_id = manifest.connector_id.clone();
 
     info!(
         "SDK: Registered connector '{}' (source_types: {:?}, url: {})",
@@ -1886,7 +2048,7 @@ pub async fn sdk_register(
     // to find an existing OAuth credential for one of its source types and
     // replay the credential-ready notification. This covers the case where the
     // connector was unavailable when OAuth completed.
-    if manifest.mcp_enabled && !manifest.mcp_catalog_loaded {
+    if needs_mcp_catalog_recovery {
         if let Some(provider) = manifest
             .oauth
             .as_ref()
@@ -3278,6 +3440,35 @@ mod tests {
             skills: Vec::new(),
             oauth: None,
         }
+    }
+
+    #[test]
+    fn native_mcp_registration_preserves_authenticated_catalog() {
+        let mut existing = manifest_with_action_schema(json!({}));
+        existing.mcp_enabled = true;
+        existing.mcp_catalog_loaded = true;
+        existing.actions[0].name = "rovo_search".to_string();
+        existing
+            .resources
+            .push(shared::models::McpResourceDefinition {
+                uri_template: "rovo://issue/{id}".to_string(),
+                name: "Issue".to_string(),
+                description: None,
+                mime_type: None,
+            });
+
+        let mut restarted = manifest_with_action_schema(json!({}));
+        restarted.mcp_enabled = true;
+        let merged = merge_native_mcp_catalog(restarted, existing);
+
+        assert!(merged.mcp_catalog_loaded);
+        assert!(
+            merged
+                .actions
+                .iter()
+                .any(|action| action.name == "rovo_search")
+        );
+        assert_eq!(merged.resources[0].name, "Issue");
     }
 
     #[test]
