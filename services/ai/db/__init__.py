@@ -4,7 +4,15 @@ from .configuration import ConfigurationRepository
 from .connection import close_db_pool, get_db_pool
 from .documents import ContentBlob, Document, DocumentsRepository
 from .embedding_providers import EmbeddingProviderRecord, EmbeddingProvidersRepository
-from .embedding_queue import EmbeddingQueueItem, EmbeddingQueueRepository, QueueStatus
+from .embedding_queue import (
+    DOCUMENT_EMBEDDING_MAX_ATTEMPTS,
+    DOCUMENT_EMBEDDING_PAYLOAD_VERSION,
+    DOCUMENT_EMBEDDING_TASK_TYPE,
+    EmbeddingQueueItem,
+    EmbeddingQueueRepository,
+    QueueStatus,
+    embedding_task,
+)
 from .embeddings import Embedding, EmbeddingsRepository
 from .messages import MessagesRepository
 from .model_providers import ModelProviderRecord, ModelProvidersRepository, ModelsRepository
@@ -59,6 +67,10 @@ __all__ = [
     "EmbeddingQueueRepository",
     "EmbeddingQueueItem",
     "QueueStatus",
+    "DOCUMENT_EMBEDDING_TASK_TYPE",
+    "DOCUMENT_EMBEDDING_PAYLOAD_VERSION",
+    "DOCUMENT_EMBEDDING_MAX_ATTEMPTS",
+    "embedding_task",
     "EmbeddingsRepository",
     "Embedding",
     "ModelProvidersRepository",

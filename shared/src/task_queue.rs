@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
@@ -61,6 +61,7 @@ pub struct Task {
     pub available_at: OffsetDateTime,
     pub weight: i64,
     pub concurrency_key: Option<String>,
+    pub deduplication_key: Option<String>,
     pub attempt_count: i32,
     pub max_attempts: i32,
     pub last_error: Option<String>,
@@ -95,6 +96,7 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for Task {
             available_at: row.try_get("available_at")?,
             weight: row.try_get("weight")?,
             concurrency_key: row.try_get("concurrency_key")?,
+            deduplication_key: row.try_get("deduplication_key")?,
             attempt_count: row.try_get("attempt_count")?,
             max_attempts: row.try_get("max_attempts")?,
             last_error: row.try_get("last_error")?,
@@ -110,7 +112,8 @@ impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for Task {
 }
 
 /// A task to enqueue. `id` defaults to a fresh ULID; producers that need
-/// idempotent retries must set it explicitly and reuse it.
+/// idempotent retries must set it explicitly and reuse it. An optional
+/// `deduplication_key` coalesces active work for the same task type.
 #[derive(Debug, Clone)]
 pub struct EnqueueTaskRequest {
     pub id: String,
@@ -121,6 +124,7 @@ pub struct EnqueueTaskRequest {
     pub available_at: OffsetDateTime,
     pub weight: i64,
     pub concurrency_key: Option<String>,
+    pub deduplication_key: Option<String>,
     pub max_attempts: i32,
 }
 
@@ -135,6 +139,7 @@ impl EnqueueTaskRequest {
             available_at: OffsetDateTime::now_utc(),
             weight: 1,
             concurrency_key: None,
+            deduplication_key: None,
             max_attempts: 3,
         }
     }
@@ -189,8 +194,8 @@ pub struct TaskStats {
 }
 
 /// Thin, strongly typed facade over the canonical task queue PostgreSQL
-/// functions created by migration 112. All queue semantics live in SQL so the
-/// Rust and Python facades can never drift apart.
+/// functions created by migrations 112 and 113. All queue semantics live in
+/// SQL so the Rust and Python facades can never drift apart.
 #[derive(Clone)]
 pub struct TaskQueue {
     pool: PgPool,
@@ -199,6 +204,15 @@ pub struct TaskQueue {
 impl TaskQueue {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn get(&self, task_id: &str) -> Result<Option<Task>> {
+        Ok(
+            sqlx::query_as::<_, Task>("SELECT * FROM tasks WHERE id = $1")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await?,
+        )
     }
 
     /// Enqueue tasks, returning only the rows that were actually inserted.
@@ -222,9 +236,11 @@ impl TaskQueue {
         let concurrency_keys: Vec<Option<String>> =
             tasks.iter().map(|t| t.concurrency_key.clone()).collect();
         let max_attempts: Vec<i32> = tasks.iter().map(|t| t.max_attempts).collect();
+        let deduplication_keys: Vec<Option<String>> =
+            tasks.iter().map(|t| t.deduplication_key.clone()).collect();
 
         let rows = sqlx::query_as::<_, Task>(
-            "SELECT * FROM task_enqueue_bulk($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "SELECT * FROM task_enqueue_bulk($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&ids)
         .bind(&task_types)
@@ -235,6 +251,7 @@ impl TaskQueue {
         .bind(&weights)
         .bind(&concurrency_keys)
         .bind(&max_attempts)
+        .bind(&deduplication_keys)
         .fetch_all(&self.pool)
         .await?;
 
@@ -242,7 +259,8 @@ impl TaskQueue {
     }
 
     /// Convenience wrapper around [`TaskQueue::enqueue_bulk`]. Re-enqueueing
-    /// an existing id is idempotent and returns the already-stored task.
+    /// an existing id, or an active matching deduplication key, returns the
+    /// already-stored task.
     pub async fn enqueue(&self, task: EnqueueTaskRequest) -> Result<Task> {
         let created = self.enqueue_bulk(std::slice::from_ref(&task)).await?;
         if let Some(row) = created.into_iter().next() {
@@ -252,7 +270,22 @@ impl TaskQueue {
             .bind(&task.id)
             .fetch_optional(&self.pool)
             .await?;
-        existing.ok_or_else(|| anyhow::anyhow!("task {} was not enqueued", task.id))
+        if let Some(existing) = existing {
+            return Ok(existing);
+        }
+        if let Some(deduplication_key) = &task.deduplication_key {
+            let existing = sqlx::query_as::<_, Task>(
+                "SELECT * FROM tasks WHERE task_type = $1 AND deduplication_key = $2 AND status IN ('pending', 'running')",
+            )
+            .bind(&task.task_type)
+            .bind(deduplication_key)
+            .fetch_optional(&self.pool)
+            .await?;
+            if let Some(existing) = existing {
+                return Ok(existing);
+            }
+        }
+        Err(anyhow::anyhow!("task {} was not enqueued", task.id))
     }
 
     /// Atomically claim a batch of tasks. Pass a pool, connection, or
@@ -441,6 +474,13 @@ fn validate_enqueue_task_request(task: &EnqueueTaskRequest) -> Result<()> {
     }
     if task.weight < 0 {
         bail!("task weight must be >= 0");
+    }
+    if task
+        .deduplication_key
+        .as_deref()
+        .is_some_and(|key| key.trim().is_empty())
+    {
+        bail!("deduplication_key must not be empty");
     }
     if task.max_attempts < 1 {
         bail!("max_attempts must be >= 1");

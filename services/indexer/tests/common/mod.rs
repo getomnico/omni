@@ -267,7 +267,10 @@ pub async fn wait_for_embedding_queue_entry(
     let result = timeout(timeout_duration, async {
         loop {
             let row: Option<(i64,)> =
-                sqlx::query_as("SELECT COUNT(*) FROM embedding_queue WHERE document_id = $1")
+                sqlx::query_as("SELECT COUNT(*) FROM tasks
+                     WHERE task_type = 'document_embedding'
+                       AND deduplication_key = $1
+                       AND status IN ('pending', 'running')")
                     .bind(document_id)
                     .fetch_optional(pool)
                     .await

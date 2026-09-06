@@ -14,10 +14,8 @@ Contract notes:
   write affects no rows) must stop processing the task.
 - Claim result order is not guaranteed by ``UPDATE ... RETURNING``; consumers
   that need order must sort the returned tasks.
-- Enqueue idempotency is per task id: producers retrying must reuse the same
-  ``EnqueueTaskRequest.id``. There is no generic deduplication key; logical work
-  coalescing is workload policy (enforced with task-specific indexes in the
-  workload migrations).
+- Enqueue idempotency is per task id, and an optional generic
+  ``deduplication_key`` coalesces active work for the same task type.
 - A non-null ``concurrency_key`` only serializes execution: multiple tasks may
   queue for the same key, but they run one at a time in oldest-task order.
 """
@@ -58,6 +56,7 @@ class Task:
     available_at: datetime
     weight: int
     concurrency_key: str | None
+    deduplication_key: str | None
     attempt_count: int
     max_attempts: int
     last_error: str | None
@@ -72,9 +71,12 @@ class Task:
     @classmethod
     def from_row(cls, row) -> "Task":
         data = dict(row)
+        data.setdefault("deduplication_key", None)
         data["status"] = TaskStatus(data["status"])
         if isinstance(data["payload"], str):
             data["payload"] = json.loads(data["payload"])
+        if not isinstance(data["payload"], dict):
+            raise ValueError("task payload must be a JSON object")
         return cls(**data)
 
 
@@ -91,6 +93,7 @@ class EnqueueTaskRequest:
     available_at: datetime | None = None
     weight: int = 1
     concurrency_key: str | None = None
+    deduplication_key: str | None = None
     max_attempts: int = 3
 
 
@@ -149,17 +152,28 @@ class TaskQueueRepository:
         return Task.from_row(row) if row else None
 
     async def enqueue(self, task: EnqueueTaskRequest) -> Task:
-        """Enqueue one task. Re-enqueueing an existing id is idempotent and
-        returns the already-stored task."""
+        """Enqueue one task, coalescing an active matching deduplication key."""
         created = await self.enqueue_bulk([task])
         if created:
             return created[0]
-        if task.id is None:
-            raise RuntimeError("task was not enqueued")
-        existing = await self.get(task.id)
-        if existing is None:
-            raise RuntimeError(f"task {task.id} was not enqueued")
-        return existing
+        if task.id is not None:
+            existing = await self.get(task.id)
+            if existing is not None:
+                return existing
+        if task.deduplication_key is not None:
+            pool = await self._get_pool()
+            row = await pool.fetchrow(
+                """
+                SELECT * FROM tasks
+                WHERE task_type = $1 AND deduplication_key = $2
+                  AND status IN ('pending', 'running')
+                """,
+                task.task_type,
+                task.deduplication_key,
+            )
+            if row:
+                return Task.from_row(row)
+        raise RuntimeError(f"task {task.id or '<generated>'} was not enqueued")
 
     async def enqueue_bulk(self, tasks: list[EnqueueTaskRequest]) -> list[Task]:
         """Enqueue tasks, returning only the rows actually inserted."""
@@ -170,6 +184,9 @@ class TaskQueueRepository:
             self._validate_enqueue_task_request(task)
 
         ids = [task.id or str(ULID()) for task in tasks]
+        for task, task_id in zip(tasks, ids, strict=True):
+            if task.id is None:
+                task.id = task_id
         task_types = [task.task_type for task in tasks]
         payloads = [json.dumps(task.payload) for task in tasks]
         payload_versions = [task.payload_version for task in tasks]
@@ -178,10 +195,11 @@ class TaskQueueRepository:
         weights = [task.weight for task in tasks]
         concurrency_keys = [task.concurrency_key for task in tasks]
         max_attempts = [task.max_attempts for task in tasks]
+        deduplication_keys = [task.deduplication_key for task in tasks]
 
         pool = await self._get_pool()
         rows = await pool.fetch(
-            "SELECT * FROM task_enqueue_bulk($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            "SELECT * FROM task_enqueue_bulk($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             ids,
             task_types,
             payloads,
@@ -191,6 +209,7 @@ class TaskQueueRepository:
             weights,
             concurrency_keys,
             max_attempts,
+            deduplication_keys,
         )
         return [Task.from_row(row) for row in rows]
 
@@ -342,5 +361,7 @@ class TaskQueueRepository:
             raise ValueError("task weight must be >= 0")
         if task.max_attempts < 1:
             raise ValueError("max_attempts must be >= 1")
+        if task.deduplication_key is not None and not task.deduplication_key.strip():
+            raise ValueError("deduplication_key must not be empty")
         if task.payload_version < 1:
             raise ValueError("payload_version must be >= 1")

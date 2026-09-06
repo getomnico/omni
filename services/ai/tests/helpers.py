@@ -140,13 +140,19 @@ async def create_test_document(
 
 
 async def enqueue_document(db_pool, document_id: str) -> str:
-    """Add document to embedding queue. Returns queue item ID."""
+    """Add a document_embedding task. Returns its task ID."""
     item_id = str(ULID())
     async with db_pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO embedding_queue (id, document_id, status)
-               VALUES ($1, $2, 'pending')""",
+            """
+            INSERT INTO tasks (
+                id, task_type, payload, payload_version,
+                deduplication_key, max_attempts
+            ) VALUES ($1, 'document_embedding', $2::jsonb, 1, $3, 5)
+            ON CONFLICT DO NOTHING
+            """,
             item_id,
+            json.dumps({"document_id": document_id}),
             document_id,
         )
     return item_id

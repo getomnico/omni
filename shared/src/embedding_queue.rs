@@ -1,9 +1,22 @@
-use anyhow::Result;
-use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Row};
-use ulid::Ulid;
+//! Embedding workload adapter for the generic task queue.
+//!
+//! Document identifiers are encoded in the versioned task payload. This module
+//! owns provider gating and the current-model eligibility query, while lease,
+//! retry, fencing, and deduplication remain generic task-queue behavior.
 
-use crate::{db::repositories::EmbeddingProviderRepository, utils::generate_ulid};
+use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use time::Duration;
+
+use crate::{
+    db::repositories::EmbeddingProviderRepository,
+    task_queue::{ClaimOptions, EnqueueTaskRequest, Task, TaskClaim, TaskQueue, TaskStatus},
+};
+
+pub const DOCUMENT_EMBEDDING_TASK_TYPE: &str = "document_embedding";
+pub const DOCUMENT_EMBEDDING_PAYLOAD_VERSION: i32 = 1;
+pub const DOCUMENT_EMBEDDING_MAX_ATTEMPTS: i32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -17,24 +30,10 @@ pub enum EmbeddingQueueStatus {
 impl std::fmt::Display for EmbeddingQueueStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EmbeddingQueueStatus::Pending => write!(f, "pending"),
-            EmbeddingQueueStatus::Processing => write!(f, "processing"),
-            EmbeddingQueueStatus::Completed => write!(f, "completed"),
-            EmbeddingQueueStatus::Failed => write!(f, "failed"),
-        }
-    }
-}
-
-impl std::str::FromStr for EmbeddingQueueStatus {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "pending" => Ok(EmbeddingQueueStatus::Pending),
-            "processing" => Ok(EmbeddingQueueStatus::Processing),
-            "completed" => Ok(EmbeddingQueueStatus::Completed),
-            "failed" => Ok(EmbeddingQueueStatus::Failed),
-            _ => Err(anyhow::anyhow!("Invalid embedding queue status: {}", s)),
+            Self::Pending => write!(f, "pending"),
+            Self::Processing => write!(f, "processing"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
         }
     }
 }
@@ -49,111 +48,44 @@ pub struct EmbeddingQueueItem {
     pub created_at: sqlx::types::time::OffsetDateTime,
     pub updated_at: sqlx::types::time::OffsetDateTime,
     pub processed_at: Option<sqlx::types::time::OffsetDateTime>,
-}
-
-impl sqlx::FromRow<'_, sqlx::postgres::PgRow> for EmbeddingQueueItem {
-    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
-        use sqlx::Row;
-
-        let status_str: String = row.try_get("status")?;
-        let status =
-            status_str
-                .parse::<EmbeddingQueueStatus>()
-                .map_err(|e| sqlx::Error::ColumnDecode {
-                    index: "status".to_string(),
-                    source: e.into(),
-                })?;
-
-        Ok(EmbeddingQueueItem {
-            id: row.try_get("id")?,
-            document_id: row.try_get("document_id")?,
-            status,
-            retry_count: row.try_get("retry_count")?,
-            error_message: row.try_get("error_message")?,
-            created_at: row.try_get("created_at")?,
-            updated_at: row.try_get("updated_at")?,
-            processed_at: row.try_get("processed_at")?,
-        })
-    }
+    /// Fencing token for the claim that produced this adapter item.
+    pub claim_token: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct EmbeddingQueue {
     pool: PgPool,
     provider_repo: EmbeddingProviderRepository,
+    task_queue: TaskQueue,
 }
 
 impl EmbeddingQueue {
     pub fn new(pool: PgPool) -> Self {
         let provider_repo = EmbeddingProviderRepository::new(&pool);
+        let task_queue = TaskQueue::new(pool.clone());
         Self {
             pool,
             provider_repo,
+            task_queue,
         }
     }
 
     pub async fn enqueue(&self, document_id: String) -> Result<Option<String>> {
-        if !self.provider_repo.has_active_provider().await? {
-            return Ok(None);
-        }
-
-        let id = Ulid::new().to_string();
-
-        let result = sqlx::query(
-            r#"
-            INSERT INTO embedding_queue (id, document_id)
-            SELECT $1, $2
-            WHERE NOT EXISTS (
-                SELECT 1 FROM embedding_queue
-                WHERE document_id = $2 AND status IN ('pending', 'processing')
-            )
-            "#,
-        )
-        .bind(&id)
-        .bind(&document_id)
-        .execute(&self.pool)
-        .await?;
-
-        if result.rows_affected() > 0 {
-            Ok(Some(id))
-        } else {
-            Ok(None)
-        }
+        let ids = self.enqueue_batch(vec![document_id]).await?;
+        Ok(ids.into_iter().next())
     }
 
     pub async fn enqueue_batch(&self, document_ids: Vec<String>) -> Result<Vec<String>> {
-        if !self.provider_repo.has_active_provider().await? {
-            return Ok(vec![]);
+        if document_ids.is_empty() || !self.provider_repo.has_active_provider().await? {
+            return Ok(Vec::new());
         }
 
-        let mut tx = self.pool.begin().await?;
-        let mut ids = Vec::new();
-
-        for document_id in document_ids {
-            let id = Ulid::new().to_string();
-
-            let result = sqlx::query(
-                r#"
-                INSERT INTO embedding_queue (id, document_id)
-                SELECT $1, $2
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM embedding_queue
-                    WHERE document_id = $2 AND status IN ('pending', 'processing')
-                )
-                "#,
-            )
-            .bind(&id)
-            .bind(&document_id)
-            .execute(&mut *tx)
-            .await?;
-
-            if result.rows_affected() > 0 {
-                ids.push(id);
-            }
-        }
-
-        tx.commit().await?;
-        Ok(ids)
+        let tasks: Vec<EnqueueTaskRequest> = document_ids
+            .into_iter()
+            .map(|document_id| embedding_task(document_id))
+            .collect();
+        let inserted = self.task_queue.enqueue_bulk(&tasks).await?;
+        Ok(inserted.into_iter().map(|task| task.id).collect())
     }
 
     pub async fn enqueue_batch_missing_current_embeddings(
@@ -161,231 +93,222 @@ impl EmbeddingQueue {
         document_ids: Vec<String>,
     ) -> Result<Vec<String>> {
         if document_ids.is_empty() || !self.provider_repo.has_active_provider().await? {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
-        let ids: Vec<String> = document_ids.iter().map(|_| generate_ulid()).collect();
-        let rows = sqlx::query(
+        let candidates: Vec<String> = sqlx::query_scalar(
             r#"
             WITH active_provider AS (
                 SELECT config->>'model' AS model_name
                 FROM embedding_providers
                 WHERE is_current = TRUE AND is_deleted = FALSE
                 LIMIT 1
-            ),
-            input_rows AS (
-                SELECT id, document_id, ordinality
-                FROM UNNEST($1::text[], $2::text[]) WITH ORDINALITY AS t(id, document_id, ordinality)
-            ),
-            deduped_input AS (
-                SELECT DISTINCT ON (document_id) id, document_id
-                FROM input_rows
-                ORDER BY document_id, ordinality
             )
-            INSERT INTO embedding_queue (id, document_id)
-            SELECT input.id, input.document_id
-            FROM deduped_input input
+            SELECT DISTINCT d.id
+            FROM UNNEST($1::text[]) AS input(document_id)
+            JOIN documents d ON d.id = input.document_id
             CROSS JOIN active_provider provider
             WHERE NOT EXISTS (
-                SELECT 1
-                FROM embedding_queue q
-                WHERE q.document_id = input.document_id
-                  AND q.status IN ('pending', 'processing')
+                SELECT 1 FROM tasks q
+                WHERE q.task_type = $2
+                  AND q.deduplication_key = d.id
+                  AND q.status IN ('pending', 'running')
             )
             AND NOT EXISTS (
-                SELECT 1
-                FROM embeddings e
-                WHERE e.document_id = input.document_id
+                SELECT 1 FROM embeddings e
+                WHERE e.document_id = d.id
                   AND e.model_name = provider.model_name
             )
-            RETURNING id
+            ORDER BY d.id
             "#,
         )
-        .bind(&ids)
         .bind(&document_ids)
+        .bind(DOCUMENT_EMBEDDING_TASK_TYPE)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|row| row.get("id")).collect())
+        self.enqueue_batch(candidates).await
     }
 
-    pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<EmbeddingQueueItem>> {
-        let items = sqlx::query_as::<_, EmbeddingQueueItem>(
-            r#"
-            UPDATE embedding_queue
-            SET status = $2,
-                updated_at = CURRENT_TIMESTAMP,
-                processing_started_at = CURRENT_TIMESTAMP
-            WHERE id IN (
-                SELECT id
-                FROM embedding_queue
-                WHERE status = $3
-                   OR (status = $4 AND retry_count < 3)
-                ORDER BY created_at
-                LIMIT $1
-                FOR UPDATE SKIP LOCKED
+    /// Claim embedding tasks with a fencing token. The old queue's five retry
+    /// attempts are represented by each task's generic max_attempts field.
+    pub async fn claim_batch(&self, batch_size: i32, worker: &str) -> Result<TaskClaim> {
+        self.task_queue
+            .claim_bulk(
+                &self.pool,
+                DOCUMENT_EMBEDDING_TASK_TYPE,
+                worker,
+                &ClaimOptions {
+                    limit: batch_size,
+                    lease_seconds: 900,
+                    ..Default::default()
+                },
             )
-            RETURNING *
-            "#,
-        )
-        .bind(batch_size)
-        .bind(EmbeddingQueueStatus::Processing.to_string())
-        .bind(EmbeddingQueueStatus::Pending.to_string())
-        .bind(EmbeddingQueueStatus::Failed.to_string())
-        .fetch_all(&self.pool)
-        .await?;
+            .await
+    }
 
-        Ok(items)
+    /// Compatibility-shaped method for callers that only need claimed items.
+    pub async fn dequeue_batch(&self, batch_size: i32) -> Result<Vec<EmbeddingQueueItem>> {
+        let claim = self.claim_batch(batch_size, "embedding-adapter").await?;
+        claim.tasks.into_iter().map(task_to_item).collect()
+    }
+
+    pub async fn get_by_id(&self, id: &str) -> Result<Option<EmbeddingQueueItem>> {
+        let task = self.task_queue.get(id).await?;
+        task.map(task_to_item).transpose()
+    }
+
+    pub async fn get_queue_stats(&self) -> Result<QueueStats> {
+        let stats = self
+            .task_queue
+            .stats(Some(DOCUMENT_EMBEDDING_TASK_TYPE))
+            .await?;
+        let mut result = QueueStats::default();
+        for stat in stats {
+            match stat.status {
+                TaskStatus::Pending => result.pending = stat.count,
+                TaskStatus::Running => result.processing = stat.count,
+                TaskStatus::Completed => result.completed = stat.count,
+                TaskStatus::DeadLetter => result.failed = stat.count,
+            }
+        }
+        Ok(result)
     }
 
     pub async fn mark_completed(&self, ids: &[String]) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE embedding_queue
-            SET status = $2,
-                processed_at = CURRENT_TIMESTAMP,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ANY($1)
-            "#,
-        )
-        .bind(ids)
-        .bind(EmbeddingQueueStatus::Completed.to_string())
-        .execute(&self.pool)
-        .await?;
+        let token = self.claim_token_for(ids).await?;
+        self.mark_completed_with_token(ids, &token).await
+    }
 
+    pub async fn mark_completed_with_token(&self, ids: &[String], token: &str) -> Result<()> {
+        let completed = self.task_queue.complete_bulk(ids, token).await?;
+        if completed != ids.len() as i64 {
+            bail!(
+                "embedding task completion was fenced for {} tasks",
+                ids.len() - completed as usize
+            );
+        }
         Ok(())
     }
 
     pub async fn mark_failed(&self, id: &str, error: &str) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE embedding_queue
-            SET status = $3,
-                error_message = $2,
-                retry_count = retry_count + 1,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = $1
-            "#,
-        )
-        .bind(id)
-        .bind(error)
-        .bind(EmbeddingQueueStatus::Failed.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(())
+        self.mark_failed_batch(std::slice::from_ref(&id.to_string()), error)
+            .await
     }
 
     pub async fn mark_failed_batch(&self, ids: &[String], error: &str) -> Result<()> {
-        sqlx::query(
-            r#"
-            UPDATE embedding_queue
-            SET status = $3,
-                error_message = $2,
-                retry_count = retry_count + 1,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ANY($1)
-            "#,
-        )
-        .bind(ids)
-        .bind(error)
-        .bind(EmbeddingQueueStatus::Failed.to_string())
-        .execute(&self.pool)
-        .await?;
+        let token = self.claim_token_for(ids).await?;
+        self.mark_failed_batch_with_token(ids, &token, error).await
+    }
 
+    pub async fn mark_failed_batch_with_token(
+        &self,
+        ids: &[String],
+        token: &str,
+        error: &str,
+    ) -> Result<()> {
+        let failed = self
+            .task_queue
+            .fail_bulk(ids, token, error, true, 0)
+            .await?;
+        if failed.len() != ids.len() {
+            bail!(
+                "embedding task failure was fenced for {} tasks",
+                ids.len() - failed.len()
+            );
+        }
         Ok(())
     }
 
     pub async fn recover_stale_processing_items(&self, timeout_seconds: i32) -> Result<i64> {
-        let result = sqlx::query(
-            r#"
-            UPDATE embedding_queue
-            SET status = $2,
-                processing_started_at = NULL,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE status = $3
-            AND processing_started_at < CURRENT_TIMESTAMP - INTERVAL '1 second' * $1
-            "#,
-        )
-        .bind(timeout_seconds)
-        .bind(EmbeddingQueueStatus::Pending.to_string())
-        .bind(EmbeddingQueueStatus::Processing.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        let recovered_count = result.rows_affected() as i64;
-        if recovered_count > 0 {
-            tracing::info!(
-                "Recovered {} stale embedding processing items (timeout: {}s)",
-                recovered_count,
-                timeout_seconds
-            );
+        if timeout_seconds < 1 {
+            bail!("recovery timeout must be >= 1");
         }
-
-        Ok(recovered_count)
+        let rows = sqlx::query("SELECT * FROM task_recover_stale_for_type($1, $2)")
+            .bind(DOCUMENT_EMBEDDING_TASK_TYPE)
+            .bind(timeout_seconds)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.len() as i64)
     }
 
     pub async fn cleanup_completed(&self, days_old: i32) -> Result<i64> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM embedding_queue
-            WHERE status = $2
-              AND processed_at < CURRENT_TIMESTAMP - INTERVAL '1 day' * $1
-            "#,
-        )
-        .bind(days_old)
-        .bind(EmbeddingQueueStatus::Completed.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.rows_affected() as i64)
+        let cutoff =
+            sqlx::types::time::OffsetDateTime::now_utc() - Duration::days(i64::from(days_old));
+        sqlx::query_scalar("SELECT task_cleanup_for_type($1, $2)")
+            .bind(DOCUMENT_EMBEDDING_TASK_TYPE)
+            .bind(cutoff)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn cleanup_failed(&self, days_old: i32) -> Result<i64> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM embedding_queue
-            WHERE status = $2
-              AND retry_count >= 3
-              AND updated_at < CURRENT_TIMESTAMP - INTERVAL '1 day' * $1
-            "#,
-        )
-        .bind(days_old)
-        .bind(EmbeddingQueueStatus::Failed.to_string())
-        .execute(&self.pool)
-        .await?;
-
-        Ok(result.rows_affected() as i64)
+        self.cleanup_completed(days_old).await
     }
 
-    pub async fn get_queue_stats(&self) -> Result<QueueStats> {
-        let row = sqlx::query(
-            r#"
-            SELECT 
-                COUNT(*) FILTER (WHERE status = $1) as pending,
-                COUNT(*) FILTER (WHERE status = $2) as processing,
-                COUNT(*) FILTER (WHERE status = $3) as completed,
-                COUNT(*) FILTER (WHERE status = $4) as failed
-            FROM embedding_queue
-            "#,
+    async fn claim_token_for(&self, ids: &[String]) -> Result<String> {
+        let token: Option<String> = sqlx::query_scalar(
+            "SELECT claim_token FROM tasks WHERE id = ANY($1) AND status = 'running' LIMIT 1",
         )
-        .bind(EmbeddingQueueStatus::Pending.to_string())
-        .bind(EmbeddingQueueStatus::Processing.to_string())
-        .bind(EmbeddingQueueStatus::Completed.to_string())
-        .bind(EmbeddingQueueStatus::Failed.to_string())
-        .fetch_one(&self.pool)
+        .bind(ids)
+        .fetch_optional(&self.pool)
         .await?;
-
-        Ok(QueueStats {
-            pending: row.try_get::<i64, _>("pending").unwrap_or(0),
-            processing: row.try_get::<i64, _>("processing").unwrap_or(0),
-            completed: row.try_get::<i64, _>("completed").unwrap_or(0),
-            failed: row.try_get::<i64, _>("failed").unwrap_or(0),
-        })
+        token.ok_or_else(|| anyhow::anyhow!("embedding tasks are not currently claimed"))
     }
 }
 
-#[derive(Debug, Serialize)]
+fn embedding_task(document_id: String) -> EnqueueTaskRequest {
+    let mut task = EnqueueTaskRequest::new(
+        DOCUMENT_EMBEDDING_TASK_TYPE,
+        serde_json::json!({ "document_id": document_id }),
+    );
+    task.payload_version = DOCUMENT_EMBEDDING_PAYLOAD_VERSION;
+    task.deduplication_key = Some(document_id);
+    task.max_attempts = DOCUMENT_EMBEDDING_MAX_ATTEMPTS;
+    task
+}
+
+fn task_to_item(task: Task) -> Result<EmbeddingQueueItem> {
+    if task.task_type != DOCUMENT_EMBEDDING_TASK_TYPE {
+        bail!(
+            "unexpected task type for embedding item: {}",
+            task.task_type
+        );
+    }
+    if task.payload_version != DOCUMENT_EMBEDDING_PAYLOAD_VERSION {
+        bail!(
+            "unsupported embedding payload version: {}",
+            task.payload_version
+        );
+    }
+    let document_id = task
+        .payload
+        .get("document_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("embedding task payload requires document_id"))?
+        .to_string();
+    let status = match task.status {
+        TaskStatus::Pending => EmbeddingQueueStatus::Pending,
+        TaskStatus::Running => EmbeddingQueueStatus::Processing,
+        TaskStatus::Completed => EmbeddingQueueStatus::Completed,
+        TaskStatus::DeadLetter => EmbeddingQueueStatus::Failed,
+    };
+    Ok(EmbeddingQueueItem {
+        id: task.id,
+        document_id,
+        status,
+        retry_count: task.attempt_count,
+        error_message: task.last_error,
+        created_at: task.created_at,
+        updated_at: task.updated_at,
+        processed_at: task.completed_at,
+        claim_token: task.claim_token,
+    })
+}
+
+#[derive(Debug, Default, Serialize)]
 pub struct QueueStats {
     pub pending: i64,
     pub processing: i64,

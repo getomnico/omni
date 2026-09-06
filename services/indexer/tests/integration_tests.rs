@@ -292,7 +292,7 @@ async fn test_unchanged_content_upsert_does_not_requeue_existing_embeddings() {
             .expect("Document should be created");
     common::wait_for_completed(fixture.state.db_pool.pool(), 1, Duration::from_secs(5)).await;
 
-    sqlx::query("UPDATE embedding_queue SET status = 'completed' WHERE document_id = $1")
+    sqlx::query("UPDATE tasks SET status = 'completed', completed_at = clock_timestamp() WHERE task_type = 'document_embedding' AND deduplication_key = $1")
         .bind(&document.id)
         .execute(fixture.state.db_pool.pool())
         .await
@@ -352,7 +352,7 @@ async fn test_unchanged_content_upsert_does_not_requeue_existing_embeddings() {
     common::wait_for_completed(fixture.state.db_pool.pool(), 2, Duration::from_secs(5)).await;
 
     let queue_rows_after_metadata_update: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM embedding_queue WHERE document_id = $1")
+        sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE task_type = 'document_embedding' AND deduplication_key = $1")
             .bind(&document.id)
             .fetch_one(fixture.state.db_pool.pool())
             .await
@@ -402,7 +402,7 @@ async fn test_unchanged_content_upsert_does_not_requeue_existing_embeddings() {
     common::wait_for_completed(fixture.state.db_pool.pool(), 3, Duration::from_secs(5)).await;
 
     let queue_rows_after_content_update: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM embedding_queue WHERE document_id = $1")
+        sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE task_type = 'document_embedding' AND deduplication_key = $1")
             .bind(&document.id)
             .fetch_one(fixture.state.db_pool.pool())
             .await
@@ -935,7 +935,7 @@ async fn test_recovery_and_dead_letter() {
         .unwrap();
 
     sqlx::query(
-        "UPDATE embedding_queue SET status = 'processing', processing_started_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $1"
+        "UPDATE tasks SET status = 'running', claim_token = '01J00000000000000000000001', claimed_by = 'test', lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '10 minutes' WHERE id = $1"
     )
     .bind(&queue_id)
     .execute(pool)
@@ -952,7 +952,7 @@ async fn test_recovery_and_dead_letter() {
     );
 
     // Verify our specific item was recovered back to pending
-    let row: (String,) = sqlx::query_as("SELECT status FROM embedding_queue WHERE id = $1")
+    let row: (String,) = sqlx::query_as("SELECT status FROM tasks WHERE id = $1")
         .bind(&queue_id)
         .fetch_one(pool)
         .await

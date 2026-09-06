@@ -182,9 +182,9 @@ class DocumentsRepository:
         """Find embedded donor documents for content IDs.
 
         Returns content_id -> donor_document_id for donors that already have embeddings for
-        the current model. Donors with pending/processing work, or failed work newer than
-        their embeddings, are excluded because their embeddings may be stale relative to
-        their current content_id.
+        the current model. Donors with active embedding tasks, or dead-letter work newer
+        than their embeddings, are excluded because their embeddings may be stale relative
+        to their current content_id.
         """
         if not content_ids:
             return {}
@@ -205,17 +205,18 @@ class DocumentsRepository:
               AND d.id <> ALL($2::text[])
               AND NOT EXISTS (
                   SELECT 1
-                  FROM embedding_queue q
-                  WHERE q.document_id = d.id
-                    AND q.status IN ('pending', 'processing')
+                  FROM tasks q
+                  WHERE q.task_type = 'document_embedding'
+                    AND q.deduplication_key = d.id
+                    AND q.status IN ('pending', 'running')
               )
               AND NOT EXISTS (
                   SELECT 1
-                  FROM embedding_queue q
-                  WHERE q.document_id = d.id
-                    AND q.status = 'failed'
-                    AND GREATEST(q.created_at, q.updated_at, COALESCE(q.processed_at, q.updated_at))
-                        > ed.latest_embedding_at
+                  FROM tasks q
+                  WHERE q.task_type = 'document_embedding'
+                    AND q.deduplication_key = d.id
+                    AND q.status = 'dead_letter'
+                    AND q.updated_at > ed.latest_embedding_at
               )
             ORDER BY d.content_id, d.id
             """,

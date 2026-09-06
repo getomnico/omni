@@ -31,7 +31,10 @@ pub use db::repositories::{
     PersonUpsert, ServiceCredentialsRepo, SourceRepository, TitleEntry, UserRepository,
 };
 pub use db::{DatabaseError, DatabasePool};
-pub use embedding_queue::{EmbeddingQueue, EmbeddingQueueItem};
+pub use embedding_queue::{
+    DOCUMENT_EMBEDDING_MAX_ATTEMPTS, DOCUMENT_EMBEDDING_PAYLOAD_VERSION,
+    DOCUMENT_EMBEDDING_TASK_TYPE, EmbeddingQueue, EmbeddingQueueItem,
+};
 pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
 pub use queue::{EventQueue, QueueStats, QueueSummary};

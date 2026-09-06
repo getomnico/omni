@@ -1,14 +1,13 @@
 """
 Embedding processor for document indexing.
 
-Drains the embedding_queue table by chunking each document and calling the
-configured embedding provider.
+Claims document_embedding tasks, chunks each document, and calls the configured
+embedding provider.
 """
 
 import asyncio
 import logging
 import time
-from typing import Optional
 
 import ulid
 
@@ -36,10 +35,16 @@ ONLINE_POLL_INTERVAL = 5  # Seconds to wait when queue is empty
 ONLINE_BATCH_DELAY = 0.1  # Seconds to yield between batches when queue has items
 PROGRESS_LOG_INTERVAL = 30  # Seconds between progress log lines
 MAX_EMBEDDING_RETRIES = 5
+LEASE_SECONDS = 900
+HEARTBEAT_INTERVAL = 60
+
+
+class LeaseLost(RuntimeError):
+    """The worker no longer owns a task lease."""
 
 
 class EmbeddingBatchProcessor:
-    """Drains the embedding_queue table using the configured provider's online API."""
+    """Processes document_embedding tasks using the configured provider."""
 
     def __init__(
         self,
@@ -56,14 +61,14 @@ class EmbeddingBatchProcessor:
         self._embedding_semaphore = asyncio.Semaphore(1)
 
         # Progress tracking (populated at online loop start)
-        self._progress_start_time: Optional[float] = None
+        self._progress_start_time: float | None = None
         self._docs_completed = 0
         self._docs_failed = 0
         self._embeddings_written = 0
         self._embedding_time_ms: float = 0
         self._baseline_completed = 0
         self._baseline_failed = 0
-        self._last_progress_log_time: Optional[float] = None
+        self._last_progress_log_time: float | None = None
 
     @property
     def embedding_provider(self):
@@ -80,12 +85,15 @@ class EmbeddingBatchProcessor:
     async def processing_loop(self):
         """Process queue items using online API calls"""
         logger.info(f"Starting embedding processor for provider: {self.provider_type}")
+        recovered = await self.queue_repo.recover_stale_processing_items(300)
+        if recovered:
+            logger.info("Recovered %d expired embedding task leases", recovered)
 
         status_counts = await self.queue_repo.get_status_counts()
-        self._baseline_completed = status_counts.get(QueueStatus.COMPLETED, 0)
-        self._baseline_failed = status_counts.get(QueueStatus.FAILED, 0)
-        pending = status_counts.get(QueueStatus.PENDING, 0) + status_counts.get(
-            QueueStatus.PROCESSING, 0
+        self._baseline_completed = status_counts.get(str(QueueStatus.COMPLETED), 0)
+        self._baseline_failed = status_counts.get(str(QueueStatus.FAILED), 0)
+        pending = status_counts.get(str(QueueStatus.PENDING), 0) + status_counts.get(
+            str(QueueStatus.PROCESSING), 0
         )
         logger.info(
             f"Embedding queue: {pending} pending, "
@@ -112,45 +120,102 @@ class EmbeddingBatchProcessor:
         Returns:
             True if any items were processed, False if queue was empty.
         """
-        items = await self.queue_repo.get_pending_items(
-            limit=ONLINE_BATCH_SIZE, max_retries=MAX_EMBEDDING_RETRIES
-        )
+        claim = await self.queue_repo.claim_batch(ONLINE_BATCH_SIZE)
+        items: list[EmbeddingQueueItem] = []
+        for task in claim.tasks:
+            try:
+                items.append(EmbeddingQueueItem.from_task(task))
+            except ValueError as error:
+                logger.error("Invalid embedding task %s: %s", task.id, error)
+                await self.queue_repo.mark_failed_with_token(
+                    [task.id],
+                    claim.claim_token,
+                    str(error),
+                    retryable=False,
+                )
+                self._docs_failed += 1
 
         if not items:
             await asyncio.sleep(ONLINE_POLL_INTERVAL)
             return False
 
         logger.info(f"Processing {len(items)} documents via online embedding API")
-
-        documents_by_id = await self.documents_repo.get_by_ids(
-            [item.document_id for item in items]
+        lease_lost = asyncio.Event()
+        active_task_ids = {item.id for item in items}
+        heartbeat_task = asyncio.create_task(
+            self._heartbeat_claim(
+                items, claim.claim_token, lease_lost, active_task_ids
+            )
         )
-        items_to_process = await self._clone_same_content_embeddings(
-            items, documents_by_id
-        )
+        try:
+            documents_by_id = await self.documents_repo.get_by_ids(
+                [item.document_id for item in items]
+            )
+            items_to_process = await self._clone_same_content_embeddings(
+                items, documents_by_id, claim.claim_token, lease_lost
+            )
+            active_task_ids.intersection_update(item.id for item in items_to_process)
 
-        for item in items_to_process:
-            try:
-                await self._process_single_document(
-                    item, documents_by_id.get(item.document_id)
-                )
-            except Exception as e:
-                logger.error(
-                    f"Failed to process document {item.document_id}: {e}", exc_info=True
-                )
-                await self.queue_repo.mark_failed([item.id], str(e))
-                self._docs_failed += 1
-            finally:
-                # Yield to allow higher-priority tasks (stream requests) to run
-                await asyncio.sleep(0)
-                await self._maybe_log_progress()
+            for item in items_to_process:
+                if lease_lost.is_set():
+                    break
+                try:
+                    await self._process_single_document(
+                        item,
+                        documents_by_id.get(item.document_id),
+                        claim.claim_token,
+                        lease_lost,
+                    )
+                except LeaseLost:
+                    logger.warning("Lost lease for embedding task %s", item.id)
+                    lease_lost.set()
+                except Exception as e:
+                    logger.error(
+                        f"Failed to process document {item.document_id}: {e}",
+                        exc_info=True,
+                    )
+                    await self.queue_repo.mark_failed_with_token(
+                        [item.id], claim.claim_token, str(e)
+                    )
+                    self._docs_failed += 1
+                finally:
+                    active_task_ids.discard(item.id)
+                    await asyncio.sleep(0)
+                    await self._maybe_log_progress()
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
         return True
+
+    async def _heartbeat_claim(
+        self,
+        items: list[EmbeddingQueueItem],
+        claim_token: str,
+        lease_lost: asyncio.Event,
+        active_task_ids: set[str],
+    ) -> None:
+        """Keep active shared leases alive while provider calls run."""
+        try:
+            while not lease_lost.is_set():
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                for item in items:
+                    if item.id not in active_task_ids:
+                        continue
+                    if not await self.queue_repo.heartbeat(
+                        item.id, claim_token, LEASE_SECONDS
+                    ):
+                        lease_lost.set()
+                        return
+        except asyncio.CancelledError:
+            raise
 
     async def _clone_same_content_embeddings(
         self,
         items: list[EmbeddingQueueItem],
         documents_by_id: dict[str, Document],
+        claim_token: str,
+        lease_lost: asyncio.Event,
     ) -> list[EmbeddingQueueItem]:
         docs_with_content = [
             doc for doc in documents_by_id.values() if doc.content_id is not None
@@ -184,8 +249,10 @@ class EmbeddingBatchProcessor:
         if not clone_requests:
             return items
 
+        if lease_lost.is_set():
+            raise LeaseLost("embedding lease expired before cloning")
         clone_counts = await self.embeddings_repo.bulk_clone_for_documents(
-            clone_requests, model_name
+            clone_requests, model_name, claim_token
         )
         if not clone_counts:
             return items
@@ -202,9 +269,17 @@ class EmbeddingBatchProcessor:
         return [item for item in items if item.document_id not in cloned_document_ids]
 
     async def _process_single_document(
-        self, item: EmbeddingQueueItem, doc: Document | None = None
+        self,
+        item: EmbeddingQueueItem,
+        doc: Document | None = None,
+        claim_token: str | None = None,
+        lease_lost: asyncio.Event | None = None,
     ):
-        """Process a single document using the embedding provider"""
+        """Process a single document using the embedding provider."""
+        if claim_token is None:
+            raise ValueError("claim_token is required for embedding processing")
+        if lease_lost is not None and lease_lost.is_set():
+            raise LeaseLost("embedding lease expired")
         if item.retry_count > 0:
             logger.debug(
                 f"Retrying document {item.document_id} (attempt {item.retry_count + 1})"
@@ -219,8 +294,8 @@ class EmbeddingBatchProcessor:
                 logger.warning(
                     f"Document {item.document_id} has no content_id, skipping"
                 )
-                await self.queue_repo.mark_failed(
-                    [item.id], "Document has no content_id"
+                await self.queue_repo.mark_failed_with_token(
+                    [item.id], claim_token, "Document has no content_id"
                 )
                 self._docs_failed += 1
                 return
@@ -234,12 +309,15 @@ class EmbeddingBatchProcessor:
                     doc.external_id, item.document_id
                 )
                 if donor_id:
-                    await self.embeddings_repo.delete_for_documents([item.document_id])
-                    cloned = await self.embeddings_repo.clone_for_document(
-                        donor_id, item.document_id
+                    if lease_lost is not None and lease_lost.is_set():
+                        raise LeaseLost("embedding lease expired before clone")
+                    clone_counts = await self.embeddings_repo.bulk_clone_for_documents(
+                        [(donor_id, item.document_id, item.id)],
+                        self.embedding_provider.get_model_name(),
+                        claim_token,
                     )
+                    cloned = clone_counts.get(item.document_id, 0)
                     if cloned > 0:
-                        await self.queue_repo.mark_completed([item.id])
                         self._docs_completed += 1
                         self._embeddings_written += cloned
                         logger.info(
@@ -253,8 +331,8 @@ class EmbeddingBatchProcessor:
                 logger.warning(
                     f"Document {item.document_id} has empty content, skipping"
                 )
-                await self.queue_repo.mark_failed(
-                    [item.id], "Document has empty content"
+                await self.queue_repo.mark_failed_with_token(
+                    [item.id], claim_token, "Document has empty content"
                 )
                 self._docs_failed += 1
                 return
@@ -302,13 +380,14 @@ class EmbeddingBatchProcessor:
                     logger.warning(
                         f"No embeddings generated for document {item.document_id}"
                     )
-                    await self.queue_repo.mark_failed(
-                        [item.id], "No embeddings generated"
+                    await self.queue_repo.mark_failed_with_token(
+                        [item.id], claim_token, "No embeddings generated"
                     )
                     self._docs_failed += 1
                     return
 
-                await self.embeddings_repo.delete_for_documents([item.document_id])
+                if lease_lost is not None and lease_lost.is_set():
+                    raise LeaseLost("embedding lease expired before vector write")
 
                 embeddings_to_insert = []
                 for chunk_idx, chunk in enumerate(chunks):
@@ -325,9 +404,12 @@ class EmbeddingBatchProcessor:
                         }
                     )
 
-                await self.embeddings_repo.bulk_insert(embeddings_to_insert)
-
-                await self.queue_repo.mark_completed([item.id])
+                await self.embeddings_repo.replace_for_document_if_claimed(
+                    item.document_id,
+                    embeddings_to_insert,
+                    item.id,
+                    claim_token,
+                )
 
                 self._docs_completed += 1
                 self._embeddings_written += len(chunks)
@@ -340,7 +422,11 @@ class EmbeddingBatchProcessor:
                     f"Embedding generation failed for {item.document_id}: {e}",
                     exc_info=True,
                 )
-                await self.queue_repo.mark_failed([item.id], str(e))
+                if isinstance(e, LeaseLost):
+                    raise
+                await self.queue_repo.mark_failed_with_token(
+                    [item.id], claim_token, str(e)
+                )
                 self._docs_failed += 1
 
     async def _maybe_log_progress(self):
