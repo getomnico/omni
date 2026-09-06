@@ -1602,6 +1602,8 @@ impl Connector for GoogleConnector {
             scopes,
             extra_auth_params,
             scope_separator: " ".to_string(),
+            scope_parameter: "scope".to_string(),
+            user_auth_for_writes_only: false,
             enrich_endpoint: None,
             registration_endpoint: None,
             registration_requires_initial_access_token: false,

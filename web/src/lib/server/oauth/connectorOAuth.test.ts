@@ -4,6 +4,7 @@ import {
     dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    normalizeOAuthTokens,
     oauthCredentialExpiry,
     oauthServiceBaseUrl,
     parseOAuthSourceBinding,
@@ -276,6 +277,30 @@ describe('OAuth connector helpers', () => {
         expect(
             oauthServiceBaseUrl('https://example.com/windshift/oauth/authorize?prompt=login'),
         ).toBe('https://example.com/windshift')
+    })
+
+    it('extracts Slack delegated user tokens instead of the bot token', () => {
+        expect(
+            normalizeOAuthTokens('slack', {
+                ok: true,
+                access_token: 'xoxb-bot-token',
+                token_type: 'Bearer',
+                authed_user: {
+                    id: 'U123',
+                    access_token: 'xoxp-user-token',
+                    token_type: 'Bearer',
+                    scope: 'chat:write',
+                },
+            }),
+        ).toMatchObject({ access_token: 'xoxp-user-token', scope: 'chat:write' })
+
+        expect(() =>
+            normalizeOAuthTokens('slack', {
+                ok: true,
+                access_token: 'xoxb-bot-token',
+                token_type: 'Bearer',
+            }),
+        ).toThrow('delegated user access token')
     })
 
     it('limits write elevation to the requested connector scopes', () => {

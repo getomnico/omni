@@ -159,6 +159,38 @@ function isOAuthTokens(value: unknown): value is OAuthTokens {
     )
 }
 
+interface SlackOAuthTokenResponse {
+    token_type?: string
+    scope?: string
+    authed_user?: {
+        access_token?: string
+        token_type?: string
+        scope?: string
+    }
+}
+
+export function normalizeOAuthTokens(provider: string, tokenData: unknown): OAuthTokens {
+    if (provider === 'slack') {
+        const slackData =
+            typeof tokenData === 'object' && tokenData !== null && !Array.isArray(tokenData)
+                ? (tokenData as SlackOAuthTokenResponse)
+                : null
+        const user = slackData?.authed_user
+        if (!user?.access_token) {
+            throw new Error('Slack OAuth response did not contain a delegated user access token')
+        }
+        return {
+            access_token: user.access_token,
+            token_type: user.token_type ?? slackData.token_type ?? 'Bearer',
+            scope: user.scope ?? slackData.scope,
+        }
+    }
+    if (!isOAuthTokens(tokenData)) {
+        throw new Error('OAuth token exchange returned an invalid token response')
+    }
+    return tokenData
+}
+
 /// Mirrors `shared::models::OAuthManifestConfig` (Rust). Pure data: a connector
 /// declares this in its manifest and the web app's generic OAuth2 client uses
 /// it to drive the standard authorization-code flow.
@@ -172,6 +204,8 @@ export interface OAuthManifestConfig {
     scopes: Record<string, { read: string[]; write: string[] }>
     extra_auth_params: Record<string, string>
     scope_separator: string
+    scope_parameter?: string
+    user_auth_for_writes_only?: boolean
     enrich_endpoint?: string | null
     registration_endpoint?: string | null
     registration_requires_initial_access_token?: boolean
@@ -1135,16 +1169,58 @@ function buildAuthUrl(
         client_id: creds.clientId,
         redirect_uri: callbackUrl(),
         response_type: 'code',
-        scope: scopes.join(config.scope_separator),
         state: stateToken,
         ...config.extra_auth_params,
     })
+    params.set(config.scope_parameter ?? 'scope', scopes.join(config.scope_separator))
     if (codeChallenge) {
         params.set('code_challenge', codeChallenge)
         params.set('code_challenge_method', 'S256')
     }
     const authEndpoint = creds.authEndpoint ?? config.auth_endpoint
     return `${authEndpoint}?${params.toString()}`
+}
+
+interface SlackOAuthTokenResponse {
+    ok?: boolean
+    access_token?: string
+    token_type?: string
+    scope?: string
+    authed_user?: {
+        id?: string
+        access_token?: string
+        token_type?: string
+        scope?: string
+    }
+}
+
+export function normalizeOAuthTokens(
+    provider: string,
+    tokenData: OAuthTokens | SlackOAuthTokenResponse | OAuthError,
+): OAuthTokens {
+    if ('error' in tokenData) {
+        throw new Error(`OAuth token exchange failed: ${tokenData.error}`)
+    }
+    if (provider === 'slack') {
+        const slackData = tokenData as SlackOAuthTokenResponse
+        const user = slackData.authed_user
+        if (!user?.access_token) {
+            throw new Error('Slack OAuth response did not contain a delegated user access token')
+        }
+        return {
+            access_token: user.access_token,
+            token_type: user.token_type ?? slackData.token_type ?? 'Bearer',
+            scope: user.scope ?? slackData.scope,
+        }
+    }
+    if (!('access_token' in tokenData) || typeof tokenData.access_token !== 'string') {
+        throw new Error('OAuth token response did not contain an access token')
+    }
+    return {
+        access_token: tokenData.access_token,
+        token_type: tokenData.token_type ?? 'Bearer',
+        scope: tokenData.scope,
+    }
 }
 
 export interface ExchangeResult {
@@ -1265,10 +1341,7 @@ export async function exchangeCodeAndIdentify(
                 : 'OAuth token exchange failed with an invalid error response',
         )
     }
-    if (!isOAuthTokens(tokenData)) {
-        throw new Error('OAuth token exchange returned an invalid token response')
-    }
-    const tokens = tokenData
+    const tokens = normalizeOAuthTokens(config.provider, tokenData)
     logger.info('Connector OAuth token exchange succeeded', {
         provider: config.provider,
         flow: state.metadata.flow.type,
