@@ -8,7 +8,6 @@
         formatDuration,
         groupToolCallContent,
         isToolCallComplete,
-        isToolCallFailed,
         partitionStreamingWork,
         splitToolCallContent,
         type ToolCallDisplayItem,
@@ -90,13 +89,8 @@
                 (block) => stripThinkingContent(block.text, 'thinking').trim().length > 0,
             ),
     )
-    let hasToolError = $derived(toolBlocks.some(isToolCallFailed))
     let canCollapseWork = $derived(
-        !isStreaming &&
-            !hasError &&
-            hasFinalResponse &&
-            allToolsComplete &&
-            hasCollapsibleWork,
+        !isStreaming && !hasError && hasFinalResponse && allToolsComplete && hasCollapsibleWork,
     )
     let streamingPartition = $derived(partitionStreamingWork(workItems, isStreaming || isPaused))
     let duration = $derived(formatDuration(startedAt, completedAt))
@@ -132,7 +126,7 @@
     }
 </script>
 
-{#snippet workTimeline(items = workItems)}
+{#snippet workTimeline(items)}
     <div class="space-y-2">
         {#each items as item (workItemKey(item))}
             {#if item.type === 'text'}
@@ -175,7 +169,7 @@
                     Worked for {duration}
                 </Accordion.Trigger>
                 <Accordion.Content class="border-0 px-0">
-                    <div>{@render workTimeline()}</div>
+                    <div>{@render workTimeline(workItems)}</div>
                 </Accordion.Content>
             </Accordion.Item>
         </Accordion.Root>
