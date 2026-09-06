@@ -479,7 +479,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
                 # Handle finish_reason
                 if chunk.choices[0].finish_reason is not None:
-                    break
+                    # Continue through the provider's final usage-only chunk.
+                    continue
 
             # Close any open blocks
             if text_started:

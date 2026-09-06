@@ -29,6 +29,7 @@ from anthropic.types import (
     RawMessageDeltaEvent,
     RawContentBlockStartEvent,
     RawContentBlockDeltaEvent,
+    RawContentBlockStopEvent,
     RawMessageStopEvent,
     ToolUseBlock,
     TextBlock,
@@ -400,6 +401,13 @@ class GeminiProvider(LLMProvider):
 
                     # Handle function call parts
                     elif part.function_call is not None:
+                        if text_started:
+                            yield RawContentBlockStopEvent(
+                                type="content_block_stop",
+                                index=current_text_index,
+                            )
+                            text_started = False
+
                         block_index = next_block_index
                         next_block_index += 1
                         tool_call_id = f"toolu_{time.time_ns()}"
@@ -429,6 +437,16 @@ class GeminiProvider(LLMProvider):
                                     partial_json=json.dumps(dict(args)),
                                 ),
                             )
+                        yield RawContentBlockStopEvent(
+                            type="content_block_stop",
+                            index=block_index,
+                        )
+
+            if text_started:
+                yield RawContentBlockStopEvent(
+                    type="content_block_stop",
+                    index=current_text_index,
+                )
 
             if last_usage_metadata:
                 prompt_tokens = (
