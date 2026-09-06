@@ -290,9 +290,16 @@ describe('OAuth connector helpers', () => {
                     access_token: 'xoxp-user-token',
                     token_type: 'Bearer',
                     scope: 'chat:write',
+                    refresh_token: 'xoxr-user-refresh',
+                    expires_in: 3600,
                 },
             }),
-        ).toMatchObject({ access_token: 'xoxp-user-token', scope: 'chat:write' })
+        ).toMatchObject({
+            access_token: 'xoxp-user-token',
+            scope: 'chat:write',
+            refresh_token: 'xoxr-user-refresh',
+            expires_in: 3600,
+        })
 
         expect(() =>
             normalizeOAuthTokens('slack', {

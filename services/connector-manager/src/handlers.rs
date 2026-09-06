@@ -739,7 +739,7 @@ pub async fn execute_action(
                 request.action
             )));
         }
-        if action_mode == ActionMode::Write && request.user_id.is_none() {
+        if action_requires_user_oauth(manifest, action_mode) && request.user_id.is_none() {
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' requires an authenticated user",
                 request.action
@@ -1267,21 +1267,32 @@ async fn resolve_credentials_with_policy(
 }
 
 /// Select whether this action should prompt for per-user OAuth when its
-/// per-user credential is missing. Connectors can opt read actions out while
-/// still requiring delegated credentials for writes.
+/// per-user credential is missing. Connectors with the writes-only marker keep
+/// their read actions on the org credential.
 fn action_supports_user_oauth(manifest: &ConnectorManifest, action_mode: ActionMode) -> bool {
     let Some(oauth) = manifest.oauth.as_ref() else {
         return false;
     };
-
-    if action_mode == ActionMode::Write {
-        return true;
-    }
-
-    !oauth
+    let writes_only = oauth
         .get("user_auth_for_writes_only")
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    if writes_only {
+        action_mode == ActionMode::Write
+    } else {
+        true
+    }
+}
+
+fn action_requires_user_oauth(manifest: &ConnectorManifest, action_mode: ActionMode) -> bool {
+    action_mode == ActionMode::Write
+        && manifest
+            .oauth
+            .as_ref()
+            .and_then(|oauth| oauth.get("user_auth_for_writes_only"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
 }
 
 /// Decide the credential outcome when no per-user credential row exists.
@@ -4385,10 +4396,14 @@ mod tests {
         let writes_only = manifest_with_oauth(true);
         assert!(action_supports_user_oauth(&writes_only, ActionMode::Write));
         assert!(!action_supports_user_oauth(&writes_only, ActionMode::Read));
+        assert!(action_requires_user_oauth(&writes_only, ActionMode::Write));
+        assert!(!action_requires_user_oauth(&writes_only, ActionMode::Read));
 
         let all_actions = manifest_with_oauth(false);
         assert!(action_supports_user_oauth(&all_actions, ActionMode::Write));
         assert!(action_supports_user_oauth(&all_actions, ActionMode::Read));
+        assert!(!action_requires_user_oauth(&all_actions, ActionMode::Write));
+        assert!(!action_requires_user_oauth(&all_actions, ActionMode::Read));
     }
 
     #[test]

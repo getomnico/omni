@@ -1186,11 +1186,15 @@ interface SlackOAuthTokenResponse {
     access_token?: string
     token_type?: string
     scope?: string
+    refresh_token?: string
+    expires_in?: number
     authed_user?: {
         id?: string
         access_token?: string
         token_type?: string
         scope?: string
+        refresh_token?: string
+        expires_in?: number
     }
 }
 
@@ -1211,6 +1215,8 @@ export function normalizeOAuthTokens(
             access_token: user.access_token,
             token_type: user.token_type ?? slackData.token_type ?? 'Bearer',
             scope: user.scope ?? slackData.scope,
+            refresh_token: user.refresh_token ?? slackData.refresh_token,
+            expires_in: user.expires_in ?? slackData.expires_in,
         }
     }
     if (!('access_token' in tokenData) || typeof tokenData.access_token !== 'string') {
