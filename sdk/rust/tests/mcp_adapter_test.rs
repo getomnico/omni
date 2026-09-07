@@ -29,6 +29,13 @@ fn stdio_server() -> StdioMcpServer {
         .with_args([fixture_path().to_string_lossy().into_owned()])
 }
 
+fn tools_only_stdio_server() -> StdioMcpServer {
+    StdioMcpServer::new(python_executable()).with_args([
+        fixture_path().to_string_lossy().into_owned(),
+        "tools-only".to_string(),
+    ])
+}
+
 struct HttpFixture {
     child: Child,
     url: String,
@@ -184,6 +191,33 @@ async fn stdio_caches_after_discover() {
     assert_eq!(resources.len(), 1);
     let prompts = adapter.get_prompt_definitions(None, None).await.unwrap();
     assert_eq!(prompts.len(), 1);
+}
+
+#[tokio::test]
+async fn discover_keeps_tools_when_optional_methods_are_unsupported() {
+    let adapter = McpAdapter::new(McpServer::Stdio(tools_only_stdio_server()));
+    adapter
+        .discover(Some(HashMap::new()), None)
+        .await
+        .expect("tool discovery should not depend on optional MCP methods");
+
+    let actions = adapter.get_action_definitions(None, None).await.unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].name, "greet");
+    assert!(
+        adapter
+            .get_resource_definitions(None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        adapter
+            .get_prompt_definitions(None, None)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

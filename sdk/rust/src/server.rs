@@ -609,7 +609,9 @@ where
         })?;
 
     if let Err(error) = adapter.discover(env, headers).await {
-        adapter.clear_cached_catalog().await;
+        // Keep any previously authenticated catalog available. A transient
+        // OAuth or MCP failure should not make already-discovered tools
+        // disappear from the connector manifest.
         warn!("OAuth credential-ready MCP discovery failed: {error:#}");
         return Err((
             StatusCode::BAD_REQUEST,

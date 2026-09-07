@@ -198,8 +198,25 @@ impl McpAdapter {
     ) -> Result<()> {
         let client = self.connect(env, headers).await?;
         let actions = fetch_actions(&client).await?;
-        let resources = fetch_resources(&client).await?;
-        let prompts = fetch_prompts(&client).await?;
+
+        // Tools are the required part of an MCP catalog. Some servers, such
+        // as Atlassian Rovo, implement tools but return Method not found for
+        // optional resources and prompts methods. Do not discard a valid tool
+        // catalog because those optional capabilities are unavailable.
+        let resources = match fetch_resources(&client).await {
+            Ok(resources) => resources,
+            Err(error) => {
+                warn!("MCP resource discovery unavailable; continuing with tools: {error:#}");
+                Vec::new()
+            }
+        };
+        let prompts = match fetch_prompts(&client).await {
+            Ok(prompts) => prompts,
+            Err(error) => {
+                warn!("MCP prompt discovery unavailable; continuing with tools: {error:#}");
+                Vec::new()
+            }
+        };
         let _ = client.cancel().await;
         info!(
             "MCP discovery complete: {} tools, {} resources, {} prompts",

@@ -54,12 +54,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     let failureReturnTo: string | null = null
-    let pendingProvider: string | null = null
     try {
         const pendingState = await OAuthStateManager.getState(stateToken)
         if (pendingState?.user_id === user.id) {
             failureReturnTo = returnToFromStateMetadata(pendingState.metadata)
-            pendingProvider = pendingState.metadata?.provider ?? null
         }
     } catch (err) {
         logger.warn('Failed to read OAuth state for failure redirect', { err: String(err) })
@@ -68,15 +66,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     let exchange
     try {
         exchange = await exchangeCodeAndIdentify(code, stateToken, {
-            principalEmailOverrides: {
-                clickup: user.email,
-                // Rovo has no userinfo endpoint. This value is the signed-in
-                // Omni user's identity, not callback-provided provider data.
-                atlassian: user.email,
-                ...(pendingProvider?.startsWith('remote_mcp:')
-                    ? { [pendingProvider]: user.email }
-                    : {}),
-            },
+            authenticatedUserEmail: user.email,
         })
     } catch (err) {
         logger.error('OAuth exchange failed', { err: String(err) })

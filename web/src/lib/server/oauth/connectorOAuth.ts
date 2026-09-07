@@ -666,14 +666,13 @@ export interface ExchangeResult {
 }
 
 export interface ExchangeCodeOptions {
-    /// Provider-scoped identity overrides for providers whose OAuth token cannot
-    /// be used with their REST userinfo endpoint. Values must come from an
-    /// already-authenticated Omni user, never from request input.
-    principalEmailOverrides?: Record<string, string>
+    /// Identity for manifests without a userinfo endpoint. This must come from
+    /// the already-authenticated Omni session, never from request input.
+    authenticatedUserEmail?: string
 }
 
-/// Exchange an authorization code for tokens, validate state, fetch
-/// principal email unless a trusted provider-specific override is supplied.
+/// Exchange an authorization code for tokens, validate state, and identify the
+/// principal using the provider's userinfo endpoint or the authenticated Omni user.
 export async function exchangeCodeAndIdentify(
     code: string,
     stateToken: string,
@@ -779,19 +778,18 @@ export async function exchangeCodeAndIdentify(
         grantedScope: tokens.scope ?? null,
     })
 
-    const principalEmailOverride = options.principalEmailOverrides?.[config.provider]
-    if (principalEmailOverride) {
+    if (!config.userinfo_endpoint) {
+        const authenticatedUserEmail = options.authenticatedUserEmail
+        if (!authenticatedUserEmail) {
+            throw new Error(
+                `OAuth provider ${config.provider} does not advertise userinfo; an authenticated Omni user is required`,
+            )
+        }
         logger.info('Using authenticated Omni user as connector OAuth principal', {
             provider: config.provider,
             flow: state.metadata.flow.type,
         })
-        return { tokens, state, config, principalEmail: principalEmailOverride, clientCreds: creds }
-    }
-
-    if (!config.userinfo_endpoint) {
-        throw new Error(
-            `OAuth provider ${config.provider} does not advertise userinfo; a trusted principal identity override is required`,
-        )
+        return { tokens, state, config, principalEmail: authenticatedUserEmail, clientCreds: creds }
     }
 
     const userinfoResp = await remoteMcpCredentialFetch(

@@ -2088,7 +2088,6 @@ pub async fn sdk_register(
                             &recovery_creds,
                         )) {
                             Ok(credentials) => {
-                                // Fire and forget: replay the notification best-effort.
                                 let recovery_request = OAuthCredentialReadyRequest {
                                     source_id,
                                     user_id: Some(user_id),
@@ -2096,14 +2095,67 @@ pub async fn sdk_register(
                                     flow: "user_read".to_string(),
                                     credentials,
                                 };
-                                if let Err(e) = client
+                                match client
                                     .oauth_credential_ready(
                                         &manifest.connector_url,
                                         &recovery_request,
                                     )
                                     .await
                                 {
-                                    warn!("Recovery credential-ready delivery failed: {}", e);
+                                    Ok(Some(refreshed_manifest)) => {
+                                        if let Err(error) =
+                                            validate_connector_manifest_action_schemas(
+                                                &refreshed_manifest,
+                                            )
+                                        {
+                                            warn!(
+                                                "Recovery returned invalid connector manifest: {}",
+                                                error
+                                            );
+                                        } else {
+                                            let refreshed_key = format!(
+                                                "connector:manifest:{}",
+                                                refreshed_manifest.connector_id
+                                            );
+                                            match serde_json::to_string(&refreshed_manifest) {
+                                                Ok(refreshed_json) => {
+                                                    let store_result: redis::RedisResult<()> = conn
+                                                        .set_ex(
+                                                            &refreshed_key,
+                                                            refreshed_json,
+                                                            REGISTRATION_TTL_SECONDS,
+                                                        )
+                                                        .await;
+                                                    if let Err(error) = store_result {
+                                                        warn!(
+                                                            "Recovery failed to store refreshed connector manifest: {}",
+                                                            error
+                                                        );
+                                                    } else {
+                                                        info!(
+                                                            "Recovery updated MCP catalog for {}",
+                                                            refreshed_manifest.connector_id
+                                                        );
+                                                    }
+                                                }
+                                                Err(error) => warn!(
+                                                    "Recovery failed to serialize refreshed connector manifest: {}",
+                                                    error
+                                                ),
+                                            }
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        warn!(
+                                            "Recovery credential-ready returned no refreshed manifest"
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            "Recovery credential-ready delivery failed: {}",
+                                            error
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {

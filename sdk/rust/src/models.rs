@@ -22,8 +22,8 @@ pub struct OAuthManifestConfig {
     pub auth_endpoint: String,
     pub token_endpoint: String,
     /// Optional GET endpoint that returns the authenticated user's email at
-    /// `userinfo_email_field`. Providers without a userinfo endpoint must use
-    /// an explicit trusted identity binding in the OAuth callback.
+    /// `userinfo_email_field`. When absent, the OAuth callback binds the
+    /// credential to the already-authenticated Omni user.
     #[serde(default)]
     pub userinfo_endpoint: Option<String>,
     #[serde(default = "default_email_field")]

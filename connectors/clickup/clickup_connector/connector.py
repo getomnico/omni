@@ -26,7 +26,6 @@ from .config import (
     CLICKUP_OAUTH_RESOURCE,
     CLICKUP_OAUTH_SCOPES,
     CLICKUP_OAUTH_TOKEN_ENDPOINT,
-    CLICKUP_OAUTH_USERINFO_ENDPOINT,
 )
 from .mappers import (
     HierarchyLookup,
@@ -155,7 +154,6 @@ class ClickUpConnector(Connector):
             provider="clickup",
             auth_endpoint=CLICKUP_OAUTH_AUTH_ENDPOINT,
             token_endpoint=CLICKUP_OAUTH_TOKEN_ENDPOINT,
-            userinfo_endpoint=CLICKUP_OAUTH_USERINFO_ENDPOINT,
             userinfo_email_field="user.email",
             identity_scopes=[],
             scopes={

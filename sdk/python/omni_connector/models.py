@@ -272,7 +272,7 @@ class OAuthManifestConfig(BaseModel):
     provider: str
     auth_endpoint: str
     token_endpoint: str
-    userinfo_endpoint: str
+    userinfo_endpoint: str | None = None
     userinfo_email_field: str = "email"
     identity_scopes: list[str] = Field(default_factory=list)
     scopes: dict[str, OAuthScopeSet] = Field(default_factory=dict)

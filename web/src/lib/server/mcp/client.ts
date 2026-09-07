@@ -483,12 +483,6 @@ export async function discoverRemoteMcpOAuthConfig(args: {
                 asMetadata.token_endpoint,
             ).catch(() => null)
             if (!authEndpoint || !tokenEndpoint) continue
-            const userinfoEndpoint =
-                typeof asMetadata.userinfo_endpoint === 'string'
-                    ? await validateRemoteMcpUrlForCredentialUse(
-                          asMetadata.userinfo_endpoint,
-                      ).catch(() => null)
-                    : endpoint.origin
             const registrationEndpoint =
                 typeof asMetadata.registration_endpoint === 'string'
                     ? await validateRemoteMcpUrlForCredentialUse(
@@ -499,11 +493,7 @@ export async function discoverRemoteMcpOAuthConfig(args: {
                 typeof prm.resource === 'string'
                     ? await validateRemoteMcpUrlForCredentialUse(prm.resource).catch(() => null)
                     : endpoint.toString()
-            if (
-                !userinfoEndpoint ||
-                (asMetadata.registration_endpoint && !registrationEndpoint) ||
-                !resource
-            ) {
+            if ((asMetadata.registration_endpoint && !registrationEndpoint) || !resource) {
                 continue
             }
             const scopes = Array.isArray(asMetadata.scopes_supported)
@@ -519,8 +509,6 @@ export async function discoverRemoteMcpOAuthConfig(args: {
                 credential_provider: 'remote_mcp',
                 auth_endpoint: authEndpoint,
                 token_endpoint: tokenEndpoint,
-                userinfo_endpoint: userinfoEndpoint,
-                userinfo_email_field: 'email',
                 identity_scopes: [],
                 scopes: { [args.sourceType]: { read: scopes, write: scopes } },
                 extra_auth_params: {},
