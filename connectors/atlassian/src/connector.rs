@@ -70,6 +70,8 @@ impl AtlassianConnector {
                 Self::ROVO_MCP_URL.to_string(),
             )]),
             scope_separator: " ".to_string(),
+            scope_parameter: "scope".to_string(),
+            user_auth_for_writes_only: false,
             enrich_endpoint: None,
             registration_endpoint: Some(Self::ROVO_REGISTER_URL.to_string()),
             registration_requires_initial_access_token: false,

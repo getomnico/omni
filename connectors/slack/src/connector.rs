@@ -189,7 +189,7 @@ impl Connector for SlackConnector {
             token_endpoint: "https://slack.com/api/oauth.v2.access".to_string(),
             // Slack OAuth v2 returns the delegated token but not an email.
             // The callback binds it to the already-authenticated Omni user.
-            userinfo_endpoint: "".to_string(),
+            userinfo_endpoint: None,
             userinfo_email_field: "email".to_string(),
             identity_scopes: vec![],
             scopes,
