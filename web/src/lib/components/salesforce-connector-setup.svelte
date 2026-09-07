@@ -173,7 +173,7 @@
                     <Input
                         id="consumer-key"
                         bind:value={consumerKey}
-                        placeholder="3MVG9...your Connected App consumer key"
+                        placeholder="3MVG9..."
                         required />
                     <p class="text-muted-foreground text-sm">
                         The Connected App's consumer key (Setup &gt; App Manager &gt; your app &gt;
@@ -186,7 +186,7 @@
                     <Textarea
                         id="private-key"
                         bind:value={privateKey}
-                        placeholder="-----BEGIN PRIVATE KEY-----\n..."
+                        placeholder="-----BEGIN PRIVATE KEY-----..."
                         rows={5}
                         required />
                     <p class="text-muted-foreground text-sm">
