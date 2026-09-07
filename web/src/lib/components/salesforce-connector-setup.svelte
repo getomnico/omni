@@ -155,8 +155,16 @@
 
         <Tabs.Root bind:value={authMode}>
             <Tabs.List class="mt-1 mb-4 grid w-full grid-cols-2">
-                <Tabs.Trigger value="jwt" class="cursor-pointer">Connected App (JWT)</Tabs.Trigger>
-                <Tabs.Trigger value="token" class="cursor-pointer">Access Token</Tabs.Trigger>
+                <Tabs.Trigger
+                    value="jwt"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm cursor-pointer">
+                    Connected App (JWT)
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                    value="token"
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm cursor-pointer">
+                    Access Token
+                </Tabs.Trigger>
             </Tabs.List>
 
             <Tabs.Content value="jwt" class="space-y-4 pt-1">
