@@ -4,6 +4,7 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Textarea } from '$lib/components/ui/textarea'
+    import * as Tabs from '$lib/components/ui/tabs'
     import { AuthType } from '$lib/types'
     import { toast } from 'svelte-sonner'
 
@@ -152,29 +153,13 @@
             </Dialog.Description>
         </Dialog.Header>
 
-        <div class="mt-1 mb-4 flex rounded-lg border p-1">
-            <button
-                class="flex-1 cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium transition-colors {authMode ===
-                'jwt'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-muted'}"
-                type="button"
-                onclick={() => (authMode = 'jwt')}>
-                Connected App (JWT)
-            </button>
-            <button
-                class="flex-1 cursor-pointer rounded-md px-3 py-1.5 text-sm font-medium transition-colors {authMode ===
-                'token'
-                    ? 'bg-primary text-primary-foreground'
-                    : 'hover:bg-muted'}"
-                type="button"
-                onclick={() => (authMode = 'token')}>
-                Access Token
-            </button>
-        </div>
+        <Tabs.Root bind:value={authMode}>
+            <Tabs.List class="mt-1 mb-4 grid w-full grid-cols-2">
+                <Tabs.Trigger value="jwt" class="cursor-pointer">Connected App (JWT)</Tabs.Trigger>
+                <Tabs.Trigger value="token" class="cursor-pointer">Access Token</Tabs.Trigger>
+            </Tabs.List>
 
-        {#if authMode === 'jwt'}
-            <div class="space-y-4">
+            <Tabs.Content value="jwt" class="space-y-4 pt-1">
                 <div class="space-y-2">
                     <Label for="consumer-key">Consumer Key</Label>
                     <Input
@@ -234,9 +219,9 @@
                         Usually auto-detected from the token response; set it to override.
                     </p>
                 </div>
-            </div>
-        {:else}
-            <div class="space-y-4">
+            </Tabs.Content>
+
+            <Tabs.Content value="token" class="space-y-4 pt-1">
                 <div class="space-y-2">
                     <Label for="instance-url-token">Instance URL</Label>
                     <Input
@@ -262,8 +247,8 @@
                         mode is for quick trials only.
                     </p>
                 </div>
-            </div>
-        {/if}
+            </Tabs.Content>
+        </Tabs.Root>
 
         <Dialog.Footer>
             <Button variant="outline" onclick={handleCancel} class="cursor-pointer">Cancel</Button>
