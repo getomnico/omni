@@ -40,6 +40,9 @@ export const GET: RequestHandler = async ({ params, locals }) => {
             headers: {
                 'Content-Type': contentType,
                 'Cache-Control': 'private, max-age=3600',
+                // Artifact bytes may be read by sandboxed iframe previews (unique
+                // origin), so allow cross-origin reads.
+                'Access-Control-Allow-Origin': '*',
             },
         })
     } catch (err) {

@@ -53,7 +53,7 @@ Use `excel schema <file>` to see detected types, sample values, and null counts 
 - Quick lookups (specific cells, ranges, text search): `excel` CLI via `run_bash`
 - Data analysis, aggregation, pivoting: `pandas` via `run_python`
 - Cell-level editing, formatting, formulas: `openpyxl` via `run_python`
-- Always use `present_artifact` after generating or modifying a spreadsheet so the user can download it.
+- Always use `present_artifact` after generating or modifying a spreadsheet so the user can preview and download it. Excel files open in the chat's viewer pane.
 
 ## Formulas
 The `excel` CLI can extract formulas from cells:

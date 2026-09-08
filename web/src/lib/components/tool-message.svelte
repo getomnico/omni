@@ -9,7 +9,6 @@
         Terminal,
         Pencil,
         Image,
-        Download,
         Users,
         BookOpen,
         Mail,
@@ -27,6 +26,8 @@
         getSourceIconPath,
         getSourceDisplayName,
     } from '$lib/utils/icons'
+    import ArtifactChip from '$lib/components/artifacts/artifact-chip.svelte'
+    import { artifactDisplayMode, artifactFromToolCall } from '$lib/utils/artifacts'
     import { SourceType } from '$lib/types'
     import { themeStore } from '$lib/themes/store.svelte'
 
@@ -37,17 +38,16 @@
         isAdmin?: boolean
         onOAuthComplete?: () => void
         showOAuthCard?: boolean
+        // Key of the artifact currently displayed in the side pane.
+        activeArtifactKey?: string | null
+        // Key of the artifact to briefly emphasize (freshly presented).
+        emphasizeArtifactKey?: string | null
+        onOpenArtifact?: (artifact: ArtifactData) => void
     }
 
     type SearchResult = NonNullable<ToolMessageContent['toolResult']>['content'][number]
 
-    type ArtifactData = {
-        key: string
-        url: string
-        title: string
-        content_type: string
-        size_bytes: number
-    }
+    type ArtifactData = import('$lib/utils/artifacts').ArtifactData
 
     const ToolIndicators: Record<string, { loading: string; loaded: string }> = {
         search: { loading: 'Searching', loaded: 'Searched' },
@@ -105,6 +105,9 @@
         isAdmin = false,
         onOAuthComplete = () => {},
         showOAuthCard = true,
+        activeArtifactKey = null,
+        emphasizeArtifactKey = null,
+        onOpenArtifact,
     }: Props = $props()
 
     let primaryMessage = $derived(messages[0])
@@ -254,37 +257,9 @@
         return result.title
     }
 
-    function parseArtifact(message: ToolMessageContent): Omit<ArtifactData, 'key'> | null {
-        if (toolName !== 'present_artifact' || !message.actionResult?.text) return null
-        try {
-            const parsed: unknown = JSON.parse(message.actionResult.text)
-            if (typeof parsed !== 'object' || parsed === null) return null
-            const candidate = parsed as Record<string, unknown>
-            if (
-                typeof candidate.url !== 'string' ||
-                typeof candidate.title !== 'string' ||
-                typeof candidate.content_type !== 'string' ||
-                typeof candidate.size_bytes !== 'number'
-            ) {
-                return null
-            }
-            return {
-                url: candidate.url,
-                title: candidate.title,
-                content_type: candidate.content_type,
-                size_bytes: candidate.size_bytes,
-            }
-        } catch {
-            return null
-        }
-    }
-
     let artifactData = $derived(
         messages
-            .map((message, index) => {
-                const artifact = parseArtifact(message)
-                return artifact ? { ...artifact, key: `${message.toolUse.id}:${index}` } : null
-            })
+            .map(artifactFromToolCall)
             .filter((artifact): artifact is ArtifactData => artifact !== null),
     )
 
@@ -294,7 +269,7 @@
 {#if isArtifact}
     {#each artifactData as artifact (artifact.key)}
         <div class="mt-2">
-            {#if artifact.content_type.startsWith('image/')}
+            {#if artifactDisplayMode(artifact.content_type, artifact.url) === 'inline'}
                 <figure class="border-border rounded-lg border p-2">
                     <img src={artifact.url} alt={artifact.title} class="!m-0 max-w-full rounded" />
                     <figcaption class="text-muted-foreground mt-1 text-center text-xs">
@@ -302,17 +277,11 @@
                     </figcaption>
                 </figure>
             {:else}
-                <a
-                    href={artifact.url}
-                    download
-                    rel="external"
-                    class="border-border hover:bg-muted text-foreground inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm no-underline">
-                    <Download class="h-4 w-4" />
-                    <span>{artifact.title}</span>
-                    <span class="text-muted-foreground text-xs">
-                        ({Math.round(artifact.size_bytes / 1024)} KB)
-                    </span>
-                </a>
+                <ArtifactChip
+                    {artifact}
+                    isActive={activeArtifactKey !== null && artifact.key === activeArtifactKey}
+                    emphasize={artifact.key === emphasizeArtifactKey}
+                    onOpen={onOpenArtifact} />
             {/if}
         </div>
     {/each}

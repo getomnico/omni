@@ -210,6 +210,12 @@ async fn test_binary_write_and_download() {
         .unwrap();
 
     assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*"),
+    );
     let downloaded = resp.bytes().await.unwrap();
     assert_eq!(downloaded.as_ref(), &raw_bytes);
 }

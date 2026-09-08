@@ -1,6 +1,7 @@
 <script lang="ts">
     import * as Accordion from '$lib/components/ui/accordion'
     import type { MessageContent, OAuthRequired, ToolMessageContent } from '$lib/types/message'
+    import type { ArtifactData } from '$lib/utils/artifacts'
     import ToolMessage from './tool-message.svelte'
     import MarkdownMessage from './markdown-message.svelte'
     import OAuthRequiredCard from '$lib/components/oauth-integrations/oauth-required-card.svelte'
@@ -29,6 +30,10 @@
         // The run is live but paused (approval/OAuth card) and the stream flag
         // is off; keep older steps folded instead of expanding the full list.
         isPaused?: boolean
+        // Artifact side-pane state, forwarded to artifact rows.
+        activeArtifactKey?: string | null
+        emphasizeArtifactKey?: string | null
+        onOpenArtifact?: (artifact: ArtifactData) => void
     }
 
     type OAuthCardEntry = {
@@ -48,6 +53,9 @@
         onOAuthComplete = () => {},
         thinkingText = null,
         isPaused = false,
+        activeArtifactKey = null,
+        emphasizeArtifactKey = null,
+        onOpenArtifact,
     }: Props = $props()
 
     let workExpanded = $state<string>()
@@ -126,7 +134,7 @@
     }
 </script>
 
-{#snippet workTimeline(items)}
+{#snippet workTimeline(items: ToolCallDisplayItem[])}
     <div class="space-y-2">
         {#each items as item (workItemKey(item))}
             {#if item.type === 'text'}
@@ -144,6 +152,9 @@
                         {isStreaming}
                         {isAdmin}
                         {onOAuthComplete}
+                        {activeArtifactKey}
+                        {emphasizeArtifactKey}
+                        {onOpenArtifact}
                         showOAuthCard={false} />
                 </div>
             {/if}
@@ -215,6 +226,9 @@
                 {isStreaming}
                 {isAdmin}
                 {onOAuthComplete}
+                {activeArtifactKey}
+                {emphasizeArtifactKey}
+                {onOpenArtifact}
                 showOAuthCard={false} />
         </div>
     {/each}

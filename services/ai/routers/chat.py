@@ -1254,7 +1254,12 @@ async def download_artifact(
             return Response(
                 content=resp.content,
                 media_type=content_type,
-                headers={"Cache-Control": "private, max-age=3600"},
+                headers={
+                    "Cache-Control": "private, max-age=3600",
+                    # Artifact bytes may be read by sandboxed iframe previews
+                    # (unique origin), so allow cross-origin reads.
+                    "Access-Control-Allow-Origin": "*",
+                },
             )
     except httpx.HTTPStatusError as e:
         logger.error(f"Sandbox artifact download failed: {e}")

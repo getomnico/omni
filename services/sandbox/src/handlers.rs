@@ -306,6 +306,9 @@ pub async fn download_file(
 
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, content_type)
+        // Artifact bytes may be read by sandboxed iframe previews (unique
+        // origin), so allow cross-origin reads; auth is path-based.
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(axum::body::Body::from(body))
         .unwrap())
 }
