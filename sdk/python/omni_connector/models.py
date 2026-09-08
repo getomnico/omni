@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal, Self, Union
 
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 
 class SyncMode(str, Enum):
@@ -416,6 +416,17 @@ class CancelResponse(BaseModel):
     status: str
 
 
+def _normalize_rust_datetime(value: object) -> object:
+    """Normalize time's expanded four-digit year representation for datetime."""
+    if not isinstance(value, str) or not value.startswith("+"):
+        return value
+    year_text, separator, remainder = value.partition("-")
+    if separator != "-" or len(year_text) != 7 or not year_text[1:].isdigit():
+        return value
+    year = int(year_text[1:])
+    return f"{year:04d}-{remainder}" if 1 <= year <= 9999 else value
+
+
 class Source(BaseModel):
     id: str
     name: str
@@ -433,6 +444,9 @@ class Source(BaseModel):
     created_at: datetime
     updated_at: datetime
     created_by: str
+
+    _normalize_created_at = field_validator("created_at", mode="before")(_normalize_rust_datetime)
+    _normalize_updated_at = field_validator("updated_at", mode="before")(_normalize_rust_datetime)
 
 
 class ActionRequest(BaseModel):

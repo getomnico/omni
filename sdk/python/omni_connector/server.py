@@ -338,8 +338,11 @@ def create_app(connector: "Connector") -> FastAPI:
             auth: dict[str, Any] = {}
             try:
                 auth = connector._prepare_mcp_auth(request.credentials)
+                arguments = connector.prepare_mcp_tool_arguments(
+                    request.action, request.params
+                )
                 response = await adapter.execute_tool(
-                    request.action, dict(request.params), **auth
+                    request.action, arguments, **auth
                 )
                 if response.status != "success" and response.error:
                     auth_response = mcp_auth_required_response(

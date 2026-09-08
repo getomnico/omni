@@ -7,6 +7,7 @@ from omni_connector import (
     DocumentMetadata,
     DocumentPermissions,
     EventType,
+    Source,
     SyncRequest,
     SyncResponse,
 )
@@ -60,6 +61,24 @@ def test_document_permissions_defaults():
     assert data["public"] is False
     assert data["users"] == []
     assert data["groups"] == []
+
+
+def test_source_accepts_rust_expanded_year_timestamps():
+    source = Source(
+        id="source-1",
+        name="Salesforce",
+        source_type="salesforce",
+        config={},
+        is_active=True,
+        is_deleted=False,
+        scope="org",
+        created_at="+002026-09-08T10:33:57.638639000Z",
+        updated_at="+002026-09-08T10:54:05.229149000Z",
+        created_by="user-1",
+    )
+
+    assert source.created_at.year == 2026
+    assert source.updated_at.year == 2026
 
 
 def test_document():

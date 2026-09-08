@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -381,6 +382,17 @@ class Connector(ABC):
                 return {"Authorization": f"Bearer {credentials['token']}"}
         """
         return {}
+
+    def prepare_mcp_tool_arguments(
+        self, action: str, arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Prepare arguments before forwarding an MCP tool call.
+
+        Connectors can override this to adapt values that are meaningful in
+        the agent or connector-manager container but not in the MCP process's
+        runtime environment.
+        """
+        return dict(arguments)
 
     async def execute_action(
         self,

@@ -54,7 +54,7 @@ export SF_DISABLE_LOG_FILE=true
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 chmod 700 "$HOME" "$XDG_CONFIG_HOME"
 
-alias_name="omni-$source_hash-$$"
+org_target=""
 
 if [ "$OMNI_SALESFORCE_AUTH_MODE" = "jwt" ]; then
   : "${SF_CLIENT_ID:?missing SF_CLIENT_ID}"
@@ -68,21 +68,22 @@ if [ "$OMNI_SALESFORCE_AUTH_MODE" = "jwt" ]; then
     --jwt-key-file "$key_file" \
     --client-id "$SF_CLIENT_ID" \
     --instance-url "$SF_LOGIN_URL" \
-    --alias "$alias_name" \
     --set-default \
     --no-prompt 2>&1); then
     unset login_output
     printf '%s\n' "Salesforce JWT login failed" >&2
     exit 1
   fi
+  org_target="$SF_USERNAME"
 elif [ "$OMNI_SALESFORCE_AUTH_MODE" = "access_token" ]; then
   : "${SF_ACCESS_TOKEN:?missing SF_ACCESS_TOKEN}"
   : "${SF_INSTANCE_URL:?missing SF_INSTANCE_URL}"
   : "${SF_LOGIN_URL:?missing SF_LOGIN_URL}"
 
-  # The pinned Salesforce CLI requires the OAuth token in its native
-  # <org-id>!<access-token> format. OAuth responses already use that format;
-  # never prepend the org id again.
+  # The Salesforce CLI expects the OAuth token in its native
+  # <org-id>!<access-token> format, while Salesforce authorization-code
+  # responses may contain only the token value. Keep the raw value for the
+  # userinfo request and add the verified organization id below when needed.
   case "$SF_ACCESS_TOKEN" in
     *'!'*)
       token_org_id=${SF_ACCESS_TOKEN%%!*}
@@ -93,15 +94,15 @@ elif [ "$OMNI_SALESFORCE_AUTH_MODE" = "access_token" ]; then
       fi
       ;;
     *)
-      printf '%s\n' "Salesforce OAuth token must use org-id!access-token format" >&2
-      exit 1
+      token_org_id=""
+      token_value="$SF_ACCESS_TOKEN"
       ;;
   esac
 
   # Verify the token's org identity before handing it to the CLI. The token is
   # supplied through the child environment, never a command-line argument.
   actual_org_id=$(SF_USERINFO_URL="$SF_LOGIN_URL/services/oauth2/userinfo" \
-    SF_USER_ACCESS_TOKEN="$SF_ACCESS_TOKEN" python3 -c '
+    SF_USER_ACCESS_TOKEN="$token_value" python3 -c '
 import json, os, urllib.request
 request = urllib.request.Request(
     os.environ["SF_USERINFO_URL"],
@@ -116,45 +117,78 @@ print(value)
       printf '%s\n' "Unable to validate Salesforce OAuth organization" >&2
       auth_failure
     }
-  if [ "$actual_org_id" != "$token_org_id" ]; then
+  if [ -n "$token_org_id" ] && [ "$actual_org_id" != "$token_org_id" ]; then
     printf '%s\n' "Salesforce OAuth organization does not match its access token" >&2
     exit 1
   fi
+  token_org_id="$actual_org_id"
   if [ -n "${SF_ORG_ID:-}" ] && [ "$SF_ORG_ID" != "$actual_org_id" ]; then
     printf '%s\n' "Salesforce OAuth organization does not match the source" >&2
     exit 1
   fi
-  if ! login_output=$(SF_ACCESS_TOKEN="$SF_ACCESS_TOKEN" sf org login access-token \
-    --instance-url "$SF_INSTANCE_URL" \
-    --alias "$alias_name" \
-    --set-default \
-    --no-prompt 2>&1); then
+  # The access-token CLI command requires the org-id!token representation
+  # but sends that representation to Salesforce as the bearer token. That is
+  # invalid for authorization-code tokens, so create the CLI auth record
+  # directly with the verified raw token instead.
+  if ! login_output=$(SF_ACCESS_TOKEN="$token_value" \
+    SF_INSTANCE_URL="$SF_INSTANCE_URL" \
+    SF_LOGIN_URL="$SF_LOGIN_URL" \
+    node --input-type=module <<'NODE'
+import { AuthInfo } from '/usr/local/lib/node_modules/@salesforce/cli/node_modules/@salesforce/core/lib/index.js'
+
+const accessToken = process.env.SF_ACCESS_TOKEN
+const instanceUrl = process.env.SF_INSTANCE_URL
+const loginUrl = process.env.SF_LOGIN_URL
+if (!accessToken || !instanceUrl || !loginUrl) {
+  throw new Error('Missing Salesforce CLI auth bootstrap environment')
+}
+const authInfo = await AuthInfo.create({
+  accessTokenOptions: { accessToken, instanceUrl, loginUrl },
+})
+await authInfo.save()
+await authInfo.handleAliasAndDefaultSettings({ setDefault: true })
+process.stdout.write(`OMNI_ORG_USERNAME=${authInfo.getUsername()}`)
+NODE
+  2>&1); then
     unset login_output
     printf '%s\n' "Salesforce access-token login failed" >&2
     auth_failure
   fi
+  org_target=$(printf '%s\n' "$login_output" | sed -n 's/^OMNI_ORG_USERNAME=//p' | tail -n 1)
 else
   printf '%s\n' "Unsupported Salesforce MCP authentication mode" >&2
   exit 2
 fi
 
+if [ -z "$org_target" ]; then
+  printf '%s\n' "Salesforce MCP did not resolve an authenticated org" >&2
+  exit 1
+fi
+
 # The CLI has persisted the credential in its private state directory. Do not
-# pass raw credentials to sf-mcp-server, which only needs the saved alias.
+# pass raw credentials to sf-mcp-server, which only needs the saved username.
 unset SF_ACCESS_TOKEN SF_PRIVATE_KEY SF_CLIENT_ID SF_USERNAME SF_LOGIN_URL SF_INSTANCE_URL SF_ORG_ID
 unset login_output token_org_id token_value actual_org_id
 
 # Keep the tool surface explicit. The data toolset is the only supported
 # initial rollout; callers may further restrict it with SF_MCP_TOOLS.
-set -- --orgs "$alias_name" --toolsets "${SALESFORCE_MCP_TOOLSETS:-data}" --no-telemetry
+set -- --orgs "$org_target" --toolsets "${SALESFORCE_MCP_TOOLSETS:-data}" --no-telemetry
 if [ -n "${SALESFORCE_MCP_TOOLS:-}" ]; then
   set -- "$@" --tools "$SALESFORCE_MCP_TOOLS"
 fi
 
-# Do not exec: retaining this shell lets the EXIT trap remove the entire CLI
-# state directory after the MCP child exits, while forwarding termination.
-sf-mcp-server "$@" &
+# Keep the shell so the EXIT trap removes the entire CLI state directory
+# after the MCP child exits. Explicitly duplicate stdin because some
+# non-interactive POSIX shells replace stdin for asynchronous commands with
+# /dev/null.
+exec 3<&0
+sf-mcp-server "$@" <&3 3<&- &
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 143' TERM INT HUP
-wait "$child"
-status=$?
+if wait "$child"; then
+  status=0
+else
+  status=$?
+fi
+exec 3<&-
 exit "$status"

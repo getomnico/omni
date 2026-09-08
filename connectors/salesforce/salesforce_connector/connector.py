@@ -331,6 +331,23 @@ class SalesforceConnector(Connector):
             raise ValueError("Salesforce MCP requires an HTTPS Salesforce instance URL")
         return value.rstrip("/")
 
+    def prepare_mcp_tool_arguments(
+        self, action: str, arguments: Mapping[str, object]
+    ) -> dict[str, object]:
+        prepared = dict(arguments)
+        directory = prepared.get("directory")
+        if directory is None:
+            return prepared
+        if not isinstance(directory, str) or not directory:
+            raise ValueError(f"Salesforce MCP tool {action} requires a directory path")
+        # The official Salesforce MCP schema asks the agent for a path in the
+        # sandbox container, which is not mounted in this connector container.
+        # Preserve usable connector-local paths and map inaccessible ones to
+        # the connector's working directory where the CLI auth state lives.
+        if not os.path.isdir(directory):
+            prepared["directory"] = os.getcwd()
+        return prepared
+
     async def bootstrap_mcp(self, credentials: dict[str, object]) -> None:
         # Sync has only the org JWT credential. MCP catalogs must be discovered
         # with a user OAuth credential, never with the sync credential.

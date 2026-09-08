@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -107,6 +109,21 @@ def test_mcp_env_isolates_source_and_user_without_logging_or_argument_tokens() -
     assert env["SF_ACCESS_TOKEN"] == "user-oauth-token"
     assert env["SF_ORG_ID"] == "00D000000000001"
     assert env["SF_LOGIN_URL"] == "https://test.salesforce.com"
+
+
+def test_mcp_tool_directory_uses_connector_workspace_for_unmounted_paths() -> None:
+    connector = SalesforceConnector()
+    arguments = connector.prepare_mcp_tool_arguments(
+        "run_soql_query", {"directory": "/scratch/not-mounted", "query": "SELECT Id"}
+    )
+
+    assert arguments["directory"] == os.getcwd()
+    assert arguments["query"] == "SELECT Id"
+
+
+def test_mcp_tool_directory_rejects_malformed_values() -> None:
+    with pytest.raises(ValueError):
+        SalesforceConnector().prepare_mcp_tool_arguments("run_soql_query", {"directory": 42})
 
 
 def test_from_mapping_missing_credentials() -> None:
