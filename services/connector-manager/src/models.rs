@@ -302,5 +302,7 @@ pub struct ExecuteSkillRequest {
     #[serde(default)]
     pub source_id: Option<String>,
     #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
     pub arguments: Option<JsonValue>,
 }

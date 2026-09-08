@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import tempfile
 import time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, AsyncIterator, Union
+from typing import Any
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -43,7 +47,7 @@ class HttpMcpServer:
     sse_read_timeout_seconds: float = 300.0
 
 
-McpServer = Union[StdioMcpServer, HttpMcpServer]
+McpServer = StdioMcpServer | HttpMcpServer
 
 
 class McpAdapter:
@@ -120,6 +124,50 @@ class McpAdapter:
         env: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ):
+        # Cancellation of this task closes stdio_client and terminates the
+        # child process. Keep a hung official MCP/CLI process from surviving a
+        # request indefinitely.
+        try:
+            timeout_seconds = min(
+                max(float(os.environ.get("OMNI_MCP_TIMEOUT_SECONDS", "120")), 1.0),
+                300.0,
+            )
+        except ValueError:
+            timeout_seconds = 120.0
+        try:
+            return await asyncio.wait_for(
+                self._run_unbounded(callback, env=env, headers=headers),
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            # The Salesforce launcher leaves this short-lived marker after a
+            # terminal OAuth rejection. Consume it here so bootstrap callers
+            # also clean it up, while the normalized exception lets the HTTP
+            # server return the standard 412 response.
+            status_file = (env or {}).get("OMNI_SALESFORCE_AUTH_STATUS_FILE")
+            if isinstance(status_file, str) and status_file:
+                try:
+                    if (
+                        Path(status_file).read_text(encoding="utf-8").strip()
+                        == "needs_user_auth"
+                    ):
+                        Path(status_file).unlink(missing_ok=True)
+                        raise RuntimeError(
+                            "Salesforce MCP authentication required"
+                        ) from exc
+                except FileNotFoundError:
+                    pass
+                else:
+                    Path(status_file).unlink(missing_ok=True)
+            raise
+
+    async def _run_unbounded(
+        self,
+        callback,
+        *,
+        env: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         async with self._open_session(env, headers) as session:
             return await callback(session)
 
@@ -187,27 +235,67 @@ class McpAdapter:
     def _save_catalog_cache(self, path: Path) -> None:
         cached_at = self._catalog_cached_at or time.time()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "cached_at": cached_at,
-                    "catalog": self._export_catalog(),
-                }
-            )
+        payload = json.dumps(
+            {
+                "version": 1,
+                "cached_at": cached_at,
+                "catalog": self._export_catalog(),
+            }
         )
+        # Never leave a truncated catalog behind if two connector workers
+        # refresh it together or the process is interrupted during a write.
+        fd, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", dir=path.parent
+        )
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
     async def discover(
         self,
         env: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
-        """Connect to MCP server, discover tools/resources/prompts, cache them."""
+        """Connect to MCP and cache tools plus optional resources/prompts.
+
+        MCP servers are allowed to implement only tools. In particular, the
+        official Salesforce DX server returns ``Method not found`` for the
+        optional resource and prompt list methods, so those failures must not
+        discard a successfully discovered tool catalog.
+        """
+
+        # A failed discovery must not leave a removed or policy-disabled
+        # catalog active. Publish a catalog only after this attempt succeeds.
+        self._clear_catalog_cache()
 
         async def _discover(session: ClientSession) -> None:
-            self._cached_actions = await self._fetch_actions(session)
-            self._cached_resources = await self._fetch_resources(session)
-            self._cached_prompts = await self._fetch_prompts(session)
+            actions = await self._fetch_actions(session)
+            try:
+                resources = await self._fetch_resources(session)
+            except Exception:
+                logger.info("MCP server does not expose resources", exc_info=True)
+                resources = []
+            try:
+                prompts = await self._fetch_prompts(session)
+            except Exception:
+                logger.info("MCP server does not expose prompts", exc_info=True)
+                prompts = []
+
+            # Publish a complete catalog only after every optional lookup has
+            # settled. This prevents a partial failed discovery from looking
+            # like a valid cache on the next manifest registration.
+            self._cached_actions = actions
+            self._cached_resources = resources
+            self._cached_prompts = prompts
 
         await self._run(_discover, env=env, headers=headers)
         self._catalog_cached_at = time.time()
@@ -262,9 +350,8 @@ class McpAdapter:
 
                 return await self._run(_fetch, env=env, headers=headers)
             except Exception:
-                if self._cached_resources is not None:
-                    return self._cached_resources
-                raise
+                logger.info("MCP resource discovery unavailable", exc_info=True)
+                return self._cached_resources or []
         return self._cached_resources or []
 
     async def get_prompt_definitions(
@@ -282,9 +369,8 @@ class McpAdapter:
 
                 return await self._run(_fetch, env=env, headers=headers)
             except Exception:
-                if self._cached_prompts is not None:
-                    return self._cached_prompts
-                raise
+                logger.info("MCP prompt discovery unavailable", exc_info=True)
+                return self._cached_prompts or []
         return self._cached_prompts or []
 
     async def execute_tool(
@@ -372,6 +458,10 @@ class McpAdapter:
                     input_schema=tool.inputSchema
                     or {"type": "object", "properties": {}},
                     mode="read" if is_read_only else "write",
+                    # Connector-manager uses the manifest's explicit
+                    # mcp_action_names provenance to require a user OAuth
+                    # credential. MCP tools are not admin-only by default.
+                    admin_only=False,
                 )
             )
         return actions

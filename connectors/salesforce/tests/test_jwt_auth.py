@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from salesforce_connector.client import AuthenticationError, SalesforceClient
+from salesforce_connector.connector import SalesforceConnector
 from salesforce_connector.models import AuthMode, SalesforceAuth
 from tests.conftest import MockSalesforceAPI
 
@@ -50,6 +51,62 @@ def test_from_mapping_jwt() -> None:
     assert auth.client_id == "3MVG9-test-consumer-key"
     assert auth.username == "owner@example.com"
     assert auth.login_url == "https://login.salesforce.com"
+
+
+def test_from_mapping_prefers_user_token_over_merged_org_jwt() -> None:
+    auth = SalesforceAuth.from_mapping(
+        {
+            **_jwt_credentials("https://login.salesforce.com"),
+            "access_token": "user-oauth-token",
+            "instance_url": "https://example.my.salesforce.com",
+        }
+    )
+    assert auth.mode == AuthMode.BEARER
+    assert auth.access_token == "user-oauth-token"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://evilforce.com",
+        "http://login.salesforce.com",
+        "https://login.salesforce.com:8443",
+        "https://login.salesforce.com.evil.example",
+    ],
+)
+def test_mcp_login_url_rejects_untrusted_origins(value: str) -> None:
+    with pytest.raises(ValueError):
+        SalesforceConnector._mcp_login_url(value)
+
+
+def test_mcp_login_url_accepts_salesforce_domains() -> None:
+    assert (
+        SalesforceConnector._mcp_login_url("https://login.salesforce.com/")
+        == "https://login.salesforce.com"
+    )
+    assert (
+        SalesforceConnector._mcp_login_url("https://acme.my.salesforce.com")
+        == "https://acme.my.salesforce.com"
+    )
+
+
+def test_mcp_env_isolates_source_and_user_without_logging_or_argument_tokens() -> None:
+    env = SalesforceConnector().prepare_mcp_env(
+        {
+            "source_id": "source-1",
+            "user_id": "user-1",
+            "credentials": {
+                "access_token": "user-oauth-token",
+                "instance_url": "https://acme.my.salesforce.com",
+                "organization_id": "00D000000000001",
+                "login_url": "https://test.salesforce.com",
+            },
+        }
+    )
+    assert env["OMNI_SALESFORCE_SOURCE_ID"] == "source-1:user-1"
+    assert env["SF_ACCESS_TOKEN"] == "user-oauth-token"
+    assert env["SF_ORG_ID"] == "00D000000000001"
+    assert env["SF_LOGIN_URL"] == "https://test.salesforce.com"
 
 
 def test_from_mapping_missing_credentials() -> None:

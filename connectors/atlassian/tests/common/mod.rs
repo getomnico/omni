@@ -89,6 +89,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         ],
         description: None,
         actions: vec![],
+        mcp_action_names: vec![],
         search_operators: vec![],
         read_only: false,
         extra_schema: None,

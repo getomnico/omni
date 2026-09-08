@@ -280,7 +280,8 @@ class ConnectorToolHandler:
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
                             integration_type=integration_type,
-                            supports_user_oauth=bool(manifest.get("oauth")),
+                            supports_user_oauth=action_def["name"]
+                            in set(manifest.get("mcp_action_names") or []),
                         )
                     )
 

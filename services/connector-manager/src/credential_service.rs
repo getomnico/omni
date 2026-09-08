@@ -148,6 +148,19 @@ impl CredentialService {
             .map_err(|e| CredentialServiceError::Repository(e.to_string()))
     }
 
+    /// Remove a per-user credential that can no longer authenticate. This is
+    /// deliberately scoped to a user row and can never delete the org JWT.
+    pub async fn delete_user_credential(
+        &self,
+        source_id: &str,
+        user_id: &str,
+    ) -> Result<(), CredentialServiceError> {
+        self.repo()?
+            .delete_for_user(source_id, user_id)
+            .await
+            .map_err(|e| CredentialServiceError::Repository(e.to_string()))
+    }
+
     /// Fetch owner credential **without** OAuth refresh — a raw passthrough
     /// for callers that only need the stored value (e.g. SDK sync-config).
     pub async fn raw_owner_credential(
@@ -213,14 +226,28 @@ impl CredentialService {
             .map(|row| row.config)
             .unwrap_or_else(|| serde_json::json!({}));
 
-        let refreshed = do_oauth_refresh(
+        let refreshed = match do_oauth_refresh(
             &mut credential,
             &connector_config,
             oauth,
             true, // remote_mcp = true → errors on missing refresh_token
             None, // http_client
         )
-        .await?;
+        .await
+        {
+            Ok(refreshed) => refreshed,
+            Err(err @ CredentialServiceError::ReconnectRequired) => {
+                if let Some(user_id) = credential.user_id.as_deref() {
+                    repo.delete_for_user(&credential.source_id, user_id)
+                        .await
+                        .map_err(|delete_err| {
+                            CredentialServiceError::Repository(delete_err.to_string())
+                        })?;
+                }
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
 
         repo.update_credentials(&refreshed)
             .await
@@ -296,8 +323,16 @@ impl CredentialService {
         // Build a RemoteMcpOAuthConfig-like view from native fields.
         // This allows us to reuse do_oauth_refresh for both native and
         // remote-MCP paths.
-        let token_uri = string_from(&connector_config, "oauth_token_endpoint")
-            .or_else(|| string_from(&credential.credentials, "token_uri"));
+        let token_uri = if provider_str == "salesforce" {
+            // Salesforce sources may use different login domains (production,
+            // sandbox, or My Domain). The endpoint captured with this user's
+            // OAuth grant must win over provider-global connector config.
+            string_from(&credential.credentials, "token_uri")
+                .or_else(|| string_from(&connector_config, "oauth_token_endpoint"))
+        } else {
+            string_from(&connector_config, "oauth_token_endpoint")
+                .or_else(|| string_from(&credential.credentials, "token_uri"))
+        };
 
         // If we don't even have a token endpoint, there is nothing to
         // refresh — return the credential unchanged.
@@ -307,8 +342,13 @@ impl CredentialService {
 
         // Resolve auth method with proper precedence:
         //   connector config → credential JSON → heuristic
-        let auth_method_str = string_from(&connector_config, "oauth_token_endpoint_auth_method")
-            .or_else(|| string_from(&credential.credentials, "token_endpoint_auth_method"));
+        let auth_method_str = if provider_str == "salesforce" {
+            string_from(&credential.credentials, "token_endpoint_auth_method")
+                .or_else(|| string_from(&connector_config, "oauth_token_endpoint_auth_method"))
+        } else {
+            string_from(&connector_config, "oauth_token_endpoint_auth_method")
+                .or_else(|| string_from(&credential.credentials, "token_endpoint_auth_method"))
+        };
         let has_secret = string_from(&connector_config, "oauth_client_secret")
             .or_else(|| string_from(&credential.credentials, "client_secret"))
             .is_some();
@@ -325,7 +365,7 @@ impl CredentialService {
         };
 
         let native_oauth = NativeOAuthParams {
-            provider: provider_str,
+            provider: provider_str.clone(),
             credential_provider: String::new(),
             token_endpoint,
             token_endpoint_auth_method: auth_method,
@@ -346,16 +386,41 @@ impl CredentialService {
             .map(str::to_owned)
             .unwrap();
 
+        let refresh_config = if provider_str == "salesforce" {
+            let mut config = connector_config.clone();
+            if let Some(config_object) = config.as_object_mut() {
+                config_object.remove("oauth_client_id");
+                config_object.remove("oauth_client_secret");
+                config_object.remove("oauth_token_endpoint");
+                config_object.remove("oauth_token_endpoint_auth_method");
+            }
+            config
+        } else {
+            connector_config.clone()
+        };
         let refreshed = do_native_refresh(
             &mut credential,
-            &connector_config,
+            &refresh_config,
             &native_oauth,
             &refresh_token,
             None,
         )
         .await;
 
-        let refreshed = refreshed?;
+        let refreshed = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(err @ CredentialServiceError::ReconnectRequired) => {
+                if let Some(user_id) = credential.user_id.as_deref() {
+                    repo.delete_for_user(&credential.source_id, user_id)
+                        .await
+                        .map_err(|delete_err| {
+                            CredentialServiceError::Repository(delete_err.to_string())
+                        })?;
+                }
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         repo.update_credentials(&refreshed)
             .await
             .map_err(|e| CredentialServiceError::Repository(e.to_string()))?;
@@ -634,8 +699,11 @@ fn is_reconnect_required_refresh_failure(status: u16, body: &str) -> bool {
     {
         return false;
     }
+    // A proxy/WAF may return an HTML or otherwise non-OAuth response. Do not
+    // destroy a user's credential when the endpoint has not identified an
+    // OAuth failure; retry it as a transient refresh error instead.
     let Ok(value) = serde_json::from_str::<JsonValue>(body) else {
-        return true;
+        return false;
     };
     let error = value
         .get("error")
@@ -719,6 +787,10 @@ mod tests {
         assert!(!is_reconnect_required_refresh_failure(
             500,
             r#"{"error":"server_error"}"#,
+        ));
+        assert!(!is_reconnect_required_refresh_failure(
+            401,
+            "<html>unauthorized</html>"
         ));
     }
 

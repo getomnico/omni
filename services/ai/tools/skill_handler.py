@@ -14,6 +14,7 @@ import httpx
 from anthropic.types import ToolParam
 
 from db.skills import Skill, SkillsRepository
+from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
     CapabilitiesSyncRequest,
@@ -273,6 +274,33 @@ class SkillHandler:
                     f"{self._connector_manager_url}/skill",
                     json=self._connector_skill_request(skill_id),
                 )
+                if response.status_code == 412:
+                    body = response.json()
+                    skill_record = self._connector_skills.get(skill_id)
+                    provider = body.get("provider")
+                    oauth_start_url = body.get("oauth_start_url")
+                    source_id = body.get("source_id") or (
+                        skill_record.source_id if skill_record else None
+                    )
+                    source_type = body.get("source_type") or (
+                        skill_record.source_type if skill_record else None
+                    )
+                    if all(
+                        isinstance(value, str) and value
+                        for value in (provider, oauth_start_url, source_id, source_type)
+                    ):
+                        return ToolResult(
+                            content=[
+                                encode_oauth_required(
+                                    OAuthRequiredPayload(
+                                        source_id=source_id,
+                                        source_type=source_type,
+                                        provider=provider,
+                                        oauth_start_url=oauth_start_url,
+                                    )
+                                )
+                            ]
+                        )
                 response.raise_for_status()
                 payload = response.json()
         except Exception as e:
@@ -321,6 +349,11 @@ class SkillHandler:
         skill = self._connector_skills.get(skill_id)
         if skill and skill.source_id:
             request["source_id"] = skill.source_id
+        # Connector-manager uses this trusted, server-side identity to resolve
+        # MCP-backed skills to the caller's OAuth credential. Never let a
+        # connector skill silently load the source owner's/org credential.
+        if self._skill_user_id:
+            request["user_id"] = self._skill_user_id
         return request
 
     def _all_skill_ids(self) -> set[str]:

@@ -64,6 +64,51 @@ def _build_connector_url() -> str:
 def create_app(connector: "Connector") -> FastAPI:
     """Create FastAPI app for a connector."""
 
+    def mcp_auth_required_response(
+        credentials: dict[str, Any],
+        message: str,
+        *,
+        source_id: str | None = None,
+        source_type: str | None = None,
+        auth: dict[str, Any] | None = None,
+    ) -> JSONResponse | None:
+        status_file = None
+        if auth:
+            env = auth.get("env")
+            if isinstance(env, dict):
+                status_file = env.get("OMNI_SALESFORCE_AUTH_STATUS_FILE")
+        marker_auth = False
+        if isinstance(status_file, str) and status_file:
+            try:
+                with open(status_file, encoding="utf-8") as marker:
+                    marker_auth = marker.read().strip() == "needs_user_auth"
+                # The marker is a short-lived per-attempt temp file; consume
+                # it after reading so failed authentications do not accumulate
+                # in the connector container.
+                os.unlink(status_file)
+            except OSError:
+                pass
+        if not connector.mcp_authentication_error(message) and not marker_auth:
+            return None
+        resolved_source_id = source_id or credentials.get("source_id")
+        resolved_source_type = source_type or (
+            connector.source_types[0] if connector.source_types else None
+        )
+        if not isinstance(resolved_source_id, str) or not resolved_source_id:
+            return None
+        if not isinstance(resolved_source_type, str) or not resolved_source_type:
+            return None
+        return JSONResponse(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            content={
+                "error": "needs_user_auth",
+                "source_id": resolved_source_id,
+                "source_type": resolved_source_type,
+                "provider": "salesforce",
+                "oauth_start_url": f"/api/oauth/start?source_id={resolved_source_id}",
+            },
+        )
+
     server = ConnectorServer(connector)
     connector_url = _build_connector_url()
 
@@ -191,8 +236,12 @@ def create_app(connector: "Connector") -> FastAPI:
                 ).model_dump(),
             )
 
-        # Bootstrap MCP subprocess with credentials (populates tool cache for manifest)
-        await connector.bootstrap_mcp(credentials)
+        # Bootstrap MCP subprocess with credentials (populates tool cache for
+        # manifest). Include the source id as an internal, non-secret hint so
+        # stdio connectors can isolate CLI state per source.
+        mcp_credentials = dict(credentials)
+        mcp_credentials["_omni_source_id"] = source_id
+        await connector.bootstrap_mcp(mcp_credentials)
 
         try:
             sync_mode = SyncMode(request.sync_mode)
@@ -269,27 +318,66 @@ def create_app(connector: "Connector") -> FastAPI:
     async def execute_action(request: ActionRequest) -> Response:
         logger.info("Action requested: %s", request.action)
 
-        # MCP-first dispatch: if the action matches a tool exposed by the
-        # connector's MCP server, delegate to the adapter. Falls through to
-        # the connector's own execute_action for connector-defined actions.
+        # Native action names are reserved. Only a cached, explicitly
+        # discovered MCP action may enter the MCP branch; an MCP auth failure
+        # must never fall through and execute a native action with different
+        # authorization semantics.
         adapter = connector.mcp_adapter
-        if adapter is not None:
-            auth = connector._prepare_mcp_auth(request.credentials)
+        if request.origin == "mcp":
+            if adapter is None:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"error": "MCP is not enabled for this connector"},
+                )
+            cached_actions = await adapter.get_action_definitions()
+            if not any(action.name == request.action for action in cached_actions):
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={"error": "MCP action is not in the discovered catalog"},
+                )
+            auth: dict[str, Any] = {}
             try:
-                actions = await adapter.get_action_definitions(**auth)
-            except Exception:
-                logger.warning("MCP action lookup failed", exc_info=True)
-                actions = []
-            if any(a.name == request.action for a in actions):
+                auth = connector._prepare_mcp_auth(request.credentials)
                 response = await adapter.execute_tool(
                     request.action, dict(request.params), **auth
                 )
+                if response.status != "success" and response.error:
+                    auth_response = mcp_auth_required_response(
+                        request.credentials,
+                        response.error,
+                        source_id=(request.source.id if request.source else None),
+                        source_type=(
+                            request.source.source_type if request.source else None
+                        ),
+                        auth=auth,
+                    )
+                    if auth_response is not None:
+                        return auth_response
                 status_code = (
                     status.HTTP_200_OK
                     if response.status == "success"
                     else status.HTTP_400_BAD_REQUEST
                 )
-                return JSONResponse(content=response.model_dump(), status_code=status_code)
+                return JSONResponse(
+                    content=response.model_dump(), status_code=status_code
+                )
+            except Exception as e:
+                auth_response = mcp_auth_required_response(
+                    request.credentials,
+                    str(e),
+                    source_id=(request.source.id if request.source else None),
+                    source_type=(
+                        request.source.source_type if request.source else None
+                    ),
+                    auth=auth,
+                )
+                if auth_response is not None:
+                    return auth_response
+                logger.warning("MCP action execution failed", exc_info=True)
+                return JSONResponse(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    content={"error": "MCP action execution failed"},
+                )
 
         return await connector.execute_action(
             request.action,
@@ -308,15 +396,21 @@ def create_app(connector: "Connector") -> FastAPI:
                 content={"error": "MCP not enabled for this connector"},
             )
         logger.info("Resource requested: %s", request.uri)
+        auth: dict[str, Any] = {}
         try:
             auth = connector._prepare_mcp_auth(request.credentials)
             result = await adapter.read_resource(request.uri, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
         except Exception as e:
+            auth_response = mcp_auth_required_response(
+                request.credentials, str(e), auth=auth
+            )
+            if auth_response is not None:
+                return auth_response
             logger.error("Resource read failed for %s: %s", request.uri, e)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"error": str(e)},
+                content={"error": "MCP resource read failed"},
             )
 
     @app.post("/prompt")
@@ -328,15 +422,21 @@ def create_app(connector: "Connector") -> FastAPI:
                 content={"error": "MCP not enabled for this connector"},
             )
         logger.info("Prompt requested: %s", request.name)
+        auth: dict[str, Any] = {}
         try:
             auth = connector._prepare_mcp_auth(request.credentials)
             result = await adapter.get_prompt(request.name, request.arguments, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
         except Exception as e:
+            auth_response = mcp_auth_required_response(
+                request.credentials, str(e), auth=auth
+            )
+            if auth_response is not None:
+                return auth_response
             logger.error("Prompt get failed for %s: %s", request.name, e)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"error": str(e)},
+                content={"error": "MCP prompt request failed"},
             )
 
     @app.post("/skill")
@@ -386,6 +486,7 @@ def create_app(connector: "Connector") -> FastAPI:
                 status_code=status.HTTP_404_NOT_FOUND,
                 content={"error": "MCP not enabled for this connector"},
             )
+        auth: dict[str, Any] = {}
         try:
             auth = connector._prepare_mcp_auth(request.credentials)
             result = await adapter.get_prompt(prompt_name, request.arguments, **auth)
@@ -399,10 +500,15 @@ def create_app(connector: "Connector") -> FastAPI:
                 ).model_dump(),
             )
         except Exception as e:
+            auth_response = mcp_auth_required_response(
+                request.credentials, str(e), auth=auth
+            )
+            if auth_response is not None:
+                return auth_response
             logger.error("Skill get failed for %s: %s", skill_id, e)
             return JSONResponse(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={"error": str(e)},
+                content={"error": "MCP skill request failed"},
             )
 
     def _mcp_prompt_to_text(value: dict[str, Any]) -> str:

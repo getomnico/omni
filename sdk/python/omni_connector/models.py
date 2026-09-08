@@ -283,17 +283,23 @@ class OAuthManifestConfig(BaseModel):
         default=None,
         description=(
             "OAuth Dynamic Client Registration endpoint. Set this for providers "
-            "where Omni should auto-create a client instead of asking admins "
-            "to configure one manually."
+            "where Omni may auto-create a client after any required admin "
+            "registration authorization is configured."
+        ),
+    )
+    registration_requires_initial_access_token: bool = Field(
+        default=False,
+        description=(
+            "Whether dynamic registration requires an administrator-provided "
+            "initial access token."
         ),
     )
     token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = Field(
         default="client_secret_post",
         description=(
             "OAuth token endpoint client authentication method. Public DCR "
-            "clients usually use 'none', which tells Omni not to require or "
-            "send a client secret and to treat the provider as auto-managed "
-            "when registration_endpoint is also present."
+            "clients usually use 'none'. Confidential DCR clients must return "
+            "a client secret and use client_secret_post or client_secret_basic."
         ),
     )
     resource: str | None = Field(
@@ -316,6 +322,10 @@ class ConnectorManifest(BaseModel):
     source_types: list[str] = Field(default_factory=list)
     description: str | None = None
     actions: list[ActionDefinition] = Field(default_factory=list)
+    # Names of actions discovered from the connector's MCP server. This is
+    # explicit provenance for connector-manager authorization; it must not be
+    # inferred from source_types or action names.
+    mcp_action_names: list[str] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
     extra_schema: dict | None = None
     attributes_schema: dict | None = None
@@ -427,6 +437,7 @@ class Source(BaseModel):
 
 class ActionRequest(BaseModel):
     action: str
+    origin: Literal["native", "mcp"] = "native"
     params: dict[str, Any]
     credentials: dict[str, Any]
     source: Source | None = None

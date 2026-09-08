@@ -430,6 +430,18 @@ class SalesforceAuth:
     def from_mapping(cls, raw: Mapping[str, object] | None) -> SalesforceAuth:
         if raw is None:
             raise ValueError("Missing credentials")
+        # Connector-manager may merge org setup fields (including a JWT
+        # client id) into a user's OAuth credential. Prefer the user access
+        # token whenever one is present so MCP cannot silently fall back to the
+        # org JWT.
+        access_token = _as_str(raw.get("access_token"))
+        if access_token is not None:
+            return cls(
+                mode=AuthMode.BEARER,
+                access_token=access_token,
+                instance_url=_as_str(raw.get("instance_url")),
+            )
+
         client_id = _as_str(raw.get("client_id"))
         private_key = _as_str(raw.get("private_key"))
         username = _as_str(raw.get("username"))
@@ -442,7 +454,6 @@ class SalesforceAuth:
                 username=username,
                 login_url=login_url,
             )
-        access_token = _as_str(raw.get("access_token"))
         if access_token is None:
             raise ValueError(
                 "Missing credentials: provide access_token (+ instance_url), "

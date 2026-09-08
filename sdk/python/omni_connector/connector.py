@@ -143,7 +143,18 @@ class Connector(ABC):
         safe_name = "".join(
             c if c.isalnum() or c in {"-", "_"} else "_" for c in self.name
         )
-        return cache_dir / f"{safe_name}.mcp-catalog.json"
+        # The pinned MCP package version and the complete tool policy are part
+        # of the catalog identity. A stale catalog from a different package
+        # or broader policy must never be reused.
+        package_version = os.environ.get("MCP_CATALOG_VERSION", "unknown")
+        policy = os.environ.get("MCP_CATALOG_CACHE_KEY", "default")
+        safe_policy = "".join(
+            c if c.isalnum() or c in {"-", "_"} else "_" for c in policy
+        )
+        safe_version = "".join(
+            c if c.isalnum() or c in {"-", "_"} else "_" for c in package_version
+        )
+        return cache_dir / f"{safe_name}-{safe_version}-{safe_policy}.mcp-catalog.json"
 
     def _mcp_catalog_cache_ttl_seconds(self) -> int:
         raw = os.environ.get("CATALOG_CACHE_TTL_SECONDS", "86400")
@@ -172,6 +183,14 @@ class Connector(ABC):
         except Exception:
             logger.warning("Failed to save MCP catalog cache", exc_info=True)
 
+    def mcp_authentication_error(self, message: str) -> bool:
+        """Return whether an MCP failure requires the user's OAuth reconnect.
+
+        Connectors with provider-specific authentication errors can override
+        this without exposing credentials in an HTTP response.
+        """
+        return False
+
     def _prepare_mcp_auth(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """Build the env-or-headers kwargs to pass to the MCP adapter.
 
@@ -197,16 +216,19 @@ class Connector(ABC):
         if adapter is None:
             logger.debug("bootstrap_mcp: no MCP adapter, skipping")
             return
-        auth = self._prepare_mcp_auth(credentials)
         logger.info("Bootstrapping MCP: discovering tools")
         try:
+            # Authentication is deliberately inside the failure boundary:
+            # MCP bootstrap is optional and must not prevent a native sync
+            # from starting when a credential is incomplete or unsupported.
+            auth = self._prepare_mcp_auth(credentials)
             await adapter.discover(**auth)
             self._save_mcp_catalog_cache(adapter)
         except Exception:
             logger.warning("MCP bootstrap failed", exc_info=True)
 
     async def oauth_credential_ready(
-        self, request: "OAuthCredentialReadyRequest"
+        self, request: OAuthCredentialReadyRequest
     ) -> bool:
         """React to a new OAuth credential being stored for this connector.
 
@@ -233,6 +255,12 @@ class Connector(ABC):
         merged = list(manual_actions)
         for action in mcp_actions:
             if action.name not in manual_names:
+                # The connector manifest is the source-type boundary used by
+                # connector-manager during dispatch. MCP servers do not know
+                # Omni source types, so fill them in here rather than relying
+                # on an empty list (which is rejected by action dispatch).
+                if not action.source_types:
+                    action.source_types = list(self.source_types)
                 merged.append(action)
         return merged
 
@@ -252,6 +280,18 @@ class Connector(ABC):
         resources = []
         prompts = []
         skills = list(self.skills)
+        actions = await self._get_all_actions()
+        mcp_action_names: list[str] = []
+        if adapter is not None:
+            try:
+                manual_names = {action.name for action in self.actions}
+                mcp_action_names = [
+                    action.name
+                    for action in await adapter.get_action_definitions()
+                    if action.name not in manual_names
+                ]
+            except Exception:
+                logger.warning("Failed to identify MCP tools", exc_info=True)
         if adapter is not None:
             try:
                 resources = await adapter.get_resource_definitions()
@@ -275,7 +315,8 @@ class Connector(ABC):
             connector_url=connector_url,
             source_types=self.source_types,
             description=self.description,
-            actions=await self._get_all_actions(),
+            actions=actions,
+            mcp_action_names=mcp_action_names,
             search_operators=self.search_operators,
             mcp_enabled=adapter is not None,
             mcp_catalog_loaded=adapter._has_cached_catalog if adapter is not None else False,

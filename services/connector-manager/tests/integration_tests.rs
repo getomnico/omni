@@ -1828,6 +1828,7 @@ async fn register_action_manifest(
             admin_only: false,
             hidden: false,
         }],
+        mcp_action_names: vec![],
         search_operators: vec![],
         read_only: false,
         extra_schema: None,

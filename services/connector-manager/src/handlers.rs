@@ -1,5 +1,4 @@
-use crate::AppState;
-use crate::connector_client::ConnectorClient;
+use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
     ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, OAuthCredentialReadyRequest,
@@ -8,28 +7,30 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
+use crate::AppState;
 use axum::{
-    Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{
-        IntoResponse,
         sse::{Event, KeepAlive, Sse},
+        IntoResponse,
     },
+    Json,
 };
 use futures::future::join_all;
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{
-    ConfigurationRepository, SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE,
+    person::SOURCE_MUTATION_LOCK_NAMESPACE, ConfigurationRepository, SyncRunRepository,
 };
 use shared::models::{
-    ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
+    ActionMode, ActionOrigin, ConnectorManifest, GlobalConfiguration, IntegrationType,
+    SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
+    SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -41,6 +42,64 @@ use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::OwnedSemaphorePermit;
 use tracing::{debug, error, info, warn};
+
+/// Match a requested MCP resource URI against an advertised URI template.
+/// Templates use `{name}` placeholders; a trailing `*` is supported for
+/// legacy manifests. Matching the template structure prevents an arbitrary
+/// URI from being authorized by a loose prefix comparison.
+fn resource_uri_matches_template(uri: &str, template: &str) -> bool {
+    if uri == template {
+        return true;
+    }
+    if let Some(prefix) = template.strip_suffix('*') {
+        if !uri.starts_with(prefix) || uri.len() <= prefix.len() {
+            return false;
+        }
+        // A legacy wildcard must end at a URI component boundary; `foo*`
+        // must not authorize `foobar`.
+        return prefix.ends_with('/')
+            || prefix.ends_with(':')
+            || prefix.ends_with('?')
+            || prefix.ends_with('#')
+            || uri.as_bytes().get(prefix.len()) == Some(&b'/');
+    }
+
+    let mut template_rest = template;
+    let mut uri_rest = uri;
+    loop {
+        let Some(open) = template_rest.find('{') else {
+            return uri_rest == template_rest;
+        };
+        let Some(close_rel) = template_rest[open..].find('}') else {
+            return false;
+        };
+        let close = open + close_rel;
+        let literal = &template_rest[..open];
+        if !uri_rest.starts_with(literal) {
+            return false;
+        }
+        uri_rest = &uri_rest[literal.len()..];
+        template_rest = &template_rest[close + 1..];
+
+        if template_rest.is_empty() {
+            return !uri_rest.is_empty() && !uri_rest.contains('/');
+        }
+        let Some(next_literal_end) = template_rest.find('{') else {
+            let value_end = uri_rest.len().saturating_sub(template_rest.len());
+            return uri_rest.ends_with(template_rest)
+                && value_end > 0
+                && !uri_rest[..value_end].contains('/');
+        };
+        let next_literal = &template_rest[..next_literal_end];
+        let Some(value_end) = uri_rest.find(next_literal) else {
+            return false;
+        };
+        if value_end == 0 || uri_rest[..value_end].contains('/') {
+            return false;
+        }
+        uri_rest = &uri_rest[value_end..];
+    }
+}
 
 pub async fn health_check() -> impl IntoResponse {
     Json(json!({ "status": "healthy" }))
@@ -428,6 +487,7 @@ pub async fn execute_action(
     let creds: shared::models::ServiceCredential;
     let mut params = request.params.clone();
     let mut transient_actor_email = None;
+    let mut action_origin = ActionOrigin::Native;
     let manifests = get_registered_manifests(&state.redis_client).await;
 
     let (connector_url, action_admin_only) = if is_transient {
@@ -475,6 +535,11 @@ pub async fn execute_action(
         }
         let action_admin_only = action_def.admin_only;
         let action_mode = action_def.mode;
+        if manifest.mcp_action_names.contains(&request.action) {
+            return Err(ApiError::BadRequest(
+                "MCP actions cannot be executed with transient credentials".to_string(),
+            ));
+        }
 
         if action_mode != ActionMode::Read {
             return Err(ApiError::BadRequest(format!(
@@ -608,12 +673,28 @@ pub async fn execute_action(
         }
         let action_admin_only = action_def.admin_only;
         let action_mode = action_def.mode;
+        let is_mcp_action = manifest.mcp_action_names.contains(&request.action);
+        if is_mcp_action {
+            action_origin = ActionOrigin::Mcp;
+        }
 
-        // Native MCP tools are always user-authorized. Keep admin-only
-        // connector actions (such as Atlassian indexing helpers) on their
-        // existing org-credential path, but never dispatch an MCP action with
-        // an org service-account credential when there is no actor.
-        if manifest.mcp_enabled && !action_admin_only && request.user_id.is_none() {
+        // MCP actions are always user-scoped. Do not allow an org-level agent
+        // or a missing actor to fall through to the source JWT credential.
+        if is_mcp_action && request.user_id.is_none() {
+            return Err(ApiError::BadRequest(
+                "user_id is required for MCP actions".to_string(),
+            ));
+        }
+
+        // Remote MCP sources have their own user-authorization boundary.
+        // Local stdio MCP connectors are deliberately bootstrapped with the
+        // source credential and currently expose admin-only tools, while their
+        // native actions retain the existing credential resolution behavior.
+        if manifest.integration_type == IntegrationType::RemoteMcp
+            && manifest.mcp_enabled
+            && !action_admin_only
+            && request.user_id.is_none()
+        {
             return Err(ApiError::BadRequest(
                 "user_id is required for native MCP actions".to_string(),
             ));
@@ -633,12 +714,22 @@ pub async fn execute_action(
         }
 
         let cred_service = CredentialService::new(state.db_pool.clone());
-        creds = match resolve_credentials(
+        // Salesforce's native actions retain their historical org-credential
+        // behavior. Only actions explicitly present in mcp_action_names may
+        // consume the caller's per-user OAuth credential.
+        let credential_user_id = if source_type == SourceType::Salesforce && !is_mcp_action {
+            None
+        } else {
+            request.user_id.as_deref()
+        };
+        creds = match resolve_credentials_with_policy(
             &cred_service,
             &source_id,
-            request.user_id.as_deref(),
+            credential_user_id,
             action_admin_only,
-            manifest.oauth.is_some(),
+            manifest.oauth.is_some() && is_mcp_action,
+            is_mcp_action,
+            oauth_provider_from_manifest(&manifest),
         )
         .await?
         {
@@ -651,6 +742,15 @@ pub async fn execute_action(
                 )?);
             }
             CredentialResolution::NoCredentials => {
+                if is_mcp_action && manifest.oauth.is_some() {
+                    if let Some(provider) = oauth_provider_from_manifest(&manifest) {
+                        return Ok(needs_user_auth_response(
+                            &source_id,
+                            source_type.to_string(),
+                            provider,
+                        )?);
+                    }
+                }
                 return Err(ApiError::NotFound(format!(
                     "Credentials not found for source: {source_id}"
                 )));
@@ -740,13 +840,22 @@ pub async fn execute_action(
     }
 
     info!(
-        "Dispatching action '{}' to connector {} (provider={:?}, auth_type={:?}, principal={:?})",
-        request.action, connector_url, creds.provider, creds.auth_type, creds.principal_email,
+        "Dispatching action '{}' to connector {} (origin={:?}, credential_class={}, provider={:?}, auth_type={:?}, principal={:?})",
+        request.action,
+        connector_url,
+        action_origin,
+        if creds.user_id.is_some() { "user" } else { "org" },
+        creds.provider,
+        creds.auth_type,
+        creds.principal_email,
     );
 
+    let credential_source_id = creds.source_id.clone();
+    let credential_user_id = creds.user_id.clone();
     let client = ConnectorClient::new();
     let action_request = ActionRequest {
         action: request.action,
+        origin: action_origin,
         params,
         credentials: Some(creds),
         source,
@@ -782,10 +891,96 @@ pub async fn execute_action(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
+    if action_origin == ActionOrigin::Mcp
+        && status == StatusCode::PRECONDITION_FAILED
+        && serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|body| body.get("error").and_then(Value::as_str).map(str::to_owned))
+            .as_deref()
+            == Some("needs_user_auth")
+    {
+        if let Some(user_id) = credential_user_id.as_deref() {
+            CredentialService::new(state.db_pool.clone())
+                .delete_user_credential(&credential_source_id, user_id)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+    }
+
     Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
 }
 
 /// Outcome of resolving credentials for a tool/action invocation.
+async fn invalidate_native_mcp_catalog(
+    state: &AppState,
+    source_type: &str,
+) -> Result<(), ApiError> {
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let Some(mut manifest) = manifests.into_iter().find(|manifest| {
+        manifest.integration_type == IntegrationType::Connector
+            && manifest.mcp_enabled
+            && manifest.source_types.iter().any(|item| item == source_type)
+    }) else {
+        return Ok(());
+    };
+    let mcp_names: std::collections::HashSet<_> =
+        manifest.mcp_action_names.iter().cloned().collect();
+    manifest
+        .actions
+        .retain(|action| !mcp_names.contains(&action.name));
+    manifest.mcp_action_names.clear();
+    manifest.resources.clear();
+    manifest.prompts.clear();
+    manifest.mcp_catalog_loaded = false;
+
+    let key = format!("connector:manifest:{}", manifest.connector_id);
+    let manifest_json =
+        serde_json::to_string(&manifest).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mut conn = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
+    let _: () = conn
+        .set_ex(&key, manifest_json, REGISTRATION_TTL_SECONDS)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Failed to invalidate MCP catalog: {}", e)))?;
+    Ok(())
+}
+
+async fn mcp_client_error_to_api_error(
+    err: ClientError,
+    cred_service: &CredentialService,
+    credentials: &ServiceCredential,
+    source: &Source,
+) -> ApiError {
+    if let ClientError::ConnectorError { status: 412, message } = &err {
+        if let Ok(body) = serde_json::from_str::<Value>(message) {
+            if body.get("error").and_then(Value::as_str) == Some("needs_user_auth") {
+                if let Some(user_id) = credentials.user_id.as_deref() {
+                    if let Err(delete_err) = cred_service
+                        .delete_user_credential(&source.id, user_id)
+                        .await
+                    {
+                        return ApiError::Internal(delete_err.to_string());
+                    }
+                }
+                let provider = body
+                    .get("provider")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok())
+                    .unwrap_or(credentials.provider);
+                return ApiError::PreconditionFailedJson(needs_user_auth_json(
+                    &source.id,
+                    &source.source_type,
+                    provider,
+                ));
+            }
+        }
+    }
+    ApiError::Internal(err.to_string())
+}
+
 enum CredentialResolution {
     Resolved(shared::models::ServiceCredential),
     NeedsUserAuth { provider: ServiceProvider },
@@ -857,7 +1052,36 @@ async fn resolve_credentials(
     admin_only: bool,
     supports_user_oauth: bool,
 ) -> Result<CredentialResolution, ApiError> {
+    resolve_credentials_with_policy(
+        cred_service,
+        source_id,
+        user_id,
+        admin_only,
+        supports_user_oauth,
+        false,
+        None,
+    )
+    .await
+}
+
+async fn resolve_credentials_with_policy(
+    cred_service: &CredentialService,
+    source_id: &str,
+    user_id: Option<&str>,
+    admin_only: bool,
+    supports_user_oauth: bool,
+    require_user_credential: bool,
+    user_auth_provider: Option<ServiceProvider>,
+) -> Result<CredentialResolution, ApiError> {
     let internal = |e: CredentialServiceError| ApiError::Internal(e.to_string());
+
+    if admin_only && require_user_credential {
+        // An MCP request is never allowed to use an org credential, even if a
+        // manifest accidentally marks the tool admin-only.
+        return Ok(user_auth_provider
+            .map(|provider| CredentialResolution::NeedsUserAuth { provider })
+            .unwrap_or(CredentialResolution::NoCredentials));
+    }
 
     if admin_only {
         let resolved = cred_service
@@ -881,12 +1105,57 @@ async fn resolve_credentials(
 
     match user_id {
         Some(uid) => {
-            if let Some(mut user_cred) = cred_service
-                .get_user_credential(source_id, uid)
-                .await
-                .map_err(internal)?
-            {
-                if let Some(org_cred) = cred_service
+            let user_credential = match cred_service.get_user_credential(source_id, uid).await {
+                Ok(credential) => credential,
+                Err(CredentialServiceError::ReconnectRequired) if require_user_credential => {
+                    warn!(
+                        "resolve_credentials(source={}, user={}): OAuth reauthorization required",
+                        source_id, uid
+                    );
+                    return Ok(user_auth_provider
+                        .map(|provider| CredentialResolution::NeedsUserAuth { provider })
+                        .unwrap_or(CredentialResolution::NoCredentials));
+                }
+                Err(err) => {
+                    // A transient refresh/network failure must remain a
+                    // retryable server error and must not be converted into a
+                    // disconnect/reconnect prompt.
+                    return Err(internal(err));
+                }
+            };
+            if let Some(mut user_cred) = user_credential {
+                if require_user_credential {
+                    if user_auth_provider.is_some_and(|provider| user_cred.provider != provider) {
+                        warn!(
+                            "resolve_credentials(source={}, user={}): credential provider mismatch",
+                            source_id, uid
+                        );
+                        return Ok(CredentialResolution::NoCredentials);
+                    }
+                    if user_cred.auth_type != shared::models::AuthType::OAuth {
+                        warn!(
+                            "resolve_credentials(source={}, user={}): MCP credential is not OAuth",
+                            source_id, uid
+                        );
+                        return Ok(CredentialResolution::NoCredentials);
+                    }
+                    if user_cred
+                        .expires_at
+                        .is_some_and(|expires_at| expires_at <= time::OffsetDateTime::now_utc())
+                    {
+                        warn!(
+                            "resolve_credentials(source={}, user={}): OAuth credential expired",
+                            source_id, uid
+                        );
+                        cred_service
+                            .delete_user_credential(source_id, uid)
+                            .await
+                            .map_err(internal)?;
+                        return Ok(user_auth_provider
+                            .map(|provider| CredentialResolution::NeedsUserAuth { provider })
+                            .unwrap_or(CredentialResolution::NoCredentials));
+                    }
+                } else if let Some(org_cred) = cred_service
                     .get_org_credential(source_id)
                     .await
                     .map_err(internal)?
@@ -908,7 +1177,18 @@ async fn resolve_credentials(
                 .get_org_credential(source_id)
                 .await
                 .map_err(internal)?;
-            let resolution = resolve_missing_user_credential(org_credential, supports_user_oauth);
+            let resolution = if require_user_credential {
+                // Strict MCP mode never returns the org credential, but still
+                // uses the standard auth challenge when this connector has an
+                // OAuth flow.
+                resolve_missing_user_credential(None, supports_user_oauth, user_auth_provider)
+            } else {
+                resolve_missing_user_credential(
+                    org_credential,
+                    supports_user_oauth,
+                    user_auth_provider,
+                )
+            };
             match &resolution {
                 CredentialResolution::Resolved(org) => info!(
                     "resolve_credentials(source={}, user={}): no per-user cred, org row exists → org cred {}",
@@ -958,14 +1238,26 @@ async fn resolve_credentials(
 fn resolve_missing_user_credential(
     org_credential: Option<ServiceCredential>,
     supports_user_oauth: bool,
+    user_auth_provider: Option<ServiceProvider>,
 ) -> CredentialResolution {
     match org_credential {
         Some(org) if !supports_user_oauth => CredentialResolution::Resolved(org),
         Some(org) => CredentialResolution::NeedsUserAuth {
             provider: org.provider,
         },
+        None if supports_user_oauth => user_auth_provider
+            .map(|provider| CredentialResolution::NeedsUserAuth { provider })
+            .unwrap_or(CredentialResolution::NoCredentials),
         None => CredentialResolution::NoCredentials,
     }
+}
+
+fn oauth_provider_from_manifest(manifest: &ConnectorManifest) -> Option<ServiceProvider> {
+    manifest
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.get("provider"))
+        .and_then(|provider| serde_json::from_value(provider.clone()).ok())
 }
 
 /// Wire shape for the 412 "needs user auth" response. Stable contract used by
@@ -979,6 +1271,16 @@ struct NeedsUserAuthResponse {
     oauth_start_url: String,
 }
 
+fn needs_user_auth_json(source_id: &str, source_type: &str, provider: ServiceProvider) -> Value {
+    json!({
+        "error": "needs_user_auth",
+        "source_id": source_id,
+        "source_type": source_type,
+        "provider": provider,
+        "oauth_start_url": format!("/api/oauth/start?source_id={}", source_id),
+    })
+}
+
 fn remote_mcp_gateway_error_to_api_error(
     err: crate::remote_mcp::gateway::GatewayError,
 ) -> ApiError {
@@ -987,13 +1289,11 @@ fn remote_mcp_gateway_error_to_api_error(
             source_id,
             source_type,
             provider,
-        } => ApiError::PreconditionFailedJson(json!({
-            "error": "needs_user_auth",
-            "source_id": source_id,
-            "source_type": source_type,
-            "provider": provider,
-            "oauth_start_url": format!("/api/oauth/start?source_id={}", source_id),
-        })),
+        } => ApiError::PreconditionFailedJson(needs_user_auth_json(
+            &source_id,
+            &source_type,
+            provider,
+        )),
         crate::remote_mcp::gateway::GatewayError::MissingCredentials(source_id) => {
             ApiError::NotFound(format!("Credentials not found for source: {source_id}"))
         }
@@ -1181,10 +1481,7 @@ pub async fn read_resource(
         if !manifest
             .map(|m| {
                 m.resources.iter().any(|resource| {
-                    request.uri == resource.uri_template
-                        || request
-                            .uri
-                            .starts_with(resource.uri_template.trim_end_matches('*'))
+                    resource_uri_matches_template(&request.uri, &resource.uri_template)
                 })
             })
             .unwrap_or(false)
@@ -1226,26 +1523,41 @@ pub async fn read_resource(
             "user_id is required for native MCP resources".to_string(),
         ));
     }
+    if native_mcp
+        && !native_manifest.as_ref().is_some_and(|manifest| {
+            manifest.resources.iter().any(|resource| {
+                resource_uri_matches_template(&request.uri, &resource.uri_template)
+            })
+        })
+    {
+        return Err(ApiError::NotFound(format!(
+            "Resource not advertised: {}",
+            request.uri
+        )));
+    }
 
     let cred_service = CredentialService::new(state.db_pool.clone());
     let creds = if native_mcp {
-        match resolve_credentials(
+        match resolve_credentials_with_policy(
             &cred_service,
             &source.id,
             request.user_id.as_deref(),
             false,
             true,
+            true,
+            native_manifest
+                .as_ref()
+                .and_then(oauth_provider_from_manifest),
         )
         .await?
         {
             CredentialResolution::Resolved(credentials) => credentials,
             CredentialResolution::NeedsUserAuth { provider } => {
-                return Err(ApiError::PreconditionFailedJson(json!({
-                    "error": "needs_user_auth",
-                    "source_id": source.id,
-                    "source_type": source.source_type,
-                    "provider": provider,
-                })));
+                return Err(ApiError::PreconditionFailedJson(needs_user_auth_json(
+                    &source.id,
+                    &source.source_type,
+                    provider,
+                )));
             }
             CredentialResolution::NoCredentials => {
                 return Err(ApiError::NotFound(format!(
@@ -1273,10 +1585,17 @@ pub async fn read_resource(
         credentials: McpCredentials::from_service_credential(&creds),
     };
 
-    let result = client
+    let result = match client
         .read_resource(&connector_url, &resource_request)
         .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    {
+        Ok(result) => result,
+        Err(err) => {
+            return Err(
+                mcp_client_error_to_api_error(err, &cred_service, &creds, &source).await,
+            )
+        }
+    };
 
     Ok(Json(result))
 }
@@ -1355,26 +1674,42 @@ pub async fn get_prompt(
             "user_id is required for native MCP prompts".to_string(),
         ));
     }
+    if native_mcp
+        && !native_manifest.as_ref().is_some_and(|manifest| {
+            manifest
+                .prompts
+                .iter()
+                .any(|prompt| prompt.name == request.name)
+        })
+    {
+        return Err(ApiError::NotFound(format!(
+            "Prompt not advertised: {}",
+            request.name
+        )));
+    }
 
     let cred_service = CredentialService::new(state.db_pool.clone());
     let creds = if native_mcp {
-        match resolve_credentials(
+        match resolve_credentials_with_policy(
             &cred_service,
             &source.id,
             request.user_id.as_deref(),
             false,
             true,
+            true,
+            native_manifest
+                .as_ref()
+                .and_then(oauth_provider_from_manifest),
         )
         .await?
         {
             CredentialResolution::Resolved(credentials) => credentials,
             CredentialResolution::NeedsUserAuth { provider } => {
-                return Err(ApiError::PreconditionFailedJson(json!({
-                    "error": "needs_user_auth",
-                    "source_id": source.id,
-                    "source_type": source.source_type,
-                    "provider": provider,
-                })));
+                return Err(ApiError::PreconditionFailedJson(needs_user_auth_json(
+                    &source.id,
+                    &source.source_type,
+                    provider,
+                )));
             }
             CredentialResolution::NoCredentials => {
                 return Err(ApiError::NotFound(format!(
@@ -1403,10 +1738,14 @@ pub async fn get_prompt(
         credentials: McpCredentials::from_service_credential(&creds),
     };
 
-    let result = client
-        .get_prompt(&connector_url, &prompt_request)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let result = match client.get_prompt(&connector_url, &prompt_request).await {
+        Ok(result) => result,
+        Err(err) => {
+            return Err(
+                mcp_client_error_to_api_error(err, &cred_service, &creds, &source).await,
+            )
+        }
+    };
 
     Ok(Json(result))
 }
@@ -1463,12 +1802,14 @@ pub async fn oauth_credential_ready(
         })?;
 
     let cred_service = CredentialService::new(state.db_pool.clone());
-    let creds = match resolve_credentials(
+    let creds = match resolve_credentials_with_policy(
         &cred_service,
         &request.source_id,
         request.user_id.as_deref(),
         false,
         true, // credential-ready only exists for per-user OAuth flows
+        true,
+        serde_json::from_value(serde_json::Value::String(request.provider.clone())).ok(),
     )
     .await?
     {
@@ -1536,6 +1877,9 @@ pub async fn oauth_credential_ready(
                 "OAuth credential-ready delivered for {} (no manifest change)",
                 request.source_id
             );
+            if let Err(err) = invalidate_native_mcp_catalog(&state, &source.source_type).await {
+                warn!("Failed to invalidate stale MCP catalog: {}", err);
+            }
             Ok(Json(
                 json!({"status": "delivered", "catalog_updated": false}),
             ))
@@ -1545,6 +1889,9 @@ pub async fn oauth_credential_ready(
                 "OAuth credential-ready delivery failed for {}: {}",
                 request.source_id, e
             );
+            if let Err(err) = invalidate_native_mcp_catalog(&state, &source.source_type).await {
+                warn!("Failed to invalidate stale MCP catalog: {}", err);
+            }
             Ok(Json(json!({"status": "delivery_failed"})))
         }
     }
@@ -1675,15 +2022,69 @@ pub async fn get_skill(
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
+        if !source.is_active || source.is_deleted {
+            return Err(ApiError::BadRequest(format!(
+                "Source is inactive or deleted: {}",
+                source_id
+            )));
+        }
+        let source_type_for_skill = SourceType::try_from(source.source_type.as_str())
+            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        if !skill.source_types.is_empty() && !skill.source_types.contains(&source_type_for_skill) {
+            return Err(ApiError::NotFound(format!(
+                "Skill '{}' is not available for source type {:?}",
+                request.skill_id, source.source_type
+            )));
+        }
+        let requires_user_oauth = skill.mcp_prompt.is_some();
+        if requires_user_oauth && oauth_provider_from_manifest(&manifest).is_none() {
+            return Err(ApiError::BadRequest(
+                "MCP-backed skill has no declared OAuth provider".to_string(),
+            ));
+        }
+        if requires_user_oauth && request.user_id.is_none() {
+            return Err(ApiError::BadRequest(
+                "user_id is required for MCP-backed skills".to_string(),
+            ));
+        }
 
         let cred_service = CredentialService::new(state.db_pool.clone());
-        let creds = cred_service
-            .get_owner_credential(&source)
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| {
-                ApiError::NotFound(format!("Credentials not found for source: {}", source_id))
-            })?;
+        let creds = if requires_user_oauth {
+            match resolve_credentials_with_policy(
+                &cred_service,
+                &source.id,
+                request.user_id.as_deref(),
+                false,
+                true,
+                true,
+                oauth_provider_from_manifest(&manifest),
+            )
+            .await?
+            {
+                CredentialResolution::Resolved(credentials) => credentials,
+                CredentialResolution::NeedsUserAuth { provider } => {
+                    return Err(ApiError::PreconditionFailedJson(needs_user_auth_json(
+                        &source.id,
+                        &source.source_type,
+                        provider,
+                    )));
+                }
+                CredentialResolution::NoCredentials => {
+                    return Err(ApiError::NotFound(format!(
+                        "User credentials not found for source: {}",
+                        source_id
+                    )));
+                }
+            }
+        } else {
+            cred_service
+                .get_owner_credential(&source)
+                .await
+                .map_err(|e| ApiError::Internal(e.to_string()))?
+                .ok_or_else(|| {
+                    ApiError::NotFound(format!("Credentials not found for source: {}", source_id))
+                })?
+        };
 
         let client = ConnectorClient::new();
         let skill_request = shared::models::SkillRequest {
@@ -1691,10 +2092,17 @@ pub async fn get_skill(
             arguments: request.arguments,
             credentials: McpCredentials::from_service_credential(&creds),
         };
-        let result = client
+        let result = match client
             .get_skill(&manifest.connector_url, &skill_request)
             .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        {
+            Ok(result) => result,
+            Err(err) => {
+                return Err(
+                    mcp_client_error_to_api_error(err, &cred_service, &creds, &source).await,
+                )
+            }
+        };
         return Ok(Json(result));
     }
 
@@ -1914,60 +2322,6 @@ fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> R
     Ok(())
 }
 
-async fn preserve_native_mcp_catalog(
-    conn: &mut redis::aio::MultiplexedConnection,
-    manifest: ConnectorManifest,
-) -> Result<ConnectorManifest, ApiError> {
-    if !manifest.mcp_enabled || manifest.mcp_catalog_loaded {
-        return Ok(manifest);
-    }
-
-    let key = format!("connector:manifest:{}", manifest.connector_id);
-    let Some(existing_json) = conn
-        .get::<_, Option<String>>(&key)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Redis read error: {}", e)))?
-    else {
-        return Ok(manifest);
-    };
-    let Ok(existing) = serde_json::from_str::<ConnectorManifest>(&existing_json) else {
-        return Ok(manifest);
-    };
-    if existing.integration_type != IntegrationType::Connector
-        || !existing.mcp_catalog_loaded
-        || existing.connector_id != manifest.connector_id
-    {
-        return Ok(manifest);
-    }
-
-    Ok(merge_native_mcp_catalog(manifest, existing))
-}
-
-fn merge_native_mcp_catalog(
-    mut manifest: ConnectorManifest,
-    existing: ConnectorManifest,
-) -> ConnectorManifest {
-    let names: std::collections::HashSet<String> = manifest
-        .actions
-        .iter()
-        .map(|action| action.name.clone())
-        .collect();
-    manifest.actions.extend(
-        existing
-            .actions
-            .into_iter()
-            .filter(|action| !names.contains(&action.name)),
-    );
-    if manifest.resources.is_empty() {
-        manifest.resources = existing.resources;
-    }
-    if manifest.prompts.is_empty() {
-        manifest.prompts = existing.prompts;
-    }
-    manifest.mcp_catalog_loaded = true;
-    manifest
-}
-
 pub async fn sdk_register(
     State(state): State<AppState>,
     Json(manifest): Json<ConnectorManifest>,
@@ -1993,16 +2347,11 @@ pub async fn sdk_register(
         )));
     }
 
-    // Native MCP discovery needs per-user OAuth. On connector restart the
-    // first unauthenticated heartbeat is necessarily catalog-less; retain a
-    // previously authenticated catalog until live discovery replaces it.
+    // A catalog-less registration is fail-closed. Do not retain or union a
+    // previous MCP catalog: removed or policy-disabled tools must disappear
+    // immediately. The authenticated credential-ready registration will
+    // replace this manifest with the freshly discovered catalog.
     let needs_mcp_catalog_recovery = manifest.mcp_enabled && !manifest.mcp_catalog_loaded;
-    let mut preserve_conn = state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
-    let manifest = preserve_native_mcp_catalog(&mut preserve_conn, manifest).await?;
     let connector_id = manifest.connector_id.clone();
 
     info!(
@@ -3460,6 +3809,27 @@ pub async fn sdk_get_connector_config(
 mod tests {
     use super::*;
 
+    #[test]
+    fn resource_uri_template_matching_is_delimiter_aware() {
+        assert!(resource_uri_matches_template(
+            "rovo://issue/ABC123",
+            "rovo://issue/{id}"
+        ));
+        assert!(resource_uri_matches_template(
+            "rovo://issue/ABC123/comments/1",
+            "rovo://issue/{id}/comments/{comment_id}"
+        ));
+        assert!(!resource_uri_matches_template(
+            "rovo://issues/ABC123",
+            "rovo://issue/{id}"
+        ));
+        assert!(!resource_uri_matches_template("rovo://issue/", "rovo://issue/{id}"));
+        assert!(!resource_uri_matches_template(
+            "rovo://issue/ABC/comments/1",
+            "rovo://issue/{id}"
+        ));
+    }
+
     fn manifest_with_action_schema(input_schema: serde_json::Value) -> ConnectorManifest {
         ConnectorManifest {
             name: "test_connector".to_string(),
@@ -3481,6 +3851,7 @@ mod tests {
                 admin_only: false,
                 hidden: false,
             }],
+            mcp_action_names: Vec::new(),
             search_operators: Vec::new(),
             read_only: false,
             extra_schema: None,
@@ -3492,35 +3863,6 @@ mod tests {
             skills: Vec::new(),
             oauth: None,
         }
-    }
-
-    #[test]
-    fn native_mcp_registration_preserves_authenticated_catalog() {
-        let mut existing = manifest_with_action_schema(json!({}));
-        existing.mcp_enabled = true;
-        existing.mcp_catalog_loaded = true;
-        existing.actions[0].name = "rovo_search".to_string();
-        existing
-            .resources
-            .push(shared::models::McpResourceDefinition {
-                uri_template: "rovo://issue/{id}".to_string(),
-                name: "Issue".to_string(),
-                description: None,
-                mime_type: None,
-            });
-
-        let mut restarted = manifest_with_action_schema(json!({}));
-        restarted.mcp_enabled = true;
-        let merged = merge_native_mcp_catalog(restarted, existing);
-
-        assert!(merged.mcp_catalog_loaded);
-        assert!(
-            merged
-                .actions
-                .iter()
-                .any(|action| action.name == "rovo_search")
-        );
-        assert_eq!(merged.resources[0].name, "Issue");
     }
 
     #[test]
@@ -3824,7 +4166,7 @@ mod tests {
     #[test]
     fn missing_user_credential_with_org_only_connector_resolves_org_credential() {
         let org = org_credential("org-cred", ServiceProvider::Darwinbox);
-        match resolve_missing_user_credential(Some(org.clone()), false) {
+        match resolve_missing_user_credential(Some(org.clone()), false, None) {
             CredentialResolution::Resolved(c) => assert_eq!(c.id, org.id),
             _ => panic!("expected Resolved(org credential)"),
         }
@@ -3833,7 +4175,7 @@ mod tests {
     #[test]
     fn missing_user_credential_with_oauth_connector_yields_needs_user_auth() {
         let org = org_credential("org-cred", ServiceProvider::Google);
-        match resolve_missing_user_credential(Some(org), true) {
+        match resolve_missing_user_credential(Some(org), true, Some(ServiceProvider::Google)) {
             CredentialResolution::NeedsUserAuth { provider } => {
                 assert_eq!(provider, ServiceProvider::Google)
             }
@@ -3842,14 +4184,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_user_credential_with_no_org_credential_yields_no_credentials() {
-        match resolve_missing_user_credential(None, false) {
+    fn missing_user_credential_with_no_org_credential_yields_expected_resolution() {
+        match resolve_missing_user_credential(None, false, None) {
             CredentialResolution::NoCredentials => {}
             _ => panic!("expected NoCredentials"),
         }
-        match resolve_missing_user_credential(None, true) {
-            CredentialResolution::NoCredentials => {}
-            _ => panic!("expected NoCredentials even with supports_user_oauth=true"),
+        match resolve_missing_user_credential(None, true, Some(ServiceProvider::Google)) {
+            CredentialResolution::NeedsUserAuth { provider } => {
+                assert_eq!(provider, ServiceProvider::Google)
+            }
+            _ => panic!("expected NeedsUserAuth for an OAuth connector"),
         }
     }
 }

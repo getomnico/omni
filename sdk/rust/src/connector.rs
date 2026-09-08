@@ -173,6 +173,7 @@ pub trait Connector: Send + Sync + 'static {
                 .collect(),
             description: self.description(),
             actions: self.actions(),
+            mcp_action_names: vec![],
             search_operators: self.search_operators(),
             read_only: self.read_only(),
             extra_schema: self.extra_schema(),

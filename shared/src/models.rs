@@ -2,8 +2,8 @@ use axum::response::IntoResponse;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::FromRow;
 use sqlx::types::time::OffsetDateTime;
+use sqlx::FromRow;
 use std::collections::HashMap;
 use tracing::warn;
 
@@ -953,6 +953,11 @@ pub struct ConnectorManifest {
     pub description: Option<String>,
     #[serde(default)]
     pub actions: Vec<ActionDefinition>,
+    /// Action names discovered from this connector's MCP server. Explicit
+    /// provenance lets dispatch enforce user-scoped credentials without
+    /// affecting native connector actions.
+    #[serde(default)]
+    pub mcp_action_names: Vec<String>,
     #[serde(default)]
     pub search_operators: Vec<SearchOperator>,
     #[serde(default)]
@@ -1404,6 +1409,13 @@ pub struct McpCredentials {
     /// credential-loading path for MCP auth preparation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<AuthType>,
+    /// Optional persisted source and acting user identity. These are trusted
+    /// routing metadata, not provider credentials, and are used to isolate
+    /// stateful MCP subprocesses per source/user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     /// Optional acting-user email (for delegated/principal-aware connectors).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_email: Option<String>,
@@ -1417,6 +1429,8 @@ impl McpCredentials {
             credentials: creds.credentials.clone(),
             config: creds.config.clone(),
             auth_type: Some(creds.auth_type),
+            source_id: Some(creds.source_id.clone()),
+            user_id: creds.user_id.clone(),
             principal_email: creds.principal_email.clone(),
         }
     }
@@ -1454,9 +1468,24 @@ pub struct SkillResponse {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionOrigin {
+    Native,
+    Mcp,
+}
+
+impl Default for ActionOrigin {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {
     pub action: String,
+    #[serde(default)]
+    pub origin: ActionOrigin,
     #[serde(default)]
     pub params: JsonValue,
     #[serde(default)]

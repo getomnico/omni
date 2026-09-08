@@ -938,6 +938,7 @@ pub fn build_manifest(
         source_types: vec![source.source_type.clone()],
         description: None,
         actions,
+        mcp_action_names: Vec::new(),
         search_operators: Vec::new(),
         read_only: !config.write_tools_enabled,
         extra_schema: None,

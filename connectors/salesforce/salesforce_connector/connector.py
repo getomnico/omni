@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import os
+import tempfile
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
 from omni_connector import (
     ActionDefinition,
     Connector,
+    OAuthCredentialReadyRequest,
+    OAuthManifestConfig,
+    OAuthScopeSet,
     PersonSyncRecord,
     SearchOperator,
+    StdioMcpServer,
     SyncContext,
     SyncMode,
 )
@@ -154,6 +163,200 @@ class SalesforceConnector(Connector):
     def actions(self) -> list[ActionDefinition]:
         return list(ACTION_DEFINITIONS)
 
+    def oauth_config(self) -> OAuthManifestConfig | None:
+        """Declare Salesforce's per-user OAuth/PKCE flow for MCP actions."""
+        login_url = self._mcp_login_url(
+            os.environ.get("SALESFORCE_MCP_LOGIN_URL", "https://login.salesforce.com")
+        )
+        return OAuthManifestConfig(
+            provider="salesforce",
+            auth_endpoint=f"{login_url}/services/oauth2/authorize",
+            token_endpoint=f"{login_url}/services/oauth2/token",
+            userinfo_endpoint=f"{login_url}/services/oauth2/userinfo",
+            registration_endpoint=f"{login_url}/services/oauth2/register",
+            registration_requires_initial_access_token=True,
+            userinfo_email_field="email",
+            identity_scopes=["openid", "email", "profile"],
+            scopes={
+                "salesforce": OAuthScopeSet(
+                    read=["api", "offline_access"],
+                    write=["api", "offline_access"],
+                )
+            },
+            # Salesforce DCR is authenticated with an administrator-provided
+            # initial access token and returns a confidential client secret.
+            token_endpoint_auth_method="client_secret_post",
+        )
+
+    def _mcp_catalog_cache_ttl_seconds(self) -> int:
+        # MCP catalogs are permission-sensitive to the OAuth principal. A
+        # connector-wide disk cache could expose one user's tool catalog to
+        # another, so Salesforce keeps the catalog in process memory only.
+        return 0
+
+    @property
+    def mcp_server(self) -> StdioMcpServer | None:
+        """Use Salesforce's official stdio MCP server when explicitly enabled."""
+        enabled = os.environ.get("SALESFORCE_MCP_ENABLED", "true").lower()
+        if enabled not in {"1", "true", "yes", "on"}:
+            return None
+        return StdioMcpServer(command="omni-salesforce-mcp")
+
+    @staticmethod
+    def _credential_payload(credentials: Mapping[str, object]) -> Mapping[str, object]:
+        """Accept both SDK raw credentials and action ServiceCredential envelopes."""
+        nested = credentials.get("credentials")
+        if isinstance(nested, Mapping):
+            return nested
+        return credentials
+
+    @staticmethod
+    def _mcp_login_url(value: object) -> str:
+        url = value if isinstance(value, str) else "https://login.salesforce.com"
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        allowed_host = (
+            host in {"login.salesforce.com", "test.salesforce.com"}
+            or host.endswith(".my.salesforce.com")
+            or host.endswith(".sandbox.my.salesforce.com")
+        )
+        if (
+            parsed.scheme != "https"
+            or parsed.username
+            or parsed.password
+            or parsed.port
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or not allowed_host
+        ):
+            raise ValueError("Salesforce MCP requires an HTTPS Salesforce login URL")
+        return url.rstrip("/")
+
+    def mcp_authentication_error(self, message: str) -> bool:
+        """Recognize terminal Salesforce OAuth failures for MCP responses."""
+        lowered = message.lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "invalid_grant",
+                "invalid session",
+                "invalid access token",
+                "authentication failed",
+                "authentication required",
+                "oauth organization",
+                "access-token login failed",
+                "oauth token",
+                "credentials require",
+                "missing credentials",
+                "unsupported Salesforce MCP authentication",
+                "unauthorized",
+            )
+        )
+
+    def prepare_mcp_env(self, credentials: dict[str, object]) -> dict[str, str]:
+        payload = self._credential_payload(credentials)
+        auth = SalesforceAuth.from_mapping(payload)
+        source_id = credentials.get("source_id") or credentials.get("_omni_source_id")
+        user_id = credentials.get("user_id") or credentials.get("_omni_user_id")
+        if isinstance(source_id, str) and source_id and isinstance(user_id, str) and user_id:
+            source_id = f"{source_id}:{user_id}"
+        if not isinstance(source_id, str) or not source_id:
+            # This is only a fallback for direct SDK callers. Hashing the
+            # canonical credential payload avoids putting secrets in a path.
+            source_id = hashlib.sha256(
+                json.dumps(
+                    {"credentials": payload, "user_id": user_id},
+                    sort_keys=True,
+                    default=str,
+                ).encode()
+            ).hexdigest()
+        env = {
+            "OMNI_SALESFORCE_SOURCE_ID": source_id,
+            "SALESFORCE_MCP_TOOLSETS": os.environ.get("SALESFORCE_MCP_TOOLSETS", "data"),
+        }
+        if auth.mode.value == "jwt":
+            assert auth.client_id and auth.private_key and auth.username
+            env.update(
+                {
+                    "OMNI_SALESFORCE_AUTH_MODE": "jwt",
+                    "SF_CLIENT_ID": auth.client_id,
+                    "SF_PRIVATE_KEY": auth.private_key,
+                    "SF_USERNAME": auth.username,
+                    "SF_LOGIN_URL": self._mcp_login_url(auth.login_url),
+                }
+            )
+        else:
+            if not auth.access_token or not auth.instance_url:
+                raise ValueError("Salesforce MCP OAuth credentials require an instance URL")
+            env.update(
+                {
+                    "OMNI_SALESFORCE_AUTH_MODE": "access_token",
+                    "SF_ACCESS_TOKEN": auth.access_token,
+                    "SF_INSTANCE_URL": self._mcp_salesforce_url(auth.instance_url),
+                    "SF_LOGIN_URL": self._mcp_login_url(
+                        payload.get("login_url")
+                        or os.environ.get(
+                            "SALESFORCE_MCP_LOGIN_URL", "https://login.salesforce.com"
+                        )
+                    ),
+                }
+            )
+            organization_id = payload.get("organization_id")
+            if isinstance(organization_id, str) and organization_id:
+                env["SF_ORG_ID"] = organization_id
+
+        # Create the marker only after all local credential validation has
+        # succeeded; otherwise a rejected direct call could leak a temp file.
+        status_fd, status_file = tempfile.mkstemp(prefix="omni-salesforce-auth-")
+        os.close(status_fd)
+        env["OMNI_SALESFORCE_AUTH_STATUS_FILE"] = status_file
+        return env
+
+    @staticmethod
+    def _mcp_salesforce_url(value: str) -> str:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        allowed_host = host.endswith(".salesforce.com") or host.endswith(".force.com")
+        if (
+            parsed.scheme != "https"
+            or parsed.username
+            or parsed.password
+            or parsed.port
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or not allowed_host
+        ):
+            raise ValueError("Salesforce MCP requires an HTTPS Salesforce instance URL")
+        return value.rstrip("/")
+
+    async def bootstrap_mcp(self, credentials: dict[str, object]) -> None:
+        # Sync has only the org JWT credential. MCP catalogs must be discovered
+        # with a user OAuth credential, never with the sync credential.
+        if not credentials.get("user_id") and not credentials.get("_omni_user_id"):
+            logger.info("Skipping MCP bootstrap without a user OAuth credential")
+            return
+        await super().bootstrap_mcp(credentials)
+
+    async def oauth_credential_ready(self, request: OAuthCredentialReadyRequest) -> bool:
+        if request.provider != "salesforce" or not request.user_id:
+            return False
+        credentials = dict(request.credentials)
+        credentials["_omni_source_id"] = request.source_id
+        credentials["_omni_user_id"] = request.user_id
+        adapter = self.mcp_adapter
+        if adapter is None:
+            return False
+        try:
+            auth = self._prepare_mcp_auth(credentials)
+            await adapter.discover(**auth)
+            self._save_mcp_catalog_cache(adapter)
+            return True
+        except Exception:
+            logger.warning("Salesforce MCP user catalog bootstrap failed", exc_info=True)
+            return False
+
     async def execute_action(
         self,
         action: str,
@@ -162,7 +365,7 @@ class SalesforceConnector(Connector):
         source: Source | None = None,
         actor_email: str | None = None,
     ) -> JSONResponse:
-        return await execute_action(action, params, credentials)
+        return await execute_action(action, params, self._credential_payload(credentials))
 
     async def sync(
         self,

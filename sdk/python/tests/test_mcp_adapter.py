@@ -283,14 +283,20 @@ class TestConnectorMcpIntegration:
         assert manifest.skills[0].id == "mcp:summarize"
 
     async def test_execute_action_delegates_to_mcp(self, stdio_connector: Connector):
-        result = await stdio_connector.execute_action("greet", {"name": "Omni"}, {})
-        assert result.status_code == 200
+        # MCP dispatch is owned by the HTTP server so connector-level native
+        # actions cannot accidentally fall through to an MCP tool.
+        result = await stdio_connector.mcp_adapter.execute_tool(
+            "greet", {"name": "Omni"}, env=TEST_ENV
+        )
+        assert result.status == "success"
 
     async def test_execute_action_unknown_returns_not_supported(
         self, stdio_connector: Connector
     ):
-        result = await stdio_connector.execute_action("unknown_action", {}, {})
-        assert result.status_code == 404
+        result = await stdio_connector.mcp_adapter.execute_tool(
+            "unknown_action", {}, env=TEST_ENV
+        )
+        assert result.status == "error"
 
     async def test_http_connector_round_trip(self, http_server_url: str):
         """A Connector pointing at an HttpMcpServer surfaces tools and dispatches."""
@@ -326,10 +332,10 @@ class TestConnectorMcpIntegration:
         assert manifest.mcp_enabled is True
         assert {a.name for a in manifest.actions} >= {"greet", "add"}
 
-        result = await connector.execute_action(
-            "greet", {"name": "HTTP"}, {"token": "abc"}
+        result = await connector.mcp_adapter.execute_tool(
+            "greet", {"name": "HTTP"}, headers={"Authorization": "Bearer abc"}
         )
-        assert result.status_code == 200
+        assert result.status == "success"
 
     async def test_non_mcp_connector_manifest(self):
         class PlainConnector(Connector):
