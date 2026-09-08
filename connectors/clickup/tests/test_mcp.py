@@ -107,7 +107,7 @@ async def test_manifest_does_not_discover_without_authenticated_bootstrap() -> N
     assert manifest.prompts == []
 
 
-async def test_authenticated_bootstrap_discovers_and_caches_catalog() -> None:
+async def test_authenticated_bootstrap_discovers_catalog() -> None:
     connector = ClickUpConnector()
     fake = FakeMcpAdapter()
     connector._mcp_adapter = fake  # noqa: SLF001 - deliberate test seam
