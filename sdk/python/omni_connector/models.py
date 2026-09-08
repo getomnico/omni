@@ -333,9 +333,9 @@ class ConnectorManifest(BaseModel):
     mcp_catalog_loaded: bool = Field(
         default=False,
         description=(
-            "True when the connector has an MCP catalog available in memory, "
-            "usually from live discovery or a fresh disk cache. Connector-manager "
-            "uses this to recover missing authenticated MCP catalogs."
+            "True when the connector has an MCP catalog available in memory "
+            "from live discovery. Connector-manager uses this to recover missing "
+            "authenticated MCP catalogs."
         ),
     )
     resources: list[McpResourceDefinition] = Field(default_factory=list)

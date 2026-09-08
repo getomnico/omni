@@ -744,8 +744,6 @@ services:
       PORT: ${SALESFORCE_CONNECTOR_PORT:-4019}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: salesforce-connector
-      MCP_CATALOG_VERSION: salesforce-mcp-0.30.15
-      MCP_CATALOG_CACHE_KEY: salesforce-mcp-data
     networks:
       - omni-network
     depends_on:

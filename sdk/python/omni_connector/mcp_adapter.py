@@ -4,8 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import tempfile
-import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -60,9 +58,7 @@ class McpAdapter:
 
     Each operation opens a fresh session and tears it down afterwards.
     Tool/resource/prompt definitions are cached in memory after the first
-    successful discovery so manifest builds don't require live auth. The base
-    Connector may also persist that in-memory catalog to disk under
-    CATALOG_CACHE_DIR and reload it on connector startup, subject to TTL.
+    successful discovery so manifest builds don't require live auth.
     """
 
     def __init__(self, server: McpServer) -> None:
@@ -70,7 +66,6 @@ class McpAdapter:
         self._cached_actions: list[ActionDefinition] | None = None
         self._cached_resources: list[McpResourceDefinition] | None = None
         self._cached_prompts: list[McpPromptDefinition] | None = None
-        self._catalog_cached_at: float | None = None
 
     @asynccontextmanager
     async def _open_session(
@@ -171,58 +166,10 @@ class McpAdapter:
         async with self._open_session(env, headers) as session:
             return await callback(session)
 
-    def _export_catalog(self) -> dict[str, Any]:
-        """Return the cached MCP catalog as JSON-serializable data."""
-        return {
-            "actions": [a.model_dump() for a in self._cached_actions or []],
-            "resources": [r.model_dump() for r in self._cached_resources or []],
-            "prompts": [p.model_dump() for p in self._cached_prompts or []],
-        }
-
-    def _import_catalog(self, catalog: dict[str, Any]) -> None:
-        """Restore a previously discovered MCP catalog."""
-        self._cached_actions = [
-            ActionDefinition(**item) for item in catalog.get("actions", [])
-        ]
-        self._cached_resources = [
-            McpResourceDefinition(**item) for item in catalog.get("resources", [])
-        ]
-        self._cached_prompts = [
-            McpPromptDefinition(**item) for item in catalog.get("prompts", [])
-        ]
-
     def _clear_catalog_cache(self) -> None:
         self._cached_actions = None
         self._cached_resources = None
         self._cached_prompts = None
-        self._catalog_cached_at = None
-
-    def _catalog_cache_expired(self, ttl_seconds: int) -> bool:
-        if ttl_seconds <= 0 or self._catalog_cached_at is None:
-            return False
-        return time.time() - self._catalog_cached_at > ttl_seconds
-
-    def _clear_catalog_cache_if_expired(self, ttl_seconds: int) -> bool:
-        if not self._catalog_cache_expired(ttl_seconds):
-            return False
-        self._clear_catalog_cache()
-        return True
-
-    def _load_catalog_cache(self, path: Path, ttl_seconds: int) -> bool:
-        if ttl_seconds <= 0 or not path.exists():
-            return False
-        raw = json.loads(path.read_text())
-        if not isinstance(raw, dict):
-            return False
-        cached_at = raw.get("cached_at")
-        catalog = raw.get("catalog")
-        if not isinstance(cached_at, int | float) or not isinstance(catalog, dict):
-            return False
-        if time.time() - cached_at > ttl_seconds:
-            return False
-        self._import_catalog(catalog)
-        self._catalog_cached_at = float(cached_at)
-        return True
 
     @property
     def _has_cached_catalog(self) -> bool:
@@ -231,34 +178,6 @@ class McpAdapter:
             or self._cached_resources is not None
             or self._cached_prompts is not None
         )
-
-    def _save_catalog_cache(self, path: Path) -> None:
-        cached_at = self._catalog_cached_at or time.time()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            {
-                "version": 1,
-                "cached_at": cached_at,
-                "catalog": self._export_catalog(),
-            }
-        )
-        # Never leave a truncated catalog behind if two connector workers
-        # refresh it together or the process is interrupted during a write.
-        fd, temporary = tempfile.mkstemp(
-            prefix=f".{path.name}.", dir=path.parent
-        )
-        try:
-            with os.fdopen(fd, "w") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, path)
-        finally:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
 
     async def discover(
         self,
@@ -298,7 +217,6 @@ class McpAdapter:
             self._cached_prompts = prompts
 
         await self._run(_discover, env=env, headers=headers)
-        self._catalog_cached_at = time.time()
         logger.info(
             "MCP discovery complete: %d tools, %d resources, %d prompts",
             len(self._cached_actions or []),

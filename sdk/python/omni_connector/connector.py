@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import logging
-import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import JSONResponse
@@ -33,7 +31,6 @@ class Connector(ABC):
     def __init__(self) -> None:
         self._cancelled_syncs: set[str] = set()
         self._mcp_adapter: McpAdapter | None = None
-        self._mcp_catalog_cache_loaded = False
 
     @property
     @abstractmethod
@@ -129,60 +126,7 @@ class Connector(ABC):
 
             self._mcp_adapter = McpAdapter(server)
 
-        if not self._mcp_catalog_cache_loaded:
-            self._load_mcp_catalog_cache(self._mcp_adapter)
-        elif self._mcp_adapter._clear_catalog_cache_if_expired(
-            self._mcp_catalog_cache_ttl_seconds()
-        ):
-            logger.info("Expired MCP catalog cache for connector %s", self.name)
         return self._mcp_adapter
-
-    def _mcp_catalog_cache_path(self) -> Path:
-        cache_dir = Path(
-            os.environ.get("CATALOG_CACHE_DIR", "/var/lib/omni/mcp-catalogs")
-        )
-        safe_name = "".join(
-            c if c.isalnum() or c in {"-", "_"} else "_" for c in self.name
-        )
-        # The pinned MCP package version and the complete tool policy are part
-        # of the catalog identity. A stale catalog from a different package
-        # or broader policy must never be reused.
-        package_version = os.environ.get("MCP_CATALOG_VERSION", "unknown")
-        policy = os.environ.get("MCP_CATALOG_CACHE_KEY", "default")
-        safe_policy = "".join(
-            c if c.isalnum() or c in {"-", "_"} else "_" for c in policy
-        )
-        safe_version = "".join(
-            c if c.isalnum() or c in {"-", "_"} else "_" for c in package_version
-        )
-        return cache_dir / f"{safe_name}-{safe_version}-{safe_policy}.mcp-catalog.json"
-
-    def _mcp_catalog_cache_ttl_seconds(self) -> int:
-        raw = os.environ.get("CATALOG_CACHE_TTL_SECONDS", "86400")
-        try:
-            return max(int(raw), 0)
-        except ValueError:
-            logger.warning("Invalid CATALOG_CACHE_TTL_SECONDS=%r, using 86400", raw)
-            return 86400
-
-    def _load_mcp_catalog_cache(self, adapter: McpAdapter) -> None:
-        self._mcp_catalog_cache_loaded = True
-        try:
-            path = self._mcp_catalog_cache_path()
-            if adapter._load_catalog_cache(path, self._mcp_catalog_cache_ttl_seconds()):
-                logger.info("Loaded MCP catalog cache from %s", path)
-        except Exception:
-            logger.warning("Failed to load MCP catalog cache", exc_info=True)
-
-    def _save_mcp_catalog_cache(self, adapter: McpAdapter) -> None:
-        ttl_seconds = self._mcp_catalog_cache_ttl_seconds()
-        if ttl_seconds <= 0:
-            return
-        try:
-            path = self._mcp_catalog_cache_path()
-            adapter._save_catalog_cache(path)
-        except Exception:
-            logger.warning("Failed to save MCP catalog cache", exc_info=True)
 
     def mcp_authentication_error(self, message: str) -> bool:
         """Return whether an MCP failure requires the user's OAuth reconnect.
@@ -224,7 +168,6 @@ class Connector(ABC):
             # from starting when a credential is incomplete or unsupported.
             auth = self._prepare_mcp_auth(credentials)
             await adapter.discover(**auth)
-            self._save_mcp_catalog_cache(adapter)
         except Exception:
             logger.warning("MCP bootstrap failed", exc_info=True)
 

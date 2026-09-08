@@ -186,12 +186,6 @@ class SalesforceConnector(Connector):
             token_endpoint_auth_method="client_secret_post",
         )
 
-    def _mcp_catalog_cache_ttl_seconds(self) -> int:
-        # MCP catalogs are permission-sensitive to the OAuth principal. A
-        # connector-wide disk cache could expose one user's tool catalog to
-        # another, so Salesforce keeps the catalog in process memory only.
-        return 0
-
     @property
     def mcp_server(self) -> StdioMcpServer:
         """Use Salesforce's official stdio MCP server."""
@@ -357,7 +351,6 @@ class SalesforceConnector(Connector):
         try:
             auth = self._prepare_mcp_auth(credentials)
             await adapter.discover(**auth)
-            self._save_mcp_catalog_cache(adapter)
             return True
         except Exception:
             logger.warning("Salesforce MCP user catalog bootstrap failed", exc_info=True)
