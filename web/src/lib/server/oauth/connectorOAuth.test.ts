@@ -5,6 +5,7 @@ import {
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
     oauthServiceBaseUrl,
+    revokeDynamicallyRegisteredClient,
     scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
     windshiftInternalOrigin,
@@ -19,6 +20,17 @@ const { redisMock } = vi.hoisted(() => ({
 
 vi.mock('../redis', () => ({
     getRedisClient: vi.fn().mockResolvedValue(redisMock),
+}))
+
+const { validateRemoteMock, fetchRemoteMock } = vi.hoisted(() => ({
+    validateRemoteMock: vi.fn(),
+    fetchRemoteMock: vi.fn(),
+}))
+
+vi.mock('../mcp/client', async (importOriginal) => ({
+    ...(await importOriginal()),
+    validateRemoteMcpUrlForCredentialUse: validateRemoteMock,
+    fetchWithPinnedRemoteMcpDns: fetchRemoteMock,
 }))
 
 const baseManifest: OAuthManifestConfig = {
@@ -49,7 +61,8 @@ describe('windshiftInternalOrigin', () => {
     })
 
     it('returns null when no internal route marker is advertised', () => {
-        const { internal_base_url: _marker, ...publicOnly } = windshiftManifest
+        const publicOnly = { ...windshiftManifest }
+        delete publicOnly.internal_base_url
         expect(windshiftInternalOrigin(publicOnly)).toBeNull()
     })
 
@@ -202,5 +215,76 @@ describe('OAuth connector helpers', () => {
         expect(() =>
             scopesForExistingSourceUserFlow(baseManifest, 'example', 'write', ['unexpected:write']),
         ).toThrow('Unsupported write scopes')
+    })
+})
+
+describe('revokeDynamicallyRegisteredClient', () => {
+    const registrationConfig = {
+        oauth_registration_client_uri:
+            'https://login.salesforce.com/services/oauth2/register/abc123',
+        oauth_registration_access_token: 'registration-token',
+        oauth_registration_endpoint: 'https://login.salesforce.com/services/oauth2/register',
+    }
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        validateRemoteMock.mockImplementation(async (endpoint: string) => endpoint)
+        fetchRemoteMock.mockResolvedValue(new Response(null, { status: 204 }))
+    })
+
+    it('does nothing when no registration metadata is stored', async () => {
+        expect(await revokeDynamicallyRegisteredClient('salesforce:src-1', {})).toBe(false)
+        expect(fetchRemoteMock).not.toHaveBeenCalled()
+    })
+
+    it('rejects a non-HTTPS client registration URI', async () => {
+        const config = {
+            ...registrationConfig,
+            oauth_registration_client_uri:
+                'http://login.salesforce.com/services/oauth2/register/abc',
+        }
+        expect(await revokeDynamicallyRegisteredClient('salesforce:src-1', config)).toBe(false)
+        expect(fetchRemoteMock).not.toHaveBeenCalled()
+    })
+
+    it('rejects a client URI pointing at a different origin than the registration endpoint', async () => {
+        const config = {
+            ...registrationConfig,
+            oauth_registration_client_uri: 'https://evil.example.com/services/oauth2/register/abc',
+        }
+        expect(await revokeDynamicallyRegisteredClient('salesforce:src-1', config)).toBe(false)
+        expect(fetchRemoteMock).not.toHaveBeenCalled()
+    })
+
+    it('deletes the registered client with the bearer registration token', async () => {
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(true)
+        expect(fetchRemoteMock).toHaveBeenCalledTimes(1)
+        const [url, init] = fetchRemoteMock.mock.calls[0]
+        expect(url.toString()).toBe(registrationConfig.oauth_registration_client_uri)
+        expect(init.method).toBe('DELETE')
+        expect(init.headers.Authorization).toBe('Bearer registration-token')
+    })
+
+    it('treats a 404 as already revoked', async () => {
+        fetchRemoteMock.mockResolvedValue(new Response(null, { status: 404 }))
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(true)
+    })
+
+    it('fails closed when the provider rejects the deletion', async () => {
+        fetchRemoteMock.mockResolvedValue(new Response(null, { status: 500 }))
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(false)
+    })
+
+    it('fails closed when the provider is unreachable', async () => {
+        fetchRemoteMock.mockRejectedValue(new Error('network down'))
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(false)
     })
 })

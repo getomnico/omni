@@ -31,19 +31,42 @@
 
     let isSubmitting = $state(false)
 
-    function normalizeUrl(value: string): string {
-        let url = value.trim()
-        if (!/^https?:\/\//.test(url)) {
-            url = `https://${url}`
+    function normalizeUrl(value: string, kind: 'login' | 'instance'): string {
+        let normalized = value.trim()
+        if (!/^https?:\/\//i.test(normalized)) normalized = `https://${normalized}`
+        const parsed = new URL(normalized)
+        const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
+        const isLoginHost =
+            host === 'login.salesforce.com' ||
+            host === 'test.salesforce.com' ||
+            host.endsWith('.my.salesforce.com') ||
+            host.endsWith('.sandbox.my.salesforce.com')
+        const isInstanceHost = host.endsWith('.salesforce.com') || host.endsWith('.force.com')
+        if (
+            parsed.protocol !== 'https:' ||
+            parsed.username ||
+            parsed.password ||
+            parsed.port ||
+            parsed.search ||
+            parsed.hash ||
+            (parsed.pathname !== '/' && parsed.pathname !== '') ||
+            (kind === 'login' ? !isLoginHost : !isInstanceHost)
+        ) {
+            throw new Error(`Invalid Salesforce ${kind} URL`)
         }
-        return url.replace(/\/+$/, '')
+        return parsed.origin
     }
 
     async function handleSubmit() {
         isSubmitting = true
         try {
-            const normalizedInstance = instanceUrl.trim() ? normalizeUrl(instanceUrl) : ''
-            const sourceConfig: Record<string, string> = {}
+            const normalizedInstance = instanceUrl.trim()
+                ? normalizeUrl(instanceUrl, 'instance')
+                : ''
+            const normalizedLogin = normalizeUrl(loginUrl, 'login')
+            const sourceConfig: Record<string, string> = {
+                login_url: normalizedLogin,
+            }
             if (normalizedInstance) {
                 sourceConfig.instance_url = normalizedInstance
             }
@@ -52,6 +75,9 @@
             let authType: AuthType
 
             if (authMode === 'jwt') {
+                if (!normalizedInstance) {
+                    throw new Error('Instance URL is required to bind Salesforce OAuth to this org')
+                }
                 if (!consumerKey.trim() || !privateKey.trim() || !username.trim()) {
                     throw new Error(
                         'Consumer Key, Private Key and Username are required for Connected App auth',
@@ -62,7 +88,7 @@
                     client_id: consumerKey.trim(),
                     private_key: privateKey,
                     username: username.trim(),
-                    login_url: normalizeUrl(loginUrl),
+                    login_url: normalizedLogin,
                 }
                 if (normalizedInstance) {
                     credentials.instance_url = normalizedInstance
@@ -122,9 +148,9 @@
             if (onSuccess) {
                 onSuccess()
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Error setting up Salesforce:', error)
-            toast.error(error.message || 'Failed to set up Salesforce')
+            toast.error(error instanceof Error ? error.message : 'Failed to set up Salesforce')
         } finally {
             isSubmitting = false
         }
@@ -148,8 +174,8 @@
         <Dialog.Header>
             <Dialog.Title>Connect Salesforce</Dialog.Title>
             <Dialog.Description>
-                Set up your Salesforce integration with a Connected App (recommended) or a static
-                access token for quick trials.
+                Set up your Salesforce integration with an External Client App (recommended) or a
+                static access token for quick trials.
             </Dialog.Description>
         </Dialog.Header>
 
@@ -157,12 +183,12 @@
             <Tabs.List class="mt-1 mb-4 grid w-full grid-cols-2">
                 <Tabs.Trigger
                     value="jwt"
-                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm cursor-pointer">
-                    Connected App (JWT)
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
+                    External Client App (JWT)
                 </Tabs.Trigger>
                 <Tabs.Trigger
                     value="token"
-                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm cursor-pointer">
+                    class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
                     Access Token
                 </Tabs.Trigger>
             </Tabs.List>
@@ -176,8 +202,8 @@
                         placeholder="3MVG9..."
                         required />
                     <p class="text-muted-foreground text-sm">
-                        The Connected App's consumer key (Setup &gt; App Manager &gt; your app &gt;
-                        OAuth Settings). JWT bearer flow is enabled by default on the app.
+                        The External Client App's client ID (Setup &gt; External Client App Manager
+                        &gt; your app). Configure the JWT bearer flow on the app.
                     </p>
                 </div>
 
@@ -190,9 +216,9 @@
                         rows={5}
                         required />
                     <p class="text-muted-foreground text-sm">
-                        The RSA private key paired with the certificate uploaded to the Connected
-                        App (Upload Certificate). The connector signs its own tokens — no password
-                        or security token needed.
+                        The RSA private key paired with the certificate uploaded to the External
+                        Client App. The connector signs its own tokens — no password or security
+                        token needed.
                     </p>
                 </div>
 
@@ -218,13 +244,13 @@
                 </div>
 
                 <div class="space-y-2">
-                    <Label for="instance-url">Instance URL (optional)</Label>
+                    <Label for="instance-url">Instance URL</Label>
                     <Input
                         id="instance-url"
                         bind:value={instanceUrl}
                         placeholder="https://yourorg-dev-ed.my.salesforce.com" />
                     <p class="text-muted-foreground text-sm">
-                        Usually auto-detected from the token response; set it to override.
+                        Required to bind this Salesforce source to the correct organization.
                     </p>
                 </div>
             </Tabs.Content>
@@ -238,7 +264,8 @@
                         placeholder="https://yourorg.salesforce.com"
                         required />
                     <p class="text-muted-foreground text-sm">
-                        Your Salesforce instance URL (e.g., https://yourorg.salesforce.com)
+                        Native-action trial only; MCP requires each user to authorize Salesforce
+                        through Omni. Example: https://yourorg.salesforce.com
                     </p>
                 </div>
 
@@ -257,6 +284,11 @@
                 </div>
             </Tabs.Content>
         </Tabs.Root>
+
+        <p class="text-muted-foreground text-xs">
+            Per-user MCP actions require an External Client App; configure it after connecting under
+            Integrations &gt; OAuth Apps (Scoped to this org).
+        </p>
 
         <Dialog.Footer>
             <Button variant="outline" onclick={handleCancel} class="cursor-pointer">Cancel</Button>

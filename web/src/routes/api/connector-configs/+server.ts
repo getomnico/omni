@@ -6,6 +6,7 @@ import {
     upsertConnectorConfig,
 } from '$lib/server/db/connector-configs'
 import { validateWindshiftServerUrl } from '$lib/server/windshift-server-config'
+import { revokeDynamicallyRegisteredClient } from '$lib/server/oauth/connectorOAuth'
 
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
@@ -32,8 +33,69 @@ export const POST: RequestHandler = async ({ locals, request }) => {
     const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
     const nextConfig = { ...existingConfig, ...config }
 
-    if (!config.oauth_client_secret && existingConfig.oauth_client_secret) {
-        nextConfig.oauth_client_secret = existingConfig.oauth_client_secret
+    // Replacing a source's dynamically registered client must not leave the
+    // old client active in Salesforce, and the stored identity must not keep
+    // fast-path authorization to the revoked client_id/client_secret pair.
+    const isSalesforceSourceConfig =
+        typeof provider === 'string' && provider.startsWith('salesforce:')
+    const submittedClientId = config.oauth_client_id
+    const clientIdChanged = Boolean(
+        isSalesforceSourceConfig &&
+        typeof submittedClientId === 'string' &&
+        submittedClientId.trim() &&
+        submittedClientId.trim() !== existingConfig.oauth_client_id,
+    )
+    const dcrTokenReplaced = Boolean(
+        isSalesforceSourceConfig &&
+        typeof config.oauth_registration_initial_access_token === 'string' &&
+        config.oauth_registration_initial_access_token.trim() !== '' &&
+        config.oauth_registration_initial_access_token !== '••••••••',
+    )
+    const hadDynamicClient = existingConfig.oauth_dynamic_client_registration === 'true'
+    const replacesDynamicClient = clientIdChanged || dcrTokenReplaced
+    if (replacesDynamicClient && hadDynamicClient) {
+        if (!(await revokeDynamicallyRegisteredClient(provider, existingConfig))) {
+            throw error(
+                409,
+                'Could not revoke the existing Salesforce OAuth client; try again later',
+            )
+        }
+    }
+
+    for (const secretKey of [
+        'oauth_client_secret',
+        'oauth_registration_initial_access_token',
+        'oauth_registration_access_token',
+    ]) {
+        const submitted = config[secretKey]
+        if (
+            (!submitted || submitted === '••••••••') &&
+            typeof existingConfig[secretKey] === 'string'
+        ) {
+            nextConfig[secretKey] = existingConfig[secretKey]
+        }
+    }
+
+    // The old dynamic client was just revoked remotely. Drop its full
+    // identity and management metadata (the secret-preservation loop above
+    // must not bring the revoked client_secret back). The next authorization
+    // then runs DCR with the new initial access token, or fails closed as
+    // "not configured" until the admin provides a complete client.
+    if (replacesDynamicClient && hadDynamicClient) {
+        for (const key of [
+            'oauth_client_id',
+            'oauth_client_secret',
+            'oauth_client_secret_expires_at',
+            'oauth_token_endpoint_auth_method',
+            'oauth_redirect_uri',
+            'oauth_dynamic_client_registration',
+            'oauth_registration_endpoint',
+            'oauth_registration_client_uri',
+            'oauth_registration_access_token',
+            'oauth_registration_attempted_at',
+        ]) {
+            delete nextConfig[key]
+        }
     }
 
     // Windshift's public URL is admin-entered and fetched by the server (OAuth

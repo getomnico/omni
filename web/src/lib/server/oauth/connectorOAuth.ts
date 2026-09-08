@@ -1,6 +1,13 @@
 import { createHash, randomBytes } from 'crypto'
+import { sql } from 'drizzle-orm'
 import { app, getConfig } from '../config'
-import { getConnectorConfig, upsertConnectorConfig } from '../db/connector-configs'
+import { db } from '../db'
+import {
+    deleteConnectorConfig,
+    getConnectorConfig,
+    upsertConnectorConfig,
+} from '../db/connector-configs'
+import { getSourceById } from '../db/sources'
 import type { Source } from '../db/schema'
 import { createLogger } from '../logger'
 import {
@@ -39,6 +46,7 @@ export interface OAuthManifestConfig {
     scope_separator: string
     enrich_endpoint?: string | null
     registration_endpoint?: string | null
+    registration_requires_initial_access_token?: boolean
     token_endpoint_auth_method?: OAuthTokenEndpointAuthMethod
     resource?: string | null
     credential_provider?: string | null
@@ -49,6 +57,10 @@ export interface OAuthManifestConfig {
     /// this URL and may resolve to RFC1918 addresses. Absent for every other
     /// provider and when no internal route is configured.
     internal_base_url?: string | null
+    /// Source-scoped client configuration key. This is intentionally not a
+    /// provider identity; credentials stored in service_credentials continue
+    /// to use the logical provider name.
+    client_config_provider?: string | null
 }
 
 /// What flow we're driving — encoded into the OAuth state so the single
@@ -120,14 +132,125 @@ export async function getOAuthManifestForSourceType(
         manifest?: { oauth?: OAuthManifestConfig | null } | null
     }>
     const entry = body.find((c) => c.source_type === sourceType)
-    return entry?.manifest?.oauth ?? null
+    const manifest = entry?.manifest?.oauth ?? null
+    if (!manifest || manifest.provider !== 'salesforce') return manifest
+    return discoverSalesforceOAuthManifest(manifest)
 }
 
+function salesforceOAuthBaseUrl(value: unknown): string | null {
+    if (typeof value !== 'string' || !value.trim()) return null
+    try {
+        const url = new URL(value.trim())
+        const host = url.hostname.toLowerCase()
+        const allowedHost =
+            host === 'login.salesforce.com' ||
+            host === 'test.salesforce.com' ||
+            host.endsWith('.my.salesforce.com') ||
+            host.endsWith('.sandbox.my.salesforce.com')
+        if (
+            url.protocol !== 'https:' ||
+            url.username ||
+            url.password ||
+            url.port ||
+            url.search ||
+            url.hash ||
+            !allowedHost ||
+            (url.pathname !== '/' && url.pathname !== '')
+        ) {
+            return null
+        }
+        return url.origin
+    } catch {
+        return null
+    }
+}
+
+async function discoverSalesforceOAuthManifest(
+    manifest: OAuthManifestConfig,
+    loginUrlOverride?: string,
+): Promise<OAuthManifestConfig | null> {
+    let manifestOrigin: string | undefined
+    try {
+        manifestOrigin = new URL(manifest.auth_endpoint).origin
+    } catch {
+        manifestOrigin = undefined
+    }
+    const baseUrl = salesforceOAuthBaseUrl(loginUrlOverride ?? manifestOrigin)
+    if (!baseUrl) return null
+    let metadata: Record<string, unknown>
+    try {
+        const response = await fetch(`${baseUrl}/.well-known/openid-configuration`, {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(10_000),
+        })
+        if (!response.ok) return null
+        const body = await readLimitedResponseText(response)
+        metadata = JSON.parse(body) as Record<string, unknown>
+    } catch {
+        return null
+    }
+
+    const issuer = typeof metadata.issuer === 'string' ? metadata.issuer : ''
+    if (!issuer || salesforceOAuthBaseUrl(issuer) !== baseUrl) return null
+    const endpoint = (key: string, fallback: string): string | null => {
+        const value = typeof metadata[key] === 'string' ? metadata[key] : fallback
+        try {
+            const parsed = new URL(value)
+            if (
+                parsed.protocol !== 'https:' ||
+                parsed.username ||
+                parsed.password ||
+                parsed.port ||
+                parsed.search ||
+                parsed.hash ||
+                salesforceOAuthBaseUrl(parsed.origin) !== baseUrl ||
+                !parsed.pathname.startsWith('/services/oauth2/')
+            ) {
+                return null
+            }
+            return parsed.toString().replace(/\/$/, '')
+        } catch {
+            return null
+        }
+    }
+    const authEndpoint = endpoint('authorization_endpoint', `${baseUrl}/services/oauth2/authorize`)
+    const tokenEndpoint = endpoint('token_endpoint', `${baseUrl}/services/oauth2/token`)
+    const userinfoEndpoint = endpoint('userinfo_endpoint', `${baseUrl}/services/oauth2/userinfo`)
+    const registrationEndpoint = endpoint(
+        'registration_endpoint',
+        `${baseUrl}/services/oauth2/register`,
+    )
+    if (!authEndpoint || !tokenEndpoint || !userinfoEndpoint || !registrationEndpoint) return null
+
+    return {
+        ...manifest,
+        auth_endpoint: authEndpoint,
+        token_endpoint: tokenEndpoint,
+        userinfo_endpoint: userinfoEndpoint,
+        registration_endpoint: registrationEndpoint,
+    }
+}
+
+type OAuthSource = Pick<Source, 'sourceType' | 'integrationType' | 'config'> &
+    Partial<Pick<Source, 'id'>>
+
 export async function getOAuthConfigForSource(
-    source: Pick<Source, 'sourceType' | 'integrationType' | 'config'>,
+    source: OAuthSource,
 ): Promise<OAuthManifestConfig | null> {
     if (source.integrationType !== IntegrationType.REMOTE_MCP) {
-        return getOAuthManifestForSourceType(source.sourceType)
+        const manifest = await getOAuthManifestForSourceType(source.sourceType)
+        if (!manifest || source.sourceType !== 'salesforce') return manifest
+        const sourceConfig = (source.config ?? {}) as Record<string, unknown>
+        const hasConfiguredLoginUrl = Object.prototype.hasOwnProperty.call(
+            sourceConfig,
+            'login_url',
+        )
+        const loginUrl = salesforceOAuthBaseUrl(sourceConfig.login_url)
+        if (hasConfiguredLoginUrl && !loginUrl) return null
+        const clientConfigProvider = source.id ? `salesforce:${source.id}` : 'salesforce'
+        if (!loginUrl) return { ...manifest, client_config_provider: clientConfigProvider }
+        const discovered = await discoverSalesforceOAuthManifest(manifest, loginUrl)
+        return discovered ? { ...discovered, client_config_provider: clientConfigProvider } : null
     }
 
     const provider = `remote_mcp:${source.sourceType}`
@@ -156,7 +279,15 @@ async function loadClientCreds(
     provider: string,
     manifestConfig?: OAuthManifestConfig,
 ): Promise<ClientCreds | null> {
-    const row = await getConnectorConfig(provider)
+    const clientConfigProvider = manifestConfig?.client_config_provider || provider
+    // Salesforce client registrations are bound to a source/org. Never
+    // silently fall back to the global Salesforce client, which could send a
+    // user to the wrong org or use another source's credentials.
+    const allowProviderFallback =
+        clientConfigProvider !== provider && !clientConfigProvider.startsWith('salesforce:')
+    const row =
+        (await getConnectorConfig(clientConfigProvider)) ??
+        (allowProviderFallback ? await getConnectorConfig(provider) : null)
     const storedConfig = (row?.config ?? {}) as Record<string, string>
     const storedMethod = storedConfig.oauth_token_endpoint_auth_method
     const tokenEndpointAuthMethod = isOAuthTokenEndpointAuthMethod(storedMethod)
@@ -164,6 +295,9 @@ async function loadClientCreds(
         : (manifestConfig?.token_endpoint_auth_method ?? 'client_secret_post')
     const clientId = storedConfig.oauth_client_id
     const clientSecret = storedConfig.oauth_client_secret
+    const clientSecretExpiresAt = Number(storedConfig.oauth_client_secret_expires_at ?? 0)
+    const clientSecretExpired =
+        clientSecretExpiresAt > 0 && clientSecretExpiresAt <= Math.floor(Date.now() / 1000)
 
     const dynamicRegistrationIsCurrent =
         !manifestConfig ||
@@ -174,6 +308,7 @@ async function loadClientCreds(
 
     if (
         clientId &&
+        !clientSecretExpired &&
         isClientConfigComplete(storedConfig, tokenEndpointAuthMethod) &&
         dynamicRegistrationIsCurrent
     ) {
@@ -187,7 +322,12 @@ async function loadClientCreds(
     }
 
     if (manifestConfig && isAutoManagedOAuthProvider(manifestConfig)) {
-        return dynamicallyRegisterClient(provider, manifestConfig, storedConfig)
+        return dynamicallyRegisterClient(
+            provider,
+            manifestConfig,
+            storedConfig,
+            clientConfigProvider,
+        )
     }
 
     return null
@@ -197,7 +337,9 @@ async function loadClientCreds(
 /// servers, Windshift). Server-side fetches to these endpoints must go
 /// through SSRF validation and pinned-DNS resolution.
 function isAdminConfiguredEndpointProvider(provider: string): boolean {
-    return provider.startsWith('remote_mcp:') || provider === 'windshift'
+    return (
+        provider.startsWith('remote_mcp:') || provider === 'windshift' || provider === 'salesforce'
+    )
 }
 
 /// The exact origin (scheme://host:port) of the operator-configured Windshift
@@ -295,24 +437,92 @@ async function dynamicallyRegisterClient(
     provider: string,
     config: OAuthManifestConfig,
     existingConfig: Record<string, string>,
+    clientConfigProvider = provider,
+): Promise<ClientCreds | null> {
+    // Registration is a read/claim/write sequence. Serialize it across web
+    // instances with a transaction-scoped PostgreSQL advisory lock so two
+    // workers cannot spend the same Salesforce initial-access token creating
+    // duplicate clients.
+    return db.transaction(async (tx) => {
+        await tx.execute(
+            sql`select pg_advisory_xact_lock(hashtext(${`oauth-dcr:${clientConfigProvider}`}))`,
+        )
+        const latest = await getConnectorConfig(clientConfigProvider)
+        const latestConfig = (latest?.config ?? existingConfig) as Record<string, string>
+        return dynamicallyRegisterClientUnlocked(
+            provider,
+            config,
+            latestConfig,
+            clientConfigProvider,
+        )
+    })
+}
+
+async function dynamicallyRegisterClientUnlocked(
+    provider: string,
+    config: OAuthManifestConfig,
+    existingConfig: Record<string, string>,
+    clientConfigProvider = provider,
 ): Promise<ClientCreds | null> {
     const redirectUri = callbackUrl()
     const scope = scopesForFlow(config, Object.keys(config.scopes), 'write').join(
         config.scope_separator,
     )
+    const tokenEndpointAuthMethod = config.token_endpoint_auth_method ?? 'none'
+    const initialAccessToken = existingConfig.oauth_registration_initial_access_token
+    const lastAttempt = Number(existingConfig.oauth_registration_attempted_at ?? 0)
+    if (Number.isFinite(lastAttempt) && Date.now() - lastAttempt < 60_000) return null
+    // Some providers (including Salesforce) require an authorized initial
+    // access token and return confidential-client credentials. Never attempt
+    // an unauthenticated or secretless registration for those providers.
+    if (config.registration_requires_initial_access_token && !initialAccessToken) {
+        return null
+    }
+
+    // Do not accumulate abandoned clients when a registration becomes stale
+    // (for example after the callback URL or registration endpoint changes).
+    // If the provider cannot revoke the old client, fail closed instead of
+    // creating another one with the same administrator token.
+    if (existingConfig.oauth_dynamic_client_registration === 'true') {
+        const hadRegistration =
+            typeof existingConfig.oauth_registration_client_uri === 'string' &&
+            typeof existingConfig.oauth_registration_access_token === 'string'
+        if (
+            !hadRegistration ||
+            !(await revokeDynamicallyRegisteredClient(clientConfigProvider, existingConfig))
+        ) {
+            logger.warn(`Cannot replace stale OAuth DCR client for ${clientConfigProvider}`)
+            return null
+        }
+    }
+
     let response: Response
     try {
         await validateRemoteMcpOAuthConfigUrls(config)
+        await upsertConnectorConfig(
+            clientConfigProvider,
+            { ...existingConfig, oauth_registration_attempted_at: String(Date.now()) },
+            null,
+        )
+        const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+        }
+        if (initialAccessToken) headers.Authorization = `Bearer ${initialAccessToken}`
         response = await remoteMcpCredentialFetch(
             provider,
             config.registration_endpoint!,
             {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                },
-                body: JSON.stringify(dynamicRegistrationPayload(provider, redirectUri, scope)),
+                headers,
+                body: JSON.stringify(
+                    dynamicRegistrationPayload(
+                        provider,
+                        redirectUri,
+                        scope,
+                        tokenEndpointAuthMethod,
+                    ),
+                ),
             },
             windshiftInternalOrigin(config),
         )
@@ -321,28 +531,132 @@ async function dynamicallyRegisterClient(
     }
     const data = (await readCredentialJson(provider, response).catch(() => ({}))) as {
         client_id?: string
+        client_secret?: string
+        client_secret_expires_at?: number
+        registration_client_uri?: string
+        registration_access_token?: string
+        token_endpoint_auth_method?: OAuthTokenEndpointAuthMethod
     }
     if (!response.ok || !data.client_id) return null
+    const registeredAuthMethod = isOAuthTokenEndpointAuthMethod(data.token_endpoint_auth_method)
+        ? data.token_endpoint_auth_method
+        : tokenEndpointAuthMethod
+    if (registeredAuthMethod !== 'none' && !data.client_secret) return null
 
+    const configWithoutRegistrationMetadata = { ...existingConfig }
+    delete configWithoutRegistrationMetadata.oauth_registration_initial_access_token
+    delete configWithoutRegistrationMetadata.oauth_registration_client_uri
+    delete configWithoutRegistrationMetadata.oauth_registration_access_token
     const stored = {
-        ...existingConfig,
+        ...configWithoutRegistrationMetadata,
         oauth_client_id: data.client_id,
-        oauth_token_endpoint_auth_method: 'none',
+        ...(data.client_secret ? { oauth_client_secret: data.client_secret } : {}),
+        ...(data.client_secret_expires_at
+            ? { oauth_client_secret_expires_at: String(data.client_secret_expires_at) }
+            : {}),
+        ...(data.registration_client_uri
+            ? { oauth_registration_client_uri: data.registration_client_uri }
+            : {}),
+        ...(data.registration_access_token
+            ? { oauth_registration_access_token: data.registration_access_token }
+            : {}),
+        oauth_token_endpoint_auth_method: registeredAuthMethod,
         oauth_dynamic_client_registration: 'true',
         oauth_registration_endpoint: config.registration_endpoint!,
         oauth_redirect_uri: redirectUri,
     }
-    await upsertConnectorConfig(provider, stored, null)
+    await upsertConnectorConfig(clientConfigProvider, stored, null)
 
     return {
         clientId: data.client_id,
-        tokenEndpointAuthMethod: 'none',
+        clientSecret: data.client_secret || undefined,
+        tokenEndpointAuthMethod: registeredAuthMethod,
         authEndpoint: existingConfig.oauth_auth_endpoint || undefined,
         tokenEndpoint: existingConfig.oauth_token_endpoint || undefined,
     }
 }
 
-export function dynamicRegistrationPayload(provider: string, redirectUri: string, scope: string) {
+/**
+ * Revoke an RFC 7592 dynamically registered client, when the provider exposes
+ * registration-management credentials. Salesforce registrations are
+ * source-scoped, so cleanup is performed when that source is deleted rather
+ * than leaving an unusable client in the org indefinitely.
+ */
+export async function revokeDynamicallyRegisteredClient(
+    provider: string,
+    config: Record<string, unknown>,
+): Promise<boolean> {
+    const registrationUri = config.oauth_registration_client_uri
+    const registrationAccessToken = config.oauth_registration_access_token
+    if (typeof registrationUri !== 'string' || typeof registrationAccessToken !== 'string') {
+        return false
+    }
+
+    let clientUrl: URL
+    let registrationUrl: URL
+    try {
+        clientUrl = new URL(registrationUri)
+        registrationUrl = new URL(String(config.oauth_registration_endpoint ?? ''))
+    } catch {
+        logger.warn(`Skipping invalid OAuth DCR management URL for ${provider}`)
+        return false
+    }
+    if (
+        clientUrl.protocol !== 'https:' ||
+        clientUrl.username ||
+        clientUrl.password ||
+        clientUrl.search ||
+        clientUrl.hash ||
+        clientUrl.origin !== registrationUrl.origin
+    ) {
+        logger.warn(`Skipping untrusted OAuth DCR management URL for ${provider}`)
+        return false
+    }
+
+    try {
+        const validated = await validateRemoteMcpUrlForCredentialUse(registrationUri)
+        const response = await fetchWithPinnedRemoteMcpDns(new URL(validated), {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${registrationAccessToken}` },
+            signal: AbortSignal.timeout(20_000),
+        })
+        if (!response.ok && response.status !== 404) {
+            logger.warn(
+                `OAuth DCR client deletion returned HTTP ${response.status} for ${provider}`,
+            )
+            return false
+        }
+        return true
+    } catch (error) {
+        logger.warn(`OAuth DCR client deletion failed for ${provider}`, error)
+        return false
+    }
+}
+
+export async function removeDynamicallyRegisteredClient(provider: string): Promise<void> {
+    const existing = await getConnectorConfig(provider)
+    if (existing) {
+        const config = existing.config as Record<string, unknown>
+        const hasDynamicClient = config.oauth_dynamic_client_registration === 'true'
+        const hasRegistrationMetadata =
+            typeof config.oauth_registration_client_uri === 'string' &&
+            typeof config.oauth_registration_access_token === 'string'
+        if (
+            (hasDynamicClient || hasRegistrationMetadata) &&
+            !(await revokeDynamicallyRegisteredClient(provider, config))
+        ) {
+            throw new Error(`Could not revoke OAuth DCR client for ${provider}`)
+        }
+    }
+    await deleteConnectorConfig(provider)
+}
+
+export function dynamicRegistrationPayload(
+    provider: string,
+    redirectUri: string,
+    scope: string,
+    tokenEndpointAuthMethod: OAuthTokenEndpointAuthMethod = 'none',
+) {
     const providerName =
         provider === 'clickup'
             ? 'ClickUp'
@@ -355,11 +669,11 @@ export function dynamicRegistrationPayload(provider: string, redirectUri: string
         client_name: `Omni ${providerName} MCP`,
         redirect_uris: [redirectUri],
         grant_types:
-            provider === 'windshift' || provider === 'atlassian'
+            provider === 'windshift' || provider === 'atlassian' || provider === 'salesforce'
                 ? ['authorization_code', 'refresh_token']
                 : ['authorization_code'],
         response_types: ['code'],
-        token_endpoint_auth_method: 'none' as const,
+        token_endpoint_auth_method: tokenEndpointAuthMethod,
         scope,
     }
 }
@@ -389,7 +703,8 @@ export function isAutoManagedOAuthProvider(
 ): boolean {
     return Boolean(
         manifestConfig?.registration_endpoint &&
-        manifestConfig.token_endpoint_auth_method === 'none',
+        (manifestConfig.token_endpoint_auth_method === 'none' ||
+            manifestConfig.registration_requires_initial_access_token === true),
     )
 }
 
@@ -628,7 +943,11 @@ export async function generateAuthUrlForUserWrite(args: {
 function pkceForConfig(
     config: OAuthManifestConfig,
 ): { verifier: string; challenge: string } | null {
-    if (config.token_endpoint_auth_method !== 'none') return null
+    // Salesforce requires PKCE even when the configured External Client App
+    // authenticates the token endpoint with a client secret.
+    if (config.provider !== 'salesforce' && config.token_endpoint_auth_method !== 'none') {
+        return null
+    }
     const verifier = randomBytes(32).toString('base64url')
     const challenge = createHash('sha256').update(verifier).digest('base64url')
     return { verifier, challenge }
@@ -663,6 +982,7 @@ export interface ExchangeResult {
     config: OAuthManifestConfig
     principalEmail: string
     clientCreds: ClientCreds
+    userinfo?: unknown
 }
 
 export interface ExchangeCodeOptions {
@@ -826,7 +1146,7 @@ export async function exchangeCodeAndIdentify(
         throw new Error(`userinfo response missing field "${config.userinfo_email_field}"`)
     }
 
-    return { tokens, state, config, principalEmail: email, clientCreds: creds }
+    return { tokens, state, config, principalEmail: email, clientCreds: creds, userinfo: profile }
 }
 
 function extractEmailFromUserinfo(profile: unknown, emailField: string): string | null {
@@ -870,9 +1190,12 @@ async function manifestForFlow(
     flow: OAuthFlow,
     provider: string,
 ): Promise<OAuthManifestConfig | null> {
-    // Either flow form has at least one source_type to look up. user_write
-    // flows lose their source_type, so we look up by provider via /connectors
-    // and find a manifest whose oauth.provider matches.
+    // Existing-source flows must reconstruct the source-specific OAuth
+    // endpoints used during /oauth/start (not a provider-global default).
+    if (flow.type !== 'connect_source') {
+        const source = await getSourceById(flow.sourceId)
+        return source ? getOAuthConfigForSource(source) : null
+    }
     if (flow.type === 'connect_source' && flow.sourceTypes.length > 0) {
         return getOAuthManifestForSourceType(flow.sourceTypes[0])
     }

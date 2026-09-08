@@ -30,6 +30,8 @@ export interface OAuthTokens {
     expires_in?: number
     scope?: string
     id_token?: string
+    /// Salesforce token responses include the target org instance URL.
+    instance_url?: string
 }
 
 export interface OAuthError {

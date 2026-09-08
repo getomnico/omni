@@ -4,23 +4,25 @@
     import { Label } from '$lib/components/ui/label'
     import { Switch } from '$lib/components/ui/switch'
     import * as Card from '$lib/components/ui/card'
-    import { Loader2 } from '@lucide/svelte'
+    import * as Alert from '$lib/components/ui/alert'
+    import { Loader2, KeyRound, AlertTriangle } from '@lucide/svelte'
     import { onMount } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
+    import { toast } from 'svelte-sonner'
     import type { PageProps } from './$types'
     import salesforceLogo from '$lib/images/icons/salesforce.svg'
+    import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
 
     let { data }: PageProps = $props()
 
     let enabled = $state(data.source.isActive)
+    let originalEnabled = data.source.isActive
 
     let isSubmitting = $state(false)
-    let hasUnsavedChanges = $state(false)
+    let hasUnsavedChanges = $derived(enabled !== originalEnabled)
     let skipUnsavedCheck = $state(false)
 
     let beforeUnloadHandler: ((e: BeforeUnloadEvent) => void) | null = null
-
-    let originalEnabled = data.source.isActive
 
     onMount(() => {
         beforeUnloadHandler = (e: BeforeUnloadEvent) => {
@@ -31,6 +33,7 @@
         }
 
         window.addEventListener('beforeunload', beforeUnloadHandler)
+        void checkMcpOAuthStatus()
 
         return () => {
             if (beforeUnloadHandler) {
@@ -50,9 +53,74 @@
         }
     })
 
-    $effect(() => {
-        hasUnsavedChanges = enabled !== originalEnabled
-    })
+    type ScopedOAuthProvider = {
+        provider: string
+        displayName: string
+        configured: boolean
+        updatedAt: string | null
+        config: Record<string, unknown>
+    }
+
+    let oauthDialogOpen = $state(false)
+    let oauthDialogProvider = $state<ScopedOAuthProvider | null>(null)
+    let oauthDialogLoading = $state(false)
+    // null = unknown/failed check; false = no usable per-user OAuth client
+    let mcpOAuthConfigured = $state<boolean | null>(null)
+
+    async function loadOAuthConfig(): Promise<ScopedOAuthProvider> {
+        const response = await fetch('/api/connector-configs')
+        if (!response.ok) {
+            throw new Error('Failed to load Salesforce OAuth configuration')
+        }
+        const configs = (await response.json()) as Array<{
+            provider: string
+            config: Record<string, unknown>
+            updatedAt: string
+        }>
+        const provider = `salesforce:${data.source.id}`
+        const saved = configs.find((item) => item.provider === provider)
+        const config = saved?.config ?? {}
+        const configured =
+            typeof config.oauth_client_id === 'string' &&
+            (typeof config.oauth_client_secret === 'string' ||
+                config.oauth_dynamic_client_registration === 'true')
+        return {
+            provider,
+            displayName: `Salesforce — ${data.source.name} MCP OAuth`,
+            configured,
+            updatedAt: saved?.updatedAt ?? null,
+            config,
+        }
+    }
+
+    async function checkMcpOAuthStatus() {
+        oauthDialogLoading = true
+        try {
+            mcpOAuthConfigured = (await loadOAuthConfig()).configured
+        } catch {
+            mcpOAuthConfigured = null
+        } finally {
+            oauthDialogLoading = false
+        }
+    }
+
+    async function openOAuthConfig() {
+        oauthDialogLoading = true
+        try {
+            oauthDialogProvider = await loadOAuthConfig()
+            mcpOAuthConfigured = oauthDialogProvider.configured
+            oauthDialogOpen = true
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to load Salesforce OAuth')
+        } finally {
+            oauthDialogLoading = false
+        }
+    }
+
+    function closeOAuthConfig() {
+        oauthDialogOpen = false
+        oauthDialogProvider = null
+    }
 </script>
 
 <svelte:head>
@@ -120,3 +188,69 @@
         </Card.Footer>
     </Card.Root>
 </form>
+
+<Card.Root class="relative">
+    <Card.Header>
+        <div class="flex items-start justify-between">
+            <div>
+                <Card.Title class="flex items-center gap-2">
+                    <KeyRound class="text-muted-foreground h-5 w-5" />
+                    MCP user OAuth
+                </Card.Title>
+                <Card.Description class="mt-1">
+                    External Client App credentials used when individual Omni users authorize
+                    Salesforce MCP tools. Stored for this source only; never shared with other
+                    Salesforce orgs.
+                </Card.Description>
+            </div>
+        </div>
+    </Card.Header>
+    <Card.Content>
+        <p class="text-muted-foreground text-sm">
+            Configure a pre-created External Client App (client ID + secret) or authenticated
+            Dynamic Client Registration with an administrator-issued initial access token. The
+            registration token is removed after successful registration.
+        </p>
+        {#if mcpOAuthConfigured === false}
+            <Alert.Root
+                class="mt-3 border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+                <AlertTriangle class="h-4 w-4 text-amber-500 dark:text-amber-400" />
+                <Alert.Title>MCP is not available yet</Alert.Title>
+                <Alert.Description>
+                    Salesforce MCP tools won't appear in chat until an External Client App is
+                    configured for per-user OAuth. Use the button below to set one up.
+                </Alert.Description>
+            </Alert.Root>
+        {/if}
+    </Card.Content>
+    <Card.Footer class="flex justify-end">
+        <Button
+            type="button"
+            variant="outline"
+            disabled={oauthDialogLoading}
+            class="cursor-pointer"
+            onclick={openOAuthConfig}>
+            {#if oauthDialogLoading}
+                <Loader2 class="mr-2 h-4 w-4 animate-spin" />
+            {/if}
+            {oauthDialogProvider?.configured
+                ? 'Edit MCP OAuth client'
+                : 'Configure MCP OAuth client'}
+        </Button>
+    </Card.Footer>
+</Card.Root>
+
+{#if oauthDialogOpen && oauthDialogProvider}
+    <OAuthClientConfigDialog
+        open={oauthDialogOpen}
+        provider={oauthDialogProvider.provider}
+        displayName={oauthDialogProvider.displayName}
+        configured={oauthDialogProvider.configured}
+        config={oauthDialogProvider.config}
+        onSaved={() => {
+            oauthDialogOpen = false
+            oauthDialogProvider = null
+            void checkMcpOAuthStatus()
+        }}
+        onCancel={closeOAuthConfig} />
+{/if}

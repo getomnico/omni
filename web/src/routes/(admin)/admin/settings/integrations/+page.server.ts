@@ -11,7 +11,7 @@ import {
     type OAuthManifestConfig,
 } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
-import { IntegrationType, supportsDataSync } from '$lib/types'
+import { IntegrationType, SourceType, supportsDataSync } from '$lib/types'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -237,7 +237,32 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
                         config: saved?.config ?? {},
                     }
                 })
-                .sort((a, b) => a.displayName.localeCompare(b.displayName))
+
+            // Salesforce OAuth clients are bound to a source (org): the global
+            // 'salesforce' manifest provider is filtered out above because DCR
+            // self-registers. Surface one OAuth Apps row per connected
+            // Salesforce source, keyed `salesforce:<source-id>`.
+            const salesforceManifest = oauthManifestByProvider.get('salesforce')
+            for (const source of connectedSources) {
+                if (source.sourceType !== SourceType.SALESFORCE) continue
+                const provider = `salesforce:${source.id}`
+                const saved = savedOAuthConfigByProvider.get(provider)
+                const tokenEndpointAuthMethod = tokenEndpointAuthMethodForConfig(
+                    saved?.config,
+                    salesforceManifest,
+                )
+                oauthProviders.push({
+                    provider,
+                    displayName: `Salesforce — ${source.name}`,
+                    configured:
+                        isClientConfigComplete(saved?.config, tokenEndpointAuthMethod) ||
+                        saved?.config.oauth_dynamic_client_registration === 'true',
+                    updatedAt: saved?.updatedAt ?? null,
+                    config: saved?.config ?? {},
+                })
+            }
+
+            oauthProviders.sort((a, b) => a.displayName.localeCompare(b.displayName))
 
             availableIntegrations = Array.from(integrationMap.values())
                 // Windshift is a personal OAuth source. Users connect it under My Integrations.
@@ -255,7 +280,7 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
     }
 
     // Load MCP tab data
-    let mcpTab: {
+    const mcpTab: {
         sources: {
             id: string
             name: string

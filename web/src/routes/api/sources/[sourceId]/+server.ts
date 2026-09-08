@@ -4,6 +4,7 @@ import { db } from '$lib/server/db'
 import { sources, syncRuns, serviceCredentials } from '$lib/server/db/schema'
 import { eq, and } from 'drizzle-orm'
 import { getConfig } from '$lib/server/config'
+import { removeDynamicallyRegisteredClient } from '$lib/server/oauth/connectorOAuth'
 import { logger } from '$lib/server/logger'
 import {
     isValidSyncIntervalSeconds,
@@ -61,7 +62,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
     return json({ syncIntervalSeconds: updatedSource.syncIntervalSeconds })
 }
 
-export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
+export const DELETE: RequestHandler = async ({ params, locals, fetch, url }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
     }
@@ -95,6 +96,24 @@ export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
             })
         } catch (err) {
             logger.warn(`Failed to cancel sync ${sync.id} for source ${sourceId}`, err)
+        }
+    }
+
+    // Salesforce DCR clients are source-scoped. Revoke the registered client
+    // before removing the source, then remove its encrypted local metadata.
+    // Admins may pass ?revoke_oauth_client=false when Salesforce is
+    // unreachable and they accept leaving the registered client in the org
+    // (it can be revoked later from the Salesforce admin console).
+    const revokeOAuthClient = url.searchParams.get('revoke_oauth_client') !== 'false'
+    if (source.sourceType === 'salesforce' && revokeOAuthClient) {
+        try {
+            await removeDynamicallyRegisteredClient(`salesforce:${sourceId}`)
+        } catch (err) {
+            logger.warn(`Failed to revoke Salesforce DCR client for source ${sourceId}`, err)
+            throw error(
+                502,
+                'Salesforce is unavailable to revoke its OAuth client; try deleting the source again, or delete with ?revoke_oauth_client=false to keep the registered client in Salesforce',
+            )
         }
     }
 

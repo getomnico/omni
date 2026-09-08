@@ -85,7 +85,13 @@
         }
     }
 
-    type OAuthProvider = (typeof data.oauthProviders)[number]
+    type OAuthProvider = {
+        provider: string
+        displayName: string
+        configured: boolean
+        updatedAt: Date | string | null
+        config: Record<string, unknown>
+    }
 
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
     let sourceHealth = $state<Map<SourceId, 'healthy' | 'unhealthy'>>(data.sourceHealth)
@@ -187,6 +193,34 @@
 
     function closeOAuthDialog() {
         activeOAuthProvider = null
+    }
+
+    async function configureSalesforceOAuth(sourceId: string, sourceName: string) {
+        try {
+            const response = await fetch('/api/connector-configs')
+            if (!response.ok) throw new Error('Failed to load Salesforce OAuth configuration')
+            const configs = (await response.json()) as Array<{
+                provider: string
+                config: Record<string, unknown>
+                updatedAt: string
+            }>
+            const provider = `salesforce:${sourceId}`
+            const saved = configs.find((item) => item.provider === provider)
+            const config = saved?.config ?? {}
+            const configured =
+                typeof config.oauth_client_id === 'string' &&
+                (typeof config.oauth_client_secret === 'string' ||
+                    config.oauth_dynamic_client_registration === 'true')
+            activeOAuthProvider = {
+                provider,
+                displayName: `Salesforce — ${sourceName}`,
+                configured,
+                updatedAt: saved?.updatedAt ?? null,
+                config,
+            }
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Failed to load Salesforce OAuth')
+        }
     }
 
     async function copyRedirectUri() {
@@ -487,6 +521,19 @@
                                                     </DropdownMenu.Content>
                                                 </DropdownMenu.Root>
                                             </ButtonGroup.Root>
+                                        {/if}
+                                        {#if source.sourceType === 'salesforce'}
+                                            <Button
+                                                variant="outline"
+                                                size="sm"
+                                                class="cursor-pointer"
+                                                onclick={() =>
+                                                    configureSalesforceOAuth(
+                                                        source.id,
+                                                        source.name,
+                                                    )}>
+                                                MCP OAuth
+                                            </Button>
                                         {/if}
                                         <Button
                                             variant="ghost"

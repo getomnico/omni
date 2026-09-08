@@ -33,6 +33,68 @@ function returnToFromStateMetadata(metadata: Record<string, unknown> | undefined
     return typeof returnTo === 'string' && isSafeLocalPath(returnTo) ? returnTo : null
 }
 
+async function persistSalesforceOrganizationBinding(
+    source: Awaited<ReturnType<typeof getSourceById>>,
+    userinfo: unknown,
+): Promise<void> {
+    if (!source || source.sourceType !== SourceType.SALESFORCE) return
+    const profile =
+        typeof userinfo === 'object' && userinfo !== null
+            ? (userinfo as Record<string, unknown>)
+            : null
+    const organizationId =
+        typeof profile?.organization_id === 'string' ? profile.organization_id : ''
+    if (!organizationId) return
+    const config = { ...((source.config ?? {}) as Record<string, unknown>) }
+    if (config.organization_id === organizationId) return
+    config.organization_id = organizationId
+    await db.update(sources).set({ config, updatedAt: new Date() }).where(eq(sources.id, source.id))
+}
+
+function validateSalesforceSourceBinding(
+    source: Awaited<ReturnType<typeof getSourceById>>,
+    tokens: { instance_url?: string },
+    userinfo: unknown,
+): void {
+    if (!source || source.sourceType !== SourceType.SALESFORCE) return
+    const config = (source.config ?? {}) as Record<string, unknown>
+    const expectedInstance =
+        typeof config.instance_url === 'string'
+            ? config.instance_url.trim().replace(/\/+$/, '')
+            : ''
+    const expectedOrgId = typeof config.organization_id === 'string' ? config.organization_id : ''
+    if (!expectedInstance && !expectedOrgId) {
+        throw new Error('Salesforce source is missing its organization binding')
+    }
+
+    const profile =
+        typeof userinfo === 'object' && userinfo !== null
+            ? (userinfo as Record<string, unknown>)
+            : null
+    const actualOrgId = typeof profile?.organization_id === 'string' ? profile.organization_id : ''
+    if (expectedOrgId && actualOrgId !== expectedOrgId) {
+        throw new Error('Salesforce OAuth organization does not match the source')
+    }
+
+    if (expectedInstance) {
+        let expected: URL
+        let actual: URL
+        try {
+            expected = new URL(expectedInstance)
+            actual = new URL(tokens.instance_url ?? '')
+        } catch {
+            throw new Error('Salesforce source has an invalid organization URL')
+        }
+        if (
+            expected.protocol !== 'https:' ||
+            actual.protocol !== 'https:' ||
+            expected.host !== actual.host
+        ) {
+            throw new Error('Salesforce OAuth instance does not match the source')
+        }
+    }
+}
+
 /// Unified OAuth callback. Provider-agnostic — dispatches based on the flow
 /// stored in the OAuth state.
 export const GET: RequestHandler = async ({ url, locals, fetch }) => {
@@ -76,7 +138,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         )
     }
 
-    const { tokens, state, principalEmail, config, clientCreds } = exchange
+    const { tokens, state, principalEmail, config, clientCreds, userinfo } = exchange
     const credentialProvider = config.credential_provider ?? config.provider
 
     if (state.user_id !== user.id) {
@@ -108,10 +170,25 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null
+    const salesforceLoginUrl = (() => {
+        if (config.provider !== 'salesforce') return undefined
+        try {
+            return new URL(config.auth_endpoint).origin
+        } catch {
+            return undefined
+        }
+    })()
     const credentialsWithRefreshFallback = (existingCredentials: Record<string, unknown>) => ({
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token ?? existingCredentials.refresh_token ?? null,
         token_type: tokens.token_type ?? 'Bearer',
+        ...(tokens.instance_url ? { instance_url: tokens.instance_url } : {}),
+        ...(salesforceLoginUrl ? { login_url: salesforceLoginUrl } : {}),
+        ...(typeof userinfo === 'object' &&
+        userinfo !== null &&
+        typeof (userinfo as Record<string, unknown>).organization_id === 'string'
+            ? { organization_id: (userinfo as Record<string, unknown>).organization_id }
+            : {}),
         client_id: clientCreds.clientId,
         ...(clientCreds.clientSecret ? { client_secret: clientCreds.clientSecret } : {}),
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
@@ -162,6 +239,23 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         if (!source || source.isDeleted || source.scope !== 'org') {
             throw error(404, 'Org source not found')
         }
+        if (source.sourceType === SourceType.SALESFORCE) {
+            throw error(400, 'Salesforce org_source OAuth is not supported')
+        }
+        try {
+            validateSalesforceSourceBinding(source, tokens, userinfo)
+        } catch (err) {
+            logger.warn('OAuth source binding validation failed', {
+                sourceId: flow.sourceId,
+                provider: config.provider,
+                error: String(err),
+            })
+            throw redirect(
+                302,
+                withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_org_mismatch'),
+            )
+        }
+        await persistSalesforceOrganizationBinding(source, userinfo)
         const existing = await serviceCredentialsRepository.getOrgCredsBySourceId(flow.sourceId)
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
 
@@ -211,6 +305,22 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     if (flow.type === 'user_read' || flow.type === 'user_write') {
+        const source = await getSourceById(flow.sourceId)
+        if (!source || source.isDeleted) throw error(404, 'Source not found')
+        try {
+            validateSalesforceSourceBinding(source, tokens, userinfo)
+        } catch (err) {
+            logger.warn('OAuth source binding validation failed', {
+                sourceId: flow.sourceId,
+                provider: config.provider,
+                error: String(err),
+            })
+            throw redirect(
+                302,
+                withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_org_mismatch'),
+            )
+        }
+        await persistSalesforceOrganizationBinding(source, userinfo)
         const existing = await serviceCredentialsRepository.getByUserAndSource(
             flow.sourceId,
             user.id,

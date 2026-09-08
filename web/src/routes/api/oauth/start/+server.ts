@@ -48,6 +48,12 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         const source = await getSourceById(sourceId)
         if (!source || source.isDeleted) throw error(404, 'Source not found')
+        if (flow === 'org_source' && source.sourceType === 'salesforce') {
+            // Salesforce sync remains on its administrator-managed JWT
+            // credential. Per-user OAuth is reserved for MCP actions.
+            throw error(400, 'Salesforce org_source OAuth is not supported')
+        }
+
         if (source.scope === 'user') {
             if (flow === 'org_source') {
                 throw error(400, 'org_source OAuth is only valid for org-wide sources')

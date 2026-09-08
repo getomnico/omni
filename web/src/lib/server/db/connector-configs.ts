@@ -2,6 +2,13 @@ import { eq } from 'drizzle-orm'
 import { db } from './index'
 import { connectorConfigs } from './schema'
 import type { ConnectorConfig } from './schema'
+import { decryptConfig, encryptConfig } from '../crypto/encryption'
+
+const SECRET_KEYS = [
+    'oauth_client_secret',
+    'oauth_registration_initial_access_token',
+    'oauth_registration_access_token',
+] as const
 
 export interface ConnectorConfigPublic {
     provider: string
@@ -9,10 +16,54 @@ export interface ConnectorConfigPublic {
     updatedAt: Date
 }
 
+function isSalesforceConfig(provider: string): boolean {
+    return provider === 'salesforce' || provider.startsWith('salesforce:')
+}
+
+function decryptSalesforceSecrets(
+    provider: string,
+    config: Record<string, unknown>,
+): Record<string, unknown> {
+    if (!isSalesforceConfig(provider)) return config
+    const decrypted = { ...config }
+    for (const key of SECRET_KEYS) {
+        const value = decrypted[key]
+        if (value && typeof value === 'object') {
+            try {
+                const plaintext = decryptConfig(value)
+                if (typeof plaintext.value === 'string') decrypted[key] = plaintext.value
+            } catch {
+                // Preserve malformed/legacy values so callers can report a
+                // configuration error rather than silently using another secret.
+            }
+        }
+    }
+    return decrypted
+}
+
+function encryptSalesforceSecrets(
+    provider: string,
+    config: Record<string, unknown>,
+): Record<string, unknown> {
+    if (!isSalesforceConfig(provider)) return config
+    const encrypted = { ...config }
+    for (const key of SECRET_KEYS) {
+        const value = encrypted[key]
+        if (typeof value === 'string' && value && value !== '••••••••') {
+            encrypted[key] = encryptConfig({ value })
+        }
+    }
+    return encrypted
+}
+
 function stripSecrets(config: Record<string, unknown>): Record<string, unknown> {
     const stripped = { ...config }
-    if ('oauth_client_secret' in stripped) {
-        stripped.oauth_client_secret = '••••••••'
+    for (const key of [
+        'oauth_client_secret',
+        'oauth_registration_initial_access_token',
+        'oauth_registration_access_token',
+    ]) {
+        if (key in stripped) stripped[key] = '••••••••'
     }
     return stripped
 }
@@ -23,7 +74,11 @@ export async function getConnectorConfig(provider: string): Promise<ConnectorCon
         .from(connectorConfigs)
         .where(eq(connectorConfigs.provider, provider))
         .limit(1)
-    return row || null
+    if (!row) return null
+    return {
+        ...row,
+        config: decryptSalesforceSecrets(row.provider, row.config as Record<string, unknown>),
+    }
 }
 
 export async function getConnectorConfigPublic(
@@ -43,9 +98,15 @@ export async function getAllConnectorConfigsPublic(): Promise<ConnectorConfigPub
     const rows = await db.select().from(connectorConfigs)
     return rows.map((row) => ({
         provider: row.provider,
-        config: stripSecrets(row.config as Record<string, unknown>),
+        config: stripSecrets(
+            decryptSalesforceSecrets(row.provider, row.config as Record<string, unknown>),
+        ),
         updatedAt: row.updatedAt,
     }))
+}
+
+export async function deleteConnectorConfig(provider: string): Promise<void> {
+    await db.delete(connectorConfigs).where(eq(connectorConfigs.provider, provider))
 }
 
 export async function upsertConnectorConfig(
@@ -57,14 +118,14 @@ export async function upsertConnectorConfig(
         .insert(connectorConfigs)
         .values({
             provider,
-            config,
+            config: encryptSalesforceSecrets(provider, config),
             updatedBy,
             updatedAt: new Date(),
         })
         .onConflictDoUpdate({
             target: connectorConfigs.provider,
             set: {
-                config,
+                config: encryptSalesforceSecrets(provider, config),
                 updatedBy,
                 updatedAt: new Date(),
             },
