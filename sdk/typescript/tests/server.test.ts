@@ -168,6 +168,53 @@ describe("Connector Server", () => {
       expect(response.body.status).toBe("started");
     });
 
+    it("allows realtime and scheduled syncs to run concurrently", async () => {
+      const connector = new MockConnector();
+      connector.syncModes = ["full", "incremental", "realtime"];
+      let syncCalls = 0;
+      let firstSyncStarted!: () => void;
+      const firstSyncStartedPromise = new Promise<void>((resolve) => {
+        firstSyncStarted = resolve;
+      });
+      let releaseFirstSync!: () => void;
+      const releaseFirstSyncPromise = new Promise<void>((resolve) => {
+        releaseFirstSync = resolve;
+      });
+
+      connector.syncFn = async () => {
+        syncCalls += 1;
+        if (syncCalls === 1) {
+          firstSyncStarted();
+          await releaseFirstSyncPromise;
+        }
+      };
+      const app = createServer(connector);
+
+      const scheduled = await request(app).post("/sync").send({
+        sync_run_id: "scheduled-sync",
+        source_id: "source-same",
+        sync_mode: "full",
+      });
+      expect(scheduled.status).toBe(200);
+      await firstSyncStartedPromise;
+
+      const realtime = await request(app).post("/sync").send({
+        sync_run_id: "realtime-sync",
+        source_id: "source-same",
+        sync_mode: "realtime",
+      });
+      expect(realtime.status).toBe(200);
+
+      const scheduledConflict = await request(app).post("/sync").send({
+        sync_run_id: "second-scheduled-sync",
+        source_id: "source-same",
+        sync_mode: "incremental",
+      });
+      expect(scheduledConflict.status).toBe(409);
+
+      releaseFirstSync();
+    });
+
     it("plumbs user_filter_mode/whitelist into SyncContext.shouldIndexUser", async () => {
       let recorded: {
         alice: boolean;

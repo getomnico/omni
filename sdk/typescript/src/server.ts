@@ -22,6 +22,11 @@ import { getLogger } from "./logger.js";
 const logger = getLogger("sdk:server");
 
 const REGISTRATION_INTERVAL_MS = 30_000;
+type SyncSlotClass = "realtime" | "scheduled";
+
+function syncSlotClass(syncMode: SyncMode): SyncSlotClass {
+  return syncMode === SyncMode.REALTIME ? "realtime" : "scheduled";
+}
 
 function buildConnectorUrl(): string {
   const hostname = process.env.CONNECTOR_HOST_NAME;
@@ -42,7 +47,8 @@ export function createServer(connector: Connector): Express {
   const app = express();
   app.use(express.json());
 
-  const activeSyncs = new Map<string, SyncContext>();
+  // Realtime watchers and scheduled scans occupy independent slots per source.
+  const activeSyncs = new Map<string, Map<SyncSlotClass, SyncContext>>();
   let sdkClient: SdkClient | null = null;
 
   function getSdkClient(): SdkClient {
@@ -101,11 +107,14 @@ export function createServer(connector: Connector): Express {
   app.get("/sync/:syncRunId", (req: Request, res: Response) => {
     const { syncRunId } = req.params;
     let running = false;
-    for (const ctx of activeSyncs.values()) {
-      if (ctx.syncRunId === syncRunId) {
-        running = true;
-        break;
+    for (const slots of activeSyncs.values()) {
+      for (const ctx of slots.values()) {
+        if (ctx.syncRunId === syncRunId) {
+          running = true;
+          break;
+        }
       }
+      if (running) break;
     }
     res.json({ running });
   });
@@ -143,7 +152,8 @@ export function createServer(connector: Connector): Express {
       `Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`,
     );
 
-    if (activeSyncs.has(sourceId)) {
+    const slotClass = syncSlotClass(syncMode);
+    if (activeSyncs.get(sourceId)?.has(slotClass)) {
       res
         .status(409)
         .json(
@@ -188,7 +198,12 @@ export function createServer(connector: Connector): Express {
         userBlacklist: sourceData.user_blacklist,
       },
     );
-    activeSyncs.set(sourceId, ctx);
+    let sourceSlots = activeSyncs.get(sourceId);
+    if (!sourceSlots) {
+      sourceSlots = new Map();
+      activeSyncs.set(sourceId, sourceSlots);
+    }
+    sourceSlots.set(slotClass, ctx);
 
     const runSync = async (): Promise<void> => {
       try {
@@ -209,8 +224,12 @@ export function createServer(connector: Connector): Express {
           }
         }
       } finally {
-        if (activeSyncs.get(sourceId) === ctx) {
-          activeSyncs.delete(sourceId);
+        const currentSlots = activeSyncs.get(sourceId);
+        if (currentSlots?.get(slotClass) === ctx) {
+          currentSlots.delete(slotClass);
+          if (currentSlots.size === 0) {
+            activeSyncs.delete(sourceId);
+          }
         }
       }
     };
@@ -233,22 +252,35 @@ export function createServer(connector: Connector): Express {
     logger.info(`Cancel requested for sync ${syncRunId}`);
 
     let matchingSourceId: string | null = null;
+    let matchingSlotClass: SyncSlotClass | null = null;
     let matchingCtx: SyncContext | null = null;
-    for (const [sourceId, ctx] of activeSyncs.entries()) {
-      if (ctx.syncRunId === syncRunId) {
-        matchingSourceId = sourceId;
-        matchingCtx = ctx;
-        break;
+    for (const [sourceId, slots] of activeSyncs.entries()) {
+      for (const [slotClass, ctx] of slots.entries()) {
+        if (ctx.syncRunId === syncRunId) {
+          matchingSourceId = sourceId;
+          matchingSlotClass = slotClass;
+          matchingCtx = ctx;
+          break;
+        }
       }
+      if (matchingCtx !== null) break;
     }
 
-    if (matchingSourceId === null || matchingCtx === null) {
+    if (
+      matchingSourceId === null ||
+      matchingSlotClass === null ||
+      matchingCtx === null
+    ) {
       res.status(404).json({ status: "not_found" });
       return;
     }
 
     matchingCtx._setCancelled();
-    activeSyncs.delete(matchingSourceId);
+    const matchingSlots = activeSyncs.get(matchingSourceId);
+    matchingSlots?.delete(matchingSlotClass);
+    if (matchingSlots?.size === 0) {
+      activeSyncs.delete(matchingSourceId);
+    }
     connector.cancel(syncRunId);
     res.json({ status: "cancelled" });
   });
