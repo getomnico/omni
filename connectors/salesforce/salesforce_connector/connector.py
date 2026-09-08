@@ -165,9 +165,7 @@ class SalesforceConnector(Connector):
 
     def oauth_config(self) -> OAuthManifestConfig | None:
         """Declare Salesforce's per-user OAuth/PKCE flow for MCP actions."""
-        login_url = self._mcp_login_url(
-            os.environ.get("SALESFORCE_MCP_LOGIN_URL", "https://login.salesforce.com")
-        )
+        login_url = self._mcp_login_url("https://login.salesforce.com")
         return OAuthManifestConfig(
             provider="salesforce",
             auth_endpoint=f"{login_url}/services/oauth2/authorize",
@@ -195,11 +193,8 @@ class SalesforceConnector(Connector):
         return 0
 
     @property
-    def mcp_server(self) -> StdioMcpServer | None:
-        """Use Salesforce's official stdio MCP server when explicitly enabled."""
-        enabled = os.environ.get("SALESFORCE_MCP_ENABLED", "true").lower()
-        if enabled not in {"1", "true", "yes", "on"}:
-            return None
+    def mcp_server(self) -> StdioMcpServer:
+        """Use Salesforce's official stdio MCP server."""
         return StdioMcpServer(command="omni-salesforce-mcp")
 
     @staticmethod
@@ -271,10 +266,7 @@ class SalesforceConnector(Connector):
                     default=str,
                 ).encode()
             ).hexdigest()
-        env = {
-            "OMNI_SALESFORCE_SOURCE_ID": source_id,
-            "SALESFORCE_MCP_TOOLSETS": os.environ.get("SALESFORCE_MCP_TOOLSETS", "data"),
-        }
+        env = {"OMNI_SALESFORCE_SOURCE_ID": source_id}
         if auth.mode.value == "jwt":
             assert auth.client_id and auth.private_key and auth.username
             env.update(
@@ -295,10 +287,7 @@ class SalesforceConnector(Connector):
                     "SF_ACCESS_TOKEN": auth.access_token,
                     "SF_INSTANCE_URL": self._mcp_salesforce_url(auth.instance_url),
                     "SF_LOGIN_URL": self._mcp_login_url(
-                        payload.get("login_url")
-                        or os.environ.get(
-                            "SALESFORCE_MCP_LOGIN_URL", "https://login.salesforce.com"
-                        )
+                        payload.get("login_url") or "https://login.salesforce.com"
                     ),
                 }
             )

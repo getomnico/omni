@@ -450,12 +450,22 @@ class TestSyncEndpoint:
 
             sync_started.wait(timeout=2.0)
 
+            realtime_response = client.post(
+                "/sync",
+                json={
+                    "sync_run_id": "sync-realtime",
+                    "source_id": "source-same",
+                    "sync_mode": "realtime",
+                },
+            )
+            assert realtime_response.status_code == 200
+
             response2 = client.post(
                 "/sync",
                 json={
                     "sync_run_id": "sync-2",
                     "source_id": "source-same",
-                    "sync_mode": "full",
+                    "sync_mode": "incremental",
                 },
             )
             assert response2.status_code == 409

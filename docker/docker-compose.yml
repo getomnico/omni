@@ -733,7 +733,7 @@ services:
     image: ghcr.io/getomnico/omni/omni-salesforce-connector:${OMNI_VERSION:-latest}
     <<: *resources-connector
     cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
-    mem_limit: ${SALESFORCE_CONNECTOR_MEMORY:-1g}
+    mem_limit: 1g
     container_name: omni-salesforce-connector
     profiles:
       - salesforce
@@ -744,13 +744,8 @@ services:
       PORT: ${SALESFORCE_CONNECTOR_PORT:-4019}
       CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
       CONNECTOR_HOST_NAME: salesforce-connector
-      # The official Salesforce MCP server is enabled by default. Native
-      # Salesforce actions remain available alongside it.
-      SALESFORCE_MCP_ENABLED: ${SALESFORCE_MCP_ENABLED:-true}
-      SALESFORCE_MCP_TOOLSETS: ${SALESFORCE_MCP_TOOLSETS:-data}
-      SALESFORCE_MCP_TOOLS: ${SALESFORCE_MCP_TOOLS:-}
       MCP_CATALOG_VERSION: salesforce-mcp-0.30.15
-      MCP_CATALOG_CACHE_KEY: ${SALESFORCE_MCP_TOOLSETS:-data}-${SALESFORCE_MCP_TOOLS:-all}
+      MCP_CATALOG_CACHE_KEY: salesforce-mcp-data
     networks:
       - omni-network
     depends_on:

@@ -31,6 +31,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 REGISTRATION_INTERVAL_SECONDS = 30
+SyncSlot = tuple[str, str]
+
+
+def _sync_slot(source_id: str, sync_mode: SyncMode) -> SyncSlot:
+    slot = "realtime" if sync_mode == SyncMode.REALTIME else "scheduled"
+    return source_id, slot
 
 
 class ConnectorServer:
@@ -38,7 +44,8 @@ class ConnectorServer:
 
     def __init__(self, connector: "Connector"):
         self.connector = connector
-        self.active_syncs: dict[str, SyncContext] = {}
+        # Connector-manager permits one realtime and one scheduled sync per source.
+        self.active_syncs: dict[SyncSlot, SyncContext] = {}
         self._sdk_client: SdkClient | None = None
 
     @property
@@ -196,7 +203,17 @@ def create_app(connector: "Connector") -> FastAPI:
             sync_run_id,
         )
 
-        if source_id in server.active_syncs:
+        try:
+            sync_mode = SyncMode(request.sync_mode)
+        except ValueError:
+            logger.warning(
+                "Unknown sync_mode %r; defaulting to Incremental batching",
+                request.sync_mode,
+            )
+            sync_mode = SyncMode.INCREMENTAL
+
+        sync_slot = _sync_slot(source_id, sync_mode)
+        if sync_slot in server.active_syncs:
             return JSONResponse(
                 status_code=status.HTTP_409_CONFLICT,
                 content=SyncResponse.error(
@@ -243,15 +260,6 @@ def create_app(connector: "Connector") -> FastAPI:
         mcp_credentials["_omni_source_id"] = source_id
         await connector.bootstrap_mcp(mcp_credentials)
 
-        try:
-            sync_mode = SyncMode(request.sync_mode)
-        except ValueError:
-            logger.warning(
-                "Unknown sync_mode %r; defaulting to Incremental batching",
-                request.sync_mode,
-            )
-            sync_mode = SyncMode.INCREMENTAL
-
         ctx = SyncContext(
             sdk_client=server.sdk_client,
             sync_run_id=sync_run_id,
@@ -267,7 +275,7 @@ def create_app(connector: "Connector") -> FastAPI:
             documents_scanned=request.documents_scanned,
             documents_updated=request.documents_updated,
         )
-        server.active_syncs[source_id] = ctx
+        server.active_syncs[sync_slot] = ctx
 
         async def run_sync() -> None:
             try:
@@ -280,8 +288,8 @@ def create_app(connector: "Connector") -> FastAPI:
                     except Exception as fail_error:
                         logger.error("Failed to report sync failure: %s", fail_error)
             finally:
-                if server.active_syncs.get(source_id) is ctx:
-                    server.active_syncs.pop(source_id, None)
+                if server.active_syncs.get(sync_slot) is ctx:
+                    server.active_syncs.pop(sync_slot, None)
 
         asyncio.create_task(run_sync())
 
@@ -295,22 +303,22 @@ def create_app(connector: "Connector") -> FastAPI:
         sync_run_id = request.sync_run_id
         logger.info("Cancel requested for sync %s", sync_run_id)
 
-        matching_source_id = None
+        matching_slot: SyncSlot | None = None
         matching_ctx = None
-        for source_id, ctx in server.active_syncs.items():
+        for sync_slot, ctx in server.active_syncs.items():
             if ctx.sync_run_id == sync_run_id:
-                matching_source_id = source_id
+                matching_slot = sync_slot
                 matching_ctx = ctx
                 break
 
-        if matching_source_id is None or matching_ctx is None:
+        if matching_slot is None or matching_ctx is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
                 content=CancelResponse(status="not_found").model_dump(),
             )
 
         matching_ctx._set_cancelled()
-        server.active_syncs.pop(matching_source_id, None)
+        server.active_syncs.pop(matching_slot, None)
         connector.cancel(sync_run_id)
         return CancelResponse(status="cancelled").model_dump()
 

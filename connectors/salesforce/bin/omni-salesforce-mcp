@@ -170,12 +170,8 @@ fi
 unset SF_ACCESS_TOKEN SF_PRIVATE_KEY SF_CLIENT_ID SF_USERNAME SF_LOGIN_URL SF_INSTANCE_URL SF_ORG_ID
 unset login_output token_org_id token_value actual_org_id
 
-# Keep the tool surface explicit. The data toolset is the only supported
-# initial rollout; callers may further restrict it with SF_MCP_TOOLS.
-set -- --orgs "$org_target" --toolsets "${SALESFORCE_MCP_TOOLSETS:-data}" --no-telemetry
-if [ -n "${SALESFORCE_MCP_TOOLS:-}" ]; then
-  set -- "$@" --tools "$SALESFORCE_MCP_TOOLS"
-fi
+# Keep the tool surface explicit while the Salesforce integration is rolled out.
+set -- --orgs "$org_target" --toolsets data --no-telemetry
 
 # Keep the shell so the EXIT trap removes the entire CLI state directory
 # after the MCP child exits. Explicitly duplicate stdin because some

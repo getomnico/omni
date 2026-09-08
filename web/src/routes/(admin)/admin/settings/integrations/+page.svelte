@@ -43,7 +43,6 @@
         HardDrive,
         KeyRound,
         Mail,
-        Plus,
     } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
@@ -68,11 +67,12 @@
     import WindshiftServerSetup from '$lib/components/windshift-server-setup.svelte'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { Badge } from '$lib/components/ui/badge'
-    import { AuthType, SourceType } from '$lib/types'
+    import { SourceType } from '$lib/types'
     import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
     import { invalidateAll } from '$app/navigation'
     import { page } from '$app/state'
     import { onMount, onDestroy } from 'svelte'
+    import { SvelteMap } from 'svelte/reactivity'
     import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
@@ -125,7 +125,7 @@
             try {
                 const statusData = JSON.parse(event.data) as SyncStatusPayload
                 if (statusData.overall?.latestSyncRuns) {
-                    const updated = new Map(latestSyncRuns)
+                    const updated = new SvelteMap(latestSyncRuns)
                     for (const sync of statusData.overall.latestSyncRuns) {
                         updated.set(sync.sourceId, sync)
                     }
@@ -193,34 +193,6 @@
 
     function closeOAuthDialog() {
         activeOAuthProvider = null
-    }
-
-    async function configureSalesforceOAuth(sourceId: string, sourceName: string) {
-        try {
-            const response = await fetch('/api/connector-configs')
-            if (!response.ok) throw new Error('Failed to load Salesforce OAuth configuration')
-            const configs = (await response.json()) as Array<{
-                provider: string
-                config: Record<string, unknown>
-                updatedAt: string
-            }>
-            const provider = `salesforce:${sourceId}`
-            const saved = configs.find((item) => item.provider === provider)
-            const config = saved?.config ?? {}
-            const configured =
-                typeof config.oauth_client_id === 'string' &&
-                (typeof config.oauth_client_secret === 'string' ||
-                    config.oauth_dynamic_client_registration === 'true')
-            activeOAuthProvider = {
-                provider,
-                displayName: `Salesforce — ${sourceName}`,
-                configured,
-                updatedAt: saved?.updatedAt ?? null,
-                config,
-            }
-        } catch (err) {
-            toast.error(err instanceof Error ? err.message : 'Failed to load Salesforce OAuth')
-        }
     }
 
     async function copyRedirectUri() {
@@ -296,11 +268,6 @@
         return `/admin/settings/integrations/${slug}/${sourceId}`
     }
 
-    function remoteMcpAuthLabel(authType: string | null) {
-        if (authType === AuthType.BEARER_TOKEN) return 'Shared bearer'
-        if (authType === AuthType.OAUTH) return 'Per-user OAuth'
-        return 'Public'
-    }
 </script>
 
 <svelte:head>
@@ -521,19 +488,6 @@
                                                     </DropdownMenu.Content>
                                                 </DropdownMenu.Root>
                                             </ButtonGroup.Root>
-                                        {/if}
-                                        {#if source.sourceType === 'salesforce'}
-                                            <Button
-                                                variant="outline"
-                                                size="sm"
-                                                class="cursor-pointer"
-                                                onclick={() =>
-                                                    configureSalesforceOAuth(
-                                                        source.id,
-                                                        source.name,
-                                                    )}>
-                                                MCP OAuth
-                                            </Button>
                                         {/if}
                                         <Button
                                             variant="ghost"
