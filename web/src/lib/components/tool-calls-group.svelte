@@ -171,6 +171,25 @@
     </div>
 {/snippet}
 
+{#snippet artifactList()}
+    <div class="space-y-2">
+        {#each artifactItems as item (workItemKey(item))}
+            <div in:fly={{ y: 4, duration: 300 }}>
+                <ToolMessage
+                    messages={item.group.messages}
+                    groupKey={item.group.key}
+                    {isStreaming}
+                    {isAdmin}
+                    {onOAuthComplete}
+                    {activeArtifactKey}
+                    {emphasizeArtifactKey}
+                    {onOpenArtifact}
+                    showOAuthCard={false} />
+            </div>
+        {/each}
+    </div>
+{/snippet}
+
 {#if canCollapseWork}
     <div transition:slide={{ duration: 200 }}>
         <Accordion.Root type="single" bind:value={workExpanded} class="tool-calls-group-accordion">
@@ -184,6 +203,7 @@
                 </Accordion.Content>
             </Accordion.Item>
         </Accordion.Root>
+        {@render artifactList()}
     </div>
 {:else}
     <div transition:slide={{ duration: 200 }}>
@@ -208,6 +228,7 @@
                 </Accordion.Root>
             {/if}
             <div>{@render workTimeline(streamingPartition.visible)}</div>
+            {@render artifactList()}
             {#if awaitingModel}
                 <div class="flex pt-2">
                     <ThinkingIndicator text={thinkingText ?? 'Thinking'} />
@@ -216,23 +237,6 @@
         </div>
     </div>
 {/if}
-
-<div class="space-y-2">
-    {#each artifactItems as item (workItemKey(item))}
-        <div in:fly={{ y: 4, duration: 300 }}>
-            <ToolMessage
-                messages={item.group.messages}
-                groupKey={item.group.key}
-                {isStreaming}
-                {isAdmin}
-                {onOAuthComplete}
-                {activeArtifactKey}
-                {emphasizeArtifactKey}
-                {onOpenArtifact}
-                showOAuthCard={false} />
-        </div>
-    {/each}
-</div>
 
 {#each finalResponseBlocks as block (blockRenderKey(block))}
     <div class="min-w-0 overflow-x-auto">

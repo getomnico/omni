@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Download } from '@lucide/svelte'
     import type { ArtifactData } from '$lib/utils/artifacts'
-    import { artifactKind, formatArtifactSize } from '$lib/utils/artifacts'
+    import { artifactKind } from '$lib/utils/artifacts'
     import { cn } from '$lib/utils'
     import ArtifactKindIcon from './artifact-kind-icon.svelte'
 
@@ -18,7 +18,6 @@
     let { artifact, isActive = false, emphasize = false, onOpen }: Props = $props()
 
     let kind = $derived(artifactKind(artifact.content_type, artifact.url))
-    let sizeLabel = $derived(formatArtifactSize(artifact.size_bytes))
 
     const chipClasses = cn(
         'border-border text-foreground inline-flex max-w-full items-center gap-1.5 rounded-lg border py-1 pr-2 pl-2 text-sm',
@@ -44,7 +43,6 @@
         <span class="max-w-72 min-w-0 truncate" title={artifact.title}>
             {artifact.title}
         </span>
-        <span class="text-muted-foreground shrink-0 text-xs">{sizeLabel}</span>
     </button>
 {:else}
     <!-- No pane available (agent run transcript): download the file instead. -->
@@ -59,7 +57,6 @@
         <span class="max-w-72 min-w-0 truncate" title={artifact.title}>
             {artifact.title}
         </span>
-        <span class="text-muted-foreground shrink-0 text-xs">{sizeLabel}</span>
         <Download class="text-muted-foreground h-4 w-4 shrink-0" />
     </a>
 {/if}

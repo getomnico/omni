@@ -231,7 +231,10 @@
         const detail = isConnectorAction ? connectorDisplayName : inputSummary(primaryMessage)
         if (!detail) return statusIndicator
         if (isConnectorAction) return `${statusIndicator}: ${detail}`
-        if (toolName === 'read_document') return `${statusIndicator}: ${detail}`
+        // File-oriented tools: always show the file name, no need to expand.
+        if (toolName === 'read_document' || toolName === 'write_file' || toolName === 'read_file') {
+            return `${statusIndicator}: ${detail}`
+        }
         return selectedItem === accordionKey ? `${statusIndicator} (${detail})` : statusIndicator
     })
 

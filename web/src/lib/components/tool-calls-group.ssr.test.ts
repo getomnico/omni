@@ -75,9 +75,9 @@ describe('ToolCallsGroup SSR', () => {
         })
 
         expect(body).toContain('Quarterly Report')
-        expect(body).toContain('2 KB')
         expect(body).toContain('href="/api/chat/chat-1/artifacts/report.pdf"')
         expect(body).not.toContain('<img')
+        expect(body).not.toContain('2 KB')
     })
 
     it('renders an image artifact inline', () => {

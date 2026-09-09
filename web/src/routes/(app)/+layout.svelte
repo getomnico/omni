@@ -45,6 +45,7 @@
     import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
     import ChatHistorySearch from '$lib/components/chat-history-search.svelte'
     import type { Chat } from '$lib/server/db/schema'
+    import type { ArtifactData } from '$lib/utils/artifacts'
 
     import { themeStore } from '$lib/themes/store.svelte'
     import ArtifactResizablePane from '$lib/components/artifacts/artifact-resizable-pane.svelte'
@@ -56,6 +57,33 @@
     import { artifactPaneState } from '$lib/stores/artifact-pane.svelte'
 
     let artifactPaneWidth = $state(50)
+    // The pane stays mounted during the closing animation so it can slide out;
+    // `artifactPaneClosing` adds the closing class (reverse flex-grow
+    // transition), and the pane unmounts once the transition is done.
+    let artifactPaneVisible = $state(false)
+    let artifactPaneClosing = $state(false)
+    let displayedArtifact = $state<ArtifactData | null>(null)
+
+    $effect(() => {
+        const open = artifactPaneState.open && artifactPaneState.artifact !== null
+        if (open) {
+            displayedArtifact = artifactPaneState.artifact
+            artifactPaneClosing = false
+            artifactPaneVisible = true
+            return
+        }
+        if (artifactPaneVisible) {
+            // Closing: slide out (reverse animation), then unmount.
+            artifactPaneClosing = true
+            const timer = setTimeout(() => {
+                artifactPaneVisible = false
+                artifactPaneClosing = false
+                displayedArtifact = null
+            }, 540)
+            return () => clearTimeout(timer)
+        }
+        artifactPaneClosing = false
+    })
     import { applyTheme } from '$lib/themes/engine'
     import ThemePicker from '$lib/components/theme-picker.svelte'
 
@@ -513,11 +541,12 @@
                     {@render children()}
                 </main>
             </ResizablePane>
-            {#if artifactPaneState.open && artifactPaneState.artifact}
+            {#if artifactPaneVisible && displayedArtifact}
                 <ResizableHandle withHandle />
                 <ArtifactResizablePane
-                    artifact={artifactPaneState.artifact}
+                    artifact={displayedArtifact}
                     initialWidth={artifactPaneWidth}
+                    closing={artifactPaneClosing}
                     onWidthChange={(size) => (artifactPaneWidth = size)}
                     onClose={() => artifactPaneState.closeHandler?.()} />
             {/if}
@@ -600,6 +629,15 @@
         flex-grow: 100 !important;
     }
     :global(.artifact-pane-group:has(.artifact-opening) [data-pane]:last-child) {
+        flex-grow: 0 !important;
+    }
+
+    /* Closing: reverse animation (chat expands, pane collapses), then the
+       pane unmounts after the transition. Same !important-override trick. */
+    :global(.artifact-pane-group:has(.artifact-closing) [data-pane]:first-child) {
+        flex-grow: 100 !important;
+    }
+    :global(.artifact-pane-group:has(.artifact-closing) [data-pane]:last-child) {
         flex-grow: 0 !important;
     }
 
