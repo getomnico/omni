@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from omni_connector import (
     ActionDefinition,
@@ -45,6 +45,9 @@ from .models import (
     parse_member,
     parse_space,
 )
+
+if TYPE_CHECKING:
+    from omni_connector import Source
 
 logger = logging.getLogger(__name__)
 
@@ -230,10 +233,18 @@ class ClickUpConnector(Connector):
         action: str,
         params: Mapping[str, object],
         credentials: Mapping[str, object],
+        source: Source | None = None,
+        actor_email: str | None = None,
     ):
         if action == "search_spaces":
             return await self._search_spaces(params, credentials)
-        return await super().execute_action(action, dict(params), dict(credentials))
+        return await super().execute_action(
+            action,
+            dict(params),
+            dict(credentials),
+            source=source,
+            actor_email=actor_email,
+        )
 
     async def _search_spaces(
         self, params: Mapping[str, object], credentials: Mapping[str, object]

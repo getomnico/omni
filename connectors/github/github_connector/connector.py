@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from omni_connector import (
     Connector,
+    OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
     SearchOperator,
@@ -15,7 +17,7 @@ from omni_connector import (
 )
 
 from .client import AuthenticationError, GitHubClient, GitHubError, GitHubRepo
-from .config import CHECKPOINT_INTERVAL
+from .config import CHECKPOINT_INTERVAL, GITHUB_MCP_COMMAND, MCP_TOOLSETS
 from .mappers import (
     generate_discussion_content,
     generate_issue_content,
@@ -27,6 +29,10 @@ from .mappers import (
     map_repo_to_document,
 )
 from .models import GitHubCredentials, GitHubSourceConfig
+from .skills import connector_skills
+
+if TYPE_CHECKING:
+    from omni_connector import ConnectorSkillDefinition, Source
 
 logger = logging.getLogger(__name__)
 
@@ -76,9 +82,17 @@ class GitHubConnector(Connector):
     @property
     def mcp_server(self) -> StdioMcpServer:
         return StdioMcpServer(
-            command="github-mcp-server",
-            args=["stdio", "--toolsets", "all"],
+            command=GITHUB_MCP_COMMAND,
+            args=[
+                "stdio",
+                "--toolsets",
+                ",".join(MCP_TOOLSETS),
+            ],
         )
+
+    @property
+    def skills(self) -> list[ConnectorSkillDefinition]:
+        return connector_skills()
 
     def oauth_config(self) -> OAuthManifestConfig | None:
         return OAuthManifestConfig(
@@ -97,11 +111,107 @@ class GitHubConnector(Connector):
             scope_separator=" ",
         )
 
-    def prepare_mcp_env(self, credentials: dict[str, Any]) -> dict[str, str]:
-        raw_creds = credentials.get("credentials", credentials)
-        creds = GitHubCredentials(**raw_creds)
-        return {"GITHUB_PERSONAL_ACCESS_TOKEN": creds.effective_token}
+    def _mcp_token(self, credentials: Mapping[str, Any]) -> str | None:
+        """Extract the GitHub token from an Omni credential payload.
 
+        Accepts the flat shape used by PAT credentials (``{"token": ...}``)
+        and the ServiceCredential shape used by per-user OAuth credentials
+        (``{"credentials": {"access_token": ...}}``).
+        """
+        raw = credentials.get("credentials", credentials)
+        if not isinstance(raw, Mapping):
+            return None
+        for key in ("token", "access_token"):
+            value = raw.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    def prepare_mcp_env(self, credentials: dict[str, Any]) -> dict[str, str]:
+        token = self._mcp_token(credentials)
+        if token is None:
+            raise ValueError(
+                "Missing GitHub token for MCP: credential payload has no "
+                "'token' or 'access_token'"
+            )
+        return {"GITHUB_PERSONAL_ACCESS_TOKEN": token}
+
+    async def bootstrap_mcp(self, credentials: dict[str, Any]) -> None:
+        if self._mcp_token(credentials) is None:
+            logger.warning(
+                "Skipping GitHub MCP bootstrap: no token in credential payload"
+            )
+            return
+        await super().bootstrap_mcp(credentials)
+
+    async def oauth_credential_ready(
+        self, request: OAuthCredentialReadyRequest
+    ) -> bool:
+        if self._mcp_token(dict(request.credentials)) is None:
+            logger.debug(
+                "GitHub oauth_credential_ready: no token in credential payload"
+            )
+            return False
+        logger.info(
+            "GitHub OAuth credential ready: refreshing MCP catalog for source %s",
+            request.source_id,
+        )
+        await self.bootstrap_mcp(dict(request.credentials))
+        return True
+
+    def validate_mcp_action(
+        self,
+        action: str,
+        params: dict[str, Any],
+        source: Source | None,
+    ) -> None:
+        """Keep MCP tools inside the repositories configured on the source.
+
+        Sync honors ``repos``/``orgs``/``users`` in the source config; MCP
+        tools would otherwise operate on any repository the resolved token can
+        reach. When no explicit scope is configured (discovery mode), no
+        constraint can be derived and the call is allowed.
+        """
+        if source is None:
+            return
+        try:
+            config = GitHubSourceConfig(**(source.config or {}))
+        except Exception:
+            logger.warning(
+                "Could not parse GitHub source config for MCP scoping; allowing action %s",
+                action,
+            )
+            return
+
+        repo_scope = {r.lower() for r in config.repos if r}
+        repo_owners = {full.split("/", 1)[0].lower() for full in repo_scope}
+        org_user_owners = {o.lower() for o in (*config.orgs, *config.users) if o}
+        if not repo_scope and not org_user_owners:
+            return
+
+        owner = params.get("owner")
+        if not (isinstance(owner, str) and owner):
+            return
+        owner_l = owner.lower()
+
+        if owner_l in org_user_owners:
+            # Sync indexes everything under this org/user; any repo is in scope.
+            return
+        if owner_l in repo_owners:
+            repo = params.get("repo")
+            if (
+                isinstance(repo, str)
+                and repo
+                and f"{owner_l}/{repo.lower()}" not in repo_scope
+            ):
+                raise ValueError(
+                    f"Repository '{owner}/{repo}' is outside the sources "
+                    "configured scope"
+                )
+            return
+        raise ValueError(
+            f"Repository owner '{owner}' is outside the sources configured scope"
+        )
     async def sync(
         self,
         source_config: dict[str, Any],
@@ -373,7 +483,9 @@ class GitHubConnector(Connector):
                 )
 
         for repo_full_name, logins in repo_collaborators.items():
-            emails = [login_to_email[l] for l in logins if l in login_to_email]
+            emails = [
+                login_to_email[login] for login in logins if login in login_to_email
+            ]
             if emails:
                 await ctx.emit_group_membership(
                     group_email=f"github:repo:{repo_full_name}",
@@ -408,22 +520,22 @@ class GitHubConnector(Connector):
                         logger.warning("Failed to fetch repo %s: %s", repo_spec, e)
 
         for org in config.orgs:
-            async for repo in client.list_repos_for_org(org):
-                if repo.full_name not in seen:
-                    seen.add(repo.full_name)
-                    repos.append(repo)
+            async for org_repo in client.list_repos_for_org(org):
+                if org_repo.full_name not in seen:
+                    seen.add(org_repo.full_name)
+                    repos.append(org_repo)
 
         for user in config.users:
-            async for repo in client.list_repos_for_user(user):
-                if repo.full_name not in seen:
-                    seen.add(repo.full_name)
-                    repos.append(repo)
+            async for user_repo in client.list_repos_for_user(user):
+                if user_repo.full_name not in seen:
+                    seen.add(user_repo.full_name)
+                    repos.append(user_repo)
 
         if not config.repos and not config.orgs and not config.users:
-            async for repo in client.list_repos_for_authenticated_user():
-                if repo.full_name not in seen:
-                    seen.add(repo.full_name)
-                    repos.append(repo)
+            async for auth_repo in client.list_repos_for_authenticated_user():
+                if auth_repo.full_name not in seen:
+                    seen.add(auth_repo.full_name)
+                    repos.append(auth_repo)
 
         if not config.include_forks:
             repos = [r for r in repos if not r.fork]

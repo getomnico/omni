@@ -2,10 +2,12 @@
 
 import logging
 from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Any
 
 from githubkit import GitHub, TokenAuthStrategy
 from githubkit.exception import RequestError, RequestFailed
+from githubkit.paginator import Paginator
 from githubkit.versions.latest.models import (
     Collaborator,
     FullRepository,
@@ -22,6 +24,17 @@ from .config import DISCUSSIONS_QUERY, ITEMS_PER_PAGE, MAX_COMMENT_COUNT
 GitHubRepo = Repository | MinimalRepository | FullRepository
 
 logger = logging.getLogger(__name__)
+
+
+def _since_timestamp(value: str | None) -> datetime | None:
+    """Convert a stored ISO timestamp into the datetime the REST API expects."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        logger.warning("Could not parse since timestamp %r; rescanning", value)
+        return None
 
 
 class GitHubError(Exception):
@@ -126,22 +139,19 @@ class GitHubClient:
         self, owner: str, repo: str, since: str | None = None
     ) -> AsyncIterator[Issue]:
         """List issues (excluding PRs) for a repository."""
-        kwargs: dict[str, Any] = {
-            "owner": owner,
-            "repo": repo,
-            "state": "all",
-            "sort": "updated",
-            "direction": "desc",
-            "per_page": ITEMS_PER_PAGE,
-        }
-        if since:
-            kwargs["since"] = since
         try:
-            async for issue in self._github.paginate(
+            paginator: Paginator[Issue] = self._github.paginate(
                 self._github.rest.issues.async_list_for_repo,
+                owner=owner,
+                repo=repo,
+                state="all",
+                sort="updated",
+                direction="desc",
+                per_page=ITEMS_PER_PAGE,
+                since=_since_timestamp(since),
                 map_func=lambda r: r.parsed_data,
-                **kwargs,
-            ):
+            )
+            async for issue in paginator:
                 if not issue.pull_request:
                     yield issue
         except RequestFailed as e:
@@ -153,14 +163,15 @@ class GitHubClient:
         """List comments on an issue, capped at MAX_COMMENT_COUNT."""
         comments: list[IssueComment] = []
         try:
-            async for comment in self._github.paginate(
+            paginator: Paginator[IssueComment] = self._github.paginate(
                 self._github.rest.issues.async_list_comments,
                 owner=owner,
                 repo=repo,
                 issue_number=number,
                 per_page=ITEMS_PER_PAGE,
                 map_func=lambda r: r.parsed_data,
-            ):
+            )
+            async for comment in paginator:
                 comments.append(comment)
                 if len(comments) >= MAX_COMMENT_COUNT:
                     break
@@ -172,20 +183,18 @@ class GitHubClient:
         self, owner: str, repo: str, since: str | None = None
     ) -> AsyncIterator[PullRequestSimple]:
         """List pull requests for a repository."""
-        kwargs: dict[str, Any] = {
-            "owner": owner,
-            "repo": repo,
-            "state": "all",
-            "sort": "updated",
-            "direction": "desc",
-            "per_page": ITEMS_PER_PAGE,
-        }
         try:
-            async for pr in self._github.paginate(
+            paginator: Paginator[PullRequestSimple] = self._github.paginate(
                 self._github.rest.pulls.async_list,
+                owner=owner,
+                repo=repo,
+                state="all",
+                sort="updated",
+                direction="desc",
+                per_page=ITEMS_PER_PAGE,
                 map_func=lambda r: r.parsed_data,
-                **kwargs,
-            ):
+            )
+            async for pr in paginator:
                 if since and pr.updated_at and str(pr.updated_at) < since:
                     return
                 yield pr
@@ -198,15 +207,16 @@ class GitHubClient:
         """List review comments on a pull request, capped at MAX_COMMENT_COUNT."""
         comments: list[PullRequestReviewComment] = []
         try:
-            async for comment in self._github.paginate(
+            paginator: Paginator[PullRequestReviewComment] = self._github.paginate(
                 self._github.rest.pulls.async_list_review_comments,
                 owner=owner,
                 repo=repo,
                 pull_number=number,
                 per_page=ITEMS_PER_PAGE,
                 map_func=lambda r: r.parsed_data,
-            ):
-                comments.append(comment)
+            )
+            async for review_comment in paginator:
+                comments.append(review_comment)
                 if len(comments) >= MAX_COMMENT_COUNT:
                     break
         except RequestFailed as e:
@@ -219,14 +229,15 @@ class GitHubClient:
         """List issue-style comments on a pull request (conversation comments)."""
         comments: list[IssueComment] = []
         try:
-            async for comment in self._github.paginate(
+            paginator: Paginator[IssueComment] = self._github.paginate(
                 self._github.rest.issues.async_list_comments,
                 owner=owner,
                 repo=repo,
                 issue_number=number,
                 per_page=ITEMS_PER_PAGE,
                 map_func=lambda r: r.parsed_data,
-            ):
+            )
+            async for comment in paginator:
                 comments.append(comment)
                 if len(comments) >= MAX_COMMENT_COUNT:
                     break

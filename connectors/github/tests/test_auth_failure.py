@@ -1,8 +1,7 @@
 """Integration tests: authentication failures are handled correctly."""
 
-import pytest
 import httpx
-
+import pytest
 from omni_connector.testing import wait_for_sync
 
 pytestmark = pytest.mark.integration
