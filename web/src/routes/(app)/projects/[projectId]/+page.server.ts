@@ -32,10 +32,12 @@ export const load: PageServerLoad = async ({ locals, params }) => {
             title: string | null
             content_id: string | null
         }>(
+            // drizzle-orm/postgres-js JSON-stringifies array params, so ANY($1)
+            // fails; round-trip through json_array_elements_text instead.
             sql`SELECT d.id, d.title, d.content_id
                 FROM documents d
                 JOIN sources s ON d.source_id = s.id
-                WHERE d.id = ANY(${documentIds})
+                WHERE d.id IN (SELECT json_array_elements_text(${JSON.stringify(documentIds)}::json))
                   AND s.is_deleted = FALSE`,
         )
         documentsByUlid = Object.fromEntries(
@@ -49,7 +51,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
     let uploadsById: Record<string, { filename: string }> = {}
     if (uploadIds.length > 0) {
         const rows = await db.execute<{ id: string; filename: string }>(
-            sql`SELECT id, filename FROM uploads WHERE id = ANY(${uploadIds})`,
+            sql`SELECT id, filename FROM uploads WHERE id IN (SELECT json_array_elements_text(${JSON.stringify(uploadIds)}::json))`,
         )
         uploadsById = Object.fromEntries(rows.map((row) => [row.id, { filename: row.filename }]))
     }
