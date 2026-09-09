@@ -124,6 +124,7 @@ impl Connector for NextcloudConnector {
                 required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
             ActionDefinition {
@@ -153,6 +154,7 @@ impl Connector for NextcloudConnector {
                 // non-admin users (Nextcloud has only an org basic-auth credential;
                 // there is no per-user OAuth flow to satisfy).
                 admin_only: true,
+                actor_scoped: false,
             },
         ]
     }

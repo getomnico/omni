@@ -156,6 +156,7 @@ export const ActionDefinitionSchema = z.object({
   source_types: z.array(z.string()).default([]),
   admin_only: z.boolean().default(false),
   hidden: z.boolean().default(false),
+  actor_scoped: z.boolean().default(false),
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 

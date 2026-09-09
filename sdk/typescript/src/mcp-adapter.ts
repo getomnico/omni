@@ -388,6 +388,7 @@ export class McpAdapter {
         required_scopes: requiredScopes,
         source_types: [],
         admin_only: false,
+        actor_scoped: false,
         hidden: false,
       });
     }

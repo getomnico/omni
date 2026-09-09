@@ -68,6 +68,7 @@ impl Connector for FileSystemConnector {
             required_scopes: None,
             source_types: Vec::new(),
             admin_only: false,
+            actor_scoped: false,
             hidden: false,
         }]
     }

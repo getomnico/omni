@@ -911,6 +911,14 @@ pub struct ActionDefinition {
     /// action remains in the manifest and dispatchable by name.
     #[serde(default)]
     pub hidden: bool,
+    /// The connector enforces that this action can only affect records
+    /// within the caller's own authority, independent of the credential
+    /// used (e.g. Darwinbox self-service writes that derive the employee
+    /// from the actor). Lets user-facing writes run on the org credential
+    /// when the provider has no per-user OAuth; without it, writes on the
+    /// org-credential path are restricted to admin callers.
+    #[serde(default)]
+    pub actor_scoped: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

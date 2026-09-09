@@ -1285,6 +1285,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
             ActionDefinition {
@@ -1304,6 +1305,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: false,
             },
             ActionDefinition {
@@ -1330,6 +1332,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
             // Keep these discovery actions separate: Connector Manager uses
@@ -1361,6 +1364,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
@@ -1385,6 +1389,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
@@ -1411,6 +1416,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
@@ -1433,6 +1439,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
@@ -1487,6 +1494,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
         ]

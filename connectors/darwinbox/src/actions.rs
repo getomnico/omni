@@ -1353,9 +1353,14 @@ fn read(
         ActionMode::Read,
         false,
         source_types,
+        false,
     )
 }
 
+/// A write whose target is derived from the caller's identity or bounded by
+/// the caller's authority (self-service records, direct reports). The org
+/// credential cannot be used to affect records outside that boundary, so
+/// these remain available to regular users on the org-credential path.
 fn write(
     name: &str,
     description: &str,
@@ -1369,6 +1374,7 @@ fn write(
         ActionMode::Write,
         false,
         source_types,
+        true,
     )
 }
 
@@ -1901,6 +1907,7 @@ fn action(
     mode: ActionMode,
     admin_only: bool,
     source_types: &[SourceType],
+    actor_scoped: bool,
 ) -> ActionDefinition {
     ActionDefinition {
         name: name.to_string(),
@@ -1912,5 +1919,6 @@ fn action(
         source_types: source_types.to_vec(),
         admin_only,
         hidden: false,
+        actor_scoped,
     }
 }

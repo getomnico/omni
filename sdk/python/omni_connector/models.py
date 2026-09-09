@@ -244,6 +244,10 @@ class ActionDefinition(BaseModel):
     # Hidden from every chat/agent tool surface, admins included (unlike
     # admin_only, not bypassed for admin users). Still dispatchable by name.
     hidden: bool = False
+    # The connector enforces that this action only affects records within
+    # the caller's own authority (e.g. Darwinbox self-service writes), so it
+    # may run on the org credential for regular users.
+    actor_scoped: bool = False
     # OAuth scopes required to invoke this action, when declared by the
     # connector or its upstream MCP tool metadata.
     # None means the connector has not declared action-level scopes and

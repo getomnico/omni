@@ -1804,6 +1804,8 @@ async fn register_action_manifest(
     oauth: Option<serde_json::Value>,
     credential_scope: ActionCredentialScope,
     admin_only: bool,
+    mode: ActionMode,
+    actor_scoped: bool,
 ) {
     let mut redis_conn = fixture
         .state
@@ -1825,12 +1827,13 @@ async fn register_action_manifest(
             name: "test_action".to_string(),
             description: "test action".to_string(),
             input_schema: json!({}),
-            mode: ActionMode::Read,
+            mode,
             credential_scope,
             required_scopes: None,
             source_types: vec![source_type],
             admin_only,
             hidden: false,
+            actor_scoped,
         }],
         mcp_action_names: vec![],
         search_operators: vec![],
@@ -1921,6 +1924,8 @@ async fn test_action_org_only_connector_uses_org_credential_with_user_id() {
         None,
         ActionCredentialScope::UserOrOrg,
         false,
+        ActionMode::Read,
+        false,
     )
     .await;
     let source_id = seed_source(pool, "darwinbox", true).await;
@@ -1974,6 +1979,8 @@ async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred()
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
+        ActionMode::Read,
+        false,
     )
     .await;
     let source_id = seed_source(pool, "gmail", true).await;
@@ -2016,6 +2023,8 @@ async fn test_action_org_scope_never_uses_user_credential() {
         None,
         ActionCredentialScope::Org,
         false,
+        ActionMode::Read,
+        false,
     )
     .await;
     let source_id = seed_source(pool, "darwinbox", true).await;
@@ -2056,6 +2065,8 @@ async fn test_action_admin_only_requires_admin_and_uses_org_credential() {
         None,
         ActionCredentialScope::User,
         true,
+        ActionMode::Read,
+        false,
     )
     .await;
     let source_id = seed_source(pool, "darwinbox", true).await;
@@ -2096,5 +2107,197 @@ async fn test_action_admin_only_requires_admin_and_uses_org_credential() {
     assert_eq!(
         recorded[0].credentials.as_ref().expect("credentials")["credentials"]["token"],
         "org-token"
+    );
+}
+
+/// User-facing actions on a per-user-OAuth connector require the caller's
+/// own credential even when the action does not declare an explicit scope:
+/// the org credential is never substituted for end-user actions.
+#[tokio::test]
+async fn test_action_default_scope_on_oauth_connector_requires_user_oauth() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    register_action_manifest(
+        &fixture,
+        "gmail",
+        SourceType::Gmail,
+        Some(json!({"provider": "google"})),
+        ActionCredentialScope::UserOrOrg,
+        false,
+        ActionMode::Read,
+        false,
+    )
+    .await;
+    let source_id = seed_source(pool, "gmail", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    resp.assert_status(StatusCode::PRECONDITION_FAILED);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["error"], "needs_user_auth");
+    assert!(
+        fixture.mock_connector.get_action_requests().is_empty(),
+        "connector must not be reached while per-user OAuth is missing"
+    );
+}
+
+/// A user-facing action invoked without an acting user is rejected: end
+/// users always resolve identity before an action may run.
+#[tokio::test]
+async fn test_action_user_facing_without_user_id_is_rejected() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    register_action_manifest(
+        &fixture,
+        "gmail",
+        SourceType::Gmail,
+        Some(json!({"provider": "google"})),
+        ActionCredentialScope::UserOrOrg,
+        false,
+        ActionMode::Read,
+        false,
+    )
+    .await;
+    let source_id = seed_source(pool, "gmail", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "action": "test_action",
+            "params": {},
+        }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    assert!(fixture.mock_connector.get_action_requests().is_empty());
+}
+
+/// Writes on the org-credential path (no per-user OAuth) are admin-role-only
+/// unless the connector declares the write server-side actor-scoped. A
+/// regular user's write must never execute with the org credential.
+#[tokio::test]
+async fn test_action_org_credential_write_requires_admin_role() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    register_action_manifest(
+        &fixture,
+        "darwinbox",
+        SourceType::Darwinbox,
+        None,
+        ActionCredentialScope::UserOrOrg,
+        false,
+        ActionMode::Write,
+        false,
+    )
+    .await;
+    let source_id = seed_source(pool, "darwinbox", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    // Regular user: write must be refused before any connector call.
+    let rejected = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    rejected.assert_status(StatusCode::BAD_REQUEST);
+    let body: serde_json::Value = rejected.json();
+    assert!(
+        body["error"].as_str().unwrap_or_default().contains("admin"),
+        "rejection must cite admin authorization: {body}"
+    );
+    assert!(fixture.mock_connector.get_action_requests().is_empty());
+
+    // Admin caller: the org credential is used.
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind("01JGF7V3E0Y2R1X8P5Q7W9T4N6")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let recorded = fixture.mock_connector.get_action_requests();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].credentials.as_ref().expect("credentials")["credentials"]["token"],
+        "org-token"
+    );
+}
+
+/// Connector-declared actor-scoped writes (e.g. Darwinbox self-service) are
+/// the sanctioned exception: they run on the org credential for regular
+/// users because the connector bounds the write to the caller's own
+/// authority server-side.
+#[tokio::test]
+async fn test_action_actor_scoped_write_allowed_for_regular_users() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    register_action_manifest(
+        &fixture,
+        "darwinbox",
+        SourceType::Darwinbox,
+        None,
+        ActionCredentialScope::UserOrOrg,
+        false,
+        ActionMode::Write,
+        true,
+    )
+    .await;
+    let source_id = seed_source(pool, "darwinbox", true).await;
+    seed_org_credential(pool, &source_id).await;
+
+    server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let recorded = fixture.mock_connector.get_action_requests();
+    assert_eq!(recorded.len(), 1);
+    let req = &recorded[0];
+    assert_eq!(
+        req.credentials.as_ref().expect("credentials")["credentials"]["token"],
+        "org-token",
+        "actor-scoped writes run on the org credential"
+    );
+    assert_eq!(
+        req.actor_email.as_deref(),
+        Some("test@example.com"),
+        "actor identity must reach the connector for server-side scoping"
     );
 }

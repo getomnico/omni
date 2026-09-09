@@ -998,6 +998,7 @@ fn action_from_tool(tool: &JsonValue, write_tools_enabled: bool) -> Option<Actio
         source_types: Vec::new(),
         admin_only: false,
         hidden: false,
+        actor_scoped: false,
     })
 }
 

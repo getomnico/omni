@@ -170,6 +170,7 @@ impl Connector for AtlassianConnector {
             required_scopes: None,
             source_types: Vec::new(),
             admin_only: true,
+            actor_scoped: false,
             hidden: false,
         }]
     }

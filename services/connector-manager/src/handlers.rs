@@ -489,6 +489,7 @@ pub async fn execute_action(
     let mut params = request.params.clone();
     let mut transient_actor_email = None;
     let mut is_mcp_action = false;
+    let mut write_needs_admin = false;
     let manifests = get_registered_manifests(&state.redis_client).await;
 
     let (connector_url, action_admin_only) = if is_transient {
@@ -680,18 +681,39 @@ pub async fn execute_action(
             ));
         }
         is_mcp_action = manifest.mcp_action_names.contains(&request.action);
+
+        // Credential policy: admin-only and connector-declared Org actions
+        // execute with the source's org credential. Every other action is
+        // user-facing: it requires an acting user, and when the connector
+        // supports per-user OAuth the caller's own credential is mandatory
+        // (the org credential is never substituted). Connectors without
+        // per-user OAuth run user-facing actions on the org credential with
+        // the actor identity carried downstream, where the connector's own
+        // gates apply; writes on that path are admin-role-only unless the
+        // connector declares the action is server-side actor-scoped.
+        let user_oauth_supported = manifest.oauth.is_some();
         let org_scoped_action =
             action_admin_only || action_def.credential_scope == ActionCredentialScope::Org;
-        let user_scoped_action =
-            !org_scoped_action
-                && ((is_mcp_action && !action_admin_only)
-                    || action_def.credential_scope == ActionCredentialScope::User);
+        let user_scoped_action = !org_scoped_action;
+        let org_credential_executed = org_scoped_action || !user_oauth_supported;
+        write_needs_admin = action_mode == ActionMode::Write
+            && org_credential_executed
+            && !action_admin_only
+            && !action_def.actor_scoped;
 
-        // User-scoped actions must have an acting user. Admin-only actions
+        // User-facing actions must have an acting user. Admin-only actions
         // still use the org credential after the caller's role is checked.
         if user_scoped_action && request.user_id.is_none() {
             return Err(ApiError::BadRequest(
-                "user_id is required for MCP actions".to_string(),
+                "user_id is required for actions".to_string(),
+            ));
+        }
+        // Write actions that would execute with the org-level credential
+        // are admin-role-only; the role check runs where the caller's user
+        // row is resolved below.
+        if write_needs_admin && request.user_id.is_none() {
+            return Err(ApiError::BadRequest(
+                "user_id is required for org-credential write actions".to_string(),
             ));
         }
 
@@ -730,13 +752,16 @@ pub async fn execute_action(
         } else {
             request.user_id.as_deref()
         };
-        let require_user_credential = user_scoped_action;
+        // Per-user credentials are mandatory only when the connector has a
+        // per-user OAuth flow; org-credential-only connectors resolve the
+        // org row and keep the actor identity downstream.
+        let require_user_credential = user_scoped_action && user_oauth_supported;
         creds = match resolve_credentials_with_policy(
             &cred_service,
             &source_id,
             credential_user_id,
             action_admin_only,
-            user_scoped_action,
+            user_oauth_supported,
             require_user_credential,
             oauth_provider_from_manifest(&manifest),
         )
@@ -833,6 +858,15 @@ pub async fn execute_action(
             if action_admin_only && user.role != shared::models::UserRole::Admin {
                 return Err(ApiError::BadRequest(format!(
                     "Action '{}' requires admin privileges",
+                    request.action
+                )));
+            }
+            // Writes that execute with the org-level credential are
+            // admin-role-only unless the connector declared the action
+            // server-side actor-scoped.
+            if !is_transient && write_needs_admin && user.role != shared::models::UserRole::Admin {
+                return Err(ApiError::BadRequest(format!(
+                    "Action '{}' requires admin privileges (org-level credential)",
                     request.action
                 )));
             }
@@ -3891,6 +3925,7 @@ mod tests {
                 source_types: Vec::new(),
                 admin_only: false,
                 hidden: false,
+                actor_scoped: false,
             }],
             mcp_action_names: Vec::new(),
             search_operators: Vec::new(),
