@@ -616,9 +616,10 @@
 {/snippet}
 
 <style>
-    /* Both panes transition their flex-grow; the chat pane is already rendered
-       so its transition drives the whole group while the pane mounts. */
-    :global(.artifact-pane-group [data-pane]) {
+    /* Both panes transition their flex-grow (chat shrinks/grows while the pane
+       grows/shrinks, in tandem). Scoped to groups with the second pane mounted
+       so a lone chat pane never picks up the transition after unmount. */
+    :global(.artifact-pane-group:has([data-pane]:nth-child(3)) [data-pane]) {
         transition: flex-grow 500ms cubic-bezier(0.4, 0, 0.2, 1);
     }
 

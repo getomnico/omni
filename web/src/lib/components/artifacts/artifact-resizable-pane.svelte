@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte'
+    import { onMount, tick } from 'svelte'
     import { ResizablePane } from '$lib/components/ui/resizable'
     import ArtifactPane from './artifact-pane.svelte'
     import type { ArtifactData } from '$lib/utils/artifacts'
@@ -22,12 +22,30 @@
     // sizes in tandem.
     let opening = $state(true)
 
+    // During the slide-out, the content keeps its width at close-start (pinned
+    // to px) so the shrinking pane clips it instead of reflowing the viewer.
+    let pinnedWidth = $state<number | null>(null)
+    // `.artifact-closing` is applied one tick after the width is pinned.
+    let closingApplied = $state(false)
+    let contentEl = $state<HTMLDivElement | null>(null)
+
     onMount(() => {
         requestAnimationFrame(() => {
             requestAnimationFrame(() => {
                 opening = false
             })
         })
+    })
+
+    $effect(() => {
+        if (closing) {
+            const width = contentEl?.getBoundingClientRect().width
+            if (width) pinnedWidth = Math.ceil(width)
+            tick().then(() => (closingApplied = true))
+        } else {
+            pinnedWidth = null
+            closingApplied = false
+        }
     })
 </script>
 
@@ -38,11 +56,13 @@
     onResize={(size) => onWidthChange(size)}
     class="min-w-0">
     <div
-        class={closing
+        bind:this={contentEl}
+        class={closingApplied
             ? 'artifact-closing h-full'
             : opening
               ? 'artifact-opening h-full'
-              : 'h-full'}>
+              : 'h-full'}
+        style:width={pinnedWidth ? `${pinnedWidth}px` : undefined}>
         <ArtifactPane {artifact} {onClose} />
     </div>
 </ResizablePane>
