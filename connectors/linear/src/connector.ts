@@ -44,8 +44,10 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
       description: 'List all accessible teams in the Linear workspace',
       input_schema: { type: 'object', properties: {} },
       mode: 'read',
+      credential_scope: 'user_or_org',
       source_types: [],
       admin_only: false,
+      hidden: false,
     },
   ];
 

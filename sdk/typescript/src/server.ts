@@ -306,7 +306,7 @@ export function createServer(connector: Connector): Express {
       actor_email,
     );
 
-    if (result instanceof Response) {
+    if (result instanceof globalThis.Response) {
       res.status(result.status);
       result.headers.forEach((value, key) => res.setHeader(key, value));
       const bodyBuffer = Buffer.from(await result.arrayBuffer());
@@ -327,7 +327,7 @@ export function createServer(connector: Connector): Express {
   function needsUserAuthResponse(
     message: string,
     credentials: Record<string, unknown>
-  ): Response | null {
+  ): globalThis.Response | null {
     if (
       message !== MCP_AUTH_REQUIRED_MESSAGE &&
       !connector.mcpAuthenticationError(message)
@@ -340,7 +340,7 @@ export function createServer(connector: Connector): Express {
     if (!sourceId || !sourceType) {
       return null;
     }
-    return new Response(
+    return new globalThis.Response(
       JSON.stringify({
         error: "needs_user_auth",
         source_id: sourceId,
@@ -374,7 +374,7 @@ export function createServer(connector: Connector): Express {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const authResponse = needsUserAuthResponse(message, request.credentials);
+      const authResponse = needsUserAuthResponse(message, credentials);
       if (authResponse) {
         res.status(authResponse.status);
         authResponse.headers.forEach((value, key) => res.setHeader(key, value));
@@ -413,7 +413,7 @@ export function createServer(connector: Connector): Express {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const authResponse = needsUserAuthResponse(message, request.credentials);
+      const authResponse = needsUserAuthResponse(message, credentials);
       if (authResponse) {
         res.status(authResponse.status);
         authResponse.headers.forEach((value, key) => res.setHeader(key, value));

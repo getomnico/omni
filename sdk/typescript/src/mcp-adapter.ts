@@ -1,4 +1,4 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { readFileSync, rmSync } from 'node:fs';
 import type {
   ActionDefinition,
@@ -90,6 +90,7 @@ export class McpAdapter {
     headers: Record<string, string> | undefined,
     fn: (client: Client) => Promise<T>
   ): Promise<T> {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
     const client = new Client({ name: 'omni-mcp-adapter', version: '1.0.0' });
     let connected = false;
     try {
@@ -132,7 +133,7 @@ export class McpAdapter {
       // terminal OAuth rejection. Consume it here so bootstrap callers also
       // clean it up, while the normalized error lets the HTTP server return
       // the standard 412 response.
-      this.consumeAuthStatusFile(env, err);
+      return this.consumeAuthStatusFile(env, err);
     } finally {
       if (connected) {
         await client.close().catch(() => undefined);
