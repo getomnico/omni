@@ -146,6 +146,40 @@ class OmniTestHarness:
         self._cm_port = int(self._cm_container.get_exposed_port(8090))
 
         self._wait_for_cm_healthy()
+        # Point the SDK server(s) at the manager, then block until the
+        # connector manifest lands in the registry. The manager health-checks
+        # connectors during registration, so a freshly started manager may
+        # briefly serve requests before the connector is registered;
+        # sync-triggering tests must not race that window.
+        os.environ["CONNECTOR_MANAGER_URL"] = self.connector_manager_url
+        await self._wait_for_connector_registration()
+
+    async def _wait_for_connector_registration(self, timeout: float = 60) -> None:
+        """Wait until at least one connector is registered with the manager.
+
+        The test harness runs exactly one connector, so a non-empty connector
+        list means that connector's manifest has been accepted.
+        """
+        import httpx
+
+        url = f"{self.connector_manager_url}/connectors"
+        deadline = time.monotonic() + timeout
+        last_error: Exception | None = None
+        while time.monotonic() < deadline:
+            try:
+                async with httpx.AsyncClient(timeout=2) as client:
+                    response = await client.get(url)
+                if response.status_code == 200 and isinstance(response.json(), list):
+                    if response.json():
+                        logger.info("Connector registered with connector-manager")
+                        return
+            except Exception as e:
+                last_error = e
+            await asyncio.sleep(0.5)
+        raise TimeoutError(
+            f"Connector did not register with connector-manager within {timeout}s: "
+            f"{last_error}"
+        )
 
     def _build_connector_manager_image(self, context: str) -> str:
         """Build the connector-manager Docker image and return the tag."""
