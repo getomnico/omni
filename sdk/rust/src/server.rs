@@ -387,7 +387,7 @@ fn mcp_auth_required_action_response<C: Connector>(
     request: &ActionRequest,
     message: &str,
 ) -> Option<Response> {
-    if !mcp_auth_required(&state.connector, message) {
+    if !mcp_auth_required(state.connector.as_ref(), message) {
         return None;
     }
     let source = request.source.as_ref();
@@ -400,7 +400,7 @@ fn mcp_auth_required_action_response<C: Connector>(
     let source_type = source
         .map(|source| source.source_type.as_str())
         .or_else(|| state.connector.source_types().first().map(|t| t.as_str()));
-    let body = mcp_auth_required_body(&state.connector, source_id, source_type)?;
+    let body = mcp_auth_required_body(state.connector.as_ref(), source_id, source_type)?;
     Some(
         (
             StatusCode::PRECONDITION_FAILED,
@@ -840,7 +840,7 @@ where
             let message = format!("{:#}", e);
             error!("Resource read failed for {}: {}", request.uri, message);
             if let Some(body) = mcp_auth_required_credentials_response(
-                &state.connector,
+                state.connector.as_ref(),
                 &request.credentials,
                 &message,
             ) {
@@ -948,7 +948,11 @@ where
             let message = format!("{:#}", e);
             error!("Prompt get failed for {}: {}", name, message);
             if let Some(body) =
-                mcp_auth_required_credentials_response(&state.connector, &credentials, &message)
+                mcp_auth_required_credentials_response(
+                    state.connector.as_ref(),
+                    &credentials,
+                    &message,
+                )
             {
                 return (StatusCode::PRECONDITION_FAILED, Json(body));
             }
