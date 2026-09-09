@@ -589,34 +589,78 @@ class SalesforceConnector(Connector):
         roles: list[RoleRecord] = []
 
         if config.sync_users and "User" in available_objects:
-            async for page in iter_query_pages(
-                client, f"SELECT {', '.join(USER_FIELDS)} FROM User"
-            ):
-                users.extend(UserRecord.from_record(r) for r in page.records)
+            fields = await self._selectable_fields(client, "User", USER_FIELDS)
+            if fields:
+                async for page in iter_query_pages(
+                    client, f"SELECT {', '.join(fields)} FROM User"
+                ):
+                    users.extend(UserRecord.from_record(r) for r in page.records)
         if config.sync_groups:
             if "Group" in available_objects:
-                async for page in iter_query_pages(
-                    client,
-                    f"SELECT {', '.join(GROUP_FIELDS)} FROM Group "
-                    "WHERE Type IN ('Public', 'Queue', 'Regular')",
-                ):
-                    groups.extend(GroupRecord.from_record(r) for r in page.records)
+                fields = await self._selectable_fields(client, "Group", GROUP_FIELDS)
+                if fields:
+                    async for page in iter_query_pages(
+                        client,
+                        f"SELECT {', '.join(fields)} FROM Group "
+                        "WHERE Type IN ('Public', 'Queue', 'Regular')",
+                    ):
+                        groups.extend(GroupRecord.from_record(r) for r in page.records)
             if "GroupMember" in available_objects:
-                async for page in iter_query_pages(
-                    client, f"SELECT {', '.join(GROUP_MEMBER_FIELDS)} FROM GroupMember"
-                ):
-                    group_members.extend(GroupMemberRecord.from_record(r) for r in page.records)
+                fields = await self._selectable_fields(
+                    client, "GroupMember", GROUP_MEMBER_FIELDS
+                )
+                if fields:
+                    async for page in iter_query_pages(
+                        client, f"SELECT {', '.join(fields)} FROM GroupMember"
+                    ):
+                        group_members.extend(GroupMemberRecord.from_record(r) for r in page.records)
             if "UserRole" in available_objects:
-                async for page in iter_query_pages(
-                    client, f"SELECT {', '.join(ROLE_FIELDS)} FROM UserRole"
-                ):
-                    roles.extend(RoleRecord.from_record(r) for r in page.records)
+                fields = await self._selectable_fields(client, "UserRole", ROLE_FIELDS)
+                if fields:
+                    async for page in iter_query_pages(
+                        client, f"SELECT {', '.join(fields)} FROM UserRole"
+                    ):
+                        roles.extend(RoleRecord.from_record(r) for r in page.records)
 
         directory = build_directory(users, groups, group_members, roles)
         snapshot = self._snapshot(directory, users)
 
         await self._emit_people(client, directory, users, snapshot, previous, ctx)
         return directory, snapshot
+
+    async def _selectable_fields(
+        self,
+        client: SalesforceClient,
+        object_type: str,
+        candidates: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Narrow a SELECT list to fields the principal can actually query.
+
+        Salesforce omits fields for disabled features (e.g. UserRoleId without
+        role hierarchy) from describe; selecting them fails the whole query
+        with INVALID_FIELD. Id is always required: every parser and the
+        pagination cursors depend on it. If describe itself fails the sync
+        falls back to the candidate list and lets the query surface errors.
+        """
+        try:
+            available = await client.available_fields(object_type)
+        except SalesforceClientError as e:
+            logger.warning(
+                "Could not describe %s fields (%s); using defaults", object_type, e
+            )
+            return candidates
+        selectable = tuple(field for field in candidates if field in available)
+        missing = tuple(field for field in candidates if field not in available)
+        if missing:
+            logger.warning(
+                "Skipping Salesforce fields unavailable on %s: %s",
+                object_type,
+                ", ".join(missing),
+            )
+        if "Id" not in selectable:
+            logger.warning("Skipping %s: Id field is not accessible", object_type)
+            return ()
+        return selectable
 
     def _snapshot(self, directory: SalesforceDirectory, users: list[UserRecord]) -> PeopleSnapshot:
         user_modstamps: dict[str, str] = {}
@@ -751,7 +795,11 @@ class SalesforceConnector(Connector):
         for config in configs:
             if ctx.is_cancelled():
                 return checkpoint
-            if checkpoint.records_synced.get(config.name):
+            # Completed-object markers matter only when resuming a crashed run
+            # of THIS pass. A fresh full/delta pass (even with a stored
+            # checkpoint) must scan again: watermarks and cursors, not the
+            # completed set, decide what changed.
+            if ctx.is_resume and checkpoint.records_synced.get(config.name):
                 continue
 
             parser = _RECORD_PARSERS[config.name]

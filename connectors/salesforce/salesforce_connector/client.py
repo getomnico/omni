@@ -259,6 +259,41 @@ class GlobalDescribe:
 
 
 @dataclass(frozen=True)
+class ObjectDescribe:
+    """Fields exposed on one Salesforce object for the authenticated principal.
+
+    Describe honors the principal's licenses and field-level security, so an
+    org with a disabled feature (e.g. role hierarchy) omits its fields here.
+    Selecting such a field anyway fails the whole query with INVALID_FIELD.
+    """
+
+    fields: frozenset[str]
+
+    @classmethod
+    def from_response(cls, raw: Mapping[str, object]) -> ObjectDescribe:
+        fields_value = raw.get("fields")
+        if not isinstance(fields_value, list):
+            raise SalesforceClientError(
+                "malformed object describe response: fields expected list, "
+                f"got {type(fields_value).__name__}"
+            )
+        fields: set[str] = set()
+        for item in fields_value:
+            if not isinstance(item, Mapping):
+                raise SalesforceClientError(
+                    "malformed object describe response: fields entry expected object, "
+                    f"got {type(item).__name__}"
+                )
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise SalesforceClientError(
+                    "malformed object describe response: fields entry missing name"
+                )
+            fields.add(name)
+        return cls(fields=frozenset(fields))
+
+
+@dataclass(frozen=True)
 class DeletedResult:
     """Typed envelope of the /deleted endpoint response."""
 
@@ -332,6 +367,7 @@ class SalesforceClient:
         self._token: str | None = None
         self._token_instance_url: str | None = None
         self._token_expires_at: float = 0.0
+        self._field_cache: dict[str, frozenset[str]] = {}
 
     @property
     def instance_url(self) -> str:
@@ -470,6 +506,18 @@ class SalesforceClient:
         ).object_types
 
     @with_retry(max_retries=3)
+    async def available_fields(self, object_type: str) -> frozenset[str]:
+        """Return fields on one object the principal can actually query."""
+        cached = self._field_cache.get(object_type)
+        if cached is not None:
+            return cached
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.restful, f"sobjects/{object_type}/describe")
+        fields = ObjectDescribe.from_response(_require_mapping(raw, "object describe")).fields
+        self._field_cache[object_type] = fields
+        return fields
+
+    @with_retry(max_retries=3)
     async def query_more(self, next_records_url: str) -> QueryResult:
         """Fetch the next page of a query result."""
         sf = await self._ensure_session()
@@ -552,6 +600,7 @@ class SalesforceClient:
             raise SalesforceClientError(f"malformed record response for {object_type} {record_id}")
         return raw
 
+    @with_retry(max_retries=3)
     async def test_connection(self) -> None:
         """Verify the token with an API endpoint independent of CRM objects."""
         sf = await self._ensure_session()

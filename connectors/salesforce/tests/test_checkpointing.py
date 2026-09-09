@@ -11,6 +11,13 @@ from omni_connector.testing import wait_for_sync
 pytestmark = pytest.mark.integration
 
 
+def _as_object(value: object) -> dict[str, object] | None:
+    """asyncpg returns jsonb columns as strings unless a codec is registered."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value if isinstance(value, dict) else None
+
+
 async def _run_sync(cm_client, source_id, sync_type) -> dict:
     resp = await cm_client.post("/sync", json={"source_id": source_id, "sync_type": sync_type})
     assert resp.status_code == 200, resp.text
@@ -30,7 +37,7 @@ async def test_checkpoint_persisted_after_full_sync(
     checkpoint_row = await harness.db_pool.fetchrow(
         "SELECT checkpoint FROM sources WHERE id = $1::char(26)", source_id
     )
-    checkpoint = checkpoint_row["checkpoint"]
+    checkpoint = _as_object(checkpoint_row["checkpoint"])
     assert checkpoint is not None
     assert checkpoint["version"] == 1
     assert checkpoint["records_synced"]["Account"] is True
@@ -40,7 +47,9 @@ async def test_checkpoint_persisted_after_full_sync(
     state_row = await harness.db_pool.fetchrow(
         "SELECT connector_state FROM sources WHERE id = $1::char(26)", source_id
     )
-    assert state_row["connector_state"]["schema_fingerprint"]
+    state = _as_object(state_row["connector_state"])
+    assert state is not None
+    assert state["schema_fingerprint"]
 
 
 async def test_mid_sync_checkpoint_is_granular(
@@ -61,7 +70,8 @@ async def test_mid_sync_checkpoint_is_granular(
     checkpoint_row = await harness.db_pool.fetchrow(
         "SELECT checkpoint FROM sources WHERE id = $1::char(26)", source_id
     )
-    checkpoint = checkpoint_row["checkpoint"]
+    checkpoint = _as_object(checkpoint_row["checkpoint"])
+    assert checkpoint is not None
     cursor = checkpoint["record_cursors"]["Account"]
     # The final keyset cursor matches the last synced record.
     assert cursor["last_id"] == "00100000002499"

@@ -63,5 +63,9 @@ async def test_incremental_sync_without_changes_is_cheap(
     # Watermarks prevent a second full pass: nothing to scan, nothing emitted.
     assert row["documents_scanned"] == 0
     events = await get_events(harness.db_pool, source_id)
-    # Person/group events are re-emitted (idempotent), but no document updates.
-    assert not any(e["payload"]["type"] in ("document_created", "document_updated") for e in events)
+    # Person/group events are re-emitted (idempotent), but no document events
+    # beyond the baseline full sync.
+    new_events = [e for e in events if e["created_at"] >= row["started_at"]]
+    assert not any(
+        e["payload"]["type"] in ("document_created", "document_updated") for e in new_events
+    )

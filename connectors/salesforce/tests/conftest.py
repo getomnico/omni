@@ -312,6 +312,27 @@ def _share_payload(
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_OBJECT_FIELDS: dict[str, set[str]] = {
+    "User": {
+        "Id",
+        "Name",
+        "FirstName",
+        "LastName",
+        "Email",
+        "Title",
+        "Department",
+        "ManagerId",
+        "UserRoleId",
+        "IsActive",
+        "EmployeeNumber",
+        "SystemModstamp",
+    },
+    "Group": {"Id", "Name", "Type"},
+    "GroupMember": {"Id", "GroupId", "UserOrGroupId"},
+    "UserRole": {"Id", "Name", "ParentRoleId"},
+}
+
+
 @dataclass(frozen=True)
 class ParsedSoql:
     object_type: str
@@ -441,6 +462,10 @@ class MockSalesforceAPI:
         # Objects to omit from global describe, simulating orgs/licenses that
         # do not expose every standard object to the authenticated principal.
         self.hidden_objects: set[str] = set()
+        # Fields to omit from per-object describe (e.g. disabled features).
+        self.hidden_fields: dict[str, set[str]] = {}
+        # Union of record keys ever added per object, driving per-object describe.
+        self.field_sets: dict[str, set[str]] = {}
 
     def reset(self) -> None:
         self.objects.clear()
@@ -453,9 +478,12 @@ class MockSalesforceAPI:
         self.token_issuances = 0
         self.last_assertion = ""
         self.hidden_objects.clear()
+        self.hidden_fields.clear()
+        self.field_sets.clear()
 
     def add_record(self, object_type: str, payload: dict[str, object]) -> None:
         self.objects.setdefault(object_type, []).append(payload)
+        self.field_sets.setdefault(object_type, set()).update(payload)
 
     def add_account(self, record_id: str = "001000000000001", **kwargs: Any) -> None:
         self.add_record("Account", _account_payload(record_id, **kwargs))
@@ -504,22 +532,31 @@ class MockSalesforceAPI:
         self.next_record_id += 1
 
     def add_people_fixtures(self) -> None:
-        """Default org: 2 users, a queue, a public group, and a role hierarchy."""
-        self.add_user("005000000000001", email="owner@example.com", name="Owner User")
+        """Default org: 3 users, a queue, a public group, and a role hierarchy.
+
+        The owner sits in the Support Rep role (under Support Manager); the
+        agent sits in Support Manager (under Sales Manager, the root); the
+        manager user fills the root role. This drives the role-membership
+        expectations in the integration tests.
+        """
+        self.add_user(
+            "005000000000001", email="owner@example.com", name="Owner User", role_id="00E000000000002"
+        )
         self.add_user(
             "005000000000002",
             email="agent@example.com",
             name="Support Agent",
-            role_id="00E000000000002",
+            role_id="00E000000000003",
         )
         self.add_user(
             "005000000000003",
             email="manager@example.com",
             name="Sales Manager",
-            role_id="00E000000000003",
+            role_id="00E000000000001",
         )
+        self.add_role("00E000000000001", name="Sales Manager")
         self.add_role("00E000000000002", name="Support Rep", parent_role_id="00E000000000003")
-        self.add_role("00E000000000003", name="Support Manager")
+        self.add_role("00E000000000003", name="Support Manager", parent_role_id="00E000000000001")
         self.add_group("00G000000000001", name="Support Queue", group_type="Queue")
         self.add_group_member("00M000000000001", "00G000000000001", "005000000000002")
         self.add_group("00G000000000002", name="Execs", group_type="Public")
@@ -728,6 +765,17 @@ class MockSalesforceAPI:
                 status_code=404,
             )
 
+        async def handle_object_describe(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_type = request.path_params["object_type"]
+            fields = set(mock.field_sets.get(object_type, set()))
+            fields.difference_update(mock.hidden_fields.get(object_type, set()))
+            if not fields:
+                fields = set(DEFAULT_OBJECT_FIELDS.get(object_type, {"Id"}))
+            return JSONResponse({"fields": [{"name": name} for name in sorted(fields)]})
+
         routes = [
             Route("/services/oauth2/token", handle_token, methods=["POST"]),
             Route("/services/data/v62.0/limits/", handle_limits),
@@ -740,6 +788,10 @@ class MockSalesforceAPI:
             Route(
                 "/services/data/v62.0/sobjects/{object_type}/deleted",
                 handle_deleted,
+            ),
+            Route(
+                "/services/data/v62.0/sobjects/{object_type}/describe",
+                handle_object_describe,
             ),
             Route(
                 "/services/data/v62.0/sobjects/{object_type}/",
