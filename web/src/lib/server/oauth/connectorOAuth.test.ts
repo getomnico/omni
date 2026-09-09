@@ -4,6 +4,7 @@ import {
     dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    oauthCredentialExpiry,
     oauthServiceBaseUrl,
     revokeDynamicallyRegisteredClient,
     scopesForExistingSourceUserFlow,
@@ -80,6 +81,26 @@ describe('windshiftInternalOrigin', () => {
 })
 
 describe('OAuth connector helpers', () => {
+    it('derives credential expiry from expires_in', () => {
+        const expiry = oauthCredentialExpiry({ expires_in: 7200 })
+        const delta = expiry.getTime() - Date.now()
+        expect(delta).toBeGreaterThan(7100 * 1000)
+        expect(delta).toBeLessThanOrEqual(7200 * 1000)
+    })
+
+    it('falls back to the default lifetime when the provider omits expires_in', () => {
+        const expiry = oauthCredentialExpiry({})
+        const delta = expiry.getTime() - Date.now()
+        expect(delta).toBeGreaterThan((3600 - 1) * 1000)
+        expect(delta).toBeLessThanOrEqual(3600 * 1000)
+    })
+
+    it('treats a non-positive expires_in as missing', () => {
+        const expiry = oauthCredentialExpiry({ expires_in: 0 })
+        const delta = expiry.getTime() - Date.now()
+        expect(delta).toBeGreaterThan((3600 - 1) * 1000)
+    })
+
     beforeEach(() => {
         vi.clearAllMocks()
     })

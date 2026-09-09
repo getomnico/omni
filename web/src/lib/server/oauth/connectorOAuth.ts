@@ -27,6 +27,26 @@ export type OAuthTokenEndpointAuthMethod = 'client_secret_post' | 'client_secret
 const logger = createLogger('connector-oauth')
 const OAUTH_RESPONSE_MAX_BYTES = 1024 * 1024
 
+/**
+ * Lifetime assumed when a provider omits `expires_in` from its token
+ * response (e.g. Salesforce). Mirrors the connector-manager's refresh
+ * default; erring short only causes an earlier refresh-token exchange.
+ */
+export const DEFAULT_OAUTH_EXPIRES_IN_SECONDS = 3600
+
+/**
+ * Credential expiry derived from a token response. Without an expiry the
+ * stored credential is never refreshed and the access token dies silently.
+ * Treat missing/non-positive `expires_in` as the default lifetime.
+ */
+export function oauthCredentialExpiry(tokens: { expires_in?: unknown }): Date {
+    const expiresIn =
+        typeof tokens.expires_in === 'number' && tokens.expires_in > 0
+            ? tokens.expires_in
+            : DEFAULT_OAUTH_EXPIRES_IN_SECONDS
+    return new Date(Date.now() + expiresIn * 1000)
+}
+
 function isOAuthTokenEndpointAuthMethod(value: unknown): value is OAuthTokenEndpointAuthMethod {
     return value === 'client_secret_post' || value === 'client_secret_basic' || value === 'none'
 }

@@ -4,7 +4,10 @@ import { db } from '$lib/server/db'
 import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { ulid } from 'ulid'
 import { eq } from 'drizzle-orm'
-import { exchangeCodeAndIdentify } from '$lib/server/oauth/connectorOAuth'
+import {
+    exchangeCodeAndIdentify,
+    oauthCredentialExpiry,
+} from '$lib/server/oauth/connectorOAuth'
 import { OAuthStateManager } from '$lib/server/oauth/state'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { decryptConfig, encryptConfig } from '$lib/server/crypto/encryption'
@@ -149,10 +152,11 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         }
     }
 
-    const expiresAt =
-        typeof tokens.expires_in === 'number'
-            ? new Date(Date.now() + tokens.expires_in * 1000)
-            : null
+    // Salesforce and some other providers omit `expires_in`; without an
+    // expiry the stored credential is never refreshed (the manager only
+    // refreshes rows whose expires_at has arrived) and the access token dies
+    // silently. Fall back to the shared default lifetime.
+    const expiresAt = oauthCredentialExpiry(tokens)
     const tokenResponseMetadata = Object.fromEntries(
         (config.token_response_fields ?? [])
             .filter((field) => !['access_token', 'refresh_token', 'token_type'].includes(field))
