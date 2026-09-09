@@ -30,7 +30,9 @@
         ArrowDown,
         BookOpen,
         X,
+        ChevronsUpDown,
     } from '@lucide/svelte'
+    import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js'
     import { marked } from 'marked'
     import { onDestroy, onMount } from 'svelte'
     import type { PageProps } from './$types'
@@ -93,6 +95,31 @@
     let { data }: PageProps = $props()
     let chatMessages = $state<ChatMessage[]>([...data.messages])
     let uploadFilenames = $state<Record<string, string>>({ ...data.uploadFilenames })
+
+    let chatProject = $derived(
+        data.chat.projectId
+            ? (data.projects.find((p) => p.id === data.chat.projectId) ?? null)
+            : null,
+    )
+
+    async function moveToProject(projectId: string | null) {
+        const res = await fetch(`/api/chat/${data.chat.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ projectId }),
+        })
+        if (res.ok) {
+            toast.success(
+                projectId
+                    ? (data.projects.find((p) => p.id === projectId)?.name ?? 'Chat') + ' updated'
+                    : 'Chat removed from project',
+            )
+            await invalidateAll()
+        } else {
+            const body = await res.json()
+            toast.error(body.error || 'Failed to move chat')
+        }
+    }
 
     onDestroy(() => {
         eventSource?.close()
@@ -2717,6 +2744,50 @@
                             </a>
                         </div>
                         <span class="text-muted-foreground text-xs">Read-only session</span>
+                    </div>
+                {/if}
+                {#if chatProject}
+                    <div
+                        class="bg-muted/50 mb-4 flex items-center justify-between rounded-lg border px-4 py-2">
+                        <div class="flex min-w-0 items-center gap-2 text-sm">
+                            <span class="text-muted-foreground shrink-0">Project:</span>
+                            <a
+                                href="/projects/{chatProject.id}"
+                                class="cursor-pointer truncate font-medium hover:underline">
+                                {chatProject.name}
+                            </a>
+                        </div>
+                        <DropdownMenu.Root>
+                            <DropdownMenu.Trigger>
+                                {#snippet child({ props })}
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        class="h-6 shrink-0 cursor-pointer px-2 text-xs"
+                                        {...props}>
+                                        Move
+                                        <ChevronsUpDown class="ml-1 h-3 w-3" />
+                                    </Button>
+                                {/snippet}
+                            </DropdownMenu.Trigger>
+                            <DropdownMenu.Content align="end">
+                                {#if data.chat.projectId}
+                                    <DropdownMenu.Item
+                                        class="cursor-pointer"
+                                        onclick={() => moveToProject(null)}>
+                                        Remove from project
+                                    </DropdownMenu.Item>
+                                    <DropdownMenu.Separator />
+                                {/if}
+                                {#each data.projects.filter((p) => p.id !== data.chat.projectId) as project (project.id)}
+                                    <DropdownMenu.Item
+                                        class="cursor-pointer"
+                                        onclick={() => moveToProject(project.id)}>
+                                        {project.name}
+                                    </DropdownMenu.Item>
+                                {/each}
+                            </DropdownMenu.Content>
+                        </DropdownMenu.Root>
                     </div>
                 {/if}
                 {#if data.modelDisplayName}

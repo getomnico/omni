@@ -332,6 +332,79 @@ class ChatRole(str, Enum):
     SYSTEM = "system"
 
 
+class ProjectAttachmentType(str, Enum):
+    UPLOAD = "upload"
+    DOCUMENT = "document"
+
+
+@dataclass
+class Project:
+    id: str
+    user_id: str
+    name: str
+    description: str | None
+    instructions: str | None
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, object]) -> "Project":
+        return cls(
+            id=cast(str, row["id"]),
+            user_id=cast(str, row["user_id"]),
+            name=cast(str, row["name"]),
+            description=cast(str | None, row.get("description")),
+            instructions=cast(str | None, row.get("instructions")),
+            is_archived=cast(bool, row["is_archived"]),
+            created_at=cast(datetime, row["created_at"]),
+            updated_at=cast(datetime, row["updated_at"]),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "description": self.description,
+            "instructions": self.instructions,
+            "isArchived": self.is_archived,
+            "createdAt": self.created_at.isoformat(),
+            "updatedAt": self.updated_at.isoformat(),
+        }
+
+
+@dataclass
+class ProjectAttachment:
+    id: str
+    project_id: str
+    attachment_type: ProjectAttachmentType
+    upload_id: str | None
+    document_id: str | None
+    added_at: datetime
+
+    @classmethod
+    def from_row(cls, row: Mapping[str, object]) -> "ProjectAttachment":
+        return cls(
+            id=cast(str, row["id"]),
+            project_id=cast(str, row["project_id"]),
+            attachment_type=ProjectAttachmentType(cast(str, row["attachment_type"])),
+            upload_id=cast(str | None, row.get("upload_id")),
+            document_id=cast(str | None, row.get("document_id")),
+            added_at=cast(datetime, row["added_at"]),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "projectId": self.project_id,
+            "attachmentType": self.attachment_type.value,
+            "uploadId": self.upload_id,
+            "documentId": self.document_id,
+            "addedAt": self.added_at.isoformat(),
+        }
+
+
 @dataclass
 class Chat:
     id: str
@@ -341,6 +414,7 @@ class Chat:
     created_at: datetime
     updated_at: datetime
     agent_id: str | None = None
+    project_id: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "Chat":
@@ -356,6 +430,7 @@ class Chat:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             agent_id=row.get("agent_id"),
+            project_id=row.get("project_id"),
         )
 
     def to_dict(self) -> dict:
@@ -366,6 +441,7 @@ class Chat:
             "title": self.title,
             "model_id": self.model_id,
             "agent_id": self.agent_id,
+            "project_id": self.project_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

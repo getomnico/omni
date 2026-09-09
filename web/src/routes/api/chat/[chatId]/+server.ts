@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatRepository } from '$lib/server/db/chats'
+import { ProjectRepository } from '$lib/server/db/projects.js'
 
 export const GET: RequestHandler = async ({ params, locals }) => {
     const logger = locals.logger.child('chat')
@@ -52,6 +53,9 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
     if (!chatId) {
         return json({ error: 'chatId parameter is required' }, { status: 400 })
     }
+    if (!locals.user?.id) {
+        return json({ error: 'User not authenticated' }, { status: 401 })
+    }
 
     const chat = await chatRepository.get(chatId)
     if (!chat) {
@@ -72,6 +76,20 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
 
         if (typeof body.isStarred === 'boolean') {
             const result = await chatRepository.toggleStar(chatId, body.isStarred)
+            if (result) updatedChat = result
+        }
+
+        if (body.projectId !== undefined) {
+            if (body.projectId !== null && typeof body.projectId !== 'string') {
+                return json({ error: 'Invalid projectId' }, { status: 400 })
+            }
+            if (body.projectId !== null) {
+                const project = await new ProjectRepository().get(body.projectId)
+                if (!project || project.userId !== locals.user.id) {
+                    return json({ error: 'Project not found' }, { status: 404 })
+                }
+            }
+            const result = await chatRepository.moveChatToProject(chatId, body.projectId)
             if (result) updatedChat = result
         }
 

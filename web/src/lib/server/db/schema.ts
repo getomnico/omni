@@ -181,6 +181,20 @@ export const models = pgTable('models', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
+export const projects = pgTable('projects', {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+        .notNull()
+        .references(() => user.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    instructions: text('instructions'),
+    isArchived: boolean('is_archived').notNull().default(false),
+    isDeleted: boolean('is_deleted').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
 export const chats = pgTable('chats', {
     id: text('id').primaryKey(),
     userId: text('user_id')
@@ -192,9 +206,23 @@ export const chats = pgTable('chats', {
         onDelete: 'set null',
     }),
     agentId: text('agent_id').references(() => agents.id, { onDelete: 'set null' }),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
     isDeleted: boolean('is_deleted').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+})
+
+// Standing context attachments for a project. `uploadId` has a DB-level FK to
+// the `uploads` table (owned by omni-ai, not modeled in this drizzle schema).
+export const projectAttachments = pgTable('project_attachments', {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+        .notNull()
+        .references(() => projects.id, { onDelete: 'cascade' }),
+    attachmentType: text('attachment_type').notNull(),
+    uploadId: text('upload_id'),
+    documentId: text('document_id'),
+    addedAt: timestamp('added_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
 export const chatMessages = pgTable('chat_messages', {
@@ -430,6 +458,8 @@ export type ModelProvider = typeof modelProviders.$inferSelect
 export type Model = typeof models.$inferSelect
 export type Chat = typeof chats.$inferSelect
 export type ChatMessage = typeof chatMessages.$inferSelect
+export type Project = typeof projects.$inferSelect
+export type ProjectAttachment = typeof projectAttachments.$inferSelect
 export type Compaction = typeof compactions.$inferSelect
 export type ResponseFeedback = typeof responseFeedback.$inferSelect
 export type AuthProvider = typeof authProviders.$inferSelect

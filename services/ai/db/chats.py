@@ -6,7 +6,7 @@ from .models import Chat, ChatSearchHit
 from .connection import get_db_pool
 
 
-_CHAT_COLUMNS = "id, user_id, title, model_id, agent_id, created_at, updated_at"
+_CHAT_COLUMNS = "id, user_id, title, model_id, agent_id, project_id, created_at, updated_at"
 
 
 class ChatsRepository:
@@ -25,6 +25,7 @@ class ChatsRepository:
         title: Optional[str] = None,
         model_id: Optional[str] = None,
         agent_id: Optional[str] = None,
+        project_id: Optional[str] = None,
     ) -> Chat:
         """Create a new chat"""
         pool = await self._get_pool()
@@ -32,14 +33,14 @@ class ChatsRepository:
         chat_id = str(ULID())
 
         query = f"""
-            INSERT INTO chats (id, user_id, title, model_id, agent_id, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+            INSERT INTO chats (id, user_id, title, model_id, agent_id, project_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
             RETURNING {_CHAT_COLUMNS}
         """
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                query, chat_id, user_id, title, model_id, agent_id
+                query, chat_id, user_id, title, model_id, agent_id, project_id
             )
 
         return Chat.from_row(dict(row))
@@ -67,8 +68,13 @@ class ChatsRepository:
         query: str,
         limit: int,
         exclude_chat_id: str | None = None,
+        project_id: str | None = None,
     ) -> list[ChatSearchHit]:
-        """Search a user's non-deleted chats by title or message content."""
+        """Search a user's non-deleted chats by title or message content.
+
+        When project_id is given, results are scoped to that project's chats;
+        the project must still belong to user_id (enforced by the user_id match).
+        """
         pool = await self._get_pool()
 
         search_query = """
@@ -92,6 +98,7 @@ class ChatsRepository:
                   AND c.user_id = $1
                   AND c.is_deleted = FALSE
                   AND ($3::varchar IS NULL OR c.id <> $3::varchar)
+                  AND ($5::char(26) IS NULL OR c.project_id = $5::char(26))
             ),
             message_matches AS (
                 SELECT DISTINCT ON (c.id)
@@ -114,6 +121,7 @@ class ChatsRepository:
                   AND c.user_id = $1
                   AND c.is_deleted = FALSE
                   AND ($3::varchar IS NULL OR c.id <> $3::varchar)
+                  AND ($5::char(26) IS NULL OR c.project_id = $5::char(26))
                 ORDER BY c.id, score DESC, cm.id
             ),
             ranked_matches AS (
@@ -175,6 +183,7 @@ class ChatsRepository:
                 query,
                 exclude_chat_id,
                 limit,
+                project_id,
             )
 
         return [ChatSearchHit.from_row(dict(row)) for row in rows]

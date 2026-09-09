@@ -36,6 +36,7 @@
         Trash2,
         Bot,
         BookOpen,
+        Folder,
     } from '@lucide/svelte'
     import { onMount, type Snippet } from 'svelte'
     import { cn } from '$lib/utils'
@@ -384,6 +385,13 @@
                 variant="ghost">
                 <BookOpen />
                 <span class="group-data-[collapsible=icon]:hidden">Skills</span>
+            </Button>
+            <Button
+                href="/projects"
+                class="mb-2 flex w-full cursor-pointer items-center justify-start has-[>svg]:px-2"
+                variant="ghost">
+                <Folder />
+                <span class="group-data-[collapsible=icon]:hidden">Projects</span>
             </Button>
             <hr />
 

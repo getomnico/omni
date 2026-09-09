@@ -2,6 +2,7 @@ import { chatRepository, chatMessageRepository } from '$lib/server/db/chats.js'
 import { getModel } from '$lib/server/db/model-providers.js'
 import { getAgent } from '$lib/server/db/agents.js'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
+import { ProjectRepository } from '$lib/server/db/projects.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
 
@@ -114,6 +115,7 @@ export const load = async ({ params, locals, fetch, depends }) => {
 
     const uploadIds = collectUploadIds(messages)
     const uploadFilenames = await resolveUploadFilenames(uploadIds, fetch)
+    const projects = await new ProjectRepository().getByUserId(locals.user.id)
     const activePathMessages = await chatMessageRepository.getActivePath(chat.id)
     const activePathToolCallIds = collectActiveUnansweredToolCallIds(activePathMessages)
     const allPendingApprovals = await toolApprovalRepository.getPendingForChatAll(
@@ -146,5 +148,6 @@ export const load = async ({ params, locals, fetch, depends }) => {
         pendingApprovals,
         pendingOAuth,
         approvedOAuth,
+        projects,
     }
 }

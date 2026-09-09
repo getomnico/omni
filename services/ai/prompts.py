@@ -229,6 +229,32 @@ def _format_trusted_memory_block(memories: list[str], heading: str) -> str:
     return f"\n\n## {heading}\n{_build_memory_bullets(memories)}"
 
 
+def _format_project_instructions_block(instructions: str) -> str:
+    """Render project-level instructions as a trusted system-prompt section.
+
+    Only the project's owner can write them (same trust level as agent
+    instructions), so no untrusted fence is applied.
+    """
+    return (
+        "\n\n# Project instructions\n"
+        "The user wrote the following instructions for this project. Apply them "
+        "to every conversation in this project, in addition to the guidance above.\n"
+        f"{instructions}"
+    )
+
+
+def _format_project_context_block(lines: list[str]) -> str:
+    """Render project context attachments as pointers the model can resolve."""
+    bullet_list = "\n".join(f"- {line}" for line in lines)
+    return (
+        "\n\n# Project context\n"
+        "The following documents are attached to this project as standing context:\n"
+        f"{bullet_list}\n"
+        "- Use `read_document` with the [_ref:ULID] id when you need an attached "
+        "document's content beyond its title. Do not display _ref values to the user."
+    )
+
+
 def _available_skill_names() -> set[str]:
     if not _SKILLS_DIR.exists():
         return set()
@@ -380,6 +406,8 @@ def build_chat_system_prompt(
     user_configuration: UserConfiguration | None = None,
     include_web_search: bool = False,
     include_fetch_web_page: bool = False,
+    project_instructions: str | None = None,
+    project_context_lines: list[str] | None = None,
 ) -> str:
     """Build system prompt from active sources and available toolsets.
 
@@ -391,6 +419,8 @@ def build_chat_system_prompt(
         user_name: display name of the current user
         user_email: email of the current user
         memories: list of memory strings to inject as remembered context
+        project_instructions: standing instructions of the chat's project, if any
+        project_context_lines: rendered pointers to the project's attached documents
     """
     seen = set()
     display_names = []
@@ -416,11 +446,17 @@ def build_chat_system_prompt(
         web_tool_lines=_web_tool_lines(include_web_search, include_fetch_web_page),
     )
 
+    sections: list[str] = [base_prompt]
+
+    if project_instructions:
+        sections.append(_format_project_instructions_block(project_instructions))
+    if project_context_lines:
+        sections.append(_format_project_context_block(project_context_lines))
     if memories:
-        return base_prompt + _format_memory_block(
-            memories, heading="Remembered context about this user"
+        sections.append(
+            _format_memory_block(memories, heading="Remembered context about this user")
         )
-    return base_prompt
+    return "".join(sections)
 
 
 def _format_execution_log(execution_log: list[dict], max_chars: int = 5000) -> str:

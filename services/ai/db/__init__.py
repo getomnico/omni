@@ -8,7 +8,18 @@ from .embedding_queue import EmbeddingQueueItem, EmbeddingQueueRepository, Queue
 from .embeddings import Embedding, EmbeddingsRepository
 from .messages import MessagesRepository
 from .model_providers import ModelProviderRecord, ModelProvidersRepository, ModelsRepository
-from .models import Chat, ChatMessage, ChatSearchHit, ModelRecord, Source, User
+from .models import (
+    Chat,
+    ChatMessage,
+    ChatSearchHit,
+    ModelRecord,
+    Project,
+    ProjectAttachment,
+    ProjectAttachmentType,
+    Source,
+    User,
+)
+from .projects import ProjectAttachmentsRepository, ProjectsRepository
 from .skills import Skill, SkillsRepository
 from .task_queue import (
     ClaimOptions,
@@ -78,4 +89,9 @@ __all__ = [
     "TaskQueueRepository",
     "TaskStats",
     "TaskStatus",
+    "Project",
+    "ProjectAttachment",
+    "ProjectAttachmentType",
+    "ProjectAttachmentsRepository",
+    "ProjectsRepository",
 ]

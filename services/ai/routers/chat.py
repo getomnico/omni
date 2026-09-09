@@ -39,12 +39,14 @@ from db import (
     ChatsRepository,
     CompactionsRepository,
     MessagesRepository,
+    ProjectAttachmentsRepository,
+    ProjectsRepository,
     SkillsRepository,
 )
 from db.groups import GroupRepository
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
-from db.models import Chat, Source, UserConfiguration
+from db.models import Chat, ProjectAttachmentType, Source, UserConfiguration
 from db.tool_approvals import (
     ToolApproval,
     ToolApprovalsRepository,
@@ -388,6 +390,40 @@ async def _build_registry(
         sources=sources,
         search_operators=search_operators,
     )
+
+
+async def _load_project_context(
+    chat: Chat,
+) -> tuple[str | None, list[str] | None]:
+    """Resolve project instructions and context pointers for a project chat.
+
+    Returns (instructions, context_lines); both None when the chat has no
+    project or the project is inaccessible — the chat still proceeds without
+    project context rather than failing.
+    """
+    if not chat.project_id:
+        return None, None
+
+    project = await ProjectsRepository().get(chat.project_id)
+    if not project or project.user_id != chat.user_id:
+        return None, None
+
+    attachments = await ProjectAttachmentsRepository().list_for_project(project.id)
+    document_ids = [
+        a.document_id
+        for a in attachments
+        if a.attachment_type == ProjectAttachmentType.DOCUMENT and a.document_id
+    ]
+    context_lines: list[str] = []
+    if document_ids:
+        documents = await DocumentsRepository().get_by_ids(document_ids)
+        for document_id in document_ids:
+            document = documents.get(document_id)
+            if document:
+                title = document.title or "Untitled document"
+                context_lines.append(f"{title} [_ref:{document.id}]")
+
+    return project.instructions, (context_lines or None)
 
 
 async def _build_agent_chat_registry(
@@ -870,6 +906,9 @@ class StreamChatHandler:
             loaded_source_ids = _loaded_source_ids(
                 loaded_toolsets, build_result.connector_handler
             )
+            project_instructions, project_context_lines = await _load_project_context(
+                chat
+            )
             system_prompt = build_chat_system_prompt(
                 active_sources,
                 toolsets=build_result.toolsets,
@@ -886,6 +925,8 @@ class StreamChatHandler:
                     request.app.state, "web_fetch_provider", None
                 )
                 is not None,
+                project_instructions=project_instructions,
+                project_context_lines=project_context_lines,
             )
 
         # ---- Common setup (repair, compaction, etc.) ----

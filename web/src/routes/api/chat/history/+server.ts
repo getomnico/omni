@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatRepository } from '$lib/server/db/chats'
+import { ProjectRepository } from '$lib/server/db/projects.js'
 
 const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 50
@@ -29,12 +30,20 @@ export const GET: RequestHandler = async ({ url, locals }) => {
     const limit = Math.min(Math.max(requestedLimit, 1), MAX_LIMIT)
     const offset = parseNonNegativeInteger(url.searchParams.get('offset'), 0)
     const isStarred = parseOptionalBoolean(url.searchParams.get('isStarred'))
+    const projectId = url.searchParams.get('projectId')
+    if (projectId) {
+        const project = await new ProjectRepository().get(projectId)
+        if (!project || project.userId !== locals.user.id) {
+            return json({ error: 'Project not found' }, { status: 404 })
+        }
+    }
 
     try {
         const rows = await chatRepository.getByUserId(locals.user.id, {
             limit: limit + 1,
             offset,
             isStarred,
+            projectId: projectId || undefined,
         })
         const hasMore = rows.length > limit
         const items = hasMore ? rows.slice(0, limit) : rows

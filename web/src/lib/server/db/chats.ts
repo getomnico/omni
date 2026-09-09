@@ -92,6 +92,7 @@ export class ChatRepository {
         title?: string,
         modelId?: string,
         agentId?: string,
+        projectId?: string,
     ): Promise<Chat> {
         const chatId = ulid()
         const [newChat] = await this.db
@@ -102,6 +103,7 @@ export class ChatRepository {
                 title,
                 modelId: modelId || null,
                 agentId: agentId || null,
+                projectId: projectId || null,
             })
             .returning()
 
@@ -120,11 +122,14 @@ export class ChatRepository {
 
     async getByUserId(
         userId: string,
-        options?: { limit?: number; offset?: number; isStarred?: boolean },
+        options?: { limit?: number; offset?: number; isStarred?: boolean; projectId?: string },
     ): Promise<Chat[]> {
         const conditions = [eq(chats.userId, userId), eq(chats.isDeleted, false)]
         if (options?.isStarred !== undefined) {
             conditions.push(eq(chats.isStarred, options.isStarred))
+        }
+        if (options?.projectId !== undefined) {
+            conditions.push(eq(chats.projectId, options.projectId))
         }
 
         let query = this.db
@@ -158,6 +163,19 @@ export class ChatRepository {
         return updatedChat || null
     }
 
+    async moveChatToProject(chatId: string, projectId: string | null): Promise<Chat | null> {
+        const [updatedChat] = await this.db
+            .update(chats)
+            .set({
+                projectId,
+                updatedAt: new Date(),
+            })
+            .where(and(eq(chats.id, chatId), eq(chats.isDeleted, false)))
+            .returning()
+
+        return updatedChat || null
+    }
+
     async toggleStar(chatId: string, isStarred: boolean): Promise<Chat | null> {
         const [updatedChat] = await this.db
             .update(chats)
@@ -184,7 +202,7 @@ export class ChatRepository {
     async search(userId: string, query: string): Promise<ChatSearchHit[]> {
         const results = await this.db.execute<ChatSearchSqlRow>(sql`
             WITH title_matches AS (
-                SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.is_deleted, c.created_at, c.updated_at,
+                SELECT c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.project_id, c.is_deleted, c.created_at, c.updated_at,
                        NULL::varchar AS message_id, NULL::text AS content_text,
                        pdb.score(c.id) AS score, 'title'::text AS source
                 FROM chats c
@@ -206,7 +224,7 @@ export class ChatRepository {
             ),
             message_matches AS (
                 SELECT DISTINCT ON (c.id)
-                       c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.is_deleted, c.created_at, c.updated_at,
+                       c.id, c.user_id, c.title, c.is_starred, c.model_id, c.agent_id, c.project_id, c.is_deleted, c.created_at, c.updated_at,
                        tmm.message_id, tmm.content_text, tmm.score, 'message'::text AS source
                 FROM top_message_matches tmm
                 JOIN chats c ON c.id = tmm.chat_id
@@ -214,7 +232,7 @@ export class ChatRepository {
             ),
             ranked_matches AS (
                 SELECT DISTINCT ON (id)
-                       id, user_id, title, is_starred, model_id, agent_id, is_deleted, created_at, updated_at,
+                       id, user_id, title, is_starred, model_id, agent_id, project_id, is_deleted, created_at, updated_at,
                        message_id, content_text, score, source
                 FROM (
                     SELECT * FROM title_matches
@@ -235,6 +253,7 @@ export class ChatRepository {
                    is_starred AS "isStarred",
                    model_id AS "modelId",
                    agent_id AS "agentId",
+                   project_id AS "projectId",
                    is_deleted AS "isDeleted",
                    created_at AS "createdAt",
                    updated_at AS "updatedAt",
