@@ -16,15 +16,7 @@ export interface ConnectorConfigPublic {
     updatedAt: Date
 }
 
-function isSalesforceConfig(provider: string): boolean {
-    return provider === 'salesforce' || provider.startsWith('salesforce:')
-}
-
-function decryptSalesforceSecrets(
-    provider: string,
-    config: Record<string, unknown>,
-): Record<string, unknown> {
-    if (!isSalesforceConfig(provider)) return config
+function decryptOAuthSecrets(config: Record<string, unknown>): Record<string, unknown> {
     const decrypted = { ...config }
     for (const key of SECRET_KEYS) {
         const value = decrypted[key]
@@ -41,11 +33,7 @@ function decryptSalesforceSecrets(
     return decrypted
 }
 
-function encryptSalesforceSecrets(
-    provider: string,
-    config: Record<string, unknown>,
-): Record<string, unknown> {
-    if (!isSalesforceConfig(provider)) return config
+function encryptOAuthSecrets(config: Record<string, unknown>): Record<string, unknown> {
     const encrypted = { ...config }
     for (const key of SECRET_KEYS) {
         const value = encrypted[key]
@@ -77,7 +65,7 @@ export async function getConnectorConfig(provider: string): Promise<ConnectorCon
     if (!row) return null
     return {
         ...row,
-        config: decryptSalesforceSecrets(row.provider, row.config as Record<string, unknown>),
+        config: decryptOAuthSecrets(row.config as Record<string, unknown>),
     }
 }
 
@@ -99,7 +87,7 @@ export async function getAllConnectorConfigsPublic(): Promise<ConnectorConfigPub
     return rows.map((row) => ({
         provider: row.provider,
         config: stripSecrets(
-            decryptSalesforceSecrets(row.provider, row.config as Record<string, unknown>),
+            decryptOAuthSecrets(row.config as Record<string, unknown>),
         ),
         updatedAt: row.updatedAt,
     }))
@@ -118,14 +106,14 @@ export async function upsertConnectorConfig(
         .insert(connectorConfigs)
         .values({
             provider,
-            config: encryptSalesforceSecrets(provider, config),
+            config: encryptOAuthSecrets(config),
             updatedBy,
             updatedAt: new Date(),
         })
         .onConflictDoUpdate({
             target: connectorConfigs.provider,
             set: {
-                config: encryptSalesforceSecrets(provider, config),
+                config: encryptOAuthSecrets(config),
                 updatedBy,
                 updatedAt: new Date(),
             },

@@ -11,6 +11,7 @@
         provider: string
         displayName: string
         configured?: boolean
+        registrationRequiresInitialAccessToken?: boolean
         config?: Record<string, unknown>
         onSaved?: () => void
         onCancel?: () => void
@@ -21,6 +22,7 @@
         provider,
         displayName,
         configured = false,
+        registrationRequiresInitialAccessToken = false,
         config = {},
         onSaved,
         onCancel,
@@ -31,25 +33,30 @@
     let registrationInitialAccessToken = $state('')
     let isSaving = $state(false)
 
-    const isSalesforceProvider = $derived(
-        provider === 'salesforce' || provider.startsWith('salesforce:'),
-    )
+    const requiresInitialAccessToken = $derived(registrationRequiresInitialAccessToken)
     const savedClientId = $derived(
         open && typeof config.oauth_client_id === 'string' ? config.oauth_client_id : '',
     )
     const clientId = $derived(clientIdOverride ?? savedClientId)
 
     async function save() {
-        if (!clientId.trim() && !(isSalesforceProvider && registrationInitialAccessToken.trim())) {
-            toast.error('Client ID is required unless Salesforce DCR is configured')
+        if (
+            !clientId.trim() &&
+            !(requiresInitialAccessToken && registrationInitialAccessToken.trim())
+        ) {
+            toast.error(
+                `Client ID is required unless ${displayName} dynamic registration is configured`,
+            )
             return
         }
         if (
             !configured &&
             !clientSecret.trim() &&
-            !(isSalesforceProvider && registrationInitialAccessToken.trim())
+            !(requiresInitialAccessToken && registrationInitialAccessToken.trim())
         ) {
-            toast.error('Client secret is required unless Salesforce DCR is configured')
+            toast.error(
+                `Client secret is required unless ${displayName} dynamic registration is configured`,
+            )
             return
         }
 
@@ -57,6 +64,7 @@
         try {
             const nextConfig: Record<string, unknown> = { ...config }
             delete nextConfig.oauth_client_secret
+            delete nextConfig.oauth_registration_initial_access_token
             if (clientId.trim()) nextConfig.oauth_client_id = clientId.trim()
             else delete nextConfig.oauth_client_id
             if (clientSecret.trim()) {
@@ -116,7 +124,7 @@
                     placeholder={`Enter ${displayName} client ID`} />
             </div>
 
-            {#if isSalesforceProvider}
+            {#if requiresInitialAccessToken}
                 <div class="space-y-2">
                     <Label for="oauth-registration-token"
                         >DCR initial access token (optional)</Label>
@@ -124,11 +132,10 @@
                         id="oauth-registration-token"
                         type="password"
                         bind:value={registrationInitialAccessToken}
-                        placeholder="Required only when enabling Salesforce DCR" />
+                        placeholder="Required only when enabling dynamic registration" />
                     <p class="text-muted-foreground text-xs">
-                        Salesforce Dynamic Client Registration requires an administrator-issued
-                        initial access token. Leave blank when using a pre-created External Client
-                        App.
+                        Dynamic Client Registration requires an administrator-issued initial access
+                        token. Leave blank when using a pre-created OAuth client.
                     </p>
                 </div>
             {/if}

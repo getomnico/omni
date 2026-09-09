@@ -1,13 +1,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthType } from '$lib/types'
 
-const { lookupMock, fetchMock } = vi.hoisted(() => ({
+const { lookupMock, fetchMock, closeDispatcherMock } = vi.hoisted(() => ({
     lookupMock: vi.fn(),
     fetchMock: vi.fn(),
+    closeDispatcherMock: vi.fn(async () => undefined),
 }))
 
 vi.mock('node:dns/promises', () => ({
     lookup: lookupMock,
+}))
+
+vi.mock('undici', () => ({
+    Agent: vi.fn(function Agent() {
+        return { close: closeDispatcherMock }
+    }),
+    fetch: fetchMock,
 }))
 
 function jsonRpcResponse(body: unknown, headers?: Record<string, string>) {
@@ -23,7 +31,7 @@ describe('remote MCP probe network behavior', () => {
         vi.clearAllMocks()
         lookupMock.mockResolvedValue([{ address: '8.8.8.8', family: 4 }])
         fetchMock.mockReset()
-        vi.stubGlobal('fetch', fetchMock)
+        closeDispatcherMock.mockClear()
     })
 
     it('uses bearer auth, disables redirects, and re-checks DNS before each MCP request', async () => {

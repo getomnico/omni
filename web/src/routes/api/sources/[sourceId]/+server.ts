@@ -4,7 +4,13 @@ import { db } from '$lib/server/db'
 import { sources, syncRuns, serviceCredentials } from '$lib/server/db/schema'
 import { eq, and } from 'drizzle-orm'
 import { getConfig } from '$lib/server/config'
-import { removeDynamicallyRegisteredClient } from '$lib/server/oauth/connectorOAuth'
+import {
+    clientConfigProviderForSource,
+    getOAuthConfigForSource,
+    getOAuthManifestForSourceType,
+    isAutoManagedOAuthProvider,
+    removeDynamicallyRegisteredClient,
+} from '$lib/server/oauth/connectorOAuth'
 import { logger } from '$lib/server/logger'
 import {
     isValidSyncIntervalSeconds,
@@ -99,20 +105,32 @@ export const DELETE: RequestHandler = async ({ params, locals, fetch, url }) => 
         }
     }
 
-    // Salesforce DCR clients are source-scoped. Revoke the registered client
-    // before removing the source, then remove its encrypted local metadata.
-    // Admins may pass ?revoke_oauth_client=false when Salesforce is
-    // unreachable and they accept leaving the registered client in the org
-    // (it can be revoked later from the Salesforce admin console).
+    // Revoke a source-scoped dynamically registered OAuth client before
+    // removing the source, then remove its encrypted local metadata. The
+    // connector manifest owns the source-key template; this route remains
+    // provider-agnostic.
     const revokeOAuthClient = url.searchParams.get('revoke_oauth_client') !== 'false'
-    if (source.sourceType === 'salesforce' && revokeOAuthClient) {
+    const oauthManifest =
+        (await getOAuthConfigForSource(source)) ??
+        (await getOAuthManifestForSourceType(source.sourceType))
+    const sourceOAuthProvider =
+        oauthManifest &&
+        oauthManifest.client_config_provider_template &&
+        isAutoManagedOAuthProvider(oauthManifest)
+            ? clientConfigProviderForSource(oauthManifest, sourceId)
+            : null
+    if (
+        sourceOAuthProvider &&
+        sourceOAuthProvider !== oauthManifest?.provider &&
+        revokeOAuthClient
+    ) {
         try {
-            await removeDynamicallyRegisteredClient(`salesforce:${sourceId}`)
+            await removeDynamicallyRegisteredClient(sourceOAuthProvider)
         } catch (err) {
-            logger.warn(`Failed to revoke Salesforce DCR client for source ${sourceId}`, err)
+            logger.warn(`Failed to revoke the source OAuth client for ${sourceId}`, err)
             throw error(
                 502,
-                'Salesforce is unavailable to revoke its OAuth client; try deleting the source again, or delete with ?revoke_oauth_client=false to keep the registered client in Salesforce',
+                'The OAuth provider is unavailable to revoke its client; try deleting the source again, or delete with ?revoke_oauth_client=false to keep the registered client',
             )
         }
     }

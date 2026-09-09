@@ -33,68 +33,6 @@ function returnToFromStateMetadata(metadata: Record<string, unknown> | undefined
     return typeof returnTo === 'string' && isSafeLocalPath(returnTo) ? returnTo : null
 }
 
-async function persistSalesforceOrganizationBinding(
-    source: Awaited<ReturnType<typeof getSourceById>>,
-    userinfo: unknown,
-): Promise<void> {
-    if (!source || source.sourceType !== SourceType.SALESFORCE) return
-    const profile =
-        typeof userinfo === 'object' && userinfo !== null
-            ? (userinfo as Record<string, unknown>)
-            : null
-    const organizationId =
-        typeof profile?.organization_id === 'string' ? profile.organization_id : ''
-    if (!organizationId) return
-    const config = { ...((source.config ?? {}) as Record<string, unknown>) }
-    if (config.organization_id === organizationId) return
-    config.organization_id = organizationId
-    await db.update(sources).set({ config, updatedAt: new Date() }).where(eq(sources.id, source.id))
-}
-
-function validateSalesforceSourceBinding(
-    source: Awaited<ReturnType<typeof getSourceById>>,
-    tokens: { instance_url?: string },
-    userinfo: unknown,
-): void {
-    if (!source || source.sourceType !== SourceType.SALESFORCE) return
-    const config = (source.config ?? {}) as Record<string, unknown>
-    const expectedInstance =
-        typeof config.instance_url === 'string'
-            ? config.instance_url.trim().replace(/\/+$/, '')
-            : ''
-    const expectedOrgId = typeof config.organization_id === 'string' ? config.organization_id : ''
-    if (!expectedInstance && !expectedOrgId) {
-        throw new Error('Salesforce source is missing its organization binding')
-    }
-
-    const profile =
-        typeof userinfo === 'object' && userinfo !== null
-            ? (userinfo as Record<string, unknown>)
-            : null
-    const actualOrgId = typeof profile?.organization_id === 'string' ? profile.organization_id : ''
-    if (expectedOrgId && actualOrgId !== expectedOrgId) {
-        throw new Error('Salesforce OAuth organization does not match the source')
-    }
-
-    if (expectedInstance) {
-        let expected: URL
-        let actual: URL
-        try {
-            expected = new URL(expectedInstance)
-            actual = new URL(tokens.instance_url ?? '')
-        } catch {
-            throw new Error('Salesforce source has an invalid organization URL')
-        }
-        if (
-            expected.protocol !== 'https:' ||
-            actual.protocol !== 'https:' ||
-            expected.host !== actual.host
-        ) {
-            throw new Error('Salesforce OAuth instance does not match the source')
-        }
-    }
-}
-
 /// Unified OAuth callback. Provider-agnostic — dispatches based on the flow
 /// stored in the OAuth state.
 export const GET: RequestHandler = async ({ url, locals, fetch }) => {
@@ -109,7 +47,20 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
 
     if (oauthError) {
         logger.error('OAuth provider error', { error: oauthError })
-        throw redirect(302, '/settings/integrations?error=oauth_denied')
+        let returnTo: string | null = null
+        if (stateToken) {
+            try {
+                const pendingState = await OAuthStateManager.getState(stateToken)
+                if (pendingState?.user_id === user.id) {
+                    returnTo = returnToFromStateMetadata(pendingState.metadata)
+                }
+            } catch (err) {
+                logger.warn('Failed to read OAuth state after provider denial', {
+                    err: String(err),
+                })
+            }
+        }
+        throw redirect(302, withErrorParam(returnTo ?? '/settings/integrations', 'oauth_denied'))
     }
     if (!code || !stateToken) {
         throw error(400, 'Missing code or state')
@@ -149,6 +100,35 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
     }
 
     const flow = state.metadata.flow
+    const redirectOAuthFailure = (message: string): never => {
+        logger.error('OAuth callback validation failed', {
+            provider: config.provider,
+            sourceId: 'sourceId' in flow ? flow.sourceId : undefined,
+            flowType: flow.type,
+            message,
+        })
+        if (flow.type === 'org_source') {
+            throw redirect(
+                302,
+                withErrorParam(
+                    flow.returnTo ?? '/admin/settings/integrations',
+                    'oauth_validation_failed',
+                ),
+            )
+        }
+        if (flow.type === 'user_read' || flow.type === 'user_write') {
+            const params = new URLSearchParams({
+                ok: 'false',
+                sourceId: flow.sourceId,
+                message,
+            })
+            throw redirect(302, `/oauth/done?${params}`)
+        }
+        throw redirect(
+            302,
+            withErrorParam(flow.returnTo ?? '/settings/integrations', 'oauth_failed'),
+        )
+    }
     const grantedScopes = (tokens.scope ?? '')
         .split(config.scope_separator === ',' ? ',' : /[\s,]+/)
         .filter(Boolean)
@@ -169,32 +149,83 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         }
     }
 
-    const expiresAt = tokens.expires_in ? new Date(Date.now() + tokens.expires_in * 1000) : null
-    const salesforceLoginUrl = (() => {
-        if (config.provider !== 'salesforce') return undefined
-        try {
-            return new URL(config.auth_endpoint).origin
-        } catch {
-            return undefined
-        }
-    })()
+    const expiresAt =
+        typeof tokens.expires_in === 'number'
+            ? new Date(Date.now() + tokens.expires_in * 1000)
+            : null
+    const tokenResponseMetadata = Object.fromEntries(
+        (config.token_response_fields ?? [])
+            .filter((field) => !['access_token', 'refresh_token', 'token_type'].includes(field))
+            .flatMap((field) => {
+                const value = tokens[field]
+                return value === undefined ? [] : [[field, value]]
+            }),
+    )
     const credentialsWithRefreshFallback = (existingCredentials: Record<string, unknown>) => ({
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token ?? existingCredentials.refresh_token ?? null,
         token_type: tokens.token_type ?? 'Bearer',
-        ...(tokens.instance_url ? { instance_url: tokens.instance_url } : {}),
-        ...(salesforceLoginUrl ? { login_url: salesforceLoginUrl } : {}),
-        ...(typeof userinfo === 'object' &&
-        userinfo !== null &&
-        typeof (userinfo as Record<string, unknown>).organization_id === 'string'
-            ? { organization_id: (userinfo as Record<string, unknown>).organization_id }
-            : {}),
+        ...tokenResponseMetadata,
         client_id: clientCreds.clientId,
         ...(clientCreds.clientSecret ? { client_secret: clientCreds.clientSecret } : {}),
         token_uri: clientCreds.tokenEndpoint ?? config.token_endpoint,
         token_endpoint_auth_method: clientCreds.tokenEndpointAuthMethod,
         ...(config.resource ? { resource: config.resource } : {}),
     })
+
+    const validateOAuthCredentialForSource = async (
+        sourceId: string,
+        credentials: Record<string, unknown>,
+    ): Promise<Record<string, unknown>> => {
+        const response = await fetch(`${getConfig().services.connectorManagerUrl}/oauth/validate`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+                source_id: sourceId,
+                provider: config.provider,
+                credentials,
+                metadata:
+                    typeof userinfo === 'object' && userinfo !== null && !Array.isArray(userinfo)
+                        ? userinfo
+                        : {},
+            }),
+        })
+        const body = (await response.json().catch(() => null)) as unknown
+        if (!response.ok) {
+            const message =
+                typeof body === 'object' && body !== null
+                    ? 'message' in body
+                        ? (body as { message?: unknown }).message
+                        : 'error' in body
+                          ? (body as { error?: unknown }).error
+                          : undefined
+                    : undefined
+            throw new Error(
+                typeof message === 'string' && message ? message : 'OAuth credential rejected',
+            )
+        }
+        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+            throw new Error('OAuth validation returned an invalid response')
+        }
+        const updates = (body as { config_updates?: unknown }).config_updates
+        if (updates === undefined) return {}
+        if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
+            throw new Error('OAuth validation returned invalid config updates')
+        }
+        return updates as Record<string, unknown>
+    }
+
+    const applySourceConfigUpdates = async (
+        source: Awaited<ReturnType<typeof getSourceById>>,
+        updates: Record<string, unknown>,
+    ): Promise<void> => {
+        if (!source || Object.keys(updates).length === 0) return
+        const config = { ...((source.config ?? {}) as Record<string, unknown>), ...updates }
+        await db
+            .update(sources)
+            .set({ config, updatedAt: new Date() })
+            .where(eq(sources.id, source.id))
+    }
 
     const notifyOAuthCredentialReady = async (
         sourceId: string,
@@ -237,37 +268,27 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         }
         const source = await getSourceById(flow.sourceId)
         if (!source || source.isDeleted || source.scope !== 'org') {
-            throw error(404, 'Org source not found')
+            return redirectOAuthFailure('Org source not found')
         }
-        if (source.sourceType === SourceType.SALESFORCE) {
-            throw error(400, 'Salesforce org_source OAuth is not supported')
-        }
-        try {
-            validateSalesforceSourceBinding(source, tokens, userinfo)
-        } catch (err) {
-            logger.warn('OAuth source binding validation failed', {
-                sourceId: flow.sourceId,
-                provider: config.provider,
-                error: String(err),
-            })
-            throw redirect(
-                302,
-                withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_org_mismatch'),
-            )
-        }
-        await persistSalesforceOrganizationBinding(source, userinfo)
         const existing = await serviceCredentialsRepository.getOrgCredsBySourceId(flow.sourceId)
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
+        const credentials = credentialsWithRefreshFallback(existingCredentials)
+        let configUpdates: Record<string, unknown>
+        try {
+            configUpdates = await validateOAuthCredentialForSource(flow.sourceId, credentials)
+            await applySourceConfigUpdates(source, configUpdates)
+        } catch (err) {
+            return redirectOAuthFailure(
+                err instanceof Error ? err.message : 'OAuth credential rejected',
+            )
+        }
 
         await serviceCredentialsRepository.create({
             sourceId: flow.sourceId,
             provider: credentialProvider,
             authType: 'oauth',
             principalEmail,
-            credentials: {
-                ...existingCredentials,
-                ...credentialsWithRefreshFallback(existingCredentials),
-            },
+            credentials,
             config: (existing?.config as Record<string, unknown> | undefined) ?? {},
             expiresAt,
         })
@@ -306,26 +327,22 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
 
     if (flow.type === 'user_read' || flow.type === 'user_write') {
         const source = await getSourceById(flow.sourceId)
-        if (!source || source.isDeleted) throw error(404, 'Source not found')
-        try {
-            validateSalesforceSourceBinding(source, tokens, userinfo)
-        } catch (err) {
-            logger.warn('OAuth source binding validation failed', {
-                sourceId: flow.sourceId,
-                provider: config.provider,
-                error: String(err),
-            })
-            throw redirect(
-                302,
-                withErrorParam(failureReturnTo ?? '/settings/integrations', 'oauth_org_mismatch'),
-            )
-        }
-        await persistSalesforceOrganizationBinding(source, userinfo)
+        if (!source || source.isDeleted) return redirectOAuthFailure('Source not found')
         const existing = await serviceCredentialsRepository.getByUserAndSource(
             flow.sourceId,
             user.id,
         )
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
+        const credentials = credentialsWithRefreshFallback(existingCredentials)
+        let configUpdates: Record<string, unknown>
+        try {
+            configUpdates = await validateOAuthCredentialForSource(flow.sourceId, credentials)
+            await applySourceConfigUpdates(source, configUpdates)
+        } catch (err) {
+            return redirectOAuthFailure(
+                err instanceof Error ? err.message : 'OAuth credential rejected',
+            )
+        }
 
         await serviceCredentialsRepository.createForUser({
             sourceId: flow.sourceId,
@@ -333,10 +350,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             provider: credentialProvider,
             authType: 'oauth',
             principalEmail,
-            credentials: {
-                ...existingCredentials,
-                ...credentialsWithRefreshFallback(existingCredentials),
-            },
+            credentials,
             config: { granted_scopes: storedGrantedScopes },
             expiresAt,
         })
@@ -438,7 +452,20 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 continue
             }
 
-            // Same Google identity — refresh its creds in place and preserve scope.
+            let configUpdates: Record<string, unknown>
+            try {
+                configUpdates = await validateOAuthCredentialForSource(
+                    existing.id,
+                    credentialsWithRefreshFallback(existingCredentials),
+                )
+                await applySourceConfigUpdates(existing, configUpdates)
+            } catch (err) {
+                return redirectOAuthFailure(
+                    err instanceof Error ? err.message : 'OAuth credential rejected',
+                )
+            }
+
+            // Same identity — refresh its creds in place and preserve scope.
             await serviceCredentialsRepository.createForUser({
                 sourceId: existing.id,
                 userId: user.id,
@@ -460,19 +487,33 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         }
 
         const isGoogleDrive = sourceType === SourceType.GOOGLE_DRIVE
+        const newSourceId = ulid()
         const [newSource] = await db
             .insert(sources)
             .values({
-                id: ulid(),
+                id: newSourceId,
                 name: getSourceDisplayName(sourceType as SourceType) ?? sourceType,
                 sourceType,
                 scope: 'user',
                 config: isGoogleDrive ? { index_scope: 'pending', folder_path_filters: [] } : {},
                 createdBy: user.id,
-                // Drive must wait for the owner to choose its indexing scope.
-                isActive: !isGoogleDrive,
+                // Keep the source inactive until the credential has passed the
+                // connector's source-binding checks.
+                isActive: false,
             })
             .returning()
+
+        const newCredentials = credentialsWithRefreshFallback({})
+        let configUpdates: Record<string, unknown>
+        try {
+            configUpdates = await validateOAuthCredentialForSource(newSource.id, newCredentials)
+            await applySourceConfigUpdates(newSource, configUpdates)
+        } catch (err) {
+            await db.delete(sources).where(eq(sources.id, newSource.id))
+            return redirectOAuthFailure(
+                err instanceof Error ? err.message : 'OAuth credential rejected',
+            )
+        }
 
         await serviceCredentialsRepository.createForUser({
             sourceId: newSource.id,
@@ -480,10 +521,16 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             provider: credentialProvider,
             authType: 'oauth',
             principalEmail,
-            credentials: credentialsWithRefreshFallback({}),
+            credentials: newCredentials,
             config: { granted_scopes: effectiveGrantedScopes },
             expiresAt,
         })
+        if (!isGoogleDrive) {
+            await db
+                .update(sources)
+                .set({ isActive: true, updatedAt: new Date() })
+                .where(eq(sources.id, newSource.id))
+        }
         connectedSourceIds.push(newSource.id)
 
         logger.info(`Created personal source ${newSource.id} (${sourceType}) for user ${user.id}`)

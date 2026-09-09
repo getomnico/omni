@@ -12,6 +12,7 @@ import {
     remoteMcpConfigFromInput,
     type RemoteMcpConfig,
 } from '$lib/server/mcp/client'
+import { remoteMcpPutTransition } from '$lib/server/mcp/remoteMcpPutTransition'
 
 function remoteMcpAuthType(source: Source): string | null {
     const config = source.config as Partial<RemoteMcpConfig>
@@ -62,34 +63,6 @@ function bearerTokenFromCredential(
     const decrypted = decryptConfig(credential.credentials)
     const token = decrypted.token
     return typeof token === 'string' ? token : null
-}
-
-function remoteMcpPutTransition(
-    existingIsActive: boolean,
-    previousConfig: Partial<RemoteMcpConfig>,
-    nextConfig: RemoteMcpConfig,
-): {
-    shouldBeActive: boolean
-    shouldDeleteCredentials: boolean
-    oauthBootstrapRequired: boolean
-} {
-    const previousAuthType = previousConfig.auth_type ?? null
-    const nextAuthType = nextConfig.auth_type ?? null
-    const authTypeChanged = previousAuthType !== nextAuthType
-    const endpointChanged = previousConfig.endpoint_url !== nextConfig.endpoint_url
-    const oauthBootstrapRequired =
-        nextAuthType === AuthType.OAUTH && (authTypeChanged || endpointChanged)
-
-    return {
-        shouldBeActive:
-            nextAuthType === AuthType.OAUTH ? existingIsActive && !oauthBootstrapRequired : true,
-        shouldDeleteCredentials:
-            authTypeChanged ||
-            (previousAuthType === AuthType.OAUTH &&
-                nextAuthType === AuthType.OAUTH &&
-                endpointChanged),
-        oauthBootstrapRequired,
-    }
 }
 
 async function pruneRemoteMcpCapabilities(sourceId: string, fetchFn: typeof fetch): Promise<void> {

@@ -3,6 +3,7 @@ import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
+import { getOAuthManifestForSourceType } from '$lib/server/oauth/connectorOAuth'
 import { SourceType } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
@@ -18,8 +19,14 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
+    const oauthManifest = await getOAuthManifestForSourceType(SourceType.SALESFORCE)
+
     return {
         source,
+        oauth: {
+            registrationRequiresInitialAccessToken:
+                oauthManifest?.registration_requires_initial_access_token === true,
+        },
     }
 }
 

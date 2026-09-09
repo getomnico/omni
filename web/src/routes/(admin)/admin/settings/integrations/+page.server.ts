@@ -4,6 +4,7 @@ import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getAllConnectorConfigsPublic } from '$lib/server/db/connector-configs'
 import {
     callbackUrl,
+    clientConfigProviderForSource,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
     oauthServiceBaseUrl,
@@ -11,7 +12,7 @@ import {
     type OAuthManifestConfig,
 } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
-import { IntegrationType, SourceType, supportsDataSync } from '$lib/types'
+import { IntegrationType, supportsDataSync } from '$lib/types'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -70,6 +71,7 @@ export interface OAuthIntegrationProvider {
     configured: boolean
     updatedAt: Date | null
     config: Record<string, unknown>
+    registrationRequiresInitialAccessToken: boolean
 }
 
 function providerDisplayName(provider: string, connectors: ConnectorInfo[]): string {
@@ -217,11 +219,14 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             }
 
             oauthProviders = Array.from(sourceTypesByOAuthProvider.keys())
-                .filter(
-                    (provider) =>
+                .filter((provider) => {
+                    const manifest = oauthManifestByProvider.get(provider)
+                    return (
                         !provider.startsWith('remote_mcp:') &&
-                        !isAutoManagedOAuthProvider(oauthManifestByProvider.get(provider)),
-                )
+                        !manifest?.client_config_provider_template &&
+                        !isAutoManagedOAuthProvider(manifest)
+                    )
+                })
                 .map((provider) => {
                     const saved = savedOAuthConfigByProvider.get(provider)
                     const manifest = oauthManifestByProvider.get(provider)
@@ -235,31 +240,34 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
                         configured: isClientConfigComplete(saved?.config, tokenEndpointAuthMethod),
                         updatedAt: saved?.updatedAt ?? null,
                         config: saved?.config ?? {},
+                        registrationRequiresInitialAccessToken:
+                            manifest?.registration_requires_initial_access_token === true,
                     }
                 })
 
-            // Salesforce OAuth clients are bound to a source (org): the global
-            // 'salesforce' manifest provider is filtered out above because DCR
-            // self-registers. Surface one OAuth Apps row per connected
-            // Salesforce source, keyed `salesforce:<source-id>`.
-            const salesforceManifest = oauthManifestByProvider.get('salesforce')
-            for (const source of connectedSources) {
-                if (source.sourceType !== SourceType.SALESFORCE) continue
-                const provider = `salesforce:${source.id}`
-                const saved = savedOAuthConfigByProvider.get(provider)
-                const tokenEndpointAuthMethod = tokenEndpointAuthMethodForConfig(
-                    saved?.config,
-                    salesforceManifest,
-                )
-                oauthProviders.push({
-                    provider,
-                    displayName: `Salesforce — ${source.name}`,
-                    configured:
-                        isClientConfigComplete(saved?.config, tokenEndpointAuthMethod) ||
-                        saved?.config.oauth_dynamic_client_registration === 'true',
-                    updatedAt: saved?.updatedAt ?? null,
-                    config: saved?.config ?? {},
-                })
+            for (const [manifestProvider, manifest] of oauthManifestByProvider) {
+                const sourceTypes = sourceTypesByOAuthProvider.get(manifestProvider) ?? new Set()
+                if (!manifest.client_config_provider_template) continue
+                for (const source of connectedSources) {
+                    if (!sourceTypes.has(source.sourceType)) continue
+                    const provider = clientConfigProviderForSource(manifest, source.id)
+                    const saved = savedOAuthConfigByProvider.get(provider)
+                    const tokenEndpointAuthMethod = tokenEndpointAuthMethodForConfig(
+                        saved?.config,
+                        manifest,
+                    )
+                    oauthProviders.push({
+                        provider,
+                        displayName: `${providerDisplayName(manifestProvider, connectors)} — ${source.name}`,
+                        configured:
+                            isClientConfigComplete(saved?.config, tokenEndpointAuthMethod) ||
+                            saved?.config.oauth_dynamic_client_registration === 'true',
+                        updatedAt: saved?.updatedAt ?? null,
+                        config: saved?.config ?? {},
+                        registrationRequiresInitialAccessToken:
+                            manifest.registration_requires_initial_access_token === true,
+                    })
+                }
             }
 
             oauthProviders.sort((a, b) => a.displayName.localeCompare(b.displayName))

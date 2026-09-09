@@ -246,6 +246,7 @@
         provider={oauthDialogProvider.provider}
         displayName={oauthDialogProvider.displayName}
         configured={oauthDialogProvider.configured}
+        registrationRequiresInitialAccessToken={data.oauth.registrationRequiresInitialAccessToken}
         config={oauthDialogProvider.config}
         onSaved={() => {
             oauthDialogOpen = false

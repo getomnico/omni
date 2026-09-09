@@ -120,6 +120,8 @@ describe('OAuth connector helpers', () => {
                 'windshift',
                 'https://omni.example/api/oauth/callback',
                 'mcp:access',
+                'none',
+                ['authorization_code', 'refresh_token'],
             ),
         ).toEqual({
             client_name: 'Omni Windshift MCP',
@@ -146,6 +148,8 @@ describe('OAuth connector helpers', () => {
                 'atlassian',
                 'https://omni.example/api/oauth/callback',
                 'read:jira-work',
+                'none',
+                ['authorization_code', 'refresh_token'],
             ),
         ).toMatchObject({
             client_name: 'Omni Atlassian MCP',

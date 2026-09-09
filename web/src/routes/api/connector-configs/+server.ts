@@ -8,6 +8,10 @@ import {
 import { validateWindshiftServerUrl } from '$lib/server/windshift-server-config'
 import { revokeDynamicallyRegisteredClient } from '$lib/server/oauth/connectorOAuth'
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -22,43 +26,49 @@ export const POST: RequestHandler = async ({ locals, request }) => {
         throw error(403, 'Admin access required')
     }
 
-    const body = await request.json()
-    const { provider, config } = body
-
-    if (!provider || !config) {
-        throw error(400, 'Missing provider or config')
+    const body: unknown = await request.json().catch(() => null)
+    if (!isRecord(body) || typeof body.provider !== 'string' || !body.provider.trim()) {
+        throw error(400, 'Provider is required')
     }
+    if (!isRecord(body.config)) {
+        throw error(400, 'Config must be an object')
+    }
+    const provider = body.provider.trim()
+    const config = body.config
 
     const existing = await getConnectorConfig(provider)
     const existingConfig = (existing?.config ?? {}) as Record<string, unknown>
     const nextConfig = { ...existingConfig, ...config }
 
-    // Replacing a source's dynamically registered client must not leave the
-    // old client active in Salesforce, and the stored identity must not keep
-    // fast-path authorization to the revoked client_id/client_secret pair.
-    const isSalesforceSourceConfig =
-        typeof provider === 'string' && provider.startsWith('salesforce:')
+    // Replacing a dynamically registered client must not leave the old
+    // client active, and the stored identity must not keep fast-path
+    // authorization to the revoked client credentials.
     const submittedClientId = config.oauth_client_id
     const clientIdChanged = Boolean(
-        isSalesforceSourceConfig &&
         typeof submittedClientId === 'string' &&
         submittedClientId.trim() &&
         submittedClientId.trim() !== existingConfig.oauth_client_id,
     )
     const dcrTokenReplaced = Boolean(
-        isSalesforceSourceConfig &&
         typeof config.oauth_registration_initial_access_token === 'string' &&
         config.oauth_registration_initial_access_token.trim() !== '' &&
         config.oauth_registration_initial_access_token !== '••••••••',
     )
-    const hadDynamicClient = existingConfig.oauth_dynamic_client_registration === 'true'
+    const hadDynamicClient =
+        existingConfig.oauth_dynamic_client_registration === 'true' ||
+        (typeof existingConfig.oauth_registration_client_uri === 'string' &&
+            typeof existingConfig.oauth_registration_access_token === 'string')
+    const hasSubmittedClientCredentials = Boolean(
+        clientIdChanged &&
+            typeof submittedClientId === 'string' &&
+            typeof config.oauth_client_secret === 'string' &&
+            config.oauth_client_secret.trim() &&
+            config.oauth_client_secret !== '••••••••',
+    )
     const replacesDynamicClient = clientIdChanged || dcrTokenReplaced
     if (replacesDynamicClient && hadDynamicClient) {
         if (!(await revokeDynamicallyRegisteredClient(provider, existingConfig))) {
-            throw error(
-                409,
-                'Could not revoke the existing Salesforce OAuth client; try again later',
-            )
+            throw error(409, 'Could not revoke the existing OAuth client; try again later')
         }
     }
 
@@ -76,25 +86,35 @@ export const POST: RequestHandler = async ({ locals, request }) => {
         }
     }
 
-    // The old dynamic client was just revoked remotely. Drop its full
-    // identity and management metadata (the secret-preservation loop above
-    // must not bring the revoked client_secret back). The next authorization
-    // then runs DCR with the new initial access token, or fails closed as
-    // "not configured" until the admin provides a complete client.
-    if (replacesDynamicClient && hadDynamicClient) {
+    // Drop registration metadata after a client replacement. If the admin
+    // supplied a new client id and secret, retain those explicit credentials;
+    // otherwise the next authorization runs DCR with the new initial access
+    // token, or fails closed until a complete client is provided.
+    if (replacesDynamicClient) {
         for (const key of [
-            'oauth_client_id',
-            'oauth_client_secret',
-            'oauth_client_secret_expires_at',
-            'oauth_token_endpoint_auth_method',
-            'oauth_redirect_uri',
             'oauth_dynamic_client_registration',
+            'oauth_redirect_uri',
             'oauth_registration_endpoint',
             'oauth_registration_client_uri',
             'oauth_registration_access_token',
             'oauth_registration_attempted_at',
         ]) {
             delete nextConfig[key]
+        }
+        if (!hasSubmittedClientCredentials) {
+            // Keep a newly entered client id so the UI can report an
+            // incomplete manual configuration rather than silently restoring
+            // the previous client. DCR token replacement must clear it to
+            // force registration with the new token.
+            if (dcrTokenReplaced || !clientIdChanged) {
+                delete nextConfig.oauth_client_id
+            }
+            delete nextConfig.oauth_client_secret
+            delete nextConfig.oauth_client_secret_expires_at
+            delete nextConfig.oauth_token_endpoint_auth_method
+        }
+        if (clientIdChanged && !dcrTokenReplaced) {
+            delete nextConfig.oauth_registration_initial_access_token
         }
     }
 

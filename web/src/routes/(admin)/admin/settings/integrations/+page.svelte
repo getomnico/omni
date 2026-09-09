@@ -267,7 +267,6 @@
         const slug = sourceTypeSlug[sourceType] ?? sourceType
         return `/admin/settings/integrations/${slug}/${sourceId}`
     }
-
 </script>
 
 <svelte:head>
@@ -851,6 +850,7 @@
         provider={activeOAuthProvider.provider}
         displayName={activeOAuthProvider.displayName}
         configured={activeOAuthProvider.configured}
+        registrationRequiresInitialAccessToken={activeOAuthProvider.registrationRequiresInitialAccessToken}
         config={activeOAuthProvider.config}
         onSaved={closeOAuthDialog}
         onCancel={closeOAuthDialog} />
