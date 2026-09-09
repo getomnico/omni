@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredential, Source,
+    ActionCredentialScope, ActionDefinition, ActionResponse, Connector, SearchOperator,
+    ServiceCredential, Source,
     SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
@@ -83,6 +84,7 @@ impl Connector for ImapConnector {
                 name: "validate_credentials".to_string(),
                 description: "Test IMAP connection with the provided credentials".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -104,6 +106,7 @@ impl Connector for ImapConnector {
                 name: "list_folders".to_string(),
                 description: "List accessible IMAP mailbox folders".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {

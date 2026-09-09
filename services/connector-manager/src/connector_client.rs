@@ -1,5 +1,6 @@
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest,
     PromptRequest, ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
@@ -268,6 +269,40 @@ impl ConnectorClient {
         // Return the raw response regardless of status code so the handler
         // can proxy status, headers, and body verbatim.
         Ok(response)
+    }
+
+    /// Ask a connector to validate a freshly exchanged OAuth credential before
+    /// the credential is persisted. Older SDKs do not implement this optional
+    /// endpoint and are treated as accepting the credential.
+    pub async fn validate_oauth_credential(
+        &self,
+        connector_url: &str,
+        request: &OAuthCredentialValidationRequest,
+    ) -> Result<serde_json::Value, ClientError> {
+        let url = format!("{}/oauth/validate", connector_url);
+        debug!("Validating OAuth credential at {}", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: body,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
     /// Notify a connector that a new OAuth credential has been stored.

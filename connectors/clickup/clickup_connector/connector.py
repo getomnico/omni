@@ -166,6 +166,7 @@ class ClickUpConnector(Connector):
             scope_separator=" ",
             registration_endpoint=CLICKUP_OAUTH_REGISTRATION_ENDPOINT,
             token_endpoint_auth_method="none",
+            grant_types=["authorization_code", "refresh_token"],
             resource=CLICKUP_OAUTH_RESOURCE,
         )
 

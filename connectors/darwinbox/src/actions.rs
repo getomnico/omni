@@ -1907,6 +1907,7 @@ fn action(
         description: description.to_string(),
         input_schema,
         mode,
+        credential_scope: Default::default(),
         required_scopes: None,
         source_types: source_types.to_vec(),
         admin_only,

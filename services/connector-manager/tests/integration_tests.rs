@@ -8,7 +8,8 @@ use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
-    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest, DocumentMetadata,
+    ActionCredentialScope, ActionDefinition, ActionMode, AuthType, ConnectorEvent,
+    ConnectorManifest, DocumentMetadata,
     DocumentPermissions, IntegrationType, PersonSyncRecord, ServiceCredential, ServiceProvider,
     SourceType, SyncStatus, SyncType,
 };
@@ -1801,6 +1802,8 @@ async fn register_action_manifest(
     connector_id: &str,
     source_type: SourceType,
     oauth: Option<serde_json::Value>,
+    credential_scope: ActionCredentialScope,
+    admin_only: bool,
 ) {
     let mut redis_conn = fixture
         .state
@@ -1823,9 +1826,10 @@ async fn register_action_manifest(
             description: "test action".to_string(),
             input_schema: json!({}),
             mode: ActionMode::Read,
+            credential_scope,
             required_scopes: None,
             source_types: vec![source_type],
-            admin_only: false,
+            admin_only,
             hidden: false,
         }],
         mcp_action_names: vec![],
@@ -1874,6 +1878,30 @@ async fn seed_org_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
     id
 }
 
+/// Insert a per-user credential row alongside the org credential. Tests use
+/// different tokens to prove that the action policy selected the expected row.
+async fn seed_user_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
+    let repo = ServiceCredentialsRepo::new(pool.clone()).unwrap();
+    let id = shared::utils::generate_ulid();
+    repo.create(ServiceCredential {
+        id: id.clone(),
+        source_id: source_id.to_string(),
+        user_id: Some("01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string()),
+        provider: ServiceProvider::Darwinbox,
+        auth_type: AuthType::ApiKey,
+        principal_email: Some("user@example.com".to_string()),
+        credentials: json!({"token": "user-token"}),
+        config: json!({}),
+        expires_at: None,
+        last_validated_at: None,
+        created_at: OffsetDateTime::now_utc(),
+        updated_at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    id
+}
+
 /// Connectors with an org-only credential model (no per-user OAuth, e.g.
 /// Darwinbox) must use the org credential when a user invokes an action
 /// without a per-user row — needs_user_auth would be a dead end since no
@@ -1886,7 +1914,15 @@ async fn test_action_org_only_connector_uses_org_credential_with_user_id() {
     let pool = fixture.state.db_pool.pool();
 
     // Darwinbox-style connector: org-only credential model, no per-user OAuth.
-    register_action_manifest(&fixture, "darwinbox", SourceType::Darwinbox, None).await;
+    register_action_manifest(
+        &fixture,
+        "darwinbox",
+        SourceType::Darwinbox,
+        None,
+        ActionCredentialScope::UserOrOrg,
+        false,
+    )
+    .await;
     let source_id = seed_source(pool, "darwinbox", true).await;
     seed_org_credential(pool, &source_id).await;
 
@@ -1936,6 +1972,8 @@ async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred()
         "gmail",
         SourceType::Gmail,
         Some(json!({"provider": "google"})),
+        ActionCredentialScope::User,
+        false,
     )
     .await;
     let source_id = seed_source(pool, "gmail", true).await;
@@ -1960,5 +1998,103 @@ async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred()
     assert!(
         fixture.mock_connector.get_action_requests().is_empty(),
         "connector must not be reached while per-user OAuth is missing"
+    );
+}
+
+/// An explicitly org-scoped action must use the org credential even when a
+/// per-user credential exists for the same source.
+#[tokio::test]
+async fn test_action_org_scope_never_uses_user_credential() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    register_action_manifest(
+        &fixture,
+        "darwinbox",
+        SourceType::Darwinbox,
+        None,
+        ActionCredentialScope::Org,
+        false,
+    )
+    .await;
+    let source_id = seed_source(pool, "darwinbox", true).await;
+    seed_org_credential(pool, &source_id).await;
+    seed_user_credential(pool, &source_id).await;
+
+    server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let recorded = fixture.mock_connector.get_action_requests();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].credentials.as_ref().expect("credentials")["credentials"]["token"],
+        "org-token"
+    );
+}
+
+/// Admin-only actions require an admin caller and, once authorized, use the
+/// org credential rather than a caller's per-user credential.
+#[tokio::test]
+async fn test_action_admin_only_requires_admin_and_uses_org_credential() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+
+    register_action_manifest(
+        &fixture,
+        "darwinbox",
+        SourceType::Darwinbox,
+        None,
+        ActionCredentialScope::User,
+        true,
+    )
+    .await;
+    let source_id = seed_source(pool, "darwinbox", true).await;
+    seed_org_credential(pool, &source_id).await;
+    seed_user_credential(pool, &source_id).await;
+
+    let rejected = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await;
+    rejected.assert_status(StatusCode::BAD_REQUEST);
+    assert!(fixture.mock_connector.get_action_requests().is_empty());
+
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind("01JGF7V3E0Y2R1X8P5Q7W9T4N6")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "test_action",
+            "params": {},
+        }))
+        .await
+        .assert_status(StatusCode::OK);
+
+    let recorded = fixture.mock_connector.get_action_requests();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].credentials.as_ref().expect("credentials")["credentials"]["token"],
+        "org-token"
     );
 }

@@ -251,6 +251,7 @@ export class WindshiftConnector extends Connector<
       extra_auth_params: { resource: `${publicBaseUrl}/mcp` },
       scope_separator: " ",
       token_endpoint_auth_method: "none" as const,
+      grant_types: ["authorization_code", "refresh_token"],
       resource: `${publicBaseUrl}/mcp`,
       // Explicit marker for the operator-configured private route. Only set
       // when WINDSHIFT_INTERNAL_BASE_URL exists; when absent the transport

@@ -864,6 +864,20 @@ impl Default for ActionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCredentialScope {
+    User,
+    Org,
+    UserOrOrg,
+}
+
+impl Default for ActionCredentialScope {
+    fn default() -> Self {
+        Self::UserOrOrg
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionDefinition {
     pub name: String,
@@ -871,6 +885,10 @@ pub struct ActionDefinition {
     pub input_schema: JsonValue,
     #[serde(default)]
     pub mode: ActionMode,
+    /// Credential scope required by the action. This is intentionally
+    /// independent of how the connector implements the action.
+    #[serde(default)]
+    pub credential_scope: ActionCredentialScope,
     /// OAuth scopes required to invoke this action, when declared by the
     /// connector or its upstream MCP tool metadata.
     /// `None` means the connector has not declared action-level scopes and
@@ -1468,24 +1486,9 @@ pub struct SkillResponse {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ActionOrigin {
-    Native,
-    Mcp,
-}
-
-impl Default for ActionOrigin {
-    fn default() -> Self {
-        Self::Native
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionRequest {
     pub action: String,
-    #[serde(default)]
-    pub origin: ActionOrigin,
     #[serde(default)]
     pub params: JsonValue,
     #[serde(default)]

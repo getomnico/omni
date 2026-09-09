@@ -67,7 +67,7 @@ async def test_manifest_preserves_undeclared_and_explicit_empty_action_scopes():
 
 
 @pytest.mark.asyncio
-async def test_manifest_oauth_field_populates_supports_user_oauth():
+async def test_manifest_mcp_actions_populate_supports_user_oauth():
     source_darwinbox = Source(
         id="src-db",
         source_type="darwinbox",
@@ -100,7 +100,12 @@ async def test_manifest_oauth_field_populates_supports_user_oauth():
             "healthy": True,
             "manifest": {
                 "oauth": {"provider": "google"},
-                "actions": [{"name": "send_email"}],
+                "actions": [
+                    {"name": "send_email"},
+                    {"name": "create_draft"},
+                    {"name": "org_action", "credential_scope": "org"},
+                ],
+                "mcp_action_names": ["send_email"],
             },
         },
     ]
@@ -114,6 +119,8 @@ async def test_manifest_oauth_field_populates_supports_user_oauth():
     by_name = {action.action_name: action for action in actions}
     assert by_name["get_my_leave_balance"].supports_user_oauth is False
     assert by_name["send_email"].supports_user_oauth is True
+    assert by_name["create_draft"].supports_user_oauth is True
+    assert by_name["org_action"].supports_user_oauth is False
 
 
 def _register_action(handler: ConnectorToolHandler, source_id: str) -> None:

@@ -323,16 +323,11 @@ impl CredentialService {
         // Build a RemoteMcpOAuthConfig-like view from native fields.
         // This allows us to reuse do_oauth_refresh for both native and
         // remote-MCP paths.
-        let token_uri = if provider_str == "salesforce" {
-            // Salesforce sources may use different login domains (production,
-            // sandbox, or My Domain). The endpoint captured with this user's
-            // OAuth grant must win over provider-global connector config.
-            string_from(&credential.credentials, "token_uri")
-                .or_else(|| string_from(&connector_config, "oauth_token_endpoint"))
-        } else {
-            string_from(&connector_config, "oauth_token_endpoint")
-                .or_else(|| string_from(&credential.credentials, "token_uri"))
-        };
+        // A credential can carry source-specific refresh metadata (for
+        // example, an OAuth issuer selected during source setup). That
+        // metadata takes precedence over provider-global configuration.
+        let token_uri = string_from(&credential.credentials, "token_uri")
+            .or_else(|| string_from(&connector_config, "oauth_token_endpoint"));
 
         // If we don't even have a token endpoint, there is nothing to
         // refresh — return the credential unchanged.
@@ -340,15 +335,11 @@ impl CredentialService {
             return Ok(credential);
         };
 
-        // Resolve auth method with proper precedence:
-        //   connector config → credential JSON → heuristic
-        let auth_method_str = if provider_str == "salesforce" {
-            string_from(&credential.credentials, "token_endpoint_auth_method")
-                .or_else(|| string_from(&connector_config, "oauth_token_endpoint_auth_method"))
-        } else {
-            string_from(&connector_config, "oauth_token_endpoint_auth_method")
-                .or_else(|| string_from(&credential.credentials, "token_endpoint_auth_method"))
-        };
+        // Credential-specific OAuth metadata takes precedence over the
+        // provider-global default. The heuristic is used only when neither
+        // source declares an authentication method.
+        let auth_method_str = string_from(&credential.credentials, "token_endpoint_auth_method")
+            .or_else(|| string_from(&connector_config, "oauth_token_endpoint_auth_method"));
         let has_secret = string_from(&connector_config, "oauth_client_secret")
             .or_else(|| string_from(&credential.credentials, "client_secret"))
             .is_some();
@@ -386,18 +377,7 @@ impl CredentialService {
             .map(str::to_owned)
             .unwrap();
 
-        let refresh_config = if provider_str == "salesforce" {
-            let mut config = connector_config.clone();
-            if let Some(config_object) = config.as_object_mut() {
-                config_object.remove("oauth_client_id");
-                config_object.remove("oauth_client_secret");
-                config_object.remove("oauth_token_endpoint");
-                config_object.remove("oauth_token_endpoint_auth_method");
-            }
-            config
-        } else {
-            connector_config.clone()
-        };
+        let refresh_config = credential_refresh_config(&connector_config, &credential.credentials);
         let refreshed = do_native_refresh(
             &mut credential,
             &refresh_config,
@@ -439,6 +419,34 @@ impl CredentialService {
 }
 
 // ── Predicates ─────────────────────────────────────────────────────
+
+/// Overlay credential-owned OAuth settings onto provider configuration.
+/// Source-scoped OAuth clients must not accidentally refresh against another
+/// source's endpoint or client, while providers with only global settings
+/// continue to use the connector configuration as a fallback.
+fn credential_refresh_config(
+    connector_config: &JsonValue,
+    credential_json: &JsonValue,
+) -> JsonValue {
+    let mut config = connector_config.clone();
+    let Some(config_object) = config.as_object_mut() else {
+        return config;
+    };
+    for (credential_key, config_key) in [
+        ("client_id", "oauth_client_id"),
+        ("client_secret", "oauth_client_secret"),
+        ("token_uri", "oauth_token_endpoint"),
+        (
+            "token_endpoint_auth_method",
+            "oauth_token_endpoint_auth_method",
+        ),
+    ] {
+        if let Some(value) = credential_json.get(credential_key).filter(|value| !value.is_null()) {
+            config_object.insert(config_key.to_string(), value.clone());
+        }
+    }
+    config
+}
 
 fn credential_needs_refresh(credential: &ServiceCredential, now: OffsetDateTime) -> bool {
     match credential.expires_at {

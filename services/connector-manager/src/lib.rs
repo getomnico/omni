@@ -69,6 +69,10 @@ pub fn create_app(state: AppState) -> Router {
         .route("/prompt", post(handlers::get_prompt))
         .route("/prompts", get(handlers::list_prompts))
         .route(
+            "/oauth/validate",
+            post(handlers::validate_oauth_credential),
+        )
+        .route(
             "/oauth/credential-ready",
             post(handlers::oauth_credential_ready),
         )

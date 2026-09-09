@@ -120,6 +120,7 @@ impl Connector for NextcloudConnector {
                 description: "Verify that the provided Nextcloud credentials are valid".into(),
                 input_schema: json!({}),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: omni_connector_sdk::ActionCredentialScope::Org,
                 required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
@@ -128,6 +129,7 @@ impl Connector for NextcloudConnector {
             ActionDefinition {
                 name: "fetch_file".into(),
                 description: "Download a file from Nextcloud by its document ID".into(),
+                credential_scope: omni_connector_sdk::ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {

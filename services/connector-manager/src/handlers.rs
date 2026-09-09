@@ -2,6 +2,7 @@ use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
     ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest,
     PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress,
     TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
@@ -28,7 +29,7 @@ use shared::db::repositories::{
     person::SOURCE_MUTATION_LOCK_NAMESPACE, ConfigurationRepository, SyncRunRepository,
 };
 use shared::models::{
-    ActionMode, ActionOrigin, ConnectorManifest, GlobalConfiguration, IntegrationType,
+    ActionCredentialScope, ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType,
     SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
     SyncType,
 };
@@ -487,7 +488,7 @@ pub async fn execute_action(
     let creds: shared::models::ServiceCredential;
     let mut params = request.params.clone();
     let mut transient_actor_email = None;
-    let mut action_origin = ActionOrigin::Native;
+    let mut is_mcp_action = false;
     let manifests = get_registered_manifests(&state.redis_client).await;
 
     let (connector_url, action_admin_only) = if is_transient {
@@ -673,23 +674,28 @@ pub async fn execute_action(
         }
         let action_admin_only = action_def.admin_only;
         let action_mode = action_def.mode;
-        let is_mcp_action = manifest.mcp_action_names.contains(&request.action);
-        if is_mcp_action {
-            action_origin = ActionOrigin::Mcp;
+        if action_admin_only && request.user_id.is_none() {
+            return Err(ApiError::BadRequest(
+                "user_id is required for admin-only actions".to_string(),
+            ));
         }
+        is_mcp_action = manifest.mcp_action_names.contains(&request.action);
+        let org_scoped_action =
+            action_admin_only || action_def.credential_scope == ActionCredentialScope::Org;
+        let user_scoped_action =
+            !org_scoped_action
+                && ((is_mcp_action && !action_admin_only)
+                    || action_def.credential_scope == ActionCredentialScope::User);
 
-        // MCP actions are always user-scoped. Do not allow an org-level agent
-        // or a missing actor to fall through to the source JWT credential.
-        if is_mcp_action && request.user_id.is_none() {
+        // User-scoped actions must have an acting user. Admin-only actions
+        // still use the org credential after the caller's role is checked.
+        if user_scoped_action && request.user_id.is_none() {
             return Err(ApiError::BadRequest(
                 "user_id is required for MCP actions".to_string(),
             ));
         }
 
         // Remote MCP sources have their own user-authorization boundary.
-        // Local stdio MCP connectors are deliberately bootstrapped with the
-        // source credential and currently expose admin-only tools, while their
-        // native actions retain the existing credential resolution behavior.
         if manifest.integration_type == IntegrationType::RemoteMcp
             && manifest.mcp_enabled
             && !action_admin_only
@@ -714,21 +720,24 @@ pub async fn execute_action(
         }
 
         let cred_service = CredentialService::new(state.db_pool.clone());
-        // Salesforce's native actions retain their historical org-credential
-        // behavior. Only actions explicitly present in mcp_action_names may
-        // consume the caller's per-user OAuth credential.
-        let credential_user_id = if source_type == SourceType::Salesforce && !is_mcp_action {
+        // Native actions retain their connector-specific credential behavior.
+        // Connector-declared org-scoped actions and admin-only actions use
+        // the source's org credential. User-scoped actions require the
+        // caller's credential; MCP provenance is only a compatibility guard
+        // for manifests produced before credential_scope was added.
+        let credential_user_id = if org_scoped_action {
             None
         } else {
             request.user_id.as_deref()
         };
+        let require_user_credential = user_scoped_action;
         creds = match resolve_credentials_with_policy(
             &cred_service,
             &source_id,
             credential_user_id,
             action_admin_only,
-            manifest.oauth.is_some() && is_mcp_action,
-            is_mcp_action,
+            user_scoped_action,
+            require_user_credential,
             oauth_provider_from_manifest(&manifest),
         )
         .await?
@@ -742,7 +751,7 @@ pub async fn execute_action(
                 )?);
             }
             CredentialResolution::NoCredentials => {
-                if is_mcp_action && manifest.oauth.is_some() {
+                if require_user_credential && manifest.oauth.is_some() {
                     if let Some(provider) = oauth_provider_from_manifest(&manifest) {
                         return Ok(needs_user_auth_response(
                             &source_id,
@@ -840,10 +849,10 @@ pub async fn execute_action(
     }
 
     info!(
-        "Dispatching action '{}' to connector {} (origin={:?}, credential_class={}, provider={:?}, auth_type={:?}, principal={:?})",
+        "Dispatching action '{}' to connector {} (mcp={}, credential_class={}, provider={:?}, auth_type={:?}, principal={:?})",
         request.action,
         connector_url,
-        action_origin,
+        is_mcp_action,
         if creds.user_id.is_some() { "user" } else { "org" },
         creds.provider,
         creds.auth_type,
@@ -855,7 +864,6 @@ pub async fn execute_action(
     let client = ConnectorClient::new();
     let action_request = ActionRequest {
         action: request.action,
-        origin: action_origin,
         params,
         credentials: Some(creds),
         source,
@@ -891,7 +899,7 @@ pub async fn execute_action(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    if action_origin == ActionOrigin::Mcp
+    if is_mcp_action
         && status == StatusCode::PRECONDITION_FAILED
         && serde_json::from_slice::<Value>(&bytes)
             .ok()
@@ -1074,14 +1082,6 @@ async fn resolve_credentials_with_policy(
     user_auth_provider: Option<ServiceProvider>,
 ) -> Result<CredentialResolution, ApiError> {
     let internal = |e: CredentialServiceError| ApiError::Internal(e.to_string());
-
-    if admin_only && require_user_credential {
-        // An MCP request is never allowed to use an org credential, even if a
-        // manifest accidentally marks the tool admin-only.
-        return Ok(user_auth_provider
-            .map(|provider| CredentialResolution::NeedsUserAuth { provider })
-            .unwrap_or(CredentialResolution::NoCredentials));
-    }
 
     if admin_only {
         let resolved = cred_service
@@ -1748,6 +1748,46 @@ pub async fn get_prompt(
     };
 
     Ok(Json(result))
+}
+
+/// Validate a freshly exchanged OAuth credential through the connector before
+/// it is persisted. Connectors may return source config updates discovered from
+/// the credential (for example, a stable provider organization identifier).
+pub async fn validate_oauth_credential(
+    State(state): State<AppState>,
+    Json(mut request): Json<OAuthCredentialValidationRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let source = source_repo
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+    let connector_url = get_connector_url_for_source(&state.redis_client, &source.source_type)
+        .await
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {:?}",
+                source.source_type
+            ))
+        })?;
+
+    request.source = Some(source);
+    let client = ConnectorClient::new();
+    match client
+        .validate_oauth_credential(&connector_url, &request)
+        .await
+    {
+        Ok(result) => Ok(Json(result)),
+        Err(ClientError::ConnectorError { status: 404, .. }) => {
+            // Older connector SDKs do not implement this optional hook.
+            Ok(Json(json!({"config_updates": {}})))
+        }
+        Err(ClientError::ConnectorError { status: 400, message }) => {
+            Err(ApiError::BadRequest(message))
+        }
+        Err(err) => Err(ApiError::Internal(err.to_string())),
+    }
 }
 
 /// Generic OAuth credential-ready notification from omni-web after a user
@@ -3846,6 +3886,7 @@ mod tests {
                 description: "Export a database".to_string(),
                 input_schema,
                 mode: ActionMode::Read,
+                credential_scope: Default::default(),
                 required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,

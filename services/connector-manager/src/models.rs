@@ -143,6 +143,17 @@ pub struct OAuthCredentialReadyRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialValidationRequest {
+    pub source_id: String,
+    pub provider: String,
+    pub credentials: JsonValue,
+    #[serde(default)]
+    pub metadata: JsonValue,
+    #[serde(default)]
+    pub source: Option<Source>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SdkSourceSyncConfigResponse {
     pub config: JsonValue,
     pub credentials: JsonValue,
