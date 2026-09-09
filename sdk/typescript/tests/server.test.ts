@@ -102,13 +102,17 @@ describe("Connector Server", () => {
         sync_modes: ["full", "incremental"],
         connector_id: "mock-connector",
         connector_url: "http://localhost:8000",
+        integration_type: "connector",
         description: "",
         actions: [],
+        mcp_action_names: [],
         search_operators: [],
         mcp_enabled: false,
         mcp_catalog_loaded: false,
+        read_only: false,
         resources: [],
         prompts: [],
+        skills: [],
       });
     });
   });

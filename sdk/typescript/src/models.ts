@@ -139,14 +139,23 @@ export const ConnectorEventSchema = z.union([
 ]);
 export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
 
+export const ActionCredentialScopeSchema = z.enum([
+  'user',
+  'org',
+  'user_or_org',
+]);
+export type ActionCredentialScope = z.infer<typeof ActionCredentialScopeSchema>;
+
 export const ActionDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
   input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
+  credential_scope: ActionCredentialScopeSchema.default('user_or_org'),
   required_scopes: z.array(z.string()).optional(),
   source_types: z.array(z.string()).default([]),
   admin_only: z.boolean().default(false),
+  hidden: z.boolean().default(false),
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 
@@ -211,12 +220,14 @@ export const OAuthManifestConfigSchema = z.object({
    * configure one manually.
    */
   registration_endpoint: z.string().nullable().optional(),
+  registration_requires_initial_access_token: z.boolean().default(false),
   /**
    * OAuth token endpoint client authentication method. Public DCR clients
    * usually use `none`, which tells Omni not to require or send a client
    * secret and to treat the provider as auto-managed when
    * `registration_endpoint` is also present.
    */
+  token_response_fields: z.array(z.string()).default([]),
   token_endpoint_auth_method: OAuthTokenEndpointAuthMethodSchema.default(
     'client_secret_post'
   ),
@@ -226,8 +237,26 @@ export const OAuthManifestConfigSchema = z.object({
    * MCP server.
    */
   resource: z.string().nullable().optional(),
+  issuer_source_config_key: z.string().nullable().optional(),
+  client_config_provider_template: z.string().nullable().optional(),
+  pkce_required: z.boolean().default(false),
+  grant_types: z.array(z.string()).nullable().optional(),
+  validate_endpoint_urls: z.boolean().default(false),
+  supports_org_oauth: z.boolean().default(true),
 });
 export type OAuthManifestConfig = z.infer<typeof OAuthManifestConfigSchema>;
+
+export const ConnectorSkillDefinitionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  description: z.string().optional(),
+  source_types: z.array(z.string()).default([]),
+  content: z.string().nullable().optional(),
+  mcp_prompt: z.string().nullable().optional(),
+});
+export type ConnectorSkillDefinition = z.infer<
+  typeof ConnectorSkillDefinitionSchema
+>;
 
 export const ConnectorManifestSchema = z.object({
   name: z.string(),
@@ -236,16 +265,20 @@ export const ConnectorManifestSchema = z.object({
   sync_modes: z.array(z.string()),
   connector_id: z.string(),
   connector_url: z.string(),
+  integration_type: z.enum(['connector', 'remote_mcp']).default('connector'),
   source_types: z.array(z.string()).default([]),
   description: z.string().optional(),
   actions: z.array(ActionDefinitionSchema).default([]),
+  mcp_action_names: z.array(z.string()).default([]),
   search_operators: z.array(SearchOperatorSchema).default([]),
   extra_schema: z.record(z.unknown()).optional(),
   attributes_schema: z.record(z.unknown()).optional(),
+  read_only: z.boolean().default(false),
   mcp_enabled: z.boolean().default(false),
   mcp_catalog_loaded: z.boolean().default(false),
   resources: z.array(McpResourceDefinitionSchema).default([]),
   prompts: z.array(McpPromptDefinitionSchema).default([]),
+  skills: z.array(ConnectorSkillDefinitionSchema).default([]),
   oauth: OAuthManifestConfigSchema.nullable().optional(),
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;

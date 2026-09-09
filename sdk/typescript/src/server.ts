@@ -18,6 +18,7 @@ import {
   type SdkSourceSyncData,
 } from "./models.js";
 import { getLogger } from "./logger.js";
+import { MCP_AUTH_REQUIRED_MESSAGE } from "./mcp-adapter.js";
 
 const logger = getLogger("sdk:server");
 
@@ -319,6 +320,38 @@ export function createServer(connector: Connector): Express {
       .json(ActionResponse.failure("Unexpected action result type"));
   });
 
+  // Stable 412 "needs_user_auth" response for terminal MCP authentication
+  // failures on resource/prompt requests. Mirrors the Python SDK so
+  // connector-manager invalidates the acting user's credential and the web
+  // layer surfaces the same reconnect CTA.
+  function needsUserAuthResponse(
+    message: string,
+    credentials: Record<string, unknown>
+  ): Response | null {
+    if (
+      message !== MCP_AUTH_REQUIRED_MESSAGE &&
+      !connector.mcpAuthenticationError(message)
+    ) {
+      return null;
+    }
+    const sourceId =
+      typeof credentials.source_id === "string" ? credentials.source_id : undefined;
+    const sourceType = connector.sourceTypes[0];
+    if (!sourceId || !sourceType) {
+      return null;
+    }
+    return new Response(
+      JSON.stringify({
+        error: "needs_user_auth",
+        source_id: sourceId,
+        source_type: sourceType,
+        provider: connector.oauthConfig?.provider ?? null,
+        oauth_start_url: `/api/oauth/start?source_id=${sourceId}`,
+      }),
+      { status: 412, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
   app.post("/resource", async (req: Request, res: Response) => {
     const adapter = await connector.getMcpAdapter();
     if (!adapter) {
@@ -341,6 +374,13 @@ export function createServer(connector: Connector): Express {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const authResponse = needsUserAuthResponse(message, request.credentials);
+      if (authResponse) {
+        res.status(authResponse.status);
+        authResponse.headers.forEach((value, key) => res.setHeader(key, value));
+        res.send(Buffer.from(await authResponse.arrayBuffer()));
+        return;
+      }
       logger.error({ err }, `Resource read failed for ${uri}`);
       res.status(500).json({ error: message });
     }
@@ -373,6 +413,13 @@ export function createServer(connector: Connector): Express {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const authResponse = needsUserAuthResponse(message, request.credentials);
+      if (authResponse) {
+        res.status(authResponse.status);
+        authResponse.headers.forEach((value, key) => res.setHeader(key, value));
+        res.send(Buffer.from(await authResponse.arrayBuffer()));
+        return;
+      }
       logger.error({ err }, `Prompt get failed for ${name}`);
       res.status(500).json({ error: message });
     }

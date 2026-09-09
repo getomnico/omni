@@ -1,4 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { readFileSync, rmSync } from 'node:fs';
 import type {
   ActionDefinition,
   McpPromptDefinition,
@@ -8,6 +9,17 @@ import { ActionResponse } from './models.js';
 import { getLogger } from './logger.js';
 
 const logger = getLogger('sdk:mcp-adapter');
+
+/**
+ * Env var a stdio MCP launcher can set to point at a per-attempt status file.
+ * When a session fails, the adapter checks the file: content
+ * `needs_user_auth` means the provider rejected the credential and the
+ * failure is normalized into `MCP_AUTH_REQUIRED_MESSAGE` so the HTTP server
+ * can return the standard 412 response.
+ */
+export const MCP_AUTH_STATUS_FILE_ENV = 'OMNI_MCP_AUTH_STATUS_FILE';
+/** Canonical failure message produced when the auth-status marker is present. */
+export const MCP_AUTH_REQUIRED_MESSAGE = 'MCP authentication required';
 
 /**
  * Configuration for an MCP server reached via stdio (subprocess).
@@ -79,27 +91,26 @@ export class McpAdapter {
     fn: (client: Client) => Promise<T>
   ): Promise<T> {
     const client = new Client({ name: 'omni-mcp-adapter', version: '1.0.0' });
-    if (this.server.transport === 'stdio') {
-      const { StdioClientTransport } = await import(
-        '@modelcontextprotocol/sdk/client/stdio.js'
-      );
-      const mergedEnv = { ...(this.server.env ?? {}), ...(env ?? {}) };
-      const transport = new StdioClientTransport({
-        command: this.server.command,
-        args: this.server.args,
-        env: Object.keys(mergedEnv).length > 0 ? mergedEnv : undefined,
-        cwd: this.server.cwd,
-      });
-      logger.debug(
-        `Spawning MCP subprocess: ${this.server.command} ${(this.server.args ?? []).join(' ')}`
-      );
-      await client.connect(transport);
-      try {
+    let connected = false;
+    try {
+      if (this.server.transport === 'stdio') {
+        const { StdioClientTransport } = await import(
+          '@modelcontextprotocol/sdk/client/stdio.js'
+        );
+        const mergedEnv = { ...(this.server.env ?? {}), ...(env ?? {}) };
+        const transport = new StdioClientTransport({
+          command: this.server.command,
+          args: this.server.args,
+          env: Object.keys(mergedEnv).length > 0 ? mergedEnv : undefined,
+          cwd: this.server.cwd,
+        });
+        logger.debug(
+          `Spawning MCP subprocess: ${this.server.command} ${(this.server.args ?? []).join(' ')}`
+        );
+        await client.connect(transport);
+        connected = true;
         return await fn(client);
-      } finally {
-        await client.close();
       }
-    } else {
       const { StreamableHTTPClientTransport } = await import(
         '@modelcontextprotocol/sdk/client/streamableHttp.js'
       );
@@ -114,12 +125,49 @@ export class McpAdapter {
       });
       logger.debug(`Opening MCP HTTP session: ${this.server.url}`);
       await client.connect(transport);
-      try {
-        return await fn(client);
-      } finally {
-        await client.close();
+      connected = true;
+      return await fn(client);
+    } catch (err) {
+      // A provider launcher may leave this short-lived marker after a
+      // terminal OAuth rejection. Consume it here so bootstrap callers also
+      // clean it up, while the normalized error lets the HTTP server return
+      // the standard 412 response.
+      this.consumeAuthStatusFile(env, err);
+    } finally {
+      if (connected) {
+        await client.close().catch(() => undefined);
       }
     }
+  }
+
+  /**
+   * Read and remove the per-attempt auth-status marker file, throwing the
+   * normalized auth-required error when the launcher recorded a terminal
+   * OAuth rejection. Marker IO is best effort: a missing or unreadable file
+   * must not mask the original failure.
+   */
+  private consumeAuthStatusFile(
+    env: Record<string, string> | undefined,
+    err: unknown
+  ): never {
+    const statusFile = env?.[MCP_AUTH_STATUS_FILE_ENV];
+    if (typeof statusFile === 'string' && statusFile.length > 0) {
+      let requiresAuth = false;
+      try {
+        requiresAuth = readFileSync(statusFile, 'utf8').trim() === 'needs_user_auth';
+      } catch {
+        // The launcher's cleanup may already have removed the file.
+      }
+      try {
+        rmSync(statusFile, { force: true });
+      } catch {
+        // Cleanup is best effort.
+      }
+      if (requiresAuth) {
+        throw new Error(MCP_AUTH_REQUIRED_MESSAGE);
+      }
+    }
+    throw err;
   }
 
   async discover(
@@ -335,9 +383,11 @@ export class McpAdapter {
         description: tool.description ?? '',
         input_schema: tool.inputSchema ?? { type: 'object', properties: {} },
         mode: isReadOnly ? 'read' : 'write',
+        credential_scope: 'user',
         required_scopes: requiredScopes,
         source_types: [],
         admin_only: false,
+        hidden: false,
       });
     }
     return actions;
