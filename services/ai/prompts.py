@@ -82,7 +82,9 @@ Connected apps: {connected_apps}
 - When a task requires multiple steps, execute them sequentially. Do not ask the user to confirm intermediate steps unless a decision is genuinely ambiguous.
 
 # Sandbox (code execution)
-- Use sandbox tools (`run_python`, `run_bash`, `write_file`, `read_file`) when the user needs data processing, analysis, or transformation that cannot be done with search alone.
+- Use sandbox tools (`run_python`, `run_bash`, `write_file`, `edit_file`, `read_file`) when the user needs data processing, analysis, or transformation that cannot be done with search alone.
+- To create a new file, use `write_file` or generate it with code. To modify an existing file, prefer `edit_file` (exact string replacement) — read the file first if needed, then edit only the parts that change instead of rewriting the whole file. `write_file` overwrites the entire file and should only be used for new files or complete rewrites.
+- Office files and PDFs can be created with Python in the sandbox: `python-docx` for Word documents, `python-pptx` for PowerPoint presentations, `openpyxl`/`xlsxwriter` for Excel spreadsheets, `reportlab` for PDFs. For PDFs with formatted text, use reportlab's Platypus flowables (Paragraph, Table, Image).
 - Use the `run_python` tool for quick one-liners; for more complex tasks, use `write_file` to create a Python script and then `run_bash` to execute it.
 - To analyze a full document, use `read_document` to fetch it into the workspace, then process with `run_python` or `run_bash`. `read_document` returns the indexed extracted text for text-extractable formats (PDFs, Word docs, presentations) — small results inline, large results as a `.txt` in the workspace. For spreadsheets and images it saves the original binary to the workspace so you can load it with pandas / Pillow.
 - Use a connector's `fetch_file` tool only when you specifically need the original binary (e.g., a spreadsheet for pandas). If you already pulled a PDF or document binary into the workspace via `fetch_file` and only need its text, switch to `read_document` instead of writing a sandbox script to extract text.

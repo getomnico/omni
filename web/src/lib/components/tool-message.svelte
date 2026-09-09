@@ -8,6 +8,7 @@
         FileCode,
         Terminal,
         Pencil,
+        FilePen,
         Image,
         Users,
         BookOpen,
@@ -56,6 +57,7 @@
         fetch_web_page: { loading: 'Fetching web page', loaded: 'Fetched web page' },
         read_document: { loading: 'Reading', loaded: 'Read' },
         write_file: { loading: 'Writing', loaded: 'Wrote' },
+        edit_file: { loading: 'Editing', loaded: 'Edited' },
         read_file: { loading: 'Reading', loaded: 'Read' },
         run_bash: { loading: 'Running', loaded: 'Ran' },
         run_python: { loading: 'Running', loaded: 'Ran' },
@@ -78,6 +80,7 @@
         fetch_web_page: 'url',
         read_document: 'name',
         write_file: 'path',
+        edit_file: 'path',
         read_file: 'path',
         run_bash: 'command',
         run_python: 'code',
@@ -336,6 +339,8 @@
                         <Users class="h-4 w-4 shrink-0 text-blue-600" />
                     {:else if toolName === 'write_file'}
                         <Pencil class="h-4 w-4 shrink-0 text-amber-600" />
+                    {:else if toolName === 'edit_file'}
+                        <FilePen class="h-4 w-4 shrink-0 text-amber-600" />
                     {:else if toolName === 'present_artifact'}
                         <Image class="h-4 w-4 shrink-0 text-violet-600" />
                     {:else if isSkillTool}

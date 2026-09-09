@@ -1,15 +1,16 @@
 pub mod executor;
 pub mod handlers;
 pub mod models;
+pub mod versioning;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
-use axum::Router;
 use tower_http::trace::TraceLayer;
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ impl SandboxConfig {
 #[derive(Debug)]
 pub struct AppState {
     pub config: SandboxConfig,
+    pub git_locks: versioning::GitLocks,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -91,6 +93,8 @@ pub fn create_app(state: Arc<AppState>) -> Router {
             post(handlers::write_file_binary).layer(DefaultBodyLimit::max(400 * 1024 * 1024)),
         )
         .route("/files/read", post(handlers::read_file))
+        .route("/files/edit", post(handlers::edit_file))
+        .route("/files/versions", post(handlers::file_versions))
         .route("/files/stat", post(handlers::file_stat))
         .route("/files/download", get(handlers::download_file))
         .layer(TraceLayer::new_for_http())
@@ -161,6 +165,7 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         config: config.clone(),
+        git_locks: versioning::GitLocks::new(),
     });
     let app = create_app(state);
 

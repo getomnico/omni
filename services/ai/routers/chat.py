@@ -1237,12 +1237,16 @@ async def download_artifact(
     request: Request,
     chat_id: str = Path(..., description="Chat thread ID"),
     path: str = Path(..., description="Relative file path in the sandbox"),
+    v: str | None = Query(None, description="Optional git SHA pinning the file version"),
 ):
     try:
+        params = {"chat_id": chat_id, "path": path}
+        if v:
+            params["version"] = v
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(
                 f"{SANDBOX_URL}/files/download",
-                params={"chat_id": chat_id, "path": path},
+                params=params,
             )
 
             if resp.status_code == 404:
@@ -1251,11 +1255,16 @@ async def download_artifact(
             resp.raise_for_status()
 
             content_type = resp.headers.get("content-type", "application/octet-stream")
+            # Version-pinned responses never change, so browsers can cache them
+            # indefinitely; unpinned URLs always serve the latest file content.
+            cache_control = (
+                "private, max-age=31536000, immutable" if v else "private, max-age=3600"
+            )
             return Response(
                 content=resp.content,
                 media_type=content_type,
                 headers={
-                    "Cache-Control": "private, max-age=3600",
+                    "Cache-Control": cache_control,
                     # Artifact bytes may be read by sandboxed iframe previews
                     # (unique origin), so allow cross-origin reads.
                     "Access-Control-Allow-Origin": "*",

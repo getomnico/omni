@@ -55,6 +55,32 @@ SANDBOX_TOOLS: list[ToolParam] = [
         },
     },
     {
+        "name": "edit_file",
+        "description": "Make an exact string replacement in an existing text file in the scratch workspace. Prefer this over write_file when modifying an existing file — it preserves the rest of the content. old_string must match the file content exactly (including whitespace). If it matches multiple locations, either include more surrounding context to make it unique or pass replace_all=true.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative file path of the existing file within the scratch workspace",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "The exact text to replace",
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "The replacement text",
+                },
+                "replace_all": {
+                    "type": "boolean",
+                    "description": "Replace every occurrence of old_string instead of failing when it matches multiple locations (default: false)",
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
         "name": "run_bash",
         "description": "Run a bash command in the scratch workspace. The `excel` CLI is available for spreadsheet operations (run `excel --help` for usage). Use for file operations, data processing with standard unix tools, etc.",
         "input_schema": {
@@ -70,7 +96,7 @@ SANDBOX_TOOLS: list[ToolParam] = [
     },
     {
         "name": "run_python",
-        "description": "Run Python code in the scratch workspace. Pre-installed libraries: pandas, numpy, openpyxl, matplotlib, seaborn, json, csv. Use for data analysis, processing, transformation, and visualization.",
+        "description": "Run Python code in the scratch workspace. Pre-installed libraries: pandas, numpy, openpyxl, xlsxwriter, matplotlib, seaborn, python-docx, python-pptx, reportlab, pypdf, json, csv. Use for data analysis, processing, transformation, visualization, and creating office files (docx via python-docx, pptx via python-pptx, xlsx via openpyxl/xlsxwriter) and PDFs (via reportlab).",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -102,7 +128,7 @@ SANDBOX_TOOLS: list[ToolParam] = [
     },
 ]
 
-_TOOL_NAMES = {"write_file", "read_file", "run_bash", "run_python", "present_artifact"}
+_TOOL_NAMES = {"write_file", "read_file", "edit_file", "run_bash", "run_python", "present_artifact"}
 _UNSAFE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
@@ -156,6 +182,17 @@ class SandboxToolHandler:
                         f"{self._sandbox_url}/files/read",
                         json={k: v for k, v in body.items() if v is not None},
                     )
+                elif tool_name == "edit_file":
+                    resp = await client.post(
+                        f"{self._sandbox_url}/files/edit",
+                        json={
+                            "path": tool_input["path"],
+                            "old_string": tool_input["old_string"],
+                            "new_string": tool_input["new_string"],
+                            "replace_all": tool_input.get("replace_all", False),
+                            "chat_id": context.chat_id,
+                        },
+                    )
                 elif tool_name == "run_bash":
                     resp = await client.post(
                         f"{self._sandbox_url}/execute/bash",
@@ -203,14 +240,18 @@ class SandboxToolHandler:
                             is_error=True,
                         )
 
-                    artifact_url = (
-                        f"/api/chat/{context.chat_id}/artifacts/{tool_input['path']}"
-                    )
+                    artifact_url = f"/api/chat/{context.chat_id}/artifacts/{tool_input['path']}"
+                    # Pin the artifact to the committed version it was presented
+                    # at, so later edits never change what this card shows.
+                    version = stat.get("version")
+                    if version:
+                        artifact_url = f"{artifact_url}?v={version}"
                     artifact_info = {
                         "url": artifact_url,
                         "title": tool_input["title"],
                         "content_type": stat["content_type"],
                         "size_bytes": stat["size_bytes"],
+                        "version": version,
                     }
                     return ToolResult(
                         content=[
@@ -255,7 +296,7 @@ class SandboxToolHandler:
             )
 
         # Format the result
-        if tool_name in ("write_file", "read_file"):
+        if tool_name in ("write_file", "read_file", "edit_file"):
             return ToolResult(
                 content=[
                     {

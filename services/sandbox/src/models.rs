@@ -28,6 +28,15 @@ pub struct FileReadRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct FileEditRequest {
+    pub path: String,
+    pub old_string: String,
+    pub new_string: String,
+    pub replace_all: Option<bool>,
+    pub chat_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct BinaryFileWriteRequest {
     pub path: String,
     pub content_base64: String,
@@ -59,12 +68,30 @@ pub struct FileStatResponse {
     pub size_bytes: u64,
     pub content_type: String,
     pub exists: bool,
+    /// SHA of the latest commit covering this file, for version-pinned
+    /// artifact URLs. Null when the file has no committed version.
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FileVersionsRequest {
+    pub path: String,
+    pub chat_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileVersionResponse {
+    pub sha: String,
+    pub timestamp: String,
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct FileDownloadQuery {
     pub path: String,
     pub chat_id: String,
+    /// Optional git SHA — serve the file's content as of that version.
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

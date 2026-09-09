@@ -187,6 +187,223 @@ async fn test_file_read_line_range() {
 }
 
 #[tokio::test]
+async fn test_file_edit_exact_match() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "file-edit-basic";
+
+    f.client
+        .post(f.url("/files/write"))
+        .json(&json!({
+            "path": "doc.md",
+            "content": "# Title\n\nOld paragraph.\n\nAnother section.\n",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "doc.md",
+            "old_string": "Old paragraph.",
+            "new_string": "New paragraph.",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["content"].as_str().unwrap().contains("1 replacement"));
+
+    let resp = f
+        .client
+        .post(f.url("/files/read"))
+        .json(&json!({ "path": "doc.md", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let content = body["content"].as_str().unwrap();
+    assert!(content.contains("New paragraph."));
+    assert!(!content.contains("Old paragraph."));
+    assert!(content.contains("Another section."));
+}
+
+#[tokio::test]
+async fn test_file_edit_errors() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "file-edit-errors";
+
+    let content = "repeat\nrepeat\nunique\n";
+    f.client
+        .post(f.url("/files/write"))
+        .json(&json!({ "path": "doc.txt", "content": content, "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+
+    // No match
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "doc.txt",
+            "old_string": "does not exist",
+            "new_string": "x",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Ambiguous match without replace_all
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "doc.txt",
+            "old_string": "repeat",
+            "new_string": "x",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["detail"].as_str().unwrap().contains("2 locations"));
+
+    // Empty old_string
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "doc.txt",
+            "old_string": "",
+            "new_string": "x",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // Missing file
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "missing.txt",
+            "old_string": "a",
+            "new_string": "b",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // File should be unchanged after all failures
+    let resp = f
+        .client
+        .post(f.url("/files/read"))
+        .json(&json!({ "path": "doc.txt", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["content"].as_str().unwrap(),
+        "1 | repeat\n2 | repeat\n3 | unique"
+    );
+}
+
+#[tokio::test]
+async fn test_file_edit_replace_all() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "file-edit-replace-all";
+
+    f.client
+        .post(f.url("/files/write"))
+        .json(&json!({
+            "path": "doc.txt",
+            "content": "foo bar foo\nfoo\n",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "doc.txt",
+            "old_string": "foo",
+            "new_string": "baz",
+            "replace_all": true,
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["content"].as_str().unwrap().contains("3 replacements"));
+
+    let resp = f
+        .client
+        .post(f.url("/files/read"))
+        .json(&json!({ "path": "doc.txt", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body["content"].as_str().unwrap(),
+        "1 | baz bar baz\n2 | baz"
+    );
+}
+
+#[tokio::test]
+async fn test_file_edit_binary_rejected() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "file-edit-binary";
+
+    let raw_bytes: Vec<u8> = vec![0x00, 0xFF, 0xFE, 0x01];
+    f.client
+        .post(f.url("/files/write_binary"))
+        .json(&json!({
+            "path": "data.bin",
+            "content_base64": BASE64.encode(&raw_bytes),
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = f
+        .client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "data.bin",
+            "old_string": "x",
+            "new_string": "y",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["detail"].as_str().unwrap().contains("binary"));
+}
+
+#[tokio::test]
 async fn test_binary_write_and_download() {
     let f = SandboxTestFixture::shared().await;
     let chat_id = "binary-test";
@@ -256,6 +473,234 @@ async fn test_file_stat() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["exists"], false);
+}
+
+// ---------------------------------------------------------------------------
+// Versioning tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_versioning_write_edit_and_history() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "versioning-basic";
+
+    f.client
+        .post(f.url("/files/write"))
+        .json(&json!({
+            "path": "report.md",
+            "content": "version one\n",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    // stat exposes the version that present_artifact pins to
+    let resp = f
+        .client
+        .post(f.url("/files/stat"))
+        .json(&json!({ "path": "report.md", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let v1 = body["version"]
+        .as_str()
+        .expect("stat should expose version")
+        .to_string();
+    assert!(!v1.is_empty());
+
+    // edit_file creates a second version
+    f.client
+        .post(f.url("/files/edit"))
+        .json(&json!({
+            "path": "report.md",
+            "old_string": "version one",
+            "new_string": "version two",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = f
+        .client
+        .post(f.url("/files/versions"))
+        .json(&json!({ "path": "report.md", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let versions: Vec<Value> = resp.json().await.unwrap();
+    assert_eq!(versions.len(), 2, "expected one commit per mutation");
+    assert!(
+        versions[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("edit_file:")
+    );
+    assert!(
+        versions[1]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("write_file:")
+    );
+    assert!(versions[1]["timestamp"].as_str().is_some());
+    assert_ne!(versions[0]["sha"], versions[1]["sha"]);
+
+    // The version-1 sha still serves the original content (version pinning)
+    let resp = f
+        .client
+        .get(f.url("/files/download"))
+        .query(&[
+            ("path", "report.md"),
+            ("chat_id", chat_id),
+            ("version", v1.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes.as_ref(), b"version one\n");
+
+    // Default download keeps serving the latest content
+    let resp = f
+        .client
+        .get(f.url("/files/download"))
+        .query(&[("path", "report.md"), ("chat_id", chat_id)])
+        .send()
+        .await
+        .unwrap();
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes.as_ref(), b"version two\n");
+}
+
+#[tokio::test]
+async fn test_versioning_bash_writes_are_committed() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "versioning-bash";
+
+    f.client
+        .post(f.url("/execute/bash"))
+        .json(&json!({
+            "command": "echo from-bash > out.txt",
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = f
+        .client
+        .post(f.url("/files/versions"))
+        .json(&json!({ "path": "out.txt", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let versions: Vec<Value> = resp.json().await.unwrap();
+    assert!(!versions.is_empty(), "bash mutations should be committed");
+    assert!(
+        versions[0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("run_bash")
+    );
+}
+
+#[tokio::test]
+async fn test_versioning_binary_content_roundtrip() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "versioning-binary";
+
+    let raw_bytes: Vec<u8> = vec![0x00, 0xFF, 0xFE, 0x01, 0x02];
+    f.client
+        .post(f.url("/files/write_binary"))
+        .json(&json!({
+            "path": "file.bin",
+            "content_base64": BASE64.encode(&raw_bytes),
+            "chat_id": chat_id
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = f
+        .client
+        .post(f.url("/files/stat"))
+        .json(&json!({ "path": "file.bin", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    let body: Value = resp.json().await.unwrap();
+    let v1 = body["version"].as_str().unwrap().to_string();
+
+    let resp = f
+        .client
+        .get(f.url("/files/download"))
+        .query(&[
+            ("path", "file.bin"),
+            ("chat_id", chat_id),
+            ("version", v1.as_str()),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes.as_ref(), &raw_bytes[..]);
+}
+
+#[tokio::test]
+async fn test_versioning_errors() {
+    let f = SandboxTestFixture::shared().await;
+    let chat_id = "versioning-errors";
+
+    // No history at all for an untouched chat
+    let resp = f
+        .client
+        .post(f.url("/files/versions"))
+        .json(&json!({ "path": "nope.txt", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    f.client
+        .post(f.url("/files/write"))
+        .json(&json!({ "path": "a.txt", "content": "x", "chat_id": chat_id }))
+        .send()
+        .await
+        .unwrap();
+
+    // Unknown version ref
+    let resp = f
+        .client
+        .get(f.url("/files/download"))
+        .query(&[
+            ("path", "a.txt"),
+            ("chat_id", chat_id),
+            ("version", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // Non-hex ref is rejected
+    let resp = f
+        .client
+        .get(f.url("/files/download"))
+        .query(&[
+            ("path", "a.txt"),
+            ("chat_id", chat_id),
+            ("version", "; rm -rf"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
 }
 
 // ---------------------------------------------------------------------------

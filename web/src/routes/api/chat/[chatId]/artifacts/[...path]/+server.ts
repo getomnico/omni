@@ -3,7 +3,7 @@ import { error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types.js'
 import { chatRepository } from '$lib/server/db/chats.js'
 
-export const GET: RequestHandler = async ({ params, locals }) => {
+export const GET: RequestHandler = async ({ params, url, locals }) => {
     const { chatId, path } = params
     const logger = locals.logger.child('artifacts')
 
@@ -21,8 +21,13 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         throw error(403, 'Forbidden')
     }
 
+    const version = url.searchParams.get('v')
+    const versionSuffix = version ? `?v=${encodeURIComponent(version)}` : ''
+
     try {
-        const response = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/artifacts/${path}`)
+        const response = await fetch(
+            `${env.AI_SERVICE_URL}/chat/${chatId}/artifacts/${path}${versionSuffix}`,
+        )
 
         if (!response.ok) {
             logger.warn('Artifact proxy failed', undefined, {
@@ -35,11 +40,16 @@ export const GET: RequestHandler = async ({ params, locals }) => {
 
         const contentType = response.headers.get('content-type') || 'application/octet-stream'
         const body = await response.arrayBuffer()
+        // Version-pinned artifact URLs are immutable; unpinned ones track the
+        // latest file content and must not be cached long.
+        const cacheControl = version
+            ? 'private, max-age=31536000, immutable'
+            : 'private, max-age=3600'
 
         return new Response(body, {
             headers: {
                 'Content-Type': contentType,
-                'Cache-Control': 'private, max-age=3600',
+                'Cache-Control': cacheControl,
                 // Artifact bytes may be read by sandboxed iframe previews (unique
                 // origin), so allow cross-origin reads.
                 'Access-Control-Allow-Origin': '*',

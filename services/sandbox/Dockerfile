@@ -28,9 +28,10 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
 FROM python:3.12-slim-bookworm AS runtime
 ARG BUILD_MODE=release
 
-# Install curl for healthcheck and common data processing libraries for user code
+# Install curl for healthcheck, git for per-chat file versioning, and common
+# data processing libraries for user code
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl && \
+    apt-get install -y --no-install-recommends curl git && \
     rm -rf /var/lib/apt/lists/*
 
 ENV MPLBACKEND=Agg
@@ -39,8 +40,13 @@ RUN pip install --no-cache-dir \
     pandas>=2.2.0 \
     numpy>=1.26.0 \
     openpyxl>=3.1.0 \
+    xlsxwriter>=3.2.0 \
     matplotlib>=3.9.0 \
-    seaborn>=0.13.0
+    seaborn>=0.13.0 \
+    python-docx>=1.1.0 \
+    python-pptx>=1.0.0 \
+    reportlab>=4.2.0 \
+    pypdf>=5.0.0
 
 COPY services/sandbox/scripts/excel /usr/local/bin/excel
 RUN chmod +x /usr/local/bin/excel
