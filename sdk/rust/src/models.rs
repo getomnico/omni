@@ -41,14 +41,6 @@ pub struct OAuthManifestConfig {
     pub extra_auth_params: HashMap<String, String>,
     #[serde(default = "default_scope_separator")]
     pub scope_separator: String,
-    /// OAuth authorization parameter used for requested scopes. Most providers
-    /// use `scope`; Slack uses `user_scope` for delegated user tokens.
-    #[serde(default = "default_scope_parameter")]
-    pub scope_parameter: String,
-    /// When true, org credentials remain valid for read actions while write
-    /// actions require a per-user OAuth credential.
-    #[serde(default)]
-    pub user_auth_for_writes_only: bool,
     /// Optional path on the connector hit after token exchange to resolve
     /// provider-specific extras (e.g. Atlassian cloudId). The connector
     /// receives `{access_token, refresh_token}` and returns
@@ -142,8 +134,4 @@ fn default_email_field() -> String {
 
 fn default_scope_separator() -> String {
     " ".to_string()
-}
-
-fn default_scope_parameter() -> String {
-    "scope".to_string()
 }

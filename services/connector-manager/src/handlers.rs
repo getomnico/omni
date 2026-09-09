@@ -739,12 +739,6 @@ pub async fn execute_action(
                 request.action
             )));
         }
-        if action_requires_user_oauth(manifest, action_mode) && request.user_id.is_none() {
-            return Err(ApiError::BadRequest(format!(
-                "Action '{}' requires an authenticated user",
-                request.action
-            )));
-        }
 
         let cred_service = CredentialService::new(state.db_pool.clone());
         // Native actions retain their connector-specific credential behavior.
@@ -1264,35 +1258,6 @@ async fn resolve_credentials_with_policy(
                 .unwrap_or(CredentialResolution::NoCredentials))
         }
     }
-}
-
-/// Select whether this action should prompt for per-user OAuth when its
-/// per-user credential is missing. Connectors with the writes-only marker keep
-/// their read actions on the org credential.
-fn action_supports_user_oauth(manifest: &ConnectorManifest, action_mode: ActionMode) -> bool {
-    let Some(oauth) = manifest.oauth.as_ref() else {
-        return false;
-    };
-    let writes_only = oauth
-        .get("user_auth_for_writes_only")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-
-    if writes_only {
-        action_mode == ActionMode::Write
-    } else {
-        true
-    }
-}
-
-fn action_requires_user_oauth(manifest: &ConnectorManifest, action_mode: ActionMode) -> bool {
-    action_mode == ActionMode::Write
-        && manifest
-            .oauth
-            .as_ref()
-            .and_then(|oauth| oauth.get("user_auth_for_writes_only"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
 }
 
 /// Decide the credential outcome when no per-user credential row exists.
@@ -4364,46 +4329,6 @@ mod tests {
             created_at: time::OffsetDateTime::now_utc(),
             updated_at: time::OffsetDateTime::now_utc(),
         }
-    }
-
-    fn manifest_with_oauth(user_auth_for_writes_only: bool) -> ConnectorManifest {
-        ConnectorManifest {
-            name: "test".to_string(),
-            display_name: "Test".to_string(),
-            version: "1".to_string(),
-            sync_modes: vec![SyncType::Full],
-            connector_id: "test".to_string(),
-            connector_url: "http://test".to_string(),
-            integration_type: IntegrationType::Connector,
-            source_types: vec![SourceType::Slack.to_string()],
-            description: None,
-            actions: vec![],
-            search_operators: vec![],
-            read_only: false,
-            extra_schema: None,
-            attributes_schema: None,
-            mcp_enabled: false,
-            mcp_catalog_loaded: false,
-            resources: vec![],
-            prompts: vec![],
-            skills: vec![],
-            oauth: Some(json!({ "user_auth_for_writes_only": user_auth_for_writes_only })),
-        }
-    }
-
-    #[test]
-    fn write_actions_require_user_oauth_but_read_actions_can_use_org_credentials() {
-        let writes_only = manifest_with_oauth(true);
-        assert!(action_supports_user_oauth(&writes_only, ActionMode::Write));
-        assert!(!action_supports_user_oauth(&writes_only, ActionMode::Read));
-        assert!(action_requires_user_oauth(&writes_only, ActionMode::Write));
-        assert!(!action_requires_user_oauth(&writes_only, ActionMode::Read));
-
-        let all_actions = manifest_with_oauth(false);
-        assert!(action_supports_user_oauth(&all_actions, ActionMode::Write));
-        assert!(action_supports_user_oauth(&all_actions, ActionMode::Read));
-        assert!(!action_requires_user_oauth(&all_actions, ActionMode::Write));
-        assert!(!action_requires_user_oauth(&all_actions, ActionMode::Read));
     }
 
     #[test]

@@ -193,24 +193,6 @@ pub struct ChatGetPermalinkResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatPostMessageResponse {
-    pub ok: bool,
-    pub channel: String,
-    pub ts: String,
-    #[serde(default)]
-    pub message: Option<SlackPostedMessage>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SlackPostedMessage {
-    pub text: String,
-    pub ts: String,
-    #[serde(default)]
-    pub thread_ts: Option<String>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthTestResponse {
     pub ok: bool,

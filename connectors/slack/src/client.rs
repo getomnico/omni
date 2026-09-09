@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use omni_connector_sdk::{RateLimiter, RetryableError};
 use reqwest::Client;
 use serde::Deserialize;
@@ -6,9 +6,8 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::models::{
-    ChatGetPermalinkResponse, ChatPostMessageResponse, ConversationInfoResponse,
-    ConversationsHistoryResponse, ConversationsListResponse, ConversationsMembersResponse,
-    SlackFile, UsersListResponse,
+    ChatGetPermalinkResponse, ConversationInfoResponse, ConversationsHistoryResponse,
+    ConversationsListResponse, ConversationsMembersResponse, SlackFile, UsersListResponse,
 };
 
 const DEFAULT_SLACK_API_BASE: &str = "https://slack.com/api";
@@ -124,85 +123,6 @@ impl SlackClient {
                 })
             })
             .await
-    }
-
-    async fn post_json_request<T>(
-        &self,
-        url: &str,
-        token: &str,
-        payload: serde_json::Value,
-    ) -> Result<T>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        debug!("Making POST request to: {}", url);
-
-        self.rate_limiter
-            .execute_with_retry(|| async {
-                let response = self
-                    .client
-                    .post(url)
-                    .header("Authorization", format!("Bearer {}", token))
-                    .header("Content-Type", "application/json")
-                    .json(&payload)
-                    .send()
-                    .await
-                    .map_err(|e| RetryableError::Transient(e.into()))?;
-
-                if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    return Err(RetryableError::RateLimited {
-                        retry_after: Self::extract_retry_after(&response),
-                        message: format!("Slack API rate limited: {}", url),
-                    });
-                }
-
-                let response_status = response.status();
-                let response_text = response
-                    .text()
-                    .await
-                    .map_err(|e| RetryableError::Transient(e.into()))?;
-                if let Ok(envelope) = serde_json::from_str::<SlackErrorEnvelope>(&response_text) {
-                    if !envelope.ok {
-                        return Err(RetryableError::Permanent(anyhow!(
-                            "Slack API error: {}",
-                            envelope.format_error()
-                        )));
-                    }
-                }
-                if !response_status.is_success() {
-                    return Err(RetryableError::Permanent(anyhow!(
-                        "API request failed: {}",
-                        response_text
-                    )));
-                }
-
-                serde_json::from_str(&response_text).map_err(|e| {
-                    RetryableError::Permanent(anyhow!("Failed to parse response: {}", e))
-                })
-            })
-            .await
-    }
-
-    pub async fn post_message(
-        &self,
-        token: &str,
-        channel_id: &str,
-        text: &str,
-        thread_ts: Option<&str>,
-    ) -> Result<ChatPostMessageResponse> {
-        let mut payload = serde_json::json!({
-            "channel": channel_id,
-            "text": text,
-        });
-        if let Some(thread_ts) = thread_ts {
-            payload["thread_ts"] = serde_json::Value::String(thread_ts.to_string());
-        }
-        self.post_json_request(
-            &format!("{}/chat.postMessage", self.base_url),
-            token,
-            payload,
-        )
-        .await
     }
 
     pub async fn list_conversations(

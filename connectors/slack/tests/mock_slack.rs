@@ -1,8 +1,8 @@
 use axum::{
-    extract::{Json as ExtractJson, Query, State},
+    Router,
+    extract::{Query, State},
     response::Json,
     routing::{get, post},
-    Router,
 };
 use omni_slack_connector::models::{
     AuthTestResponse, ChatGetPermalinkResponse, ConversationInfoResponse,
@@ -45,7 +45,6 @@ impl MockSlackServer {
             .route("/users.list", get(users_list))
             .route("/conversations.members", get(conversations_members))
             .route("/conversations.join", post(conversations_join))
-            .route("/chat.postMessage", post(chat_post_message))
             .with_state(state);
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -222,34 +221,6 @@ async fn conversations_members(
 
 async fn conversations_join() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
-}
-
-async fn chat_post_message(
-    ExtractJson(payload): ExtractJson<serde_json::Value>,
-) -> Json<serde_json::Value> {
-    let channel = payload
-        .get("channel")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if channel == "C_DENIED" {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "not_in_channel"
-        }));
-    }
-
-    let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
-    let ts = "1736942400.000400";
-    Json(serde_json::json!({
-        "ok": true,
-        "channel": channel,
-        "ts": ts,
-        "message": {
-            "text": text,
-            "ts": ts,
-            "thread_ts": payload.get("thread_ts")
-        }
-    }))
 }
 
 #[derive(Deserialize)]
