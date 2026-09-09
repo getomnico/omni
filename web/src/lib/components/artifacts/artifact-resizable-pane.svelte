@@ -12,9 +12,18 @@
         closing?: boolean
         onWidthChange: (size: number) => void
         onClose: () => void
+        // Called when the slide-out flex-grow transition has finished.
+        onClosed: () => void
     }
 
-    let { artifact, initialWidth, closing = false, onWidthChange, onClose }: Props = $props()
+    let {
+        artifact,
+        initialWidth,
+        closing = false,
+        onWidthChange,
+        onClose,
+        onClosed,
+    }: Props = $props()
 
     // While `.artifact-opening` is present, the layout CSS forces the group to
     // the closed state (chat 100%, pane 0%). Removing it one frame later lets
@@ -59,6 +68,12 @@
             // Apply the closing class in the same flush: the width was just
             // measured (pre-transition), so the reverse transition starts now.
             closingApplied = true
+            // Unmount once the slide-out has had time to finish (transition +
+            // a small buffer). This replaces a transitionend listener, which
+            // can be missed when the forced flex-grow change lands in the same
+            // style flush and no transition actually runs.
+            const timer = setTimeout(onClosed, 560)
+            return () => clearTimeout(timer)
         } else {
             closingApplied = false
             // Once the slide-in has settled, go back to fluid width.

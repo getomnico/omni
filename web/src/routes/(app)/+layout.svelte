@@ -57,33 +57,17 @@
     import { artifactPaneState } from '$lib/stores/artifact-pane.svelte'
 
     let artifactPaneWidth = $state(50)
-    // The pane stays mounted during the closing animation so it can slide out;
-    // `artifactPaneClosing` adds the closing class (reverse flex-grow
-    // transition), and the pane unmounts once the transition is done.
-    let artifactPaneVisible = $state(false)
-    let artifactPaneClosing = $state(false)
-    let displayedArtifact = $state<ArtifactData | null>(null)
+    // Closing is derived: once the page turns the pane off, the store still
+    // keeps the last artifact (for the slide-out), so `closing` flips true.
+    // The wrapper listens for the flex-grow transition end and calls
+    // `onPaneClosed`, which clears the artifact (unmount).
+    let artifactPaneClosing = $derived(
+        !artifactPaneState.open && artifactPaneState.artifact !== null,
+    )
 
-    $effect(() => {
-        const open = artifactPaneState.open && artifactPaneState.artifact !== null
-        if (open) {
-            displayedArtifact = artifactPaneState.artifact
-            artifactPaneClosing = false
-            artifactPaneVisible = true
-            return
-        }
-        if (artifactPaneVisible) {
-            // Closing: slide out (reverse animation), then unmount.
-            artifactPaneClosing = true
-            const timer = setTimeout(() => {
-                artifactPaneVisible = false
-                artifactPaneClosing = false
-                displayedArtifact = null
-            }, 540)
-            return () => clearTimeout(timer)
-        }
-        artifactPaneClosing = false
-    })
+    function onPaneClosed() {
+        artifactPaneState.closeFinishedHandler?.()
+    }
     import { applyTheme } from '$lib/themes/engine'
     import ThemePicker from '$lib/components/theme-picker.svelte'
 
@@ -541,14 +525,16 @@
                     {@render children()}
                 </main>
             </ResizablePane>
-            {#if artifactPaneVisible && displayedArtifact}
+            {#if artifactPaneState.artifact}
+                {@const artifact = artifactPaneState.artifact}
                 <ResizableHandle withHandle />
                 <ArtifactResizablePane
-                    artifact={displayedArtifact}
+                    {artifact}
                     initialWidth={artifactPaneWidth}
                     closing={artifactPaneClosing}
                     onWidthChange={(size) => (artifactPaneWidth = size)}
-                    onClose={() => artifactPaneState.closeHandler?.()} />
+                    onClose={() => artifactPaneState.closeHandler?.()}
+                    onClosed={onPaneClosed} />
             {/if}
         </ResizablePaneGroup>
     </div>

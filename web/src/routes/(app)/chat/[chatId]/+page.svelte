@@ -131,6 +131,7 @@
             oauthBlockerActive = data.pendingOAuth !== null
             chosenArtifactKey = null
             artifactPaneOpen = false
+            lastOpenedArtifact = null
         }
     })
 
@@ -522,11 +523,15 @@
     let activeArtifact = $derived(
         panelArtifacts.find((artifact) => artifact.key === activeArtifactKey) ?? null,
     )
+    // Keeps the artifact available while the pane slides out (the derived
+    // active artifact is null once the pane is closed).
+    let lastOpenedArtifact = $state<ArtifactData | null>(null)
 
     function toggleArtifactPane(artifact: ArtifactData) {
         if (artifactPaneOpen && chosenArtifactKey === artifact.key) {
             closeArtifactPane()
         } else {
+            lastOpenedArtifact = artifact
             chosenArtifactKey = artifact.key
             artifactPaneOpen = true
         }
@@ -535,6 +540,12 @@
     function closeArtifactPane() {
         artifactPaneOpen = false
         chosenArtifactKey = null
+    }
+
+    // Called by the layout when the pane's slide-out transition ends; the
+    // artifact is cleared, which unmounts the pane in the layout.
+    function closeArtifactPaneFinished() {
+        lastOpenedArtifact = null
     }
 
     // The streaming assistant message doubles as its own progress indicator once
@@ -1356,8 +1367,12 @@
     // If no response is currently being streamed, nothing happens
     onMount(() => {
         artifactPaneState.bind(
-            () => ({ artifact: activeArtifact, open: artifactPaneOpen }),
+            () => ({
+                artifact: activeArtifact ?? lastOpenedArtifact,
+                open: artifactPaneOpen,
+            }),
             closeArtifactPane,
+            closeArtifactPaneFinished,
         )
 
         if ((page.state as any).stream || data.approvedOAuth) {
