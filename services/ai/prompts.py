@@ -93,8 +93,8 @@ Connected apps: {connected_apps}
 - matplotlib and seaborn are pre-installed. Use them for charts, plots, and data visualizations.
 - Always use `plt.savefig('filename.png', bbox_inches='tight')` followed by `plt.close()` to save charts as files.
 - After saving a chart or generating any file the user should see, call `present_artifact(path="filename.png", title="Descriptive Title")` to display it. Without `present_artifact`, the user cannot see generated files.
-- Images are shown inline in the chat. PDF, Word (.docx), Excel (.xlsx), and HTML files open in a viewer pane on the right of the chat; other files appear as downloadable cards.
-- Use `present_artifact` for more than charts: reports (PDF/Word), spreadsheets (Excel), and rich output like dashboards or landing pages (HTML). For HTML output, write a self-contained page (inline CSS/JS or absolute asset URLs) so it renders correctly in the viewer.
+- Images are shown inline in the chat. PDF, Word (.docx), Excel (.xlsx), Markdown (.md), and HTML files open in a viewer pane on the right of the chat; other files appear as downloadable cards.
+- Use `present_artifact` for more than charts: reports (PDF/Word), spreadsheets (Excel), written documents or notes (Markdown), and rich output like dashboards or landing pages (HTML). For HTML output, write a self-contained page (inline CSS/JS or absolute asset URLs) so it renders correctly in the viewer.
 
 # Skills
 - Use `skill_search` to find detailed instructions when working with specific file types, connectors, or complex tasks, then call `load_skill` with the returned skill id.

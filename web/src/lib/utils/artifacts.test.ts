@@ -75,6 +75,8 @@ describe('artifactKind', () => {
         expect(artifactKind('text/html')).toBe('html')
         expect(artifactKind('text/plain')).toBe('text')
         expect(artifactKind('text/csv')).toBe('text')
+        expect(artifactKind('text/markdown')).toBe('markdown')
+        expect(artifactKind('text/x-markdown')).toBe('markdown')
         expect(artifactKind('application/json')).toBe('text')
         expect(artifactKind('application/xml')).toBe('text')
         expect(
@@ -92,6 +94,12 @@ describe('artifactKind', () => {
             'xlsx',
         )
         expect(artifactKind('', '/api/chat/c/artifacts/notes.docx')).toBe('docx')
+        expect(artifactKind('application/octet-stream', '/api/chat/c/artifacts/readme.md')).toBe(
+            'markdown',
+        )
+        expect(
+            artifactKind('application/octet-stream', '/api/chat/c/artifacts/CHANGELOG.markdown'),
+        ).toBe('markdown')
         expect(artifactKind('application/octet-stream', '/api/chat/c/artifacts/blob.xyz')).toBe(
             'other',
         )

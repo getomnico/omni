@@ -20,6 +20,23 @@ const BASE_CSS = `
         overflow-wrap: anywhere;
         font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
+    /* Markdown / article content */
+    h1, h2, h3, h4, h5, h6 { margin: 1em 0 0.5em; line-height: 1.3; }
+    h1 { font-size: 1.6em; }
+    h2 { font-size: 1.35em; }
+    h3 { font-size: 1.15em; }
+    p, ul, ol, dl, blockquote { margin: 0.6em 0; }
+    ul, ol { padding-left: 1.6em; }
+    blockquote {
+        margin: 0.8em 0;
+        padding: 0.1em 1em;
+        border-left: 3px solid #e5e7eb;
+        color: #4b5563;
+    }
+    code { font: 0.9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f3f4f6; padding: 0.15em 0.35em; border-radius: 4px; }
+    pre code { display: block; padding: 0.8em 1em; overflow-x: auto; }
+    a { color: #2563eb; }
+    hr { border: 0; border-top: 1px solid #e5e7eb; margin: 1.2em 0; }
 `
 
 export function srcdocDocument(bodyHtml: string): string {

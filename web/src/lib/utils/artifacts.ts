@@ -5,7 +5,15 @@ import type { ProcessedMessage, ToolMessageContent } from '$lib/types/message'
 // right-hand artifact pane.
 export type ArtifactDisplayMode = 'inline' | 'panel'
 
-export type ArtifactKind = 'image' | 'pdf' | 'html' | 'docx' | 'xlsx' | 'text' | 'other'
+export type ArtifactKind =
+    | 'image'
+    | 'pdf'
+    | 'html'
+    | 'docx'
+    | 'xlsx'
+    | 'markdown'
+    | 'text'
+    | 'other'
 
 export type ArtifactData = {
     key: string
@@ -38,16 +46,19 @@ const TEXT_MIMES: ReadonlySet<string> = new Set([
     'application/x-yaml',
 ])
 
+const MARKDOWN_MIMES: ReadonlySet<string> = new Set(['text/markdown', 'text/x-markdown'])
+
 const EXT_KINDS: Readonly<Record<string, ArtifactKind>> = {
     pdf: 'pdf',
     html: 'html',
     htm: 'html',
     docx: 'docx',
     xlsx: 'xlsx',
+    md: 'markdown',
+    markdown: 'markdown',
     txt: 'text',
     csv: 'text',
     json: 'text',
-    md: 'text',
     log: 'text',
 }
 
@@ -96,6 +107,7 @@ export function artifactKind(
     const mime = (contentType ?? '').toLowerCase()
     if (mime.startsWith('image/')) return 'image'
     if (mime in MIME_KINDS) return MIME_KINDS[mime]
+    if (MARKDOWN_MIMES.has(mime)) return 'markdown'
     if (mime.startsWith('text/') || TEXT_MIMES.has(mime)) return 'text'
 
     // Content-type can degrade to octet-stream on some hops; fall back to the
@@ -132,6 +144,8 @@ export function artifactKindLabel(kind: ArtifactKind): string {
             return 'Word document'
         case 'xlsx':
             return 'Excel workbook'
+        case 'markdown':
+            return 'Markdown'
         case 'text':
             return 'Text file'
         default:

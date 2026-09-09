@@ -84,7 +84,7 @@ SANDBOX_TOOLS: list[ToolParam] = [
     },
     {
         "name": "present_artifact",
-        "description": "Present a generated file to the user so they can view or download it. The file must already exist in the scratch workspace; without calling this tool, users cannot see files you generate. Supported types and how they are shown: images (PNG, JPEG, etc.) render inline in the chat; PDF, Word (.docx), Excel (.xlsx) and HTML files open in a viewer pane on the right of the chat; other file types appear as a downloadable card. For rich output such as dashboards or landing pages, write an HTML file and present it. Make HTML files self-contained (inline CSS/JS) or reference assets by absolute URL so they render correctly in the viewer.",
+        "description": "Present a generated file to the user so they can view or download it. The file must already exist in the scratch workspace; without calling this tool, users cannot see files you generate. Supported types and how they are shown: images (PNG, JPEG, etc.) render inline in the chat; PDF, Word (.docx), Excel (.xlsx), Markdown (.md) and HTML files open in a viewer pane on the right of the chat; other file types appear as a downloadable card. For rich output such as dashboards or landing pages, write an HTML file and present it. For written documents or notes, prefer Markdown. Make HTML files self-contained (inline CSS/JS) or reference assets by absolute URL so they render correctly in the viewer.",
         "input_schema": {
             "type": "object",
             "properties": {

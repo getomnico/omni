@@ -7,6 +7,7 @@
     import ArtifactHtmlViewer from './viewers/artifact-html-viewer.svelte'
     import ArtifactDocxViewer from './viewers/artifact-docx-viewer.svelte'
     import ArtifactXlsxViewer from './viewers/artifact-xlsx-viewer.svelte'
+    import ArtifactMarkdownViewer from './viewers/artifact-markdown-viewer.svelte'
     import ArtifactTextViewer from './viewers/artifact-text-viewer.svelte'
     import ArtifactGenericViewer from './viewers/artifact-generic-viewer.svelte'
 
@@ -73,6 +74,8 @@
                     <ArtifactDocxViewer {artifact} />
                 {:else if kind === 'xlsx'}
                     <ArtifactXlsxViewer {artifact} />
+                {:else if kind === 'markdown'}
+                    <ArtifactMarkdownViewer {artifact} />
                 {:else if kind === 'text'}
                     <ArtifactTextViewer {artifact} />
                 {:else}

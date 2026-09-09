@@ -1,6 +1,7 @@
 <script lang="ts">
     import {
         File,
+        FileCode,
         FileSpreadsheet,
         FileText,
         FileType,
@@ -22,6 +23,7 @@
         html: Globe,
         docx: FileType,
         xlsx: FileSpreadsheet,
+        markdown: FileCode,
         text: FileText,
         other: File,
     }
@@ -32,6 +34,7 @@
         html: 'text-orange-500',
         docx: 'text-blue-600',
         xlsx: 'text-emerald-600',
+        markdown: 'text-purple-600',
         text: 'text-muted-foreground',
         other: 'text-muted-foreground',
     }
