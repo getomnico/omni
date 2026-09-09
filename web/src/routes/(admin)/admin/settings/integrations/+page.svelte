@@ -668,9 +668,9 @@
                                 <div
                                     class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
                                     <div class="flex items-center gap-2 font-medium">
-                                        {#if oauthProviderIcons[provider.provider]}
+                                        {#if oauthProviderIcons[provider.provider.split(':')[0]]}
                                             <img
-                                                src={oauthProviderIcons[provider.provider]}
+                                                src={oauthProviderIcons[provider.provider.split(':')[0]]}
                                                 alt={provider.displayName}
                                                 class="h-5 w-5 shrink-0 object-contain" />
                                         {:else}

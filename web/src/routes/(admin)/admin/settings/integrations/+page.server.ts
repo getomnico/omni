@@ -256,12 +256,21 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
                         saved?.config,
                         manifest,
                     )
+                    // A source whose client is auto-registered via dynamic
+                    // client registration needs no admin attention; hide the
+                    // row unless an action is still pending (e.g. supplying
+                    // the required registration token for a DCR provider).
+                    const dcrManaged = saved?.config.oauth_dynamic_client_registration === 'true'
+                    const registrationTokenPending =
+                        manifest.registration_requires_initial_access_token === true &&
+                        !saved?.config.oauth_registration_initial_access_token
+                    if (dcrManaged && !registrationTokenPending) continue
                     oauthProviders.push({
                         provider,
                         displayName: `${providerDisplayName(manifestProvider, connectors)} — ${source.name}`,
                         configured:
-                            isClientConfigComplete(saved?.config, tokenEndpointAuthMethod) ||
-                            saved?.config.oauth_dynamic_client_registration === 'true',
+                            dcrManaged ||
+                            isClientConfigComplete(saved?.config, tokenEndpointAuthMethod),
                         updatedAt: saved?.updatedAt ?? null,
                         config: saved?.config ?? {},
                         registrationRequiresInitialAccessToken:
