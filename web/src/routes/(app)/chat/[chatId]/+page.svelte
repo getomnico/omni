@@ -99,7 +99,7 @@
         eventSource = null
         activeStreamChatId = null
         clearReconnectState()
-        artifactPaneState.close()
+        artifactPaneState.unbind()
     })
 
     afterNavigate(() => {
@@ -131,7 +131,6 @@
             oauthBlockerActive = data.pendingOAuth !== null
             chosenArtifactKey = null
             artifactPaneOpen = false
-            artifactPaneState.close()
         }
     })
 
@@ -536,20 +535,8 @@
     function closeArtifactPane() {
         artifactPaneOpen = false
         chosenArtifactKey = null
-        artifactPaneState.close()
     }
 
-    // Keep the layout's shared pane state in sync: the artifact to show, whether
-    // it is open, and the close callback for the pane's close button.
-    $effect(() => {
-        if (!artifactPaneOpen || !activeArtifact) {
-            if (artifactPaneState.open || artifactPaneState.artifact) {
-                artifactPaneState.close()
-            }
-            return
-        }
-        artifactPaneState.update(activeArtifact, true, closeArtifactPane)
-    })
     // The streaming assistant message doubles as its own progress indicator once
     // it has anything visible (a tool call row or response text). Only show the
     // standalone loader while a response is starting and there is nothing to
@@ -1368,6 +1355,11 @@
     // This will trigger the streaming of AI response when the component is mounted
     // If no response is currently being streamed, nothing happens
     onMount(() => {
+        artifactPaneState.bind(
+            () => ({ artifact: activeArtifact, open: artifactPaneOpen }),
+            closeArtifactPane,
+        )
+
         if ((page.state as any).stream || data.approvedOAuth) {
             streamResponse(data.chat.id)
         } else {
