@@ -13,13 +13,23 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ActionMode, McpPromptArgument, McpPromptDefinition, McpResourceDefinition,
+    ActionCredentialScope, ActionDefinition, ActionMode, McpPromptArgument, McpPromptDefinition,
+    McpResourceDefinition,
 };
 use tokio::process::Command;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::models::ActionResponse;
+
+/// Env var a stdio MCP launcher can set to point at a per-attempt status file.
+/// When a session fails, the adapter checks the file: content
+/// `needs_user_auth` means the provider rejected the credential and the
+/// failure is normalized into [`MCP_AUTH_REQUIRED_MESSAGE`] so the HTTP
+/// server can return the standard 412 response.
+pub const MCP_AUTH_STATUS_FILE_ENV: &str = "OMNI_MCP_AUTH_STATUS_FILE";
+/// Canonical failure message produced when the auth-status marker is present.
+pub const MCP_AUTH_REQUIRED_MESSAGE: &str = "MCP authentication required";
 
 /// Configuration for an MCP server reached via stdio (subprocess).
 #[derive(Debug, Clone)]
@@ -134,59 +144,22 @@ impl McpAdapter {
         env: Option<HashMap<String, String>>,
         headers: Option<HashMap<String, String>>,
     ) -> Result<RmcpClient> {
-        match &self.server {
-            McpServer::Stdio(stdio) => {
-                let mut cmd = Command::new(&stdio.command);
-                cmd.args(&stdio.args);
-                for (k, v) in &stdio.env {
-                    cmd.env(k, v);
+        // Capture the marker path before env is consumed by the transport.
+        let status_file = env
+            .as_ref()
+            .and_then(|extra| extra.get(MCP_AUTH_STATUS_FILE_ENV))
+            .cloned();
+        let result = match &self.server {
+            McpServer::Stdio(stdio) => connect_stdio(stdio, env).await,
+            McpServer::Http(http) => connect_http(http, headers).await,
+        };
+        match result {
+            Ok(client) => Ok(client),
+            Err(error) => {
+                if auth_status_file_requires_auth(&status_file) {
+                    return Err(anyhow::anyhow!(MCP_AUTH_REQUIRED_MESSAGE));
                 }
-                if let Some(extra) = env {
-                    for (k, v) in extra {
-                        cmd.env(k, v);
-                    }
-                }
-                if let Some(cwd) = &stdio.cwd {
-                    cmd.current_dir(cwd);
-                }
-                debug!(
-                    "Spawning MCP subprocess: {} {}",
-                    stdio.command,
-                    stdio.args.join(" ")
-                );
-                let transport =
-                    TokioChildProcess::new(cmd).context("failed to spawn MCP child process")?;
-                ().serve(transport)
-                    .await
-                    .context("MCP stdio handshake failed")
-            }
-            McpServer::Http(http) => {
-                let mut header_map: HashMap<http::HeaderName, http::HeaderValue> = HashMap::new();
-                for (k, v) in &http.headers {
-                    header_map.insert(
-                        http::HeaderName::from_bytes(k.as_bytes())
-                            .with_context(|| format!("invalid header name '{}'", k))?,
-                        http::HeaderValue::from_str(v)
-                            .with_context(|| format!("invalid header value for '{}'", k))?,
-                    );
-                }
-                if let Some(extra) = headers {
-                    for (k, v) in extra {
-                        header_map.insert(
-                            http::HeaderName::from_bytes(k.as_bytes())
-                                .with_context(|| format!("invalid header name '{}'", k))?,
-                            http::HeaderValue::from_str(&v)
-                                .with_context(|| format!("invalid header value for '{}'", k))?,
-                        );
-                    }
-                }
-                let config = StreamableHttpClientTransportConfig::with_uri(http.url.clone())
-                    .custom_headers(header_map);
-                debug!("Opening MCP HTTP session: {}", http.url);
-                let transport = StreamableHttpClientTransport::from_config(config);
-                ().serve(transport)
-                    .await
-                    .context("MCP streamable-http handshake failed")
+                Err(error)
             }
         }
     }
@@ -463,6 +436,83 @@ impl McpAdapter {
     }
 }
 
+/// Consume the per-attempt auth-status marker file, returning whether the
+/// launcher recorded a terminal OAuth rejection. Marker IO is best effort: a
+/// missing or unreadable file simply means the failure was not an auth
+/// failure and must not mask the original error.
+fn auth_status_file_requires_auth(status_file: &Option<String>) -> bool {
+    let Some(path) = status_file else {
+        return false;
+    };
+    let requires_auth = std::fs::read_to_string(path)
+        .map(|content| content.trim() == "needs_user_auth")
+        .unwrap_or(false);
+    // The marker is a short-lived per-attempt temp file; consume it after
+    // reading so failed authentications do not accumulate in the container.
+    let _ = std::fs::remove_file(path);
+    requires_auth
+}
+
+async fn connect_stdio(
+    stdio: &StdioMcpServer,
+    env: Option<HashMap<String, String>>,
+) -> Result<RmcpClient> {
+    let mut cmd = Command::new(&stdio.command);
+    cmd.args(&stdio.args);
+    for (k, v) in &stdio.env {
+        cmd.env(k, v);
+    }
+    if let Some(extra) = env {
+        for (k, v) in extra {
+            cmd.env(k, v);
+        }
+    }
+    if let Some(cwd) = &stdio.cwd {
+        cmd.current_dir(cwd);
+    }
+    debug!(
+        "Spawning MCP subprocess: {} {}",
+        stdio.command,
+        stdio.args.join(" ")
+    );
+    let transport = TokioChildProcess::new(cmd).context("failed to spawn MCP child process")?;
+    ().serve(transport)
+        .await
+        .context("MCP stdio handshake failed")
+}
+
+async fn connect_http(
+    http: &HttpMcpServer,
+    headers: Option<HashMap<String, String>>,
+) -> Result<RmcpClient> {
+    let mut header_map: HashMap<http::HeaderName, http::HeaderValue> = HashMap::new();
+    for (k, v) in &http.headers {
+        header_map.insert(
+            http::HeaderName::from_bytes(k.as_bytes())
+                .with_context(|| format!("invalid header name '{}'", k))?,
+            http::HeaderValue::from_str(v)
+                .with_context(|| format!("invalid header value for '{}'", k))?,
+        );
+    }
+    if let Some(extra) = headers {
+        for (k, v) in extra {
+            header_map.insert(
+                http::HeaderName::from_bytes(k.as_bytes())
+                    .with_context(|| format!("invalid header name '{}'", k))?,
+                http::HeaderValue::from_str(&v)
+                    .with_context(|| format!("invalid header value for '{}'", k))?,
+            );
+        }
+    }
+    let config =
+        StreamableHttpClientTransportConfig::with_uri(http.url.clone()).custom_headers(header_map);
+    debug!("Opening MCP HTTP session: {}", http.url);
+    let transport = StreamableHttpClientTransport::from_config(config);
+    ().serve(transport)
+        .await
+        .context("MCP streamable-http handshake failed")
+}
+
 fn type_of(v: &JsonValue) -> &'static str {
     match v {
         JsonValue::Null => "null",
@@ -496,6 +546,7 @@ async fn fetch_actions(client: &RmcpClient) -> Result<Vec<ActionDefinition>> {
             } else {
                 ActionMode::Write
             },
+            credential_scope: ActionCredentialScope::User,
             // Rust MCP adapter does not extract tool-level scope metadata yet.
             required_scopes: None,
             source_types: Vec::new(),

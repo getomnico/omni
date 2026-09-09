@@ -9,8 +9,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, IntegrationType, SearchOperator,
@@ -114,6 +114,16 @@ pub trait Connector: Send + Sync + 'static {
     /// API keys, or other auth schemes.
     fn oauth_config(&self) -> Option<OAuthManifestConfig> {
         None
+    }
+
+    /// Recognize terminal authentication failures surfaced by the MCP server
+    /// or its launcher that require the acting user's OAuth reconnection.
+    /// Connectors with provider-specific authentication errors can override
+    /// this without exposing credentials in an HTTP response; failures that
+    /// carry the generic auth-status marker are already recognized by the
+    /// SDK and do not need this hook.
+    fn mcp_authentication_error(&self, _message: &str) -> bool {
+        false
     }
 
     /// Connector-specific gate run before the SDK reserves a sync slot or

@@ -1,7 +1,7 @@
 use crate::client::{SdkClient, SdkError, build_connector_url};
 use crate::connector::{Connector, SyncRequestValidationError};
 use crate::context::SyncContext;
-use crate::mcp_adapter::{McpAdapter, McpServer};
+use crate::mcp_adapter::{MCP_AUTH_REQUIRED_MESSAGE, McpAdapter, McpServer};
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials,
     OAuthCredentialReadyRequest, PromptRequest, ResourceRequest, SkillRequest, SkillResponse,
@@ -309,6 +309,7 @@ where
             Ok(mcp_actions) => {
                 let manual: std::collections::HashSet<String> =
                     manifest.actions.iter().map(|a| a.name.clone()).collect();
+                let mut mcp_action_names = Vec::new();
                 for mut action in mcp_actions {
                     if action.source_types.is_empty() {
                         action.source_types = manifest
@@ -320,9 +321,11 @@ where
                             .collect();
                     }
                     if !manual.contains(&action.name) {
+                        mcp_action_names.push(action.name.clone());
                         manifest.actions.push(action);
                     }
                 }
+                manifest.mcp_action_names = mcp_action_names;
             }
             Err(e) => warn!("Failed to merge MCP actions into manifest: {}", e),
         }
@@ -350,6 +353,76 @@ where
     }
 
     manifest
+}
+
+/// Whether an MCP failure message is a terminal authentication rejection
+/// that requires the acting user's OAuth reconnection.
+fn mcp_auth_required<C: Connector>(connector: &C, message: &str) -> bool {
+    message == MCP_AUTH_REQUIRED_MESSAGE || connector.mcp_authentication_error(message)
+}
+
+/// Build the stable 412 `needs_user_auth` response body. Mirrors the Python
+/// SDK's response so connector-manager invalidates the user's credential and
+/// the web layer can surface the same "connect" CTA. Returns `None` when the
+/// acting source cannot be identified.
+fn mcp_auth_required_body<C: Connector>(
+    connector: &C,
+    source_id: Option<&str>,
+    source_type: Option<&str>,
+) -> Option<serde_json::Value> {
+    let source_id = source_id?;
+    let source_type = source_type?;
+    Some(serde_json::json!({
+        "error": "needs_user_auth",
+        "source_id": source_id,
+        "source_type": source_type,
+        "provider": connector.oauth_config().map(|config| config.provider),
+        "oauth_start_url": format!("/api/oauth/start?source_id={}", source_id),
+    }))
+}
+
+/// 412 `needs_user_auth` axum response for MCP action failures.
+fn mcp_auth_required_action_response<C: Connector>(
+    state: &ServerState<C>,
+    request: &ActionRequest,
+    message: &str,
+) -> Option<Response> {
+    if !mcp_auth_required(&state.connector, message) {
+        return None;
+    }
+    let source = request.source.as_ref();
+    let source_id = source.map(|source| source.id.as_str()).or_else(|| {
+        request
+            .credentials
+            .as_ref()
+            .map(|credentials| credentials.source_id.as_str())
+    });
+    let source_type = source
+        .map(|source| source.source_type.as_str())
+        .or_else(|| state.connector.source_types().first().map(|t| t.as_str()));
+    let body = mcp_auth_required_body(&state.connector, source_id, source_type)?;
+    Some(
+        (
+            StatusCode::PRECONDITION_FAILED,
+            [("content-type", "application/json")],
+            body.to_string(),
+        )
+            .into_response(),
+    )
+}
+
+/// 412 `needs_user_auth` response for MCP resource/prompt failures, which
+/// carry source identity on the credentials wrapper rather than a Source.
+fn mcp_auth_required_credentials_response<C: Connector>(
+    connector: &C,
+    credentials: &McpCredentials,
+    message: &str,
+) -> Option<serde_json::Value> {
+    if !mcp_auth_required(connector, message) {
+        return None;
+    }
+    let source_type = connector.source_types().first().map(|t| t.as_str());
+    mcp_auth_required_body(connector, credentials.source_id.as_deref(), source_type)
 }
 
 fn mcp_prompt_skill(prompt: &shared::models::McpPromptDefinition) -> ConnectorSkillDefinition {
@@ -674,14 +747,33 @@ where
                     let response = adapter
                         .execute_tool(&request.action, request.params.clone(), env, headers)
                         .await;
-                    let status = match response.status.as_str() {
-                        "success" => StatusCode::OK,
-                        _ => StatusCode::BAD_REQUEST,
-                    };
-                    return Ok(response.into_response_with_status(status));
+                    if response.status != "success" {
+                        if let Some(error) = response.error.as_deref() {
+                            // Terminal OAuth rejection: surface the standard
+                            // 412 challenge instead of a generic failure so
+                            // connector-manager invalidates the credential.
+                            if let Some(auth_response) =
+                                mcp_auth_required_action_response(&state, &request, error)
+                            {
+                                return Ok(auth_response);
+                            }
+                        }
+                        return Ok(response.into_response_with_status(StatusCode::BAD_REQUEST));
+                    }
+                    return Ok(response.into_response_with_status(StatusCode::OK));
                 }
             }
             Err(e) => {
+                let message = format!("{:#}", e);
+                // A live-validation failure caused by a terminal OAuth
+                // rejection must produce the auth challenge; never fall
+                // through to the connector's native handler for a tool that
+                // needs the acting user's credential.
+                if let Some(auth_response) =
+                    mcp_auth_required_action_response(&state, &request, &message)
+                {
+                    return Ok(auth_response);
+                }
                 // Never execute a cached MCP action after live validation fails.
                 // Falling through is safe only for connector-defined actions.
                 if adapter.has_cached_action(&request.action).await {
@@ -745,10 +837,18 @@ where
         .await
         .map(Json)
         .map_err(|e| {
-            error!("Resource read failed for {}: {}", request.uri, e);
+            let message = format!("{:#}", e);
+            error!("Resource read failed for {}: {}", request.uri, message);
+            if let Some(body) = mcp_auth_required_credentials_response(
+                &state.connector,
+                &request.credentials,
+                &message,
+            ) {
+                return (StatusCode::PRECONDITION_FAILED, Json(body));
+            }
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
+                Json(serde_json::json!({ "error": message })),
             )
         })
 }
@@ -845,10 +945,16 @@ where
         .get_prompt(&name, arguments, env, headers)
         .await
         .map_err(|e| {
-            error!("Prompt get failed for {}: {}", name, e);
+            let message = format!("{:#}", e);
+            error!("Prompt get failed for {}: {}", name, message);
+            if let Some(body) =
+                mcp_auth_required_credentials_response(&state.connector, &credentials, &message)
+            {
+                return (StatusCode::PRECONDITION_FAILED, Json(body));
+            }
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() })),
+                Json(serde_json::json!({ "error": message })),
             )
         })
 }
