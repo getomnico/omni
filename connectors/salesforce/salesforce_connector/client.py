@@ -229,6 +229,36 @@ class DeletedRecord:
 
 
 @dataclass(frozen=True)
+class GlobalDescribe:
+    """Names of Salesforce objects available to the authenticated principal."""
+
+    object_types: frozenset[str]
+
+    @classmethod
+    def from_response(cls, raw: Mapping[str, object]) -> GlobalDescribe:
+        objects_value = raw.get("sobjects")
+        if not isinstance(objects_value, list):
+            raise SalesforceClientError(
+                "malformed global describe response: sobjects expected list, "
+                f"got {type(objects_value).__name__}"
+            )
+        object_types: set[str] = set()
+        for item in objects_value:
+            if not isinstance(item, Mapping):
+                raise SalesforceClientError(
+                    "malformed global describe response: sobjects entry expected object, "
+                    f"got {type(item).__name__}"
+                )
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise SalesforceClientError(
+                    "malformed global describe response: sobjects entry missing name"
+                )
+            object_types.add(name)
+        return cls(object_types=frozenset(object_types))
+
+
+@dataclass(frozen=True)
 class DeletedResult:
     """Typed envelope of the /deleted endpoint response."""
 
@@ -431,6 +461,15 @@ class SalesforceClient:
         return QueryResult.from_response(_require_mapping(raw, "query"))
 
     @with_retry(max_retries=3)
+    async def available_object_types(self) -> frozenset[str]:
+        """Return objects exposed by the authenticated Salesforce edition/user."""
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.describe)
+        return GlobalDescribe.from_response(
+            _require_mapping(raw, "global describe")
+        ).object_types
+
+    @with_retry(max_retries=3)
     async def query_more(self, next_records_url: str) -> QueryResult:
         """Fetch the next page of a query result."""
         sf = await self._ensure_session()
@@ -514,8 +553,10 @@ class SalesforceClient:
         return raw
 
     async def test_connection(self) -> None:
-        """Verify the token works by querying a single Account."""
-        await self.query("SELECT Id FROM Account LIMIT 1")
+        """Verify the token with an API endpoint independent of CRM objects."""
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.limits)
+        _require_mapping(raw, "limits")
 
 
 def _format_api_datetime(value: datetime) -> str:

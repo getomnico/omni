@@ -26,7 +26,7 @@ fi
 chmod 700 "$source_dir"
 
 key_file="$source_dir/jwt.key"
-auth_status_file="${OMNI_SALESFORCE_AUTH_STATUS_FILE:-}"
+auth_status_file="${OMNI_MCP_AUTH_STATUS_FILE:-}"
 preserve_auth_failure=0
 auth_failure() {
   preserve_auth_failure=1

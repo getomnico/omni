@@ -438,6 +438,9 @@ class MockSalesforceAPI:
         self.token_issuances: int = 0
         self.last_assertion: str = ""
         self.instance_url: str = "http://localhost"
+        # Objects to omit from global describe, simulating orgs/licenses that
+        # do not expose every standard object to the authenticated principal.
+        self.hidden_objects: set[str] = set()
 
     def reset(self) -> None:
         self.objects.clear()
@@ -449,6 +452,7 @@ class MockSalesforceAPI:
         self.next_record_id = 1
         self.token_issuances = 0
         self.last_assertion = ""
+        self.hidden_objects.clear()
 
     def add_record(self, object_type: str, payload: dict[str, object]) -> None:
         self.objects.setdefault(object_type, []).append(payload)
@@ -587,6 +591,37 @@ class MockSalesforceAPI:
                 }
             )
 
+        async def handle_limits(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            return JSONResponse({"DailyApiRequests": {"Max": 15000, "Remaining": 15000}})
+
+        async def handle_describe(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_names = {
+                "Account",
+                "Contact",
+                "Opportunity",
+                "Lead",
+                "Case",
+                "Task",
+                "User",
+                "Group",
+                "GroupMember",
+                "UserRole",
+                "AccountShare",
+                "ContactShare",
+                "OpportunityShare",
+                "LeadShare",
+                "CaseShare",
+            }
+            object_names.update(mock.objects)
+            object_names.difference_update(mock.hidden_objects)
+            return JSONResponse({"sobjects": [{"name": name} for name in sorted(object_names)]})
+
         async def handle_query(request: Request) -> JSONResponse:
             denied = auth_guard()
             if denied:
@@ -695,6 +730,8 @@ class MockSalesforceAPI:
 
         routes = [
             Route("/services/oauth2/token", handle_token, methods=["POST"]),
+            Route("/services/data/v62.0/limits/", handle_limits),
+            Route("/services/data/v62.0/sobjects/", handle_describe),
             Route("/services/data/v62.0/query/", handle_query),
             Route(
                 "/services/data/v62.0/sobjects/{object_type}/updated",

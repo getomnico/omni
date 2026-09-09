@@ -173,6 +173,7 @@ class SalesforceConnector(Connector):
             userinfo_endpoint=f"{login_url}/services/oauth2/userinfo",
             registration_endpoint=f"{login_url}/services/oauth2/register",
             registration_requires_initial_access_token=True,
+            token_response_fields=["instance_url"],
             userinfo_email_field="email",
             identity_scopes=["openid", "email", "profile"],
             scopes={
@@ -184,6 +185,12 @@ class SalesforceConnector(Connector):
             # Salesforce DCR is authenticated with an administrator-provided
             # initial access token and returns a confidential client secret.
             token_endpoint_auth_method="client_secret_post",
+            issuer_source_config_key="login_url",
+            client_config_provider_template="salesforce:{source_id}",
+            pkce_required=True,
+            grant_types=["authorization_code", "refresh_token"],
+            validate_endpoint_urls=True,
+            supports_org_oauth=False,
         )
 
     @property
@@ -221,6 +228,62 @@ class SalesforceConnector(Connector):
         ):
             raise ValueError("Salesforce MCP requires an HTTPS Salesforce login URL")
         return url.rstrip("/")
+
+    @classmethod
+    def _mcp_login_url_from_payload(cls, payload: Mapping[str, object]) -> str:
+        login_url = payload.get("login_url")
+        if not isinstance(login_url, str) or not login_url.strip():
+            token_uri = payload.get("token_uri")
+            if isinstance(token_uri, str):
+                parsed = urlparse(token_uri)
+                if parsed.scheme and parsed.netloc and parsed.path.endswith(
+                    "/services/oauth2/token"
+                ):
+                    login_url = f"{parsed.scheme}://{parsed.netloc}"
+        return cls._mcp_login_url(login_url or "https://login.salesforce.com")
+
+    async def validate_oauth_credential(
+        self,
+        source: Source,
+        credentials: dict[str, object],
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        config = source.config
+        expected_instance = config.get("instance_url")
+        expected_instance = (
+            expected_instance.strip().rstrip("/")
+            if isinstance(expected_instance, str) and expected_instance.strip()
+            else None
+        )
+        expected_org_id = config.get("organization_id")
+        expected_org_id = (
+            expected_org_id if isinstance(expected_org_id, str) and expected_org_id else None
+        )
+        actual_org_id = (metadata or {}).get("organization_id")
+        actual_org_id = actual_org_id if isinstance(actual_org_id, str) else None
+        actual_instance = credentials.get("instance_url")
+        actual_instance = actual_instance if isinstance(actual_instance, str) else None
+
+        if expected_instance is None and expected_org_id is None:
+            return {"organization_id": actual_org_id} if actual_org_id else {}
+        if expected_org_id is not None and actual_org_id != expected_org_id:
+            raise ValueError("Salesforce OAuth organization does not match the source")
+        if expected_instance is not None:
+            if actual_instance is None:
+                raise ValueError("Salesforce OAuth credential has no instance URL")
+            try:
+                expected_url = self._mcp_salesforce_url(expected_instance)
+                actual_url = self._mcp_salesforce_url(actual_instance)
+            except ValueError as exc:
+                raise ValueError("Salesforce OAuth instance does not match the source") from exc
+            if urlparse(expected_url).hostname != urlparse(actual_url).hostname:
+                raise ValueError("Salesforce OAuth instance does not match the source")
+
+        return (
+            {"organization_id": actual_org_id}
+            if actual_org_id and expected_org_id is None
+            else {}
+        )
 
     def mcp_authentication_error(self, message: str) -> bool:
         """Recognize terminal Salesforce OAuth failures for MCP responses."""
@@ -280,9 +343,7 @@ class SalesforceConnector(Connector):
                     "OMNI_SALESFORCE_AUTH_MODE": "access_token",
                     "SF_ACCESS_TOKEN": auth.access_token,
                     "SF_INSTANCE_URL": self._mcp_salesforce_url(auth.instance_url),
-                    "SF_LOGIN_URL": self._mcp_login_url(
-                        payload.get("login_url") or "https://login.salesforce.com"
-                    ),
+                    "SF_LOGIN_URL": self._mcp_login_url_from_payload(payload),
                 }
             )
             organization_id = payload.get("organization_id")
@@ -293,7 +354,7 @@ class SalesforceConnector(Connector):
         # succeeded; otherwise a rejected direct call could leak a temp file.
         status_fd, status_file = tempfile.mkstemp(prefix="omni-salesforce-auth-")
         os.close(status_fd)
-        env["OMNI_SALESFORCE_AUTH_STATUS_FILE"] = status_file
+        env["OMNI_MCP_AUTH_STATUS_FILE"] = status_file
         return env
 
     @staticmethod
@@ -434,6 +495,35 @@ class SalesforceConnector(Connector):
             logger.exception("Sync failed with unexpected error")
             await ctx.fail(str(e))
 
+    async def _available_object_configs(
+        self,
+        client: SalesforceClient,
+        config: SalesforceSourceConfig,
+        ctx: SyncContext,
+    ) -> tuple[tuple[SalesforceObjectConfig, ...], frozenset[str]]:
+        """Limit sync work to objects exposed by this Salesforce org/user.
+
+        Salesforce editions and licenses do not expose the same standard CRM
+        objects. Global describe is the authoritative capability boundary;
+        without it, a missing object such as Account aborts the entire sync.
+        """
+        available = await client.available_object_types()
+        requested = enabled_object_configs(config.enabled_objects)
+        configs = tuple(item for item in requested if item.name in available)
+        missing = tuple(item.name for item in requested if item.name not in available)
+        if missing:
+            logger.warning(
+                "Skipping Salesforce objects unavailable to this principal: %s",
+                ", ".join(missing),
+            )
+            if config.enabled_objects:
+                for object_type in missing:
+                    await ctx.emit_error(
+                        f"{object_type}:*",
+                        "Salesforce object is not available to this principal",
+                    )
+        return configs, available
+
     async def _run_scheduled_sync(
         self,
         client: SalesforceClient,
@@ -442,13 +532,17 @@ class SalesforceConnector(Connector):
         ctx: SyncContext,
     ) -> SalesforceCheckpoint:
         """One-shot sync: people, shares, records (full or delta), deletes."""
-        configs = enabled_object_configs(config.enabled_objects)
+        configs, available_objects = await self._available_object_configs(client, config, ctx)
 
-        directory, _ = await self._sync_people(client, config, ctx, previous=None)
+        directory, _ = await self._sync_people(
+            client, config, ctx, previous=None, available_objects=available_objects
+        )
         if ctx.is_cancelled():
             return checkpoint
 
-        share_grants = await self._sync_shares(client, configs, directory, ctx)
+        share_grants = await self._sync_shares(
+            client, configs, directory, ctx, available_objects=available_objects
+        )
         if ctx.is_cancelled():
             return checkpoint
 
@@ -482,6 +576,7 @@ class SalesforceConnector(Connector):
         config: SalesforceSourceConfig,
         ctx: SyncContext,
         previous: PeopleSnapshot | None,
+        available_objects: frozenset[str],
     ) -> tuple[SalesforceDirectory, PeopleSnapshot]:
         """Query users/groups/roles and emit person and group-membership events.
 
@@ -493,26 +588,29 @@ class SalesforceConnector(Connector):
         group_members: list[GroupMemberRecord] = []
         roles: list[RoleRecord] = []
 
-        if config.sync_users:
+        if config.sync_users and "User" in available_objects:
             async for page in iter_query_pages(
                 client, f"SELECT {', '.join(USER_FIELDS)} FROM User"
             ):
                 users.extend(UserRecord.from_record(r) for r in page.records)
         if config.sync_groups:
-            async for page in iter_query_pages(
-                client,
-                f"SELECT {', '.join(GROUP_FIELDS)} FROM Group "
-                "WHERE Type IN ('Public', 'Queue', 'Regular')",
-            ):
-                groups.extend(GroupRecord.from_record(r) for r in page.records)
-            async for page in iter_query_pages(
-                client, f"SELECT {', '.join(GROUP_MEMBER_FIELDS)} FROM GroupMember"
-            ):
-                group_members.extend(GroupMemberRecord.from_record(r) for r in page.records)
-            async for page in iter_query_pages(
-                client, f"SELECT {', '.join(ROLE_FIELDS)} FROM UserRole"
-            ):
-                roles.extend(RoleRecord.from_record(r) for r in page.records)
+            if "Group" in available_objects:
+                async for page in iter_query_pages(
+                    client,
+                    f"SELECT {', '.join(GROUP_FIELDS)} FROM Group "
+                    "WHERE Type IN ('Public', 'Queue', 'Regular')",
+                ):
+                    groups.extend(GroupRecord.from_record(r) for r in page.records)
+            if "GroupMember" in available_objects:
+                async for page in iter_query_pages(
+                    client, f"SELECT {', '.join(GROUP_MEMBER_FIELDS)} FROM GroupMember"
+                ):
+                    group_members.extend(GroupMemberRecord.from_record(r) for r in page.records)
+            if "UserRole" in available_objects:
+                async for page in iter_query_pages(
+                    client, f"SELECT {', '.join(ROLE_FIELDS)} FROM UserRole"
+                ):
+                    roles.extend(RoleRecord.from_record(r) for r in page.records)
 
         directory = build_directory(users, groups, group_members, roles)
         snapshot = self._snapshot(directory, users)
@@ -605,11 +703,15 @@ class SalesforceConnector(Connector):
         configs: tuple[SalesforceObjectConfig, ...],
         directory: SalesforceDirectory,
         ctx: SyncContext,
+        available_objects: frozenset[str],
     ) -> dict[str, RecordGrants]:
         """Query share rows for every share-enabled object and resolve grants."""
         grants_by_parent: dict[str, RecordGrants] = {}
         for config in configs:
             if config.share_object is None or config.share_parent_field is None:
+                continue
+            if config.share_object not in available_objects:
+                logger.info("Skipping unavailable Salesforce share object %s", config.share_object)
                 continue
             if ctx.is_cancelled():
                 return grants_by_parent
@@ -828,7 +930,7 @@ class SalesforceConnector(Connector):
     ) -> None:
         """Long-lived polling sync. The connector-manager supervises this slot
         and restarts it if it dies; it returns only when cancelled."""
-        configs = enabled_object_configs(config.enabled_objects)
+        configs, available_objects = await self._available_object_configs(client, config, ctx)
         poll_seconds = max(config.realtime_poll_seconds, 10)
 
         directory: SalesforceDirectory | None = None
@@ -841,8 +943,12 @@ class SalesforceConnector(Connector):
             # No baseline yet: run a full pass so polling has watermarks to
             # work from.
             logger.info("Realtime sync: no watermarks, running baseline full sync")
-            directory, previous = await self._sync_people(client, config, ctx, None)
-            share_grants = await self._sync_shares(client, configs, directory, ctx)
+            directory, previous = await self._sync_people(
+                client, config, ctx, None, available_objects=available_objects
+            )
+            share_grants = await self._sync_shares(
+                client, configs, directory, ctx, available_objects=available_objects
+            )
             checkpoint = await self._sync_records(
                 client=client,
                 configs=configs,
@@ -865,8 +971,12 @@ class SalesforceConnector(Connector):
                 last_people_refresh is not None
                 and now - last_people_refresh >= people_refresh_interval
             ):
-                directory, previous = await self._sync_people(client, config, ctx, previous)
-                share_grants = await self._sync_shares(client, configs, directory, ctx)
+                directory, previous = await self._sync_people(
+                    client, config, ctx, previous, available_objects=available_objects
+                )
+                share_grants = await self._sync_shares(
+                    client, configs, directory, ctx, available_objects=available_objects
+                )
                 last_people_refresh = now
                 if ctx.is_cancelled():
                     return

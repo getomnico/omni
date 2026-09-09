@@ -85,6 +85,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["object_type"],
         ),
         mode="read",
+        credential_scope="org",
         source_types=["salesforce"],
     ),
     ActionDefinition(
@@ -95,6 +96,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id"],
         ),
         mode="read",
+        credential_scope="org",
         source_types=["salesforce"],
     ),
     ActionDefinition(
@@ -114,6 +116,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["subject"],
         ),
         mode="write",
+        credential_scope="org",
         source_types=["salesforce"],
     ),
     ActionDefinition(
@@ -128,6 +131,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id", "status"],
         ),
         mode="write",
+        credential_scope="org",
         source_types=["salesforce"],
     ),
     ActionDefinition(
@@ -149,6 +153,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["subject"],
         ),
         mode="write",
+        credential_scope="org",
         source_types=["salesforce"],
     ),
     ActionDefinition(
@@ -162,6 +167,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["task_id", "status"],
         ),
         mode="write",
+        credential_scope="org",
         source_types=["salesforce"],
     ),
 )
