@@ -623,6 +623,15 @@
         transition: flex-grow 500ms cubic-bezier(0.4, 0, 0.2, 1);
     }
 
+    /* The slide-in runs slower than the slide-out so the two feel matched:
+       the open starts from an invisible 0-width pane, so without a longer
+       duration it reads as quicker than collapsing back to 0. */
+    :global(
+        .artifact-pane-group:has([data-pane]:nth-child(3)):has(.artifact-anim-open) [data-pane]
+    ) {
+        transition: flex-grow 700ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
     /* For one frame after the pane mounts, force the closed layout (chat 100%,
        pane 0%). `!important` overrides paneforge's inline sizes; removing the
        class below lets the transition animate both panes together. */
