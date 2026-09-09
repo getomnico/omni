@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -9,13 +10,16 @@ from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
 from .client import SdkClient
+from .config import SdkConfig
 from .context import SyncContext
 from .exceptions import SdkClientError
+from .mcp_adapter import MCP_AUTH_REQUIRED_MESSAGE, MCP_AUTH_STATUS_FILE_ENV
 from .models import (
     ActionRequest,
     CancelRequest,
     CancelResponse,
     OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest,
     PromptRequest,
     ResourceRequest,
     SkillRequest,
@@ -42,8 +46,9 @@ def _sync_slot(source_id: str, sync_mode: SyncMode) -> SyncSlot:
 class ConnectorServer:
     """HTTP server wrapper for a connector."""
 
-    def __init__(self, connector: "Connector"):
+    def __init__(self, connector: "Connector", config: SdkConfig):
         self.connector = connector
+        self.config = config
         # Connector-manager permits one realtime and one scheduled sync per source.
         self.active_syncs: dict[SyncSlot, SyncContext] = {}
         self._sdk_client: SdkClient | None = None
@@ -51,24 +56,13 @@ class ConnectorServer:
     @property
     def sdk_client(self) -> SdkClient:
         if self._sdk_client is None:
-            self._sdk_client = SdkClient.from_env()
+            self._sdk_client = SdkClient(config=self.config)
         return self._sdk_client
 
 
-def _build_connector_url() -> str:
-    hostname = os.environ.get("CONNECTOR_HOST_NAME")
-    if not hostname:
-        raise RuntimeError(
-            "CONNECTOR_HOST_NAME environment variable is required. "
-            "Set it to this connector's hostname (e.g. the Docker service name)."
-        )
-    port = os.environ.get("PORT")
-    if not port:
-        raise RuntimeError("PORT environment variable is required.")
-    return f"http://{hostname}:{port}"
-
-
-def create_app(connector: "Connector") -> FastAPI:
+def create_app(
+    connector: "Connector", config: SdkConfig | None = None
+) -> FastAPI:
     """Create FastAPI app for a connector."""
 
     def mcp_auth_required_response(
@@ -83,7 +77,7 @@ def create_app(connector: "Connector") -> FastAPI:
         if auth:
             env = auth.get("env")
             if isinstance(env, dict):
-                status_file = env.get("OMNI_SALESFORCE_AUTH_STATUS_FILE")
+                status_file = env.get(MCP_AUTH_STATUS_FILE_ENV)
         marker_auth = False
         if isinstance(status_file, str) and status_file:
             try:
@@ -95,6 +89,8 @@ def create_app(connector: "Connector") -> FastAPI:
                 os.unlink(status_file)
             except OSError:
                 pass
+        if message == MCP_AUTH_REQUIRED_MESSAGE:
+            marker_auth = True
         if not connector.mcp_authentication_error(message) and not marker_auth:
             return None
         resolved_source_id = source_id or credentials.get("source_id")
@@ -105,36 +101,62 @@ def create_app(connector: "Connector") -> FastAPI:
             return None
         if not isinstance(resolved_source_type, str) or not resolved_source_type:
             return None
+        oauth_config = connector.oauth_config()
+        provider = oauth_config.provider if oauth_config is not None else None
         return JSONResponse(
             status_code=status.HTTP_412_PRECONDITION_FAILED,
             content={
                 "error": "needs_user_auth",
                 "source_id": resolved_source_id,
                 "source_type": resolved_source_type,
-                "provider": "salesforce",
+                "provider": provider,
                 "oauth_start_url": f"/api/oauth/start?source_id={resolved_source_id}",
             },
         )
 
-    server = ConnectorServer(connector)
-    connector_url = _build_connector_url()
-
-    if not os.environ.get("CONNECTOR_MANAGER_URL"):
-        raise RuntimeError(
-            "CONNECTOR_MANAGER_URL environment variable is required for connector registration."
-        )
+    config_from_env = config is None
+    config = config or SdkConfig.from_env()
+    connector_url = config.connector_url
+    server = ConnectorServer(connector, config)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):  # noqa: ARG001
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
+        nonlocal connector_url
+        if config_from_env:
+            # Resolve environment-backed configuration when the ASGI app is
+            # started, not only when it is imported. Test harnesses and
+            # embedders may create the app before bringing up the manager.
+            try:
+                runtime_config = SdkConfig.from_env()
+                server.config = runtime_config
+                server._sdk_client = None
+                connector_url = runtime_config.connector_url
+            except ValueError:
+                logger.warning("Using connector SDK configuration captured at app creation")
+
         async def registration_loop() -> None:
+            nonlocal connector_url
+            registration_succeeded = False
             while True:
+                if config_from_env:
+                    try:
+                        runtime_config = SdkConfig.from_env()
+                        if runtime_config != server.config:
+                            server.config = runtime_config
+                            server._sdk_client = None
+                            connector_url = runtime_config.connector_url
+                    except ValueError:
+                        pass
                 try:
                     manifest = await connector.get_manifest(connector_url=connector_url)
                     await server.sdk_client.register(manifest.model_dump())
                     logger.info("Registered with connector manager")
+                    registration_succeeded = True
                 except Exception as e:
                     logger.warning("Registration failed: %s", e)
-                await asyncio.sleep(REGISTRATION_INTERVAL_SECONDS)
+                await asyncio.sleep(
+                    REGISTRATION_INTERVAL_SECONDS if registration_succeeded else 1
+                )
 
         registration_task = asyncio.create_task(registration_loop())
 
@@ -157,10 +179,26 @@ def create_app(connector: "Connector") -> FastAPI:
         m = await connector.get_manifest(connector_url=connector_url)
         return m.model_dump()
 
+    @app.post("/oauth/validate")
+    async def validate_oauth_credential(
+        request: OAuthCredentialValidationRequest,
+    ) -> JSONResponse:
+        try:
+            config_updates = await connector.validate_oauth_credential(
+                request.source, request.credentials, request.metadata
+            )
+            return JSONResponse(content={"config_updates": config_updates})
+        except Exception as exc:
+            logger.warning("OAuth credential validation failed", exc_info=True)
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": str(exc)},
+            )
+
     @app.post("/oauth/credential-ready")
     async def oauth_credential_ready(
         request: OAuthCredentialReadyRequest,
-    ) -> JSONResponse:
+    ) -> Response:
         """
         Generic notification when a new OAuth credential has been stored.
         The connector may use the credential to refresh its MCP catalog or
@@ -299,7 +337,7 @@ def create_app(connector: "Connector") -> FastAPI:
         )
 
     @app.post("/cancel")
-    async def cancel_sync(request: CancelRequest) -> dict[str, str]:
+    async def cancel_sync(request: CancelRequest) -> JSONResponse:
         sync_run_id = request.sync_run_id
         logger.info("Cancel requested for sync %s", sync_run_id)
 
@@ -320,7 +358,10 @@ def create_app(connector: "Connector") -> FastAPI:
         matching_ctx._set_cancelled()
         server.active_syncs.pop(matching_slot, None)
         connector.cancel(sync_run_id)
-        return CancelResponse(status="cancelled").model_dump()
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=CancelResponse(status="cancelled").model_dump(),
+        )
 
     @app.post("/action")
     async def execute_action(request: ActionRequest) -> Response:
@@ -331,18 +372,24 @@ def create_app(connector: "Connector") -> FastAPI:
         # must never fall through and execute a native action with different
         # authorization semantics.
         adapter = connector.mcp_adapter
-        if request.origin == "mcp":
-            if adapter is None:
+        native_action_names = {action.name for action in connector.actions}
+        if adapter is not None and request.action not in native_action_names:
+            try:
+                mcp_action_names = {
+                    action.name for action in await adapter.get_action_definitions()
+                }
+            except Exception:
+                logger.warning("Failed to identify MCP action", exc_info=True)
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"error": "MCP catalog is unavailable"},
+                )
+            if request.action not in mcp_action_names:
                 return JSONResponse(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    content={"error": "MCP is not enabled for this connector"},
+                    content={"error": "Action is not in the connector catalog"},
                 )
-            cached_actions = await adapter.get_action_definitions()
-            if not any(action.name == request.action for action in cached_actions):
-                return JSONResponse(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    content={"error": "MCP action is not in the discovered catalog"},
-                )
+
             auth: dict[str, Any] = {}
             try:
                 auth = connector._prepare_mcp_auth(request.credentials)

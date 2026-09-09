@@ -12,6 +12,9 @@ def mock_connector_manager():
         respx_mock.post("/sdk/events").mock(
             return_value=Response(200, json={"status": "ok"})
         )
+        respx_mock.post("/sdk/events/batch").mock(
+            return_value=Response(200, json={"status": "ok"})
+        )
 
         respx_mock.post("/sdk/content").mock(
             return_value=Response(200, json={"content_id": "test-content-id-123"})

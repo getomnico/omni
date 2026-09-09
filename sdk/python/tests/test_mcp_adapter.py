@@ -240,6 +240,15 @@ class TestConnectorMcpIntegration:
 
         return StdioMcpConnector()
 
+    async def test_manifest_is_catalogless_without_authenticated_discovery(
+        self, stdio_connector: Connector
+    ):
+        manifest = await stdio_connector.get_manifest(connector_url="http://test:8000")
+        assert manifest.mcp_enabled is True
+        assert manifest.mcp_catalog_loaded is False
+        assert manifest.mcp_action_names == []
+        assert {a.name for a in manifest.actions}.isdisjoint({"greet", "add"})
+
     async def test_manifest_includes_mcp_tools_as_actions(
         self, stdio_connector: Connector
     ):

@@ -171,6 +171,20 @@ class Connector(ABC):
         except Exception:
             logger.warning("MCP bootstrap failed", exc_info=True)
 
+    async def validate_oauth_credential(
+        self,
+        source: Source,
+        credentials: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Validate a freshly exchanged OAuth credential for a source.
+
+        Connectors may reject credentials that are valid at the provider but
+        belong to a different source organization. The returned config updates
+        are merged into the source by the caller.
+        """
+        return {}
+
     async def oauth_credential_ready(
         self, request: OAuthCredentialReadyRequest
     ) -> bool:
@@ -353,8 +367,10 @@ class Connector(ABC):
         """Start the HTTP server for this connector."""
         import uvicorn
 
+        from .config import SdkConfig
         from .server import create_app
 
-        app = create_app(self)
+        config = SdkConfig.from_env(port=port)
+        app = create_app(self, config=config)
         logger.info("Starting %s connector on %s:%d", self.name, host, port)
         uvicorn.run(app, host=host, port=port)

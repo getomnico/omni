@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal, Self, Union
+from typing import Annotated, Any, Literal, Self
 
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
@@ -58,7 +58,11 @@ class Document(BaseModel):
 class DocumentEvent(BaseModel):
     """Document create/update/delete event — mirrors Rust ConnectorEvent::Document* variants."""
 
-    type: Literal["document_created", "document_updated", "document_deleted"]
+    type: Literal[
+        EventType.DOCUMENT_CREATED,
+        EventType.DOCUMENT_UPDATED,
+        EventType.DOCUMENT_DELETED,
+    ]
     sync_run_id: str
     source_id: str
     document_id: str
@@ -70,12 +74,12 @@ class DocumentEvent(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict format matching Rust tagged enum serialization."""
         base: dict[str, Any] = {
-            "type": self.type,
+            "type": self.type.value,
             "sync_run_id": self.sync_run_id,
             "source_id": self.source_id,
             "document_id": self.document_id,
         }
-        if self.type == EventType.DOCUMENT_DELETED.value:
+        if self.type == EventType.DOCUMENT_DELETED:
             return base
 
         base["content_id"] = self.content_id
@@ -185,15 +189,43 @@ def _event_discriminator(v: Any) -> str:
     return "document"
 
 
-ConnectorEvent = Annotated[
-    Union[
-        Annotated[DocumentEvent, Tag("document")],
-        Annotated[GroupMembershipSyncEvent, Tag("group")],
-        Annotated[PersonSyncEvent, Tag("person_sync")],
-        Annotated[PersonDeletedEvent, Tag("person_deleted")],
-    ],
+ConnectorEventValue = Annotated[
+    Annotated[DocumentEvent, Tag("document")]
+    | Annotated[GroupMembershipSyncEvent, Tag("group")]
+    | Annotated[PersonSyncEvent, Tag("person_sync")]
+    | Annotated[PersonDeletedEvent, Tag("person_deleted")],
     Discriminator(_event_discriminator),
 ]
+
+
+def ConnectorEvent(**data: Any) -> ConnectorEventValue:
+    """Construct the concrete source event model selected by ``type``.
+
+    ``ConnectorEventValue`` remains the discriminated-union type used by SDK
+    APIs, while this function preserves the ergonomic constructor used by
+    connector authors.
+    """
+    event_type = data.get("type")
+    event_type = event_type.value if isinstance(event_type, EventType) else event_type
+    event_model: type[BaseModel]
+    if event_type in {
+        EventType.DOCUMENT_CREATED.value,
+        EventType.DOCUMENT_UPDATED.value,
+        EventType.DOCUMENT_DELETED.value,
+    }:
+        event_model = DocumentEvent
+    elif event_type == EventType.GROUP_MEMBERSHIP_SYNC.value:
+        event_model = GroupMembershipSyncEvent
+    elif event_type == EventType.PERSON_SYNC.value:
+        event_model = PersonSyncEvent
+    elif event_type == EventType.PERSON_DELETED.value:
+        event_model = PersonDeletedEvent
+    else:
+        raise ValueError(f"Unknown connector event type: {event_type!r}")
+    return event_model(**data)
+
+
+ActionCredentialScope = Literal["user", "org", "user_or_org"]
 
 
 class ActionDefinition(BaseModel):
@@ -203,6 +235,7 @@ class ActionDefinition(BaseModel):
         default_factory=lambda: {"type": "object", "properties": {}}
     )
     mode: str = "write"  # "read" or "write"
+    credential_scope: ActionCredentialScope = "user_or_org"
     # TODO: kept as list[str] on purpose — the SourceType enum lives in the Rust
     # `shared` crate (source of truth) and we don't want to hand-mirror it here.
     # Revisit if/when we generate Python types from the Rust models.
@@ -294,6 +327,10 @@ class OAuthManifestConfig(BaseModel):
             "initial access token."
         ),
     )
+    token_response_fields: list[str] = Field(
+        default_factory=list,
+        description="Additional token response fields to preserve in credentials.",
+    )
     token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = Field(
         default="client_secret_post",
         description=(
@@ -309,6 +346,39 @@ class OAuthManifestConfig(BaseModel):
             "requests for providers that bind tokens to a specific resource, "
             "such as a remote MCP server."
         ),
+    )
+    issuer_source_config_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional source config key containing an OAuth issuer URL. The web "
+            "OAuth client uses standard OpenID Connect discovery when present."
+        ),
+    )
+    client_config_provider_template: str | None = Field(
+        default=None,
+        description=(
+            "Optional template for source-scoped OAuth client configuration. "
+            "The {source_id} placeholder is replaced for a persisted source."
+        ),
+    )
+    pkce_required: bool = Field(
+        default=False,
+        description="Whether authorization requests must use PKCE.",
+    )
+    grant_types: list[str] | None = Field(
+        default=None,
+        description="Optional OAuth Dynamic Client Registration grant types.",
+    )
+    validate_endpoint_urls: bool = Field(
+        default=False,
+        description=(
+            "Whether OAuth endpoints from this manifest require SSRF-safe URL "
+            "validation before server-side requests."
+        ),
+    )
+    supports_org_oauth: bool = Field(
+        default=True,
+        description="Whether this connector supports OAuth credentials for org sources.",
     )
 
 
@@ -327,8 +397,8 @@ class ConnectorManifest(BaseModel):
     # inferred from source_types or action names.
     mcp_action_names: list[str] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
-    extra_schema: dict | None = None
-    attributes_schema: dict | None = None
+    extra_schema: dict[str, Any] | None = None
+    attributes_schema: dict[str, Any] | None = None
     mcp_enabled: bool = False
     mcp_catalog_loaded: bool = Field(
         default=False,
@@ -451,11 +521,18 @@ class Source(BaseModel):
 
 class ActionRequest(BaseModel):
     action: str
-    origin: Literal["native", "mcp"] = "native"
     params: dict[str, Any]
     credentials: dict[str, Any]
     source: Source | None = None
     actor_email: str | None = None
+
+
+class OAuthCredentialValidationRequest(BaseModel):
+    source_id: str
+    provider: str
+    credentials: dict[str, Any]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    source: Source
 
 
 class ActionResponse(BaseModel):

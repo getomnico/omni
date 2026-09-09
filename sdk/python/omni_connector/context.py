@@ -5,9 +5,9 @@ from typing import Any
 
 from .client import SdkClient
 from .models import (
-    ConnectorEvent,
-    DocumentEvent,
+    ConnectorEventValue,
     Document,
+    DocumentEvent,
     EventType,
     GroupMembershipSyncEvent,
     PersonDeletedEvent,
@@ -77,7 +77,7 @@ class SyncContext:
         self._buffer_size_threshold, self._buffer_time_threshold = _thresholds_for(
             sync_mode
         )
-        self._event_buffer: list[ConnectorEvent] = []
+        self._event_buffer: list[ConnectorEventValue] = []
         self._oldest_event_at: float | None = None
 
     @property
@@ -133,7 +133,7 @@ class SyncContext:
             return email not in self._user_blacklist
         return True
 
-    async def _buffer_event(self, event: ConnectorEvent) -> None:
+    async def _buffer_event(self, event: ConnectorEventValue) -> None:
         """Append an event to the buffer and flush if size/time threshold is hit.
 
         Auto-flush errors propagate to the caller so the connector knows an

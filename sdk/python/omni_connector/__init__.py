@@ -1,4 +1,5 @@
 from .client import SdkClient
+from .config import SdkConfig
 from .connector import Connector
 from .context import SyncContext
 from .exceptions import (
@@ -9,12 +10,14 @@ from .exceptions import (
 )
 from .mcp_adapter import HttpMcpServer, McpServer, StdioMcpServer
 from .models import (
+    ActionCredentialScope,
     ActionDefinition,
     ActionRequest,
     ActionResponse,
     CancelRequest,
     CancelResponse,
     ConnectorEvent,
+    ConnectorEventValue,
     ConnectorManifest,
     ConnectorSkillDefinition,
     Document,
@@ -23,15 +26,16 @@ from .models import (
     DocumentPermissions,
     EventType,
     GroupMembershipSyncEvent,
-    PersonDeletedEvent,
-    PersonSyncEvent,
-    PersonSyncRecord,
     McpPromptArgument,
     McpPromptDefinition,
     McpResourceDefinition,
     OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
+    PersonDeletedEvent,
+    PersonSyncEvent,
+    PersonSyncRecord,
     SdkSourceSyncData,
     SearchOperator,
     SkillRequest,
@@ -52,23 +56,27 @@ __all__ = [
     "SyncContext",
     "ContentStorage",
     "SdkClient",
+    "SdkConfig",
     # Models
     "Document",
     "DocumentMetadata",
     "DocumentPermissions",
     "ConnectorEvent",
+    "ConnectorEventValue",
     "DocumentEvent",
     "GroupMembershipSyncEvent",
     "PersonDeletedEvent",
     "PersonSyncEvent",
     "PersonSyncRecord",
     "EventType",
+    "ActionCredentialScope",
     "ActionDefinition",
     "ActionRequest",
     "ActionResponse",
     "ConnectorManifest",
     "ConnectorSkillDefinition",
     "OAuthCredentialReadyRequest",
+    "OAuthCredentialValidationRequest",
     "OAuthManifestConfig",
     "OAuthScopeSet",
     "SearchOperator",

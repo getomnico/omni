@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from pydantic import AnyUrl
 
 from .models import (
     ActionDefinition,
@@ -23,6 +23,11 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+MCP_AUTH_STATUS_FILE_ENV = "OMNI_MCP_AUTH_STATUS_FILE"
+MCP_AUTH_REQUIRED_MESSAGE = "MCP authentication required"
 
 
 @dataclass(frozen=True)
@@ -114,11 +119,11 @@ class McpAdapter:
 
     async def _run(
         self,
-        callback,
+        callback: Callable[[ClientSession], Awaitable[T]],
         *,
         env: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
-    ):
+    ) -> T:
         # Cancellation of this task closes stdio_client and terminates the
         # child process. Keep a hung official MCP/CLI process from surviving a
         # request indefinitely.
@@ -135,34 +140,35 @@ class McpAdapter:
                 timeout=timeout_seconds,
             )
         except Exception as exc:
-            # The Salesforce launcher leaves this short-lived marker after a
+            # A provider launcher may leave this short-lived marker after a
             # terminal OAuth rejection. Consume it here so bootstrap callers
             # also clean it up, while the normalized exception lets the HTTP
-            # server return the standard 412 response.
-            status_file = (env or {}).get("OMNI_SALESFORCE_AUTH_STATUS_FILE")
+            # server return the standard 412 response. Marker IO is best
+            # effort: a read or cleanup failure must never mask the original
+            # MCP failure.
+            status_file = (env or {}).get(MCP_AUTH_STATUS_FILE_ENV)
+            requires_auth = False
             if isinstance(status_file, str) and status_file:
                 try:
-                    if (
-                        Path(status_file).read_text(encoding="utf-8").strip()
-                        == "needs_user_auth"
-                    ):
-                        Path(status_file).unlink(missing_ok=True)
-                        raise RuntimeError(
-                            "Salesforce MCP authentication required"
-                        ) from exc
-                except FileNotFoundError:
+                    content = Path(status_file).read_text(encoding="utf-8").strip()
+                    requires_auth = content == "needs_user_auth"
+                except OSError:
                     pass
-                else:
+                try:
                     Path(status_file).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if requires_auth:
+                raise RuntimeError(MCP_AUTH_REQUIRED_MESSAGE) from exc
             raise
 
     async def _run_unbounded(
         self,
-        callback,
+        callback: Callable[[ClientSession], Awaitable[T]],
         *,
         env: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
-    ):
+    ) -> T:
         async with self._open_session(env, headers) as session:
             return await callback(session)
 
@@ -186,8 +192,8 @@ class McpAdapter:
     ) -> None:
         """Connect to MCP and cache tools plus optional resources/prompts.
 
-        MCP servers are allowed to implement only tools. In particular, the
-        official Salesforce DX server returns ``Method not found`` for the
+        MCP servers are allowed to implement only tools. In particular, some
+        official provider servers return ``Method not found`` for the
         optional resource and prompt list methods, so those failures must not
         discard a successfully discovered tool catalog.
         """
@@ -232,7 +238,7 @@ class McpAdapter:
         if env is not None or headers is not None:
             try:
 
-                async def _fetch(session):
+                async def _fetch(session: ClientSession) -> list[ActionDefinition]:
                     actions = await self._fetch_actions(session)
                     self._cached_actions = actions
                     logger.debug("Fetched %d action definitions (live)", len(actions))
@@ -261,7 +267,7 @@ class McpAdapter:
         if env is not None or headers is not None:
             try:
 
-                async def _fetch(session):
+                async def _fetch(session: ClientSession) -> list[McpResourceDefinition]:
                     resources = await self._fetch_resources(session)
                     self._cached_resources = resources
                     return resources
@@ -280,7 +286,7 @@ class McpAdapter:
         if env is not None or headers is not None:
             try:
 
-                async def _fetch(session):
+                async def _fetch(session: ClientSession) -> list[McpPromptDefinition]:
                     prompts = await self._fetch_prompts(session)
                     self._cached_prompts = prompts
                     return prompts
@@ -327,7 +333,7 @@ class McpAdapter:
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         async def _read(session: ClientSession) -> dict[str, Any]:
-            result = await session.read_resource(uri)
+            result = await session.read_resource(AnyUrl(uri))
             items: list[dict[str, Any]] = []
             for item in result.contents:
                 entry: dict[str, Any] = {"uri": str(item.uri)}
@@ -376,9 +382,8 @@ class McpAdapter:
                     input_schema=tool.inputSchema
                     or {"type": "object", "properties": {}},
                     mode="read" if is_read_only else "write",
-                    # Connector-manager uses the manifest's explicit
-                    # mcp_action_names provenance to require a user OAuth
-                    # credential. MCP tools are not admin-only by default.
+                    credential_scope="user",
+                    # MCP tools are not admin-only by default.
                     admin_only=False,
                 )
             )

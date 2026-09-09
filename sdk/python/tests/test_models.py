@@ -141,6 +141,8 @@ def test_connector_manifest():
         display_name="My Connector",
         version="1.0.0",
         sync_modes=["full", "incremental"],
+        connector_id="my-connector",
+        connector_url="http://localhost:8000",
         actions=[],
     )
 
