@@ -20,7 +20,9 @@ use axum::{
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use serde::de::DeserializeOwned;
-use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
+use shared::models::{
+    AuthType, ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType,
+};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -546,19 +548,24 @@ where
 
     // Bootstrap MCP discovery now that we have credentials. Populates the
     // adapter's cache so subsequent /manifest reads (which run without creds)
-    // can return the live tool/resource/prompt list.
+    // can return the live tool/resource/prompt list. Native MCP discovery
+    // requires per-user OAuth — org credentials that only power sync (e.g.
+    // Slack bot tokens) cannot authenticate the MCP server, so skip quietly
+    // instead of warning on every scheduled sync.
     if let Some(adapter) = state.mcp_adapter() {
         let creds = credentials
             .as_ref()
             .map(McpCredentials::from_service_credential)
             .unwrap_or_default();
-        match build_mcp_auth(&*state.connector, &creds).await {
-            Ok((env, headers)) => {
-                if let Err(e) = adapter.discover(env, headers).await {
-                    warn!("MCP bootstrap failed: {}", e);
+        if creds.auth_type == Some(AuthType::OAuth) {
+            match build_mcp_auth(&*state.connector, &creds).await {
+                Ok((env, headers)) => {
+                    if let Err(e) = adapter.discover(env, headers).await {
+                        warn!("MCP bootstrap failed: {}", e);
+                    }
                 }
+                Err(e) => warn!("MCP auth preparation failed: {:#}", e),
             }
-            Err(e) => warn!("MCP auth preparation failed: {:#}", e),
         }
     }
 

@@ -159,38 +159,6 @@ function isOAuthTokens(value: unknown): value is OAuthTokens {
     )
 }
 
-interface SlackOAuthTokenResponse {
-    token_type?: string
-    scope?: string
-    authed_user?: {
-        access_token?: string
-        token_type?: string
-        scope?: string
-    }
-}
-
-export function normalizeOAuthTokens(provider: string, tokenData: unknown): OAuthTokens {
-    if (provider === 'slack') {
-        const slackData =
-            typeof tokenData === 'object' && tokenData !== null && !Array.isArray(tokenData)
-                ? (tokenData as SlackOAuthTokenResponse)
-                : null
-        const user = slackData?.authed_user
-        if (!user?.access_token) {
-            throw new Error('Slack OAuth response did not contain a delegated user access token')
-        }
-        return {
-            access_token: user.access_token,
-            token_type: user.token_type ?? slackData.token_type ?? 'Bearer',
-            scope: user.scope ?? slackData.scope,
-        }
-    }
-    if (!isOAuthTokens(tokenData)) {
-        throw new Error('OAuth token exchange returned an invalid token response')
-    }
-    return tokenData
-}
-
 /// Mirrors `shared::models::OAuthManifestConfig` (Rust). Pure data: a connector
 /// declares this in its manifest and the web app's generic OAuth2 client uses
 /// it to drive the standard authorization-code flow.
@@ -204,8 +172,6 @@ export interface OAuthManifestConfig {
     scopes: Record<string, { read: string[]; write: string[] }>
     extra_auth_params: Record<string, string>
     scope_separator: string
-    scope_parameter?: string
-    user_auth_for_writes_only?: boolean
     enrich_endpoint?: string | null
     registration_endpoint?: string | null
     registration_requires_initial_access_token?: boolean
@@ -1169,10 +1135,10 @@ function buildAuthUrl(
         client_id: creds.clientId,
         redirect_uri: callbackUrl(),
         response_type: 'code',
+        scope: scopes.join(config.scope_separator),
         state: stateToken,
         ...config.extra_auth_params,
     })
-    params.set(config.scope_parameter ?? 'scope', scopes.join(config.scope_separator))
     if (codeChallenge) {
         params.set('code_challenge', codeChallenge)
         params.set('code_challenge_method', 'S256')
@@ -1183,6 +1149,7 @@ function buildAuthUrl(
 
 interface SlackOAuthTokenResponse {
     ok?: boolean
+    error?: string
     access_token?: string
     token_type?: string
     scope?: string
@@ -1190,36 +1157,38 @@ interface SlackOAuthTokenResponse {
     expires_in?: number
     authed_user?: {
         id?: string
-        access_token?: string
-        token_type?: string
-        scope?: string
-        refresh_token?: string
-        expires_in?: number
     }
 }
 
-export function normalizeOAuthTokens(
-    provider: string,
-    tokenData: OAuthTokens | SlackOAuthTokenResponse | OAuthError,
-): OAuthTokens {
-    if ('error' in tokenData) {
+export function normalizeOAuthTokens(provider: string, tokenData: unknown): OAuthTokens {
+    if (isOAuthError(tokenData)) {
         throw new Error(`OAuth token exchange failed: ${tokenData.error}`)
     }
     if (provider === 'slack') {
-        const slackData = tokenData as SlackOAuthTokenResponse
-        const user = slackData.authed_user
-        if (!user?.access_token) {
-            throw new Error('Slack OAuth response did not contain a delegated user access token')
+        // Slack's hosted-MCP flow (oauth.v2.user.access) returns the delegated
+        // user token at the top level, wrapped in Slack's ok/error envelope.
+        const slackData =
+            typeof tokenData === 'object' && tokenData !== null && !Array.isArray(tokenData)
+                ? (tokenData as SlackOAuthTokenResponse)
+                : null
+        if (slackData?.ok === false) {
+            throw new Error(`Slack OAuth token exchange failed: ${slackData.error ?? 'unknown'}`)
+        }
+        const token = slackData?.access_token
+        if (typeof token !== 'string' || !token.startsWith('xoxp-')) {
+            throw new Error(
+                'Slack OAuth response did not contain a delegated user access token (xoxp-*)',
+            )
         }
         return {
-            access_token: user.access_token,
-            token_type: user.token_type ?? slackData.token_type ?? 'Bearer',
-            scope: user.scope ?? slackData.scope,
-            refresh_token: user.refresh_token ?? slackData.refresh_token,
-            expires_in: user.expires_in ?? slackData.expires_in,
+            access_token: token,
+            token_type: slackData.token_type ?? 'Bearer',
+            scope: slackData.scope,
+            refresh_token: slackData.refresh_token,
+            expires_in: slackData.expires_in,
         }
     }
-    if (!('access_token' in tokenData) || typeof tokenData.access_token !== 'string') {
+    if (!isOAuthTokens(tokenData)) {
         throw new Error('OAuth token response did not contain an access token')
     }
     return {

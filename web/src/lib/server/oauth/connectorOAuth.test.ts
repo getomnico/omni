@@ -279,26 +279,23 @@ describe('OAuth connector helpers', () => {
         ).toBe('https://example.com/windshift')
     })
 
-    it('extracts Slack delegated user tokens instead of the bot token', () => {
+    it('normalizes Slack hosted-MCP user tokens and rejects bot tokens', () => {
         expect(
             normalizeOAuthTokens('slack', {
                 ok: true,
-                access_token: 'xoxb-bot-token',
-                token_type: 'Bearer',
-                authed_user: {
-                    id: 'U123',
-                    access_token: 'xoxp-user-token',
-                    token_type: 'Bearer',
-                    scope: 'chat:write',
-                    refresh_token: 'xoxr-user-refresh',
-                    expires_in: 3600,
-                },
+                access_token: 'xoxp-user-token',
+                token_type: 'user',
+                scope: 'chat:write,channels:history',
+                refresh_token: 'xoxe-1-refresh',
+                expires_in: 43200,
+                authed_user: { id: 'U123' },
             }),
         ).toMatchObject({
             access_token: 'xoxp-user-token',
-            scope: 'chat:write',
-            refresh_token: 'xoxr-user-refresh',
-            expires_in: 3600,
+            token_type: 'user',
+            scope: 'chat:write,channels:history',
+            refresh_token: 'xoxe-1-refresh',
+            expires_in: 43200,
         })
 
         expect(() =>
@@ -308,6 +305,13 @@ describe('OAuth connector helpers', () => {
                 token_type: 'Bearer',
             }),
         ).toThrow('delegated user access token')
+
+        expect(() =>
+            normalizeOAuthTokens('slack', {
+                ok: false,
+                error: 'invalid_code',
+            }),
+        ).toThrow('invalid_code')
     })
 
     it('limits write elevation to the requested connector scopes', () => {
