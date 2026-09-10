@@ -1,7 +1,7 @@
 import { error, redirect } from '@sveltejs/kit'
 import { MagicLinkService } from '$lib/server/magicLinks'
 import { DomainService } from '$lib/server/domains'
-import { createUserSession } from '$lib/server/auth'
+import { createUserSession, setSessionTokenCookie } from '$lib/server/auth'
 import { db } from '$lib/server/db'
 import { user, magicLinks } from '$lib/server/db/schema'
 import { createId } from '@paralleldrive/cuid2'
@@ -26,15 +26,13 @@ export const load: PageServerLoad = async ({ url, cookies }) => {
     if (verificationResult.user) {
         const sessionResult = await createUserSession(verificationResult.user.id)
         if (sessionResult.success && sessionResult.session) {
-            cookies.set('session', sessionResult.session.token, {
-                httpOnly: true,
-                secure: true,
-                sameSite: 'lax',
-                path: '/',
-                maxAge: 60 * 60 * 24 * 30, // 30 days
-            })
+            setSessionTokenCookie(
+                cookies,
+                sessionResult.session.token,
+                sessionResult.session.expiresAt,
+            )
 
-            throw redirect(302, '/dashboard')
+            throw redirect(302, '/')
         }
     }
 
@@ -82,15 +80,13 @@ export const load: PageServerLoad = async ({ url, cookies }) => {
         // Create session for the new user
         const sessionResult = await createUserSession(userId)
         if (sessionResult.success && sessionResult.session) {
-            cookies.set('session', sessionResult.session.token, {
-                httpOnly: true,
-                secure: true,
-                sameSite: 'lax',
-                path: '/',
-                maxAge: 60 * 60 * 24 * 30, // 30 days
-            })
+            setSessionTokenCookie(
+                cookies,
+                sessionResult.session.token,
+                sessionResult.session.expiresAt,
+            )
 
-            throw redirect(302, '/dashboard')
+            throw redirect(302, '/')
         }
     }
 

@@ -1,4 +1,4 @@
-import { eq, and, gt } from 'drizzle-orm'
+import { eq, and, gt, isNull } from 'drizzle-orm'
 import { db } from './db'
 import { magicLinks, user, type MagicLink } from './db/schema'
 import { createId } from '@paralleldrive/cuid2'
@@ -77,7 +77,7 @@ export class MagicLinkService {
                     and(
                         eq(magicLinks.tokenHash, tokenHash),
                         gt(magicLinks.expiresAt, new Date()),
-                        eq(magicLinks.usedAt, null),
+                        isNull(magicLinks.usedAt),
                     ),
                 )
                 .limit(1)
