@@ -4,6 +4,13 @@ import { db } from '$lib/server/db'
 import { sources, syncRuns, serviceCredentials } from '$lib/server/db/schema'
 import { eq, and } from 'drizzle-orm'
 import { getConfig } from '$lib/server/config'
+import {
+    clientConfigProviderForSource,
+    getOAuthConfigForSource,
+    getOAuthManifestForSourceType,
+    isAutoManagedOAuthProvider,
+    removeDynamicallyRegisteredClient,
+} from '$lib/server/oauth/connectorOAuth'
 import { logger } from '$lib/server/logger'
 import {
     isValidSyncIntervalSeconds,
@@ -61,7 +68,7 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
     return json({ syncIntervalSeconds: updatedSource.syncIntervalSeconds })
 }
 
-export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
+export const DELETE: RequestHandler = async ({ params, locals, fetch, url }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
     }
@@ -95,6 +102,36 @@ export const DELETE: RequestHandler = async ({ params, locals, fetch }) => {
             })
         } catch (err) {
             logger.warn(`Failed to cancel sync ${sync.id} for source ${sourceId}`, err)
+        }
+    }
+
+    // Revoke a source-scoped dynamically registered OAuth client before
+    // removing the source, then remove its encrypted local metadata. The
+    // connector manifest owns the source-key template; this route remains
+    // provider-agnostic.
+    const revokeOAuthClient = url.searchParams.get('revoke_oauth_client') !== 'false'
+    const oauthManifest =
+        (await getOAuthConfigForSource(source)) ??
+        (await getOAuthManifestForSourceType(source.sourceType))
+    const sourceOAuthProvider =
+        oauthManifest &&
+        oauthManifest.client_config_provider_template &&
+        isAutoManagedOAuthProvider(oauthManifest)
+            ? clientConfigProviderForSource(oauthManifest, sourceId)
+            : null
+    if (
+        sourceOAuthProvider &&
+        sourceOAuthProvider !== oauthManifest?.provider &&
+        revokeOAuthClient
+    ) {
+        try {
+            await removeDynamicallyRegisteredClient(sourceOAuthProvider)
+        } catch (err) {
+            logger.warn(`Failed to revoke the source OAuth client for ${sourceId}`, err)
+            throw error(
+                502,
+                'The OAuth provider is unavailable to revoke its client; try deleting the source again, or delete with ?revoke_oauth_client=false to keep the registered client',
+            )
         }
     }
 

@@ -1,7 +1,6 @@
 """Tests for the MCP adapter (stdio + Streamable HTTP transports)."""
 
 import asyncio
-import json
 import os
 import socket
 import subprocess
@@ -135,23 +134,6 @@ class TestStdioAdapter:
         prompts = await adapter.get_prompt_definitions()
         assert len(prompts) == 1
 
-    async def test_catalog_file_cache_respects_ttl(self, adapter: McpAdapter, tmp_path):
-        await adapter.discover(env=TEST_ENV)
-        cache_path = tmp_path / "catalog.json"
-        adapter._save_catalog_cache(cache_path)
-
-        fresh = McpAdapter(TEST_STDIO_SERVER)
-        assert fresh._load_catalog_cache(cache_path, ttl_seconds=60) is True
-        assert len(await fresh.get_action_definitions()) == 2
-
-        data = json.loads(cache_path.read_text())
-        data["cached_at"] = 1
-        cache_path.write_text(json.dumps(data))
-
-        stale = McpAdapter(TEST_STDIO_SERVER)
-        assert stale._load_catalog_cache(cache_path, ttl_seconds=1) is False
-        assert await stale.get_action_definitions() == []
-
     async def test_no_auth_no_cache_returns_empty(self, adapter: McpAdapter):
         """Without auth and without cache, returns empty lists."""
         assert await adapter.get_action_definitions() == []
@@ -258,6 +240,15 @@ class TestConnectorMcpIntegration:
 
         return StdioMcpConnector()
 
+    async def test_manifest_is_catalogless_without_authenticated_discovery(
+        self, stdio_connector: Connector
+    ):
+        manifest = await stdio_connector.get_manifest(connector_url="http://test:8000")
+        assert manifest.mcp_enabled is True
+        assert manifest.mcp_catalog_loaded is False
+        assert {a.name for a in manifest.actions}.isdisjoint({"greet", "add"})
+        assert all(a.origin == "native" for a in manifest.actions)
+
     async def test_manifest_includes_mcp_tools_as_actions(
         self, stdio_connector: Connector
     ):
@@ -267,6 +258,9 @@ class TestConnectorMcpIntegration:
         action_names = {a.name for a in manifest.actions}
         assert "greet" in action_names
         assert "add" in action_names
+        assert all(
+            a.origin == "mcp" for a in manifest.actions if a.name in {"greet", "add"}
+        )
 
     async def test_manifest_includes_resources(self, stdio_connector: Connector):
         await stdio_connector.bootstrap_mcp({"token": "test"})
@@ -283,14 +277,20 @@ class TestConnectorMcpIntegration:
         assert manifest.skills[0].id == "mcp:summarize"
 
     async def test_execute_action_delegates_to_mcp(self, stdio_connector: Connector):
-        result = await stdio_connector.execute_action("greet", {"name": "Omni"}, {})
-        assert result.status_code == 200
+        # MCP dispatch is owned by the HTTP server so connector-level native
+        # actions cannot accidentally fall through to an MCP tool.
+        result = await stdio_connector.mcp_adapter.execute_tool(
+            "greet", {"name": "Omni"}, env=TEST_ENV
+        )
+        assert result.status == "success"
 
     async def test_execute_action_unknown_returns_not_supported(
         self, stdio_connector: Connector
     ):
-        result = await stdio_connector.execute_action("unknown_action", {}, {})
-        assert result.status_code == 404
+        result = await stdio_connector.mcp_adapter.execute_tool(
+            "unknown_action", {}, env=TEST_ENV
+        )
+        assert result.status == "error"
 
     async def test_http_connector_round_trip(self, http_server_url: str):
         """A Connector pointing at an HttpMcpServer surfaces tools and dispatches."""
@@ -326,10 +326,10 @@ class TestConnectorMcpIntegration:
         assert manifest.mcp_enabled is True
         assert {a.name for a in manifest.actions} >= {"greet", "add"}
 
-        result = await connector.execute_action(
-            "greet", {"name": "HTTP"}, {"token": "abc"}
+        result = await connector.mcp_adapter.execute_tool(
+            "greet", {"name": "HTTP"}, headers={"Authorization": "Bearer abc"}
         )
-        assert result.status_code == 200
+        assert result.status == "success"
 
     async def test_non_mcp_connector_manifest(self):
         class PlainConnector(Connector):

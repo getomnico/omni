@@ -3,30 +3,49 @@ import os
 from typing import Any
 
 import httpx
-
 from pydantic import ValidationError
 
+from .config import SdkConfig
 from .exceptions import SdkClientError, ServiceOverloadedError
 from .models import ConnectorEvent, SdkSourceSyncData
 
 logger = logging.getLogger(__name__)
 
 
+def _response_field(response: httpx.Response, field: str) -> str:
+    payload = response.json()
+    value = payload.get(field) if isinstance(payload, dict) else None
+    if not isinstance(value, str):
+        raise SdkClientError(f"Response did not contain a string {field!r}")
+    return value
+
+
 class SdkClient:
     """HTTP client for communicating with connector-manager SDK endpoints."""
 
-    def __init__(self, base_url: str | None = None, timeout: float = 30.0):
-        self.base_url = (
-            base_url or os.environ.get("CONNECTOR_MANAGER_URL", "")
-        ).rstrip("/")
-        if not self.base_url:
-            raise ValueError("CONNECTOR_MANAGER_URL environment variable not set")
-        self._timeout = timeout
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: float = 30.0,
+        *,
+        config: SdkConfig | None = None,
+    ):
+        if config is not None and base_url is not None:
+            raise ValueError("Pass either config or base_url, not both")
+        if config is None:
+            manager_url = base_url or os.environ.get("CONNECTOR_MANAGER_URL", "")
+            config = SdkConfig(
+                connector_manager_url=manager_url,
+                request_timeout=timeout,
+            )
+        self.config = config
+        self.base_url = config.connector_manager_url
+        self._timeout = config.request_timeout
         self._client: httpx.AsyncClient | None = None
 
     @classmethod
     def from_env(cls) -> "SdkClient":
-        return cls()
+        return cls(config=SdkConfig.from_env())
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -163,7 +182,7 @@ class SdkClient:
                 f"Failed to extract content: {response.status_code} - {response.text}"
             )
 
-        return response.json()["content_id"]
+        return _response_field(response, "content_id")
 
     async def extract_text(
         self,
@@ -215,7 +234,7 @@ class SdkClient:
                 f"Failed to extract text: {response.status_code} - {response.text}"
             )
 
-        return response.json()["text"]
+        return _response_field(response, "text")
 
     async def store_content(
         self,
@@ -243,7 +262,7 @@ class SdkClient:
                 f"Failed to store content: {response.status_code} - {response.text}"
             )
 
-        return response.json()["content_id"]
+        return _response_field(response, "content_id")
 
     async def update_checkpoint(
         self, sync_run_id: str, checkpoint: dict[str, Any]
@@ -351,7 +370,7 @@ class SdkClient:
                 f"Failed to mark as failed: {response.status_code} - {response.text}"
             )
 
-    async def register(self, manifest: dict) -> None:
+    async def register(self, manifest: dict[str, Any]) -> None:
         """Register this connector with the connector manager."""
         logger.debug("SDK: Registering connector")
 

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-import time
+import os
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, AsyncIterator, Union
+from typing import Any, TypeVar
 
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from pydantic import AnyUrl
 
 from .models import (
     ActionDefinition,
@@ -21,6 +23,11 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+MCP_AUTH_STATUS_FILE_ENV = "OMNI_MCP_AUTH_STATUS_FILE"
+MCP_AUTH_REQUIRED_MESSAGE = "MCP authentication required"
 
 
 @dataclass(frozen=True)
@@ -43,7 +50,7 @@ class HttpMcpServer:
     sse_read_timeout_seconds: float = 300.0
 
 
-McpServer = Union[StdioMcpServer, HttpMcpServer]
+McpServer = StdioMcpServer | HttpMcpServer
 
 
 class McpAdapter:
@@ -56,9 +63,7 @@ class McpAdapter:
 
     Each operation opens a fresh session and tears it down afterwards.
     Tool/resource/prompt definitions are cached in memory after the first
-    successful discovery so manifest builds don't require live auth. The base
-    Connector may also persist that in-memory catalog to disk under
-    CATALOG_CACHE_DIR and reload it on connector startup, subject to TTL.
+    successful discovery so manifest builds don't require live auth.
     """
 
     def __init__(self, server: McpServer) -> None:
@@ -66,7 +71,6 @@ class McpAdapter:
         self._cached_actions: list[ActionDefinition] | None = None
         self._cached_resources: list[McpResourceDefinition] | None = None
         self._cached_prompts: list[McpPromptDefinition] | None = None
-        self._catalog_cached_at: float | None = None
 
     @asynccontextmanager
     async def _open_session(
@@ -115,66 +119,63 @@ class McpAdapter:
 
     async def _run(
         self,
-        callback,
+        callback: Callable[[ClientSession], Awaitable[T]],
         *,
         env: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
-    ):
+    ) -> T:
+        # Cancellation of this task closes stdio_client and terminates the
+        # child process. Keep a hung official MCP/CLI process from surviving a
+        # request indefinitely.
+        try:
+            timeout_seconds = min(
+                max(float(os.environ.get("OMNI_MCP_TIMEOUT_SECONDS", "120")), 1.0),
+                300.0,
+            )
+        except ValueError:
+            timeout_seconds = 120.0
+        try:
+            return await asyncio.wait_for(
+                self._run_unbounded(callback, env=env, headers=headers),
+                timeout=timeout_seconds,
+            )
+        except Exception as exc:
+            # A provider launcher may leave this short-lived marker after a
+            # terminal OAuth rejection. Consume it here so bootstrap callers
+            # also clean it up, while the normalized exception lets the HTTP
+            # server return the standard 412 response. Marker IO is best
+            # effort: a read or cleanup failure must never mask the original
+            # MCP failure.
+            status_file = (env or {}).get(MCP_AUTH_STATUS_FILE_ENV)
+            requires_auth = False
+            if isinstance(status_file, str) and status_file:
+                try:
+                    content = Path(status_file).read_text(encoding="utf-8").strip()
+                    requires_auth = content == "needs_user_auth"
+                except OSError:
+                    pass
+                try:
+                    Path(status_file).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if requires_auth:
+                raise RuntimeError(MCP_AUTH_REQUIRED_MESSAGE) from exc
+            raise
+
+    async def _run_unbounded(
+        self,
+        callback: Callable[[ClientSession], Awaitable[T]],
+        *,
+        env: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> T:
         async with self._open_session(env, headers) as session:
             return await callback(session)
-
-    def _export_catalog(self) -> dict[str, Any]:
-        """Return the cached MCP catalog as JSON-serializable data."""
-        return {
-            "actions": [a.model_dump() for a in self._cached_actions or []],
-            "resources": [r.model_dump() for r in self._cached_resources or []],
-            "prompts": [p.model_dump() for p in self._cached_prompts or []],
-        }
-
-    def _import_catalog(self, catalog: dict[str, Any]) -> None:
-        """Restore a previously discovered MCP catalog."""
-        self._cached_actions = [
-            ActionDefinition(**item) for item in catalog.get("actions", [])
-        ]
-        self._cached_resources = [
-            McpResourceDefinition(**item) for item in catalog.get("resources", [])
-        ]
-        self._cached_prompts = [
-            McpPromptDefinition(**item) for item in catalog.get("prompts", [])
-        ]
 
     def _clear_catalog_cache(self) -> None:
         self._cached_actions = None
         self._cached_resources = None
         self._cached_prompts = None
-        self._catalog_cached_at = None
-
-    def _catalog_cache_expired(self, ttl_seconds: int) -> bool:
-        if ttl_seconds <= 0 or self._catalog_cached_at is None:
-            return False
-        return time.time() - self._catalog_cached_at > ttl_seconds
-
-    def _clear_catalog_cache_if_expired(self, ttl_seconds: int) -> bool:
-        if not self._catalog_cache_expired(ttl_seconds):
-            return False
-        self._clear_catalog_cache()
-        return True
-
-    def _load_catalog_cache(self, path: Path, ttl_seconds: int) -> bool:
-        if ttl_seconds <= 0 or not path.exists():
-            return False
-        raw = json.loads(path.read_text())
-        if not isinstance(raw, dict):
-            return False
-        cached_at = raw.get("cached_at")
-        catalog = raw.get("catalog")
-        if not isinstance(cached_at, int | float) or not isinstance(catalog, dict):
-            return False
-        if time.time() - cached_at > ttl_seconds:
-            return False
-        self._import_catalog(catalog)
-        self._catalog_cached_at = float(cached_at)
-        return True
 
     @property
     def _has_cached_catalog(self) -> bool:
@@ -184,33 +185,44 @@ class McpAdapter:
             or self._cached_prompts is not None
         )
 
-    def _save_catalog_cache(self, path: Path) -> None:
-        cached_at = self._catalog_cached_at or time.time()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "cached_at": cached_at,
-                    "catalog": self._export_catalog(),
-                }
-            )
-        )
-
     async def discover(
         self,
         env: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> None:
-        """Connect to MCP server, discover tools/resources/prompts, cache them."""
+        """Connect to MCP and cache tools plus optional resources/prompts.
+
+        MCP servers are allowed to implement only tools. In particular, some
+        official provider servers return ``Method not found`` for the
+        optional resource and prompt list methods, so those failures must not
+        discard a successfully discovered tool catalog.
+        """
+
+        # A failed discovery must not leave a removed or policy-disabled
+        # catalog active. Publish a catalog only after this attempt succeeds.
+        self._clear_catalog_cache()
 
         async def _discover(session: ClientSession) -> None:
-            self._cached_actions = await self._fetch_actions(session)
-            self._cached_resources = await self._fetch_resources(session)
-            self._cached_prompts = await self._fetch_prompts(session)
+            actions = await self._fetch_actions(session)
+            try:
+                resources = await self._fetch_resources(session)
+            except Exception:
+                logger.info("MCP server does not expose resources", exc_info=True)
+                resources = []
+            try:
+                prompts = await self._fetch_prompts(session)
+            except Exception:
+                logger.info("MCP server does not expose prompts", exc_info=True)
+                prompts = []
+
+            # Publish a complete catalog only after every optional lookup has
+            # settled. This prevents a partial failed discovery from looking
+            # like a valid cache on the next manifest registration.
+            self._cached_actions = actions
+            self._cached_resources = resources
+            self._cached_prompts = prompts
 
         await self._run(_discover, env=env, headers=headers)
-        self._catalog_cached_at = time.time()
         logger.info(
             "MCP discovery complete: %d tools, %d resources, %d prompts",
             len(self._cached_actions or []),
@@ -226,7 +238,7 @@ class McpAdapter:
         if env is not None or headers is not None:
             try:
 
-                async def _fetch(session):
+                async def _fetch(session: ClientSession) -> list[ActionDefinition]:
                     actions = await self._fetch_actions(session)
                     self._cached_actions = actions
                     logger.debug("Fetched %d action definitions (live)", len(actions))
@@ -255,16 +267,15 @@ class McpAdapter:
         if env is not None or headers is not None:
             try:
 
-                async def _fetch(session):
+                async def _fetch(session: ClientSession) -> list[McpResourceDefinition]:
                     resources = await self._fetch_resources(session)
                     self._cached_resources = resources
                     return resources
 
                 return await self._run(_fetch, env=env, headers=headers)
             except Exception:
-                if self._cached_resources is not None:
-                    return self._cached_resources
-                raise
+                logger.info("MCP resource discovery unavailable", exc_info=True)
+                return self._cached_resources or []
         return self._cached_resources or []
 
     async def get_prompt_definitions(
@@ -275,16 +286,15 @@ class McpAdapter:
         if env is not None or headers is not None:
             try:
 
-                async def _fetch(session):
+                async def _fetch(session: ClientSession) -> list[McpPromptDefinition]:
                     prompts = await self._fetch_prompts(session)
                     self._cached_prompts = prompts
                     return prompts
 
                 return await self._run(_fetch, env=env, headers=headers)
             except Exception:
-                if self._cached_prompts is not None:
-                    return self._cached_prompts
-                raise
+                logger.info("MCP prompt discovery unavailable", exc_info=True)
+                return self._cached_prompts or []
         return self._cached_prompts or []
 
     async def execute_tool(
@@ -323,7 +333,7 @@ class McpAdapter:
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         async def _read(session: ClientSession) -> dict[str, Any]:
-            result = await session.read_resource(uri)
+            result = await session.read_resource(AnyUrl(uri))
             items: list[dict[str, Any]] = []
             for item in result.contents:
                 entry: dict[str, Any] = {"uri": str(item.uri)}
@@ -372,6 +382,10 @@ class McpAdapter:
                     input_schema=tool.inputSchema
                     or {"type": "object", "properties": {}},
                     mode="read" if is_read_only else "write",
+                    credential_scope="user",
+                    # MCP tools are not admin-only by default.
+                    admin_only=False,
+                    origin="mcp",
                 )
             )
         return actions

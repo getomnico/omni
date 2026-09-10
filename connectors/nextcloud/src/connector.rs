@@ -116,18 +116,23 @@ impl Connector for NextcloudConnector {
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                origin: Default::default(),
                 name: "validate_credentials".into(),
                 description: "Verify that the provided Nextcloud credentials are valid".into(),
                 input_schema: json!({}),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: omni_connector_sdk::ActionCredentialScope::Org,
                 required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "fetch_file".into(),
                 description: "Download a file from Nextcloud by its document ID".into(),
+                credential_scope: omni_connector_sdk::ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -151,6 +156,7 @@ impl Connector for NextcloudConnector {
                 // non-admin users (Nextcloud has only an org basic-auth credential;
                 // there is no per-user OAuth flow to satisfy).
                 admin_only: true,
+                actor_scoped: false,
             },
         ]
     }

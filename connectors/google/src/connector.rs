@@ -21,7 +21,8 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, AuthType, Connector, ConnectorSkillDefinition,
+    ActionCredentialScope, ActionDefinition, ActionResponse, AuthType, Connector,
+    ConnectorSkillDefinition,
     OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod, SearchOperator,
     ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
     SyncRequestValidationError, SyncType,
@@ -1265,11 +1266,13 @@ impl Connector for GoogleConnector {
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                origin: Default::default(),
                 name: "fetch_file".to_string(),
                 description:
                     "Download a file from Google Drive (Workspace files exported to Office format) or a Gmail attachment."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: Default::default(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1283,12 +1286,15 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "search_users".to_string(),
                 description: "Search Google Admin directory users".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1301,13 +1307,16 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: false,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "google_workspace_schema".to_string(),
                 description: "Inspect the JSON schema for a Google Workspace CLI method"
                     .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: Default::default(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1326,16 +1335,19 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
             // Keep these discovery actions separate: Connector Manager uses
             // admin_only for both authorization and credential selection.
             ActionDefinition {
+                origin: Default::default(),
                 name: "discover_folders".to_string(),
                 description:
                     "List accessible shared drives and shared-drive folders for folder-path filter selection."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1356,14 +1368,17 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "discover_personal_folders".to_string(),
                 description:
                     "List folders visible to the owner of a personal Google Drive source."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: Default::default(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1379,14 +1394,17 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "validate_shared_drive_access".to_string(),
                 description:
                     "Validate that the service account can read ACLs (Content manager/Manager) for every selected shared drive."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1404,14 +1422,17 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "validate_sa_direct_group_access".to_string(),
                 description:
                     "Validate that an SA-direct credential can enumerate Workspace groups and group members before setup."
                         .to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1425,13 +1446,16 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive],
                 admin_only: true,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "google_workspace_call".to_string(),
                 description: "Call a Google Workspace API through the installed gws CLI"
                     .to_string(),
                 mode: omni_connector_sdk::ActionMode::Write,
+                credential_scope: Default::default(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -1478,6 +1502,7 @@ impl Connector for GoogleConnector {
                 required_scopes: None,
                 source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
                 admin_only: false,
+                actor_scoped: false,
                 hidden: false,
             },
         ]
@@ -1579,8 +1604,16 @@ impl Connector for GoogleConnector {
             scope_separator: " ".to_string(),
             enrich_endpoint: None,
             registration_endpoint: None,
+            registration_requires_initial_access_token: false,
+            token_response_fields: Vec::new(),
             token_endpoint_auth_method: OAuthTokenEndpointAuthMethod::ClientSecretPost,
             resource: None,
+            issuer_source_config_key: None,
+            client_config_provider_template: None,
+            pkce_required: false,
+            grant_types: None,
+            validate_endpoint_urls: false,
+            supports_org_oauth: true,
         })
     }
 

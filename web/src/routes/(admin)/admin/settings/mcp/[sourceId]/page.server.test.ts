@@ -7,7 +7,12 @@ vi.mock('$lib/server/authHelpers', () => ({
 }))
 
 vi.mock('$lib/server/config', () => ({
-    getConfig: () => ({ services: { connectorManagerUrl: 'http://connector-manager.test' } }),
+    app: { publicUrl: 'http://localhost:3000' },
+    database: { url: 'postgres://localhost/test' },
+    getConfig: () => ({
+        database: { url: 'postgres://localhost/test' },
+        services: { connectorManagerUrl: 'http://connector-manager.test' },
+    }),
 }))
 
 vi.mock('$lib/server/db/connector-configs', () => ({

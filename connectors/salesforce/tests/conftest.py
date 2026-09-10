@@ -1,0 +1,1361 @@
+"""Integration test fixtures for the Salesforce connector.
+
+Session-scoped: harness, mock Salesforce API server, connector server, connector-manager.
+Function-scoped: seed helper, source_id, httpx client.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+import socket
+import threading
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+
+import httpx
+import pytest
+import pytest_asyncio
+import uvicorn
+from omni_connector import SyncContext, SyncMode
+from omni_connector.testing import OmniTestHarness, SeedHelper
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
+
+from salesforce_connector.config import API_VERSION
+
+logger = logging.getLogger(__name__)
+
+
+def _event_type(event: Any) -> str:
+    value = event.type
+    return value.value if hasattr(value, "value") else str(value)
+
+
+def _now_modstamp() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
+
+
+def _parse_ts(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+async def set_source_config(harness: Any, source_id: str, config: Mapping[str, object]) -> None:
+    """Replace a source's config (used to exercise visibility settings)."""
+    await harness.db_pool.execute(
+        "UPDATE sources SET config = $2::jsonb WHERE id = $1::char(26)",
+        source_id,
+        json.dumps(config),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Connector-level sync harness (no manager required)
+# ---------------------------------------------------------------------------
+
+
+class FakeSdkClient:
+    """In-memory stand-in for the SDK client used by SyncContext."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+        self.checkpoints: list[dict[str, Any]] = []
+        # Number of flushed events captured at each checkpoint, so tests can
+        # prove events were flushed before a cursor advanced.
+        self.checkpoint_event_counts: list[int] = []
+        self.connector_states: list[dict[str, Any]] = []
+        self.heartbeats = 0
+        self.completed = 0
+        self.failures: list[str] = []
+        self.scanned_increments = 0
+        self._content = 0
+
+    async def emit_event_batch(
+        self, sync_run_id: str, source_id: str, events: list[Any]
+    ) -> None:
+        self.events.extend(events)
+
+    async def store_content(
+        self, sync_run_id: str, content: str, content_type: str = "text/plain"
+    ) -> str:
+        self._content += 1
+        return f"content-{self._content}"
+
+    async def update_checkpoint(
+        self, sync_run_id: str, checkpoint: dict[str, Any]
+    ) -> None:
+        self.checkpoints.append(checkpoint)
+        self.checkpoint_event_counts.append(len(self.events))
+
+    async def update_connector_state(
+        self, source_id: str, connector_state: dict[str, Any]
+    ) -> None:
+        self.connector_states.append(connector_state)
+
+    async def heartbeat(self, sync_run_id: str) -> None:
+        self.heartbeats += 1
+
+    async def increment_scanned(self, sync_run_id: str) -> None:
+        self.scanned_increments += 1
+
+    async def complete(
+        self,
+        sync_run_id: str,
+        documents_scanned: int,
+        documents_emitted: int,
+        error: str | None,
+    ) -> None:
+        self.completed += 1
+
+    async def fail(self, sync_run_id: str, error: str) -> None:
+        self.failures.append(error)
+
+    @property
+    def documents(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for event in self.events:
+            if _event_type(event) == "document_created":
+                result[event.document_id] = event
+        return result
+
+    @property
+    def deleted_ids(self) -> list[str]:
+        return [
+            event.document_id
+            for event in self.events
+            if _event_type(event) == "document_deleted"
+        ]
+
+    @property
+    def updated_ids(self) -> list[str]:
+        return [
+            event.document_id
+            for event in self.events
+            if _event_type(event) == "document_updated"
+        ]
+
+
+def salesforce_config(
+    mock_server: str, **overrides: object
+) -> dict[str, object]:
+    config: dict[str, object] = {"instance_url": mock_server}
+    config.update(overrides)
+    return config
+
+
+def make_sync_context(
+    fake: FakeSdkClient,
+    checkpoint: dict[str, Any] | None,
+    *,
+    sync_mode: SyncMode = SyncMode.FULL,
+    is_resume: bool = False,
+    sync_run_id: str = "run-1",
+    connector_state: dict[str, Any] | None = None,
+    source_id: str = "src-1",
+) -> SyncContext:
+    return SyncContext(
+        sdk_client=fake,  # type: ignore[arg-type]
+        sync_run_id=sync_run_id,
+        source_id=source_id,
+        source_type="salesforce",
+        checkpoint=checkpoint,
+        connector_state=connector_state,
+        sync_mode=sync_mode,
+        is_resume=is_resume,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Record payload builders
+# ---------------------------------------------------------------------------
+
+
+def _record_payload(
+    object_type: str,
+    record_id: str,
+    fields: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "attributes": {
+            "type": object_type,
+            "url": f"/services/data/v62.0/sobjects/{object_type}/{record_id}",
+        },
+        "Id": record_id,
+        **fields,
+    }
+
+
+def _account_payload(
+    record_id: str = "001000000000001",
+    name: str = "Acme Corp",
+    system_modstamp: str = "2024-06-01T14:00:00.000+0000",
+    owner_id: str = "005000000000001",
+) -> dict[str, object]:
+    return _record_payload(
+        "Account",
+        record_id,
+        {
+            "Name": name,
+            "Industry": "Technology",
+            "Phone": "+1234567890",
+            "Website": "https://acme.com",
+            "BillingCity": "San Francisco",
+            "BillingState": "CA",
+            "BillingCountry": "US",
+            "NumberOfEmployees": 50,
+            "AnnualRevenue": 1000000,
+            "Description": "A technology company",
+            "Type": "Customer",
+            "OwnerId": owner_id,
+            "CreatedDate": "2024-01-15T10:30:00.000+0000",
+            "SystemModstamp": system_modstamp,
+        },
+    )
+
+
+def _contact_payload(
+    record_id: str = "003000000000001",
+    first_name: str = "John",
+    last_name: str = "Doe",
+    email: str = "john@example.com",
+    system_modstamp: str = "2024-06-01T14:00:00.000+0000",
+    owner_id: str = "005000000000001",
+    account_name: str = "Acme Corp",
+) -> dict[str, object]:
+    return _record_payload(
+        "Contact",
+        record_id,
+        {
+            "FirstName": first_name,
+            "LastName": last_name,
+            "Name": f"{first_name} {last_name}",
+            "Email": email,
+            "Phone": "+1234567890",
+            "Title": "Engineer",
+            "Department": "Engineering",
+            "AccountId": "001000000000001",
+            "Account": {"Name": account_name} if account_name else None,
+            "MailingCity": "San Francisco",
+            "MailingState": "CA",
+            "MailingCountry": "US",
+            "OwnerId": owner_id,
+            "CreatedDate": "2024-01-15T10:30:00.000+0000",
+            "SystemModstamp": system_modstamp,
+        },
+    )
+
+
+def _opportunity_payload(
+    record_id: str = "006000000000001",
+    name: str = "Big Deal",
+    system_modstamp: str = "2024-06-10T11:00:00.000+0000",
+    owner_id: str = "005000000000001",
+) -> dict[str, object]:
+    return _record_payload(
+        "Opportunity",
+        record_id,
+        {
+            "Name": name,
+            "Amount": 50000,
+            "StageName": "Prospecting",
+            "CloseDate": "2024-12-31",
+            "Probability": 25,
+            "Type": "New Business",
+            "LeadSource": "Web",
+            "Description": "A big deal",
+            "AccountId": "001000000000001",
+            "Account": {"Name": "Acme Corp"},
+            "OwnerId": owner_id,
+            "CreatedDate": "2024-02-01T09:00:00.000+0000",
+            "SystemModstamp": system_modstamp,
+        },
+    )
+
+
+def _lead_payload(
+    record_id: str = "00Q000000000001",
+    first_name: str = "Jane",
+    last_name: str = "Smith",
+    system_modstamp: str = "2024-03-15T16:00:00.000+0000",
+    owner_id: str = "005000000000001",
+) -> dict[str, object]:
+    return _record_payload(
+        "Lead",
+        record_id,
+        {
+            "FirstName": first_name,
+            "LastName": last_name,
+            "Name": f"{first_name} {last_name}",
+            "Email": "jane@example.com",
+            "Phone": "+1987654321",
+            "Company": "StartupCo",
+            "Title": "CTO",
+            "Industry": "Software",
+            "Status": "Open",
+            "LeadSource": "Web",
+            "Description": "Interested in our product",
+            "OwnerId": owner_id,
+            "CreatedDate": "2024-03-01T10:00:00.000+0000",
+            "SystemModstamp": system_modstamp,
+        },
+    )
+
+
+def _case_payload(
+    record_id: str = "500000000000001",
+    subject: str = "Support request",
+    system_modstamp: str = "2024-04-01T15:00:00.000+0000",
+    owner_id: str = "005000000000001",
+) -> dict[str, object]:
+    return _record_payload(
+        "Case",
+        record_id,
+        {
+            "Subject": subject,
+            "Description": "Need help with integration",
+            "Status": "New",
+            "Priority": "High",
+            "Type": "Problem",
+            "Origin": "Web",
+            "ContactId": "003000000000001",
+            "AccountId": "001000000000001",
+            "Account": {"Name": "Acme Corp"},
+            "OwnerId": owner_id,
+            "CreatedDate": "2024-04-01T14:00:00.000+0000",
+            "SystemModstamp": system_modstamp,
+        },
+    )
+
+
+def _task_payload(
+    record_id: str = "00T000000000001",
+    subject: str = "Send proposal",
+    system_modstamp: str = "2024-04-20T09:00:00.000+0000",
+    owner_id: str = "005000000000001",
+) -> dict[str, object]:
+    return _record_payload(
+        "Task",
+        record_id,
+        {
+            "Subject": subject,
+            "Description": "Prepare and send the proposal",
+            "Status": "Not Started",
+            "Priority": "High",
+            "ActivityDate": "2024-04-20",
+            "WhoId": "003000000000001",
+            "WhatId": "006000000000001",
+            "OwnerId": owner_id,
+            "CreatedDate": "2024-04-20T09:00:00.000+0000",
+            "SystemModstamp": system_modstamp,
+        },
+    )
+
+
+def _user_payload(
+    user_id: str = "005000000000001",
+    email: str = "owner@example.com",
+    name: str = "Owner User",
+    is_active: bool = True,
+    role_id: str | None = "00E000000000001",
+    manager_id: str | None = None,
+) -> dict[str, object]:
+    return _record_payload(
+        "User",
+        user_id,
+        {
+            "Name": name,
+            "FirstName": name.split()[0] if name else None,
+            "LastName": " ".join(name.split()[1:]) if name else None,
+            "Email": email,
+            "Title": "Sales Rep",
+            "Department": "Sales",
+            "ManagerId": manager_id,
+            "UserRoleId": role_id,
+            "IsActive": is_active,
+            "EmployeeNumber": user_id[-4:],
+            "SystemModstamp": "2024-05-01T09:00:00.000+0000",
+        },
+    )
+
+
+def _group_payload(
+    group_id: str = "00G000000000001",
+    name: str = "Support Queue",
+    group_type: str = "Queue",
+    related_id: str | None = None,
+) -> dict[str, object]:
+    return _record_payload(
+        "Group",
+        group_id,
+        {"Name": name, "Type": group_type, "RelatedId": related_id},
+    )
+
+
+def _group_member_payload(
+    member_id: str,
+    group_id: str,
+    user_or_group_id: str,
+) -> dict[str, object]:
+    return _record_payload(
+        "GroupMember",
+        member_id,
+        {"GroupId": group_id, "UserOrGroupId": user_or_group_id},
+    )
+
+
+def _role_payload(
+    role_id: str = "00E000000000001",
+    name: str = "Sales Manager",
+    parent_role_id: str | None = None,
+) -> dict[str, object]:
+    return _record_payload(
+        "UserRole",
+        role_id,
+        {"Name": name, "ParentRoleId": parent_role_id},
+    )
+
+
+SHARE_ACCESS_LEVEL_FIELDS: dict[str, str] = {
+    "AccountShare": "AccountAccessLevel",
+    "ContactShare": "ContactAccessLevel",
+    "OpportunityShare": "OpportunityAccessLevel",
+    "LeadShare": "LeadAccessLevel",
+    "CaseShare": "CaseAccessLevel",
+}
+
+SHARE_PARENT_FIELDS: dict[str, str] = {
+    "AccountShare": "AccountId",
+    "ContactShare": "ContactId",
+    "OpportunityShare": "OpportunityId",
+    "LeadShare": "LeadId",
+    "CaseShare": "CaseId",
+}
+
+
+def _share_payload(
+    object_type: str,
+    share_id: str,
+    parent_field: str,
+    parent_id: str,
+    user_or_group_id: str,
+    access_level: str = "Read",
+    row_cause: str = "Manual",
+) -> dict[str, object]:
+    return _record_payload(
+        object_type,
+        share_id,
+        {
+            parent_field: parent_id,
+            "UserOrGroupId": user_or_group_id,
+            SHARE_ACCESS_LEVEL_FIELDS[object_type]: access_level,
+            "RowCause": row_cause,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Minimal SOQL handling for the mock
+# ---------------------------------------------------------------------------
+
+
+DEFAULT_OBJECT_FIELDS: dict[str, set[str]] = {
+    "User": {
+        "Id",
+        "Name",
+        "FirstName",
+        "LastName",
+        "Email",
+        "Title",
+        "Department",
+        "ManagerId",
+        "UserRoleId",
+        "IsActive",
+        "EmployeeNumber",
+        "SystemModstamp",
+    },
+    "Group": {"Id", "Name", "Type", "RelatedId"},
+    "GroupMember": {"Id", "GroupId", "UserOrGroupId"},
+    "UserRole": {"Id", "Name", "ParentRoleId"},
+    # Standard record objects expose their configured fields even before any
+    # record is seeded, matching a real org describe response.
+    "Account": {
+        "Id",
+        "Name",
+        "Industry",
+        "Phone",
+        "Website",
+        "BillingCity",
+        "BillingState",
+        "BillingCountry",
+        "NumberOfEmployees",
+        "AnnualRevenue",
+        "Description",
+        "Type",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Contact": {
+        "Id",
+        "Name",
+        "FirstName",
+        "LastName",
+        "Email",
+        "Phone",
+        "Title",
+        "Department",
+        "AccountId",
+        "Account",
+        "MailingCity",
+        "MailingState",
+        "MailingCountry",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Opportunity": {
+        "Id",
+        "Name",
+        "Amount",
+        "StageName",
+        "CloseDate",
+        "Probability",
+        "Type",
+        "LeadSource",
+        "Description",
+        "AccountId",
+        "Account",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Lead": {
+        "Id",
+        "Name",
+        "FirstName",
+        "LastName",
+        "Email",
+        "Phone",
+        "Company",
+        "Title",
+        "Industry",
+        "Status",
+        "LeadSource",
+        "Description",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Case": {
+        "Id",
+        "CaseNumber",
+        "Subject",
+        "Description",
+        "Status",
+        "Priority",
+        "Type",
+        "Origin",
+        "ContactId",
+        "AccountId",
+        "Account",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Task": {
+        "Id",
+        "Subject",
+        "Description",
+        "Status",
+        "Priority",
+        "ActivityDate",
+        "WhoId",
+        "WhatId",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+}
+for _share_object, _access_field in SHARE_ACCESS_LEVEL_FIELDS.items():
+    DEFAULT_OBJECT_FIELDS[_share_object] = {
+        "Id",
+        SHARE_PARENT_FIELDS[_share_object],
+        "UserOrGroupId",
+        _access_field,
+        "RowCause",
+    }
+
+# Relationship names exposed by describe for traversable fields (e.g.
+# Account.Name). Salesforce reports these on the lookup field descriptor.
+RELATIONSHIP_NAMES: frozenset[str] = frozenset({"Account", "Owner", "Contact", "Who", "What"})
+
+
+@dataclass(frozen=True)
+class ParsedSoql:
+    object_type: str
+    where: str | None
+    order_by: tuple[str, ...]
+    limit: int | None
+
+
+def _parse_soql(soql: str) -> ParsedSoql:
+    object_match = re.search(r"FROM\s+(\w+)", soql, re.IGNORECASE)
+    if not object_match:
+        raise ValueError(f"Invalid SOQL: {soql}")
+    object_type = object_match.group(1)
+    where_match = re.search(r"\bWHERE\s+(.+?)(?:\s+ORDER BY|\s+LIMIT|$)", soql, re.IGNORECASE)
+    where = where_match.group(1).strip() if where_match else None
+    order_match = re.search(r"ORDER BY\s+(.+?)(?:\s+LIMIT|$)", soql, re.IGNORECASE)
+    order_by = (
+        tuple(
+            part.strip().removesuffix(" ASC").removesuffix(" DESC")
+            for part in order_match.group(1).split(",")
+        )
+        if order_match
+        else ()
+    )
+    limit_match = re.search(r"LIMIT\s+(\d+)", soql, re.IGNORECASE)
+    limit = int(limit_match.group(1)) if limit_match else None
+    return ParsedSoql(object_type, where, order_by, limit)
+
+
+def _soql_value(record: Mapping[str, object], field: str) -> object:
+    return record.get(field)
+
+
+def _project_record(record: Mapping[str, object], soql: str) -> dict[str, object]:
+    """Return only the columns named in the SELECT list, like Salesforce does."""
+    match = re.search(r"SELECT\s+(.+?)\s+FROM", soql, re.IGNORECASE)
+    if not match:
+        return dict(record)
+    selected = [field.strip() for field in match.group(1).split(",")]
+    projected: dict[str, object] = {}
+    for field in selected:
+        if "." in field:
+            root, _, child = field.partition(".")
+            nested = record.get(root)
+            if isinstance(nested, Mapping) and child in nested:
+                projected.setdefault(root, {})
+                nested_out = projected[root]
+                if isinstance(nested_out, dict):
+                    nested_out[child] = nested[child]
+            continue
+        if field in record:
+            projected[field] = record[field]
+    return projected
+
+
+def _split_top_level_and(where: str) -> list[str]:
+    """Split a WHERE expression on top-level AND, respecting parentheses."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    index = 0
+    while index < len(where):
+        char = where[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        if depth == 0 and where[index : index + 5].upper() == " AND ":
+            parts.append("".join(current).strip())
+            current = []
+            index += 5
+            continue
+        current.append(char)
+        index += 1
+    if current:
+        parts.append("".join(current).strip())
+    return [part for part in parts if part]
+
+
+def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
+    clause = clause.strip()
+    # Keyset delta clause: (SystemModstamp > X OR (SystemModstamp = X AND Id > 'Y'))
+    keyset = re.search(
+        r"SystemModstamp\s*>\s*([^ )]+)\s*OR\s*\(\s*SystemModstamp\s*=\s*([^ )]+)"
+        r"\s*AND\s+Id\s*>\s*'([^']+)'\s*\)",
+        clause,
+    )
+    if keyset:
+        threshold = _parse_ts(keyset.group(1))
+        modstamp = record.get("SystemModstamp")
+        if modstamp is None:
+            return False
+        value = _parse_ts(str(modstamp))
+        if value > threshold:
+            return True
+        return value == threshold and str(record.get("Id", "")) > keyset.group(3)
+
+    mod_ge = re.search(r"SystemModstamp\s*>=\s*([^ )]+)", clause)
+    if mod_ge:
+        threshold = _parse_ts(mod_ge.group(1))
+        modstamp = record.get("SystemModstamp")
+        if modstamp is None:
+            return False
+        return _parse_ts(str(modstamp)) >= threshold
+
+    mod_le = re.search(r"SystemModstamp\s*<=\s*([^ )]+)", clause)
+    if mod_le:
+        threshold = _parse_ts(mod_le.group(1))
+        modstamp = record.get("SystemModstamp")
+        if modstamp is None:
+            return False
+        return _parse_ts(str(modstamp)) <= threshold
+
+    id_gt = re.search(r"Id\s*>\s*'([^']+)'", clause)
+    if id_gt:
+        return str(record.get("Id", "")) > id_gt.group(1)
+
+    # Generic field IN (...) filter, anchored on the whole field name so
+    # OwnerId IN (...) is not mistaken for Id IN (...).
+    field_in = re.search(r"(\w+)\s+IN\s*\(([^)]+)\)", clause)
+    if field_in:
+        values = {v.strip().strip("'") for v in field_in.group(2).split(",")}
+        return record.get(field_in.group(1)) in values
+
+    row_cause = re.search(r"RowCause\s*!=\s*'([^']+)'", clause)
+    if row_cause:
+        return record.get("RowCause") != row_cause.group(1)
+
+    # LIKE branches: "Name LIKE '%x%' OR Email LIKE '%y%'"
+    saw_like = False
+    for branch in re.split(r"\s+OR\s+", clause):
+        like = re.search(r"(\w+)\s+LIKE\s+'%([^']*)%'", branch)
+        if like:
+            saw_like = True
+            value = _soql_value(record, like.group(1))
+            if isinstance(value, str) and like.group(2).lower() in value.lower():
+                return True
+    if saw_like:
+        return False
+    raise ValueError(f"unsupported WHERE clause: {clause}")
+
+
+def _matches_where(record: Mapping[str, object], where: str) -> bool:
+    """Evaluate every top-level AND constraint, including upper bounds."""
+    return all(_matches_clause(record, clause) for clause in _split_top_level_and(where))
+
+# ---------------------------------------------------------------------------
+# Mock Salesforce API
+# ---------------------------------------------------------------------------
+
+
+class MockSalesforceAPI:
+    """Controllable mock of the Salesforce REST API with SOQL filtering."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, list[dict[str, object]]] = {}
+        self.deleted: dict[str, list[dict[str, str]]] = {}
+        self.should_fail_auth: bool = False
+        self.fail_next_api_call: bool = False
+        self.created_records: list[dict[str, object]] = []
+        self.updated_records: list[tuple[str, str]] = []
+        self.next_record_id = 1
+        # JWT token endpoint state
+        self.token_issuances: int = 0
+        self.last_assertion: str = ""
+        self.instance_url: str = "http://localhost"
+        # Objects to omit from global describe, simulating orgs/licenses that
+        # do not expose every standard object to the authenticated principal.
+        self.hidden_objects: set[str] = set()
+        # Fields to omit from per-object describe (e.g. disabled features).
+        self.hidden_fields: dict[str, set[str]] = {}
+        # Union of record keys ever added per object, driving per-object describe.
+        self.field_sets: dict[str, set[str]] = {}
+        # Every SOQL string the connector issued, in order.
+        self.queries: list[str] = []
+        # Objects whose SOQL queries fail with a non-retryable 400.
+        self.fail_query_objects: set[str] = set()
+        # Objects whose SOQL queries fail with a 401 (dead credential).
+        self.fail_auth_objects: set[str] = set()
+        # Remaining 429 responses to emit before serving queries.
+        self.rate_limit_remaining: int = 0
+        self.rate_limit_hits: int = 0
+        # Objects whose /deleted queries fail with a non-retryable 400.
+        self.fail_deleted_objects: set[str] = set()
+        # Override the retention-window start reported by /deleted.
+        self.deletion_earliest_override: str | None = None
+        # Override the latest covered deletion timestamp reported by /deleted.
+        self.deletion_latest_override: str | None = None
+        # When set, /deleted returns at most this many records per page and a
+        # nextRecordsUrl, exercising the connector's pagination path.
+        self.deleted_page_size: int | None = None
+        self._deleted_windows: dict[str, tuple[datetime, datetime]] = {}
+
+    def reset(self) -> None:
+        self.objects.clear()
+        self.deleted.clear()
+        self.should_fail_auth = False
+        self.fail_next_api_call = False
+        self.created_records.clear()
+        self.updated_records.clear()
+        self.next_record_id = 1
+        self.token_issuances = 0
+        self.last_assertion = ""
+        self.hidden_objects.clear()
+        self.hidden_fields.clear()
+        self.field_sets.clear()
+        self.queries.clear()
+        self.fail_query_objects.clear()
+        self.fail_auth_objects.clear()
+        self.rate_limit_remaining = 0
+        self.rate_limit_hits = 0
+        self.fail_deleted_objects.clear()
+        self.deletion_earliest_override = None
+        self.deletion_latest_override = None
+        self.deleted_page_size = None
+        self._deleted_windows.clear()
+
+    def add_record(self, object_type: str, payload: dict[str, object]) -> None:
+        self.objects.setdefault(object_type, []).append(payload)
+        self.field_sets.setdefault(object_type, set()).update(payload)
+
+    def add_account(self, record_id: str = "001000000000001", **kwargs: Any) -> None:
+        self.add_record("Account", _account_payload(record_id, **kwargs))
+
+    def add_contact(self, record_id: str = "003000000000001", **kwargs: Any) -> None:
+        self.add_record("Contact", _contact_payload(record_id, **kwargs))
+
+    def add_opportunity(self, record_id: str = "006000000000001", **kwargs: Any) -> None:
+        self.add_record("Opportunity", _opportunity_payload(record_id, **kwargs))
+
+    def add_lead(self, record_id: str = "00Q000000000001", **kwargs: Any) -> None:
+        self.add_record("Lead", _lead_payload(record_id, **kwargs))
+
+    def add_case(self, record_id: str = "500000000000001", **kwargs: Any) -> None:
+        self.add_record("Case", _case_payload(record_id, **kwargs))
+
+    def add_task(self, record_id: str = "00T000000000001", **kwargs: Any) -> None:
+        self.add_record("Task", _task_payload(record_id, **kwargs))
+
+    def add_user(self, user_id: str = "005000000000001", **kwargs: Any) -> None:
+        self.add_record("User", _user_payload(user_id, **kwargs))
+
+    def add_group(
+        self,
+        group_id: str = "00G000000000001",
+        related_id: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.add_record("Group", _group_payload(group_id, related_id=related_id, **kwargs))
+
+    def add_group_member(self, member_id: str, group_id: str, user_or_group_id: str) -> None:
+        self.add_record("GroupMember", _group_member_payload(member_id, group_id, user_or_group_id))
+
+    def add_role(self, role_id: str = "00E000000000001", **kwargs: Any) -> None:
+        self.add_record("UserRole", _role_payload(role_id, **kwargs))
+
+    def add_share(self, object_type: str, **kwargs: Any) -> None:
+        parent_field = SHARE_PARENT_FIELDS[object_type]
+        self.add_record(
+            object_type,
+            _share_payload(
+                object_type, f"{object_type}-{self.next_record_id}", parent_field, **kwargs
+            ),
+        )
+        self.next_record_id += 1
+
+    def add_people_fixtures(self) -> None:
+        """Default org: 3 users, a queue, a public group, and a role hierarchy.
+
+        The owner sits in the Support Rep role (under Support Manager); the
+        agent sits in Support Manager (under Sales Manager, the root); the
+        manager user fills the root role. This drives the role-membership
+        expectations in the integration tests.
+        """
+        self.add_user(
+            "005000000000001",
+            email="owner@example.com",
+            name="Owner User",
+            role_id="00E000000000002",
+        )
+        self.add_user(
+            "005000000000002",
+            email="agent@example.com",
+            name="Support Agent",
+            role_id="00E000000000003",
+        )
+        self.add_user(
+            "005000000000003",
+            email="manager@example.com",
+            name="Sales Manager",
+            role_id="00E000000000001",
+        )
+        self.add_role("00E000000000001", name="Sales Manager")
+        self.add_role("00E000000000002", name="Support Rep", parent_role_id="00E000000000003")
+        self.add_role("00E000000000003", name="Support Manager", parent_role_id="00E000000000001")
+        self.add_group("00G000000000001", name="Support Queue", group_type="Queue")
+        self.add_group_member("00M000000000001", "00G000000000001", "005000000000002")
+        self.add_group("00G000000000002", name="Execs", group_type="Public")
+        self.add_group_member("00M000000000002", "00G000000000002", "005000000000003")
+        # Salesforce-generated role group: share rows target this 00G id and it
+        # resolves through RelatedId to the role and its subordinates.
+        self.add_group(
+            "00G000000000003",
+            name="Support Manager and Subordinates",
+            group_type="RoleAndSubordinates",
+            related_id="00E000000000003",
+        )
+
+    def mark_deleted(self, object_type: str, record_id: str) -> None:
+        """Remove the live record and record its deletion timestamp.
+
+        A real Salesforce delete makes the record unreachable from SOQL, so a
+        full re-scan cannot re-emit it; the mock mirrors that.
+        """
+        self.objects[object_type] = [
+            record
+            for record in self.objects.get(object_type, [])
+            if record.get("Id") != record_id
+        ]
+        self.deleted.setdefault(object_type, []).append(
+            {"id": record_id, "deletedDate": _now_modstamp()}
+        )
+
+    def _query_records(self, soql: str) -> list[dict[str, object]]:
+        parsed = _parse_soql(soql)
+        records = [
+            record
+            for record in self.objects.get(parsed.object_type, [])
+            if parsed.where is None or _matches_where(record, parsed.where)
+        ]
+        if parsed.order_by:
+
+            def sort_key(record: Mapping[str, object]) -> tuple[object, ...]:
+                return tuple(record.get(field) for field in parsed.order_by)
+
+            records.sort(key=sort_key)
+        if parsed.limit is not None:
+            records = records[: parsed.limit]
+        return records
+
+    def create_app(self) -> Starlette:
+        mock = self
+
+        def auth_guard() -> JSONResponse | None:
+            if mock.fail_next_api_call:
+                mock.fail_next_api_call = False
+                return JSONResponse(
+                    [
+                        {
+                            "message": "Session expired or invalid",
+                            "errorCode": "INVALID_SESSION_ID",
+                        }
+                    ],
+                    status_code=401,
+                )
+            if mock.should_fail_auth:
+                return JSONResponse(
+                    [
+                        {
+                            "message": "Session expired or invalid",
+                            "errorCode": "INVALID_SESSION_ID",
+                        }
+                    ],
+                    status_code=401,
+                )
+            return None
+
+        async def handle_token(request: Request) -> JSONResponse:
+            form = await request.form()
+            grant_type = form.get("grant_type", "")
+            if grant_type != "urn:ietf:params:oauth:grant-type:jwt-bearer":
+                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+            mock.last_assertion = str(form.get("assertion", ""))
+            mock.token_issuances += 1
+            return JSONResponse(
+                {
+                    "access_token": f"jwt-test-token-{mock.token_issuances}",
+                    "instance_url": mock.instance_url,
+                    "token_type": "Bearer",
+                    "issued_at": int(time.time() * 1000),
+                    "expires_in": 7200,
+                }
+            )
+
+        async def handle_limits(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            return JSONResponse({"DailyApiRequests": {"Max": 15000, "Remaining": 15000}})
+
+        async def handle_describe(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_names = {
+                "Account",
+                "Contact",
+                "Opportunity",
+                "Lead",
+                "Case",
+                "Task",
+                "User",
+                "Group",
+                "GroupMember",
+                "UserRole",
+                "AccountShare",
+                "ContactShare",
+                "OpportunityShare",
+                "LeadShare",
+                "CaseShare",
+            }
+            object_names.update(mock.objects)
+            object_names.difference_update(mock.hidden_objects)
+            return JSONResponse({"sobjects": [{"name": name} for name in sorted(object_names)]})
+
+        async def handle_query(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            soql = request.query_params.get("q", "")
+            mock.queries.append(soql)
+            try:
+                parsed = _parse_soql(soql)
+            except ValueError as e:
+                return JSONResponse(
+                    [{"message": str(e), "errorCode": "MALFORMED_QUERY"}],
+                    status_code=400,
+                )
+            if parsed.object_type in mock.fail_query_objects:
+                return JSONResponse(
+                    [{"message": "query failed", "errorCode": "QUERY_FAILED"}],
+                    status_code=400,
+                )
+            if parsed.object_type in mock.fail_auth_objects:
+                return JSONResponse(
+                    [{"message": "Session expired", "errorCode": "INVALID_SESSION_ID"}],
+                    status_code=401,
+                )
+            if mock.rate_limit_remaining > 0:
+                mock.rate_limit_remaining -= 1
+                mock.rate_limit_hits += 1
+                return JSONResponse(
+                    [{"message": "rate limited", "errorCode": "REQUEST_LIMIT_EXCEEDED"}],
+                    status_code=429,
+                )
+            records = [
+                _project_record(record, soql) for record in mock._query_records(soql)
+            ]
+            return JSONResponse({"totalSize": len(records), "done": True, "records": records})
+
+        async def handle_deleted(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_type = request.path_params["object_type"]
+            if object_type in mock.fail_deleted_objects:
+                return JSONResponse(
+                    [{"message": "deleted failed", "errorCode": "QUERY_FAILED"}],
+                    status_code=400,
+                )
+            # Salesforce returns a nextRecordsUrl for large delete sets. The
+            # follow-up request carries only the locator, so the original
+            # window is looked up from the mock's per-object state.
+            query_id = request.query_params.get("queryId")
+            offset = 0
+            if query_id is None:
+                start = _parse_ts(request.query_params["start"])
+                end = _parse_ts(request.query_params["end"])
+                mock._deleted_windows[object_type] = (start, end)
+            else:
+                window = mock._deleted_windows.get(object_type)
+                if window is None:
+                    return JSONResponse(
+                        [
+                            {
+                                "message": "invalid query locator",
+                                "errorCode": "INVALID_QUERY_LOCATOR",
+                            }
+                        ],
+                        status_code=400,
+                    )
+                start, end = window
+                try:
+                    offset = int(query_id)
+                except ValueError:
+                    return JSONResponse(
+                        [
+                            {
+                                "message": "invalid query locator",
+                                "errorCode": "INVALID_QUERY_LOCATOR",
+                            }
+                        ],
+                        status_code=400,
+                    )
+            latest = mock.deletion_latest_override or end.strftime("%Y-%m-%dT%H:%M:%SZ")
+            latest_dt = _parse_ts(latest)
+            # Only deletions Salesforce reports as covered are returned.
+            effective_end = min(end, latest_dt)
+            deleted_records = [
+                entry
+                for entry in mock.deleted.get(object_type, [])
+                if start <= _parse_ts(entry["deletedDate"]) <= effective_end
+            ]
+            next_records_url: str | None = None
+            if mock.deleted_page_size is not None:
+                page = deleted_records[offset : offset + mock.deleted_page_size]
+                next_offset = offset + len(page)
+                if next_offset < len(deleted_records):
+                    next_records_url = (
+                        f"/services/data/{API_VERSION}/sobjects/{object_type}/deleted"
+                        f"?queryId={next_offset}"
+                    )
+            else:
+                page = deleted_records
+            earliest = mock.deletion_earliest_override or start.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+            body: dict[str, object] = {
+                "deletedRecords": page,
+                "earliestDateAvailable": earliest,
+                "latestDateCovered": latest,
+            }
+            if next_records_url is not None:
+                body["nextRecordsUrl"] = next_records_url
+            return JSONResponse(body)
+
+        async def handle_get_record(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_type = request.path_params["object_type"]
+            record_id = request.path_params["record_id"]
+            for record in mock.objects.get(object_type, []):
+                if record.get("Id") == record_id:
+                    return JSONResponse(record)
+            return JSONResponse(
+                [{"message": f"{object_type} not found", "errorCode": "NOT_FOUND"}],
+                status_code=404,
+            )
+
+        async def handle_create_record(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_type = request.path_params["object_type"]
+            body = await request.json()
+            if not isinstance(body, Mapping):
+                return JSONResponse({"message": "invalid body"}, status_code=400)
+            record_id = str(body.get("Id") or f"00R{mock.next_record_id:013d}")
+            mock.next_record_id += 1
+            record = _record_payload(
+                object_type,
+                record_id,
+                {**dict(body), "SystemModstamp": _now_modstamp()},
+            )
+            mock.add_record(object_type, record)
+            mock.created_records.append(record)
+            return JSONResponse({"id": record_id, "success": True}, status_code=201)
+
+        async def handle_update_record(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_type = request.path_params["object_type"]
+            record_id = request.path_params["record_id"]
+            body = await request.json()
+            if not isinstance(body, Mapping):
+                return JSONResponse({"message": "invalid body"}, status_code=400)
+            for record in mock.objects.get(object_type, []):
+                if record.get("Id") == record_id:
+                    record.update(body)
+                    record["SystemModstamp"] = _now_modstamp()
+                    mock.updated_records.append((object_type, record_id))
+                    return JSONResponse({}, status_code=204)
+            return JSONResponse(
+                [{"message": f"{object_type} not found", "errorCode": "NOT_FOUND"}],
+                status_code=404,
+            )
+
+        async def handle_object_describe(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            object_type = request.path_params["object_type"]
+            fields = set(DEFAULT_OBJECT_FIELDS.get(object_type, set()))
+            fields.update(mock.field_sets.get(object_type, set()))
+            fields.difference_update(mock.hidden_fields.get(object_type, set()))
+            if not fields:
+                fields = {"Id"}
+            entries = []
+            for name in sorted(fields):
+                entry: dict[str, object] = {"name": name}
+                if name in RELATIONSHIP_NAMES:
+                    entry["relationshipName"] = name
+                entries.append(entry)
+            return JSONResponse({"fields": entries})
+
+        routes = [
+            Route("/services/oauth2/token", handle_token, methods=["POST"]),
+            Route("/services/data/v62.0/limits/", handle_limits),
+            Route("/services/data/v62.0/sobjects/", handle_describe),
+            Route("/services/data/v62.0/query/", handle_query),
+            Route(
+                "/services/data/v62.0/sobjects/{object_type}/deleted",
+                handle_deleted,
+            ),
+            Route(
+                "/services/data/v62.0/sobjects/{object_type}/describe",
+                handle_object_describe,
+            ),
+            Route(
+                "/services/data/v62.0/sobjects/{object_type}/",
+                handle_create_record,
+                methods=["POST"],
+            ),
+            Route(
+                "/services/data/v62.0/sobjects/{object_type}/{record_id}",
+                handle_update_record,
+                methods=["PATCH"],
+            ),
+            Route(
+                "/services/data/v62.0/sobjects/{object_type}/{record_id}",
+                handle_get_record,
+                methods=["GET"],
+            ),
+        ]
+        return Starlette(routes=routes)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_port(port: int, host: str = "localhost", timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=1):
+                return
+        except OSError:
+            time.sleep(0.1)
+    raise TimeoutError(f"Port {port} not open after {timeout}s")
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def mock_salesforce_api() -> MockSalesforceAPI:
+    return MockSalesforceAPI()
+
+
+@pytest.fixture(scope="session")
+def mock_salesforce_server(mock_salesforce_api: MockSalesforceAPI) -> str:
+    """Start mock Salesforce API server in a daemon thread. Returns base URL."""
+    port = _free_port()
+    mock_salesforce_api.instance_url = f"http://localhost:{port}"
+    app = mock_salesforce_api.create_app()
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    _wait_for_port(port)
+    return f"http://localhost:{port}"
+
+
+@pytest.fixture(scope="session")
+def connector_port() -> int:
+    return _free_port()
+
+
+@pytest.fixture(scope="session")
+def connector_server(connector_port: int) -> str:
+    """Start the Salesforce connector as a uvicorn server in a daemon thread. Returns base URL."""
+    import os
+
+    os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:0")
+    os.environ.setdefault("CONNECTOR_HOST_NAME", "host.docker.internal")
+    os.environ.setdefault("PORT", str(connector_port))
+
+    from omni_connector.server import create_app
+
+    from salesforce_connector import SalesforceConnector
+
+    app = create_app(SalesforceConnector())
+    config = uvicorn.Config(app, host="0.0.0.0", port=connector_port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    _wait_for_port(connector_port)
+    return f"http://localhost:{connector_port}"
+
+
+@pytest_asyncio.fixture(scope="session")
+async def harness(
+    connector_server: str,
+    connector_port: int,
+) -> OmniTestHarness:
+    """Session-scoped OmniTestHarness with all infrastructure started."""
+    import os
+
+    h = OmniTestHarness()
+    await h.start_infra()
+    await h.start_connector_manager(
+        {
+            "SALESFORCE_CONNECTOR_URL": f"http://host.docker.internal:{connector_port}",
+        }
+    )
+
+    os.environ["CONNECTOR_MANAGER_URL"] = h.connector_manager_url
+
+    yield h
+    await h.teardown()
+
+
+# ---------------------------------------------------------------------------
+# Function-scoped fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def seed(harness: OmniTestHarness) -> SeedHelper:
+    return harness.seed()
+
+
+@pytest_asyncio.fixture
+async def source_id(
+    seed: SeedHelper,
+    mock_salesforce_server: str,
+    mock_salesforce_api: MockSalesforceAPI,
+) -> str:
+    """Create a Salesforce source with credentials pointing to the mock server."""
+    mock_salesforce_api.reset()
+    sid = await seed.create_source(
+        source_type="salesforce",
+        config={"instance_url": mock_salesforce_server},
+    )
+    await seed.create_credentials(
+        sid,
+        {"access_token": "test-token", "instance_url": mock_salesforce_server},
+        provider="salesforce",
+    )
+    return sid
+
+
+@pytest_asyncio.fixture
+async def cm_client(harness: OmniTestHarness) -> httpx.AsyncClient:
+    """Async httpx client pointed at the connector-manager."""
+    async with httpx.AsyncClient(base_url=harness.connector_manager_url, timeout=30) as client:
+        yield client

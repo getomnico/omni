@@ -280,6 +280,7 @@
     provider={data.oauth.provider}
     displayName={`${source.name} MCP`}
     configured={data.oauth.configured}
+    registrationRequiresInitialAccessToken={data.oauth.registrationRequiresInitialAccessToken}
     config={data.oauth.config}
     onSaved={() => (oauthDialogOpen = false)}
     onCancel={() => (oauthDialogOpen = false)} />

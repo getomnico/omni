@@ -8,6 +8,39 @@ import { logger } from '$lib/server/logger'
 import { IntegrationType, SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
 import { getSourcesByType } from '$lib/server/db/sources'
 
+function validateSalesforceUrl(value: unknown, kind: 'login' | 'instance'): string {
+    if (typeof value !== 'string' || !value.trim()) {
+        throw error(400, `Salesforce ${kind} URL is required`)
+    }
+    const raw = value.trim()
+    const normalized = /^https:\/\//i.test(raw) ? raw : `https://${raw}`
+    let parsed: URL
+    try {
+        parsed = new URL(normalized)
+    } catch {
+        throw error(400, `Invalid Salesforce ${kind} URL`)
+    }
+    const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
+    const loginHost =
+        host === 'login.salesforce.com' ||
+        host === 'test.salesforce.com' ||
+        host.endsWith('.my.salesforce.com')
+    const instanceHost = host.endsWith('.salesforce.com') || host.endsWith('.force.com')
+    if (
+        parsed.protocol !== 'https:' ||
+        parsed.username ||
+        parsed.password ||
+        parsed.port ||
+        parsed.search ||
+        parsed.hash ||
+        (parsed.pathname !== '/' && parsed.pathname !== '') ||
+        (kind === 'login' ? !loginHost : !instanceHost)
+    ) {
+        throw error(400, `Invalid Salesforce ${kind} URL`)
+    }
+    return parsed.origin
+}
+
 export const GET: RequestHandler = async ({ locals }) => {
     if (!locals.user) {
         throw error(401, 'Unauthorized')
@@ -89,6 +122,13 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     // pass a scope.
     const scope: 'org' | 'user' = body.scope === 'org' ? 'org' : 'user'
 
+    let sourceConfig: Record<string, unknown> =
+        config && typeof config === 'object' && !Array.isArray(config) ? { ...config } : {}
+    if (sourceType === SourceType.SALESFORCE) {
+        sourceConfig.login_url = validateSalesforceUrl(sourceConfig.login_url, 'login')
+        sourceConfig.instance_url = validateSalesforceUrl(sourceConfig.instance_url, 'instance')
+    }
+
     if (!name || !sourceType) {
         throw error(400, 'Name and sourceType are required')
     }
@@ -163,7 +203,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                 sourceType,
                 integrationType: IntegrationType.CONNECTOR,
                 scope,
-                config: config || {},
+                config: sourceConfig,
                 createdBy: user.id,
                 isActive: isActive ?? false,
                 syncIntervalSeconds: DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType],

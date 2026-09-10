@@ -351,6 +351,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "paperless" | "paperless_ngx" => Some(SourceType::PaperlessNgx),
         "web" | "website" => Some(SourceType::Web),
         "darwinbox" => Some(SourceType::Darwinbox),
+        "salesforce" | "sf" => Some(SourceType::Salesforce),
         _ => None,
     }
 }
@@ -636,6 +637,17 @@ mod tests {
         let parsed = test_parse("in:darwinbox leave policy");
         assert_eq!(parsed.cleaned_query, "leave policy");
         assert_eq!(parsed.source_types, vec![SourceType::Darwinbox]);
+    }
+
+    #[test]
+    fn test_in_operator_salesforce_alias() {
+        let parsed = test_parse("in:salesforce open opportunities");
+        assert_eq!(parsed.cleaned_query, "open opportunities");
+        assert_eq!(parsed.source_types, vec![SourceType::Salesforce]);
+
+        let parsed = test_parse("in:sf cases");
+        assert_eq!(parsed.cleaned_query, "cases");
+        assert_eq!(parsed.source_types, vec![SourceType::Salesforce]);
     }
 
     #[test]

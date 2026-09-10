@@ -9,19 +9,27 @@ import {
   CancelRequestSchema,
   ActionRequestSchema,
   OAuthCredentialReadyRequestSchema,
+  OAuthCredentialValidationRequestSchema,
   ResourceRequestSchema,
   PromptRequestSchema,
   createSyncResponseStarted,
   createSyncResponseError,
   ActionResponse,
   type ConnectorManifest,
+  type OAuthCredentialValidationResponse,
   type SdkSourceSyncData,
 } from "./models.js";
 import { getLogger } from "./logger.js";
+import { MCP_AUTH_REQUIRED_MESSAGE } from "./mcp-adapter.js";
 
 const logger = getLogger("sdk:server");
 
 const REGISTRATION_INTERVAL_MS = 30_000;
+type SyncSlotClass = "realtime" | "scheduled";
+
+function syncSlotClass(syncMode: SyncMode): SyncSlotClass {
+  return syncMode === SyncMode.REALTIME ? "realtime" : "scheduled";
+}
 
 function buildConnectorUrl(): string {
   const hostname = process.env.CONNECTOR_HOST_NAME;
@@ -42,7 +50,8 @@ export function createServer(connector: Connector): Express {
   const app = express();
   app.use(express.json());
 
-  const activeSyncs = new Map<string, SyncContext>();
+  // Realtime watchers and scheduled scans occupy independent slots per source.
+  const activeSyncs = new Map<string, Map<SyncSlotClass, SyncContext>>();
   let sdkClient: SdkClient | null = null;
 
   function getSdkClient(): SdkClient {
@@ -76,6 +85,26 @@ export function createServer(connector: Connector): Express {
     res.json(manifest);
   });
 
+  app.post("/oauth/validate", async (req: Request, res: Response) => {
+    const parseResult = OAuthCredentialValidationRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: "Invalid request body" });
+      return;
+    }
+    if (!parseResult.data.source) {
+      res.status(400).json({ error: "source is required for OAuth validation" });
+      return;
+    }
+
+    try {
+      const binding = await connector.validateOauthCredential(parseResult.data);
+      res.json({ source_binding: binding } satisfies OAuthCredentialValidationResponse);
+    } catch (err) {
+      logger.warn({ err }, "OAuth credential validation failed");
+      res.status(400).json({ error: String(err) });
+    }
+  });
+
   app.post("/oauth/credential-ready", async (req: Request, res: Response) => {
     const parseResult = OAuthCredentialReadyRequestSchema.safeParse(req.body);
     if (!parseResult.success) {
@@ -101,11 +130,14 @@ export function createServer(connector: Connector): Express {
   app.get("/sync/:syncRunId", (req: Request, res: Response) => {
     const { syncRunId } = req.params;
     let running = false;
-    for (const ctx of activeSyncs.values()) {
-      if (ctx.syncRunId === syncRunId) {
-        running = true;
-        break;
+    for (const slots of activeSyncs.values()) {
+      for (const ctx of slots.values()) {
+        if (ctx.syncRunId === syncRunId) {
+          running = true;
+          break;
+        }
       }
+      if (running) break;
     }
     res.json({ running });
   });
@@ -143,7 +175,8 @@ export function createServer(connector: Connector): Express {
       `Sync triggered for source ${sourceId} (sync_run_id: ${syncRunId})`,
     );
 
-    if (activeSyncs.has(sourceId)) {
+    const slotClass = syncSlotClass(syncMode);
+    if (activeSyncs.get(sourceId)?.has(slotClass)) {
       res
         .status(409)
         .json(
@@ -188,7 +221,12 @@ export function createServer(connector: Connector): Express {
         userBlacklist: sourceData.user_blacklist,
       },
     );
-    activeSyncs.set(sourceId, ctx);
+    let sourceSlots = activeSyncs.get(sourceId);
+    if (!sourceSlots) {
+      sourceSlots = new Map();
+      activeSyncs.set(sourceId, sourceSlots);
+    }
+    sourceSlots.set(slotClass, ctx);
 
     const runSync = async (): Promise<void> => {
       try {
@@ -209,8 +247,12 @@ export function createServer(connector: Connector): Express {
           }
         }
       } finally {
-        if (activeSyncs.get(sourceId) === ctx) {
-          activeSyncs.delete(sourceId);
+        const currentSlots = activeSyncs.get(sourceId);
+        if (currentSlots?.get(slotClass) === ctx) {
+          currentSlots.delete(slotClass);
+          if (currentSlots.size === 0) {
+            activeSyncs.delete(sourceId);
+          }
         }
       }
     };
@@ -233,22 +275,35 @@ export function createServer(connector: Connector): Express {
     logger.info(`Cancel requested for sync ${syncRunId}`);
 
     let matchingSourceId: string | null = null;
+    let matchingSlotClass: SyncSlotClass | null = null;
     let matchingCtx: SyncContext | null = null;
-    for (const [sourceId, ctx] of activeSyncs.entries()) {
-      if (ctx.syncRunId === syncRunId) {
-        matchingSourceId = sourceId;
-        matchingCtx = ctx;
-        break;
+    for (const [sourceId, slots] of activeSyncs.entries()) {
+      for (const [slotClass, ctx] of slots.entries()) {
+        if (ctx.syncRunId === syncRunId) {
+          matchingSourceId = sourceId;
+          matchingSlotClass = slotClass;
+          matchingCtx = ctx;
+          break;
+        }
       }
+      if (matchingCtx !== null) break;
     }
 
-    if (matchingSourceId === null || matchingCtx === null) {
+    if (
+      matchingSourceId === null ||
+      matchingSlotClass === null ||
+      matchingCtx === null
+    ) {
       res.status(404).json({ status: "not_found" });
       return;
     }
 
     matchingCtx._setCancelled();
-    activeSyncs.delete(matchingSourceId);
+    const matchingSlots = activeSyncs.get(matchingSourceId);
+    matchingSlots?.delete(matchingSlotClass);
+    if (matchingSlots?.size === 0) {
+      activeSyncs.delete(matchingSourceId);
+    }
     connector.cancel(syncRunId);
     res.json({ status: "cancelled" });
   });
@@ -273,7 +328,7 @@ export function createServer(connector: Connector): Express {
       actor_email,
     );
 
-    if (result instanceof Response) {
+    if (result instanceof globalThis.Response) {
       res.status(result.status);
       result.headers.forEach((value, key) => res.setHeader(key, value));
       const bodyBuffer = Buffer.from(await result.arrayBuffer());
@@ -286,6 +341,38 @@ export function createServer(connector: Connector): Express {
       .status(500)
       .json(ActionResponse.failure("Unexpected action result type"));
   });
+
+  // Stable 412 "needs_user_auth" response for terminal MCP authentication
+  // failures on resource/prompt requests. Mirrors the Python SDK so
+  // connector-manager invalidates the acting user's credential and the web
+  // layer surfaces the same reconnect CTA.
+  function needsUserAuthResponse(
+    message: string,
+    credentials: Record<string, unknown>
+  ): globalThis.Response | null {
+    if (
+      message !== MCP_AUTH_REQUIRED_MESSAGE &&
+      !connector.mcpAuthenticationError(message)
+    ) {
+      return null;
+    }
+    const sourceId =
+      typeof credentials.source_id === "string" ? credentials.source_id : undefined;
+    const sourceType = connector.sourceTypes[0];
+    if (!sourceId || !sourceType) {
+      return null;
+    }
+    return new globalThis.Response(
+      JSON.stringify({
+        error: "needs_user_auth",
+        source_id: sourceId,
+        source_type: sourceType,
+        provider: connector.oauthConfig?.provider ?? null,
+        oauth_start_url: `/api/oauth/start?source_id=${sourceId}`,
+      }),
+      { status: 412, headers: { "Content-Type": "application/json" } }
+    );
+  }
 
   app.post("/resource", async (req: Request, res: Response) => {
     const adapter = await connector.getMcpAdapter();
@@ -309,6 +396,13 @@ export function createServer(connector: Connector): Express {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const authResponse = needsUserAuthResponse(message, credentials);
+      if (authResponse) {
+        res.status(authResponse.status);
+        authResponse.headers.forEach((value, key) => res.setHeader(key, value));
+        res.send(Buffer.from(await authResponse.arrayBuffer()));
+        return;
+      }
       logger.error({ err }, `Resource read failed for ${uri}`);
       res.status(500).json({ error: message });
     }
@@ -341,6 +435,13 @@ export function createServer(connector: Connector): Express {
       res.json(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const authResponse = needsUserAuthResponse(message, credentials);
+      if (authResponse) {
+        res.status(authResponse.status);
+        authResponse.headers.forEach((value, key) => res.setHeader(key, value));
+        res.send(Buffer.from(await authResponse.arrayBuffer()));
+        return;
+      }
       logger.error({ err }, `Prompt get failed for ${name}`);
       res.status(500).json({ error: message });
     }

@@ -1,8 +1,40 @@
 import { json, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
+import { and, eq, isNull } from 'drizzle-orm'
+import { ulid } from 'ulid'
+import { db } from '$lib/server/db'
+import { encryptConfig } from '$lib/server/crypto/encryption'
+import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { getSourceById } from '$lib/server/db/sources'
+import {
+    getOAuthManifestForSourceType,
+    requestOAuthCredentialValidation,
+    SOURCE_BINDING_CONFIG_KEY,
+    type OAuthSourceBinding,
+} from '$lib/server/oauth/connectorOAuth'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
-import { ServiceProvider, AuthType, supportsDataSync } from '$lib/types'
+import { ServiceProvider, AuthType, IntegrationType, supportsDataSync } from '$lib/types'
+
+/**
+ * Validate an org credential and derive its admin-owned source binding for
+ * connectors that declare an OAuth manifest. Persistence happens later in the
+ * same transaction as the credential replacement.
+ */
+async function validateOrgSourceBinding(
+    sourceId: string,
+    sourceType: string,
+    provider: string,
+    credentials: Record<string, unknown>,
+): Promise<OAuthSourceBinding | null> {
+    const manifest = await getOAuthManifestForSourceType(sourceType)
+    if (!manifest) return null
+    return requestOAuthCredentialValidation({
+        sourceId,
+        provider,
+        credentials,
+        flow: 'org_source',
+    })
+}
 
 export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     if (!locals.user) {
@@ -41,9 +73,28 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(403, 'Forbidden')
     }
 
+    // Validate before opening the transaction so a remote connector call does
+    // not hold database locks. A rejected credential must not be persisted.
+    let orgSourceBinding: OAuthSourceBinding | null = null
+    if (source.scope === 'org' && source.integrationType === IntegrationType.CONNECTOR) {
+        try {
+            orgSourceBinding = await validateOrgSourceBinding(
+                sourceId,
+                source.sourceType,
+                provider,
+                credentials as Record<string, unknown>,
+            )
+        } catch (bindingError) {
+            throw error(
+                400,
+                bindingError instanceof Error ? bindingError.message : 'OAuth credential rejected',
+            )
+        }
+    }
+
     try {
         // Personal-source creds belong to the source's owner (per-user row).
-        // Org-source creds are the shared service-account row (user_id IS NULL).
+        // Org-source creds and their source binding are replaced atomically.
         const created =
             source.scope === 'user'
                 ? await serviceCredentialsRepository.createForUser({
@@ -55,13 +106,41 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
                       credentials,
                       config: config || {},
                   })
-                : await serviceCredentialsRepository.create({
-                      sourceId,
-                      provider,
-                      authType,
-                      principalEmail: principalEmail || null,
-                      credentials,
-                      config: config || {},
+                : await db.transaction(async (tx) => {
+                      if (orgSourceBinding && Object.keys(orgSourceBinding).length > 0) {
+                          await tx
+                              .update(sources)
+                              .set({
+                                  config: {
+                                      ...((source.config ?? {}) as Record<string, unknown>),
+                                      [SOURCE_BINDING_CONFIG_KEY]: orgSourceBinding,
+                                  },
+                                  updatedAt: new Date(),
+                              })
+                              .where(eq(sources.id, sourceId))
+                      }
+                      await tx
+                          .delete(serviceCredentials)
+                          .where(
+                              and(
+                                  eq(serviceCredentials.sourceId, sourceId),
+                                  isNull(serviceCredentials.userId),
+                              ),
+                          )
+                      const [credential] = await tx
+                          .insert(serviceCredentials)
+                          .values({
+                              id: ulid(),
+                              sourceId,
+                              userId: null,
+                              provider,
+                              authType,
+                              principalEmail: principalEmail || null,
+                              credentials: encryptConfig(credentials),
+                              config: config || {},
+                          })
+                          .returning()
+                      return credential
                   })
 
         if (triggerSync && supportsDataSync(source.integrationType)) {

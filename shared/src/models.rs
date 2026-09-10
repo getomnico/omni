@@ -2,9 +2,9 @@ use axum::response::IntoResponse;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::FromRow;
 use sqlx::types::time::OffsetDateTime;
-use std::collections::HashMap;
+use sqlx::FromRow;
+use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -206,6 +206,7 @@ pub enum SourceType {
     GoogleAds,
     Darwinbox,
     Windshift,
+    Salesforce,
 }
 
 impl SourceType {
@@ -237,6 +238,7 @@ impl SourceType {
             SourceType::GoogleAds => "google_ads",
             SourceType::Darwinbox => "darwinbox",
             SourceType::Windshift => "windshift",
+            SourceType::Salesforce => "salesforce",
         }
     }
 }
@@ -286,6 +288,7 @@ impl TryFrom<&str> for SourceType {
             "google_ads" => Ok(SourceType::GoogleAds),
             "darwinbox" => Ok(SourceType::Darwinbox),
             "windshift" => Ok(SourceType::Windshift),
+            "salesforce" => Ok(SourceType::Salesforce),
             other => Err(format!("unknown source type: {other}")),
         }
     }
@@ -332,6 +335,7 @@ pub enum ServiceProvider {
     #[serde(rename = "remote_mcp")]
     RemoteMcp,
     Windshift,
+    Salesforce,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -860,13 +864,35 @@ impl Default for ActionMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCredentialScope {
+    /// User-facing (default). The platform decides resolution: per-user
+    /// OAuth when the connector supports it, otherwise the org credential
+    /// with the actor identity carried downstream.
+    User,
+    /// Runs on the source's org-level credential (org-wide reads, setup
+    /// surfaces that are not admin-only).
+    Org,
+}
+
+impl Default for ActionCredentialScope {
+    fn default() -> Self {
+        Self::User
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ActionDefinition {
     pub name: String,
     pub description: String,
     pub input_schema: JsonValue,
     #[serde(default)]
     pub mode: ActionMode,
+    /// Credential scope required by the action. This is intentionally
+    /// independent of how the connector implements the action.
+    #[serde(default)]
+    pub credential_scope: ActionCredentialScope,
     /// OAuth scopes required to invoke this action, when declared by the
     /// connector or its upstream MCP tool metadata.
     /// `None` means the connector has not declared action-level scopes and
@@ -889,6 +915,31 @@ pub struct ActionDefinition {
     /// action remains in the manifest and dispatchable by name.
     #[serde(default)]
     pub hidden: bool,
+    /// The connector enforces that this action can only affect records
+    /// within the caller's own authority, independent of the credential
+    /// used (e.g. Darwinbox self-service writes that derive the employee
+    /// from the actor). Lets user-facing writes run on the org credential
+    /// when the provider has no per-user OAuth; without it, writes on the
+    /// org-credential path are restricted to admin callers.
+    #[serde(default)]
+    pub actor_scoped: bool,
+    /// Provenance of this action: `native` actions are declared by the
+    /// connector itself, `mcp` actions were discovered from its MCP server.
+    /// Lets dispatch enforce per-user credentials, block transient
+    /// credentials, and invalidate stale MCP catalogs without separate
+    /// name lists.
+    #[serde(default)]
+    pub origin: ActionOrigin,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionOrigin {
+    #[default]
+    Native,
+    Mcp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -960,7 +1011,7 @@ pub struct ConnectorManifest {
     #[serde(default)]
     pub mcp_enabled: bool,
     /// True when the connector has MCP tools/resources/prompts available from
-    /// live discovery or a fresh catalog cache. Connector-manager uses this to
+    /// live discovery or an in-memory catalog cache. Connector-manager uses this to
     /// recover missing authenticated MCP catalogs after connector restart.
     #[serde(default)]
     pub mcp_catalog_loaded: bool,
@@ -977,6 +1028,48 @@ pub struct ConnectorManifest {
     /// connector-manager need typed access to its fields.
     #[serde(default)]
     pub oauth: Option<JsonValue>,
+}
+
+/// Which web OAuth flow produced a credential. Passed to the connector's
+/// validation hook so it can decide whether a binding claim applies.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthCredentialFlow {
+    OrgSource,
+    ConnectSource,
+    UserRead,
+    UserWrite,
+}
+
+/// Provider-defined identity binding returned by a connector's OAuth
+/// credential validation (e.g. Salesforce `organization_id`, a workspace id
+/// for another provider). Stored verbatim under the reserved `source_binding`
+/// key in source config; never merged into other config keys.
+pub type OAuthSourceBinding = BTreeMap<String, String>;
+
+/// Sent by connector-manager to a connector so it can validate a freshly
+/// exchanged OAuth credential before it is persisted (for example, rejecting
+/// credentials that belong to a different provider organization).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialValidationRequest {
+    pub source_id: String,
+    pub provider: String,
+    pub credentials: JsonValue,
+    pub flow: OAuthCredentialFlow,
+    #[serde(default)]
+    pub metadata: JsonValue,
+    #[serde(default)]
+    pub source: Option<Source>,
+}
+
+/// Connector response for `OAuthCredentialValidationRequest`. An error must be
+/// surfaced as an HTTP error; an empty binding means "accepted, nothing to bind".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OAuthCredentialValidationResponse {
+    #[serde(default)]
+    pub source_binding: Option<OAuthSourceBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1400,6 +1493,13 @@ pub struct McpCredentials {
     /// credential-loading path for MCP auth preparation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<AuthType>,
+    /// Optional persisted source and acting user identity. These are trusted
+    /// routing metadata, not provider credentials, and are used to isolate
+    /// stateful MCP subprocesses per source/user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     /// Optional acting-user email (for delegated/principal-aware connectors).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal_email: Option<String>,
@@ -1413,6 +1513,8 @@ impl McpCredentials {
             credentials: creds.credentials.clone(),
             config: creds.config.clone(),
             auth_type: Some(creds.auth_type),
+            source_id: Some(creds.source_id.clone()),
+            user_id: creds.user_id.clone(),
             principal_email: creds.principal_email.clone(),
         }
     }

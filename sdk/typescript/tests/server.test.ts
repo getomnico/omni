@@ -102,14 +102,77 @@ describe("Connector Server", () => {
         sync_modes: ["full", "incremental"],
         connector_id: "mock-connector",
         connector_url: "http://localhost:8000",
+        integration_type: "connector",
         description: "",
         actions: [],
         search_operators: [],
         mcp_enabled: false,
         mcp_catalog_loaded: false,
+        read_only: false,
         resources: [],
         prompts: [],
+        skills: [],
       });
+    });
+  });
+
+  describe("POST /oauth/validate", () => {
+    const requestBody = () => ({
+      source_id: "source-456",
+      provider: "mock",
+      credentials: { access_token: "token" },
+      flow: "org_source",
+      metadata: {},
+      source: {
+        id: "source-456",
+        name: "Mock Source",
+        source_type: "mock",
+        config: {},
+        is_active: true,
+      },
+    });
+
+    it("returns an empty binding by default", async () => {
+      const connector = new MockConnector();
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post("/oauth/validate")
+        .send(requestBody());
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ source_binding: null });
+    });
+
+    it("returns the connector's binding", async () => {
+      const connector = new MockConnector();
+      vi.spyOn(connector, "validateOauthCredential").mockResolvedValue({
+        organization_id: "00D123",
+      });
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post("/oauth/validate")
+        .send(requestBody());
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        source_binding: { organization_id: "00D123" },
+      });
+    });
+
+    it("surfaces connector rejection as a 400", async () => {
+      const connector = new MockConnector();
+      vi.spyOn(connector, "validateOauthCredential").mockRejectedValue(
+        new Error("OAuth organization does not match the source"),
+      );
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post("/oauth/validate")
+        .send(requestBody());
+
+      expect(response.status).toBe(400);
     });
   });
 
@@ -166,6 +229,53 @@ describe("Connector Server", () => {
 
       expect(response.status).toBe(200);
       expect(response.body.status).toBe("started");
+    });
+
+    it("allows realtime and scheduled syncs to run concurrently", async () => {
+      const connector = new MockConnector();
+      connector.syncModes = ["full", "incremental", "realtime"];
+      let syncCalls = 0;
+      let firstSyncStarted!: () => void;
+      const firstSyncStartedPromise = new Promise<void>((resolve) => {
+        firstSyncStarted = resolve;
+      });
+      let releaseFirstSync!: () => void;
+      const releaseFirstSyncPromise = new Promise<void>((resolve) => {
+        releaseFirstSync = resolve;
+      });
+
+      connector.syncFn = async () => {
+        syncCalls += 1;
+        if (syncCalls === 1) {
+          firstSyncStarted();
+          await releaseFirstSyncPromise;
+        }
+      };
+      const app = createServer(connector);
+
+      const scheduled = await request(app).post("/sync").send({
+        sync_run_id: "scheduled-sync",
+        source_id: "source-same",
+        sync_mode: "full",
+      });
+      expect(scheduled.status).toBe(200);
+      await firstSyncStartedPromise;
+
+      const realtime = await request(app).post("/sync").send({
+        sync_run_id: "realtime-sync",
+        source_id: "source-same",
+        sync_mode: "realtime",
+      });
+      expect(realtime.status).toBe(200);
+
+      const scheduledConflict = await request(app).post("/sync").send({
+        sync_run_id: "second-scheduled-sync",
+        source_id: "source-same",
+        sync_mode: "incremental",
+      });
+      expect(scheduledConflict.status).toBe(409);
+
+      releaseFirstSync();
     });
 
     it("plumbs user_filter_mode/whitelist into SyncContext.shouldIndexUser", async () => {

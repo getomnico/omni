@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -205,6 +206,57 @@ async def test_connector_skill_loads() -> None:
     text = result.content[0]["text"]
     assert "Google Drive Skill" in text
     assert "connector tools" in text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_connector_skill_412_surfaces_oauth_required_payload() -> None:
+    """A 412 needs_user_auth response must set both the encoded envelope in
+    content and the typed ToolResult.oauth_required field."""
+    respx.get("http://cm.test/skills").mock(
+        return_value=Response(
+            200,
+            json={
+                "skills": [
+                    {
+                        "id": "sf-skill",
+                        "title": "Salesforce Skill",
+                        "description": "SF guidance",
+                        "source_type": "salesforce",
+                        "source_id": "src-1",
+                    }
+                ]
+            },
+        )
+    )
+    respx.post("http://cm.test/skill").mock(
+        return_value=Response(
+            412,
+            json={
+                "error": "needs_user_auth",
+                "source_id": "src-1",
+                "source_type": "salesforce",
+                "provider": "salesforce",
+                "oauth_start_url": "/api/oauth/start?source_id=src-1",
+            },
+        )
+    )
+    handler = SkillHandler(SKILLS_DIR, connector_manager_url="http://cm.test")
+
+    result = await handler.execute("load_skill", {"skill": "sf-skill"}, _ctx())
+
+    assert result.is_error is False
+    assert result.oauth_required is not None
+    assert result.oauth_required.source_id == "src-1"
+    assert result.oauth_required.provider == "salesforce"
+    envelope = json.loads(result.content[0]["text"])
+    assert envelope["omni_kind"] == "oauth_required"
+    assert envelope["payload"] == {
+        "source_id": "src-1",
+        "source_type": "salesforce",
+        "provider": "salesforce",
+        "oauth_start_url": "/api/oauth/start?source_id=src-1",
+    }
 
 
 def test_google_workspace_connector_skills_do_not_instruct_local_gws_auth_or_install() -> (

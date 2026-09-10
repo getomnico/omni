@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit'
 import { lookup } from 'node:dns/promises'
 import net from 'node:net'
-import { Agent } from 'undici'
+import { Agent, fetch as undiciFetch } from 'undici'
 import { AuthType } from '$lib/types'
 
 export interface RemoteMcpConfig {
@@ -162,7 +162,7 @@ export async function fetchWithPinnedRemoteMcpDns(
     const timeoutSignal = AbortSignal.timeout(REMOTE_MCP_HTTP_TIMEOUT_MS)
     const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
     try {
-        const response = await fetch(url.toString(), {
+        const response = await undiciFetch(url.toString(), {
             ...init,
             signal,
             redirect: 'manual',

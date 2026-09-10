@@ -6,8 +6,8 @@ from typing import Any
 from .client import SdkClient
 from .models import (
     ConnectorEvent,
-    DocumentEvent,
     Document,
+    DocumentEvent,
     EventType,
     GroupMembershipSyncEvent,
     PersonDeletedEvent,

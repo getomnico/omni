@@ -4,6 +4,7 @@ import { sourcesRepository } from '$lib/server/repositories/sources'
 import { getAllConnectorConfigsPublic } from '$lib/server/db/connector-configs'
 import {
     callbackUrl,
+    clientConfigProviderForSource,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
     oauthServiceBaseUrl,
@@ -35,6 +36,7 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     'github',
     // CRM & sales
     'hubspot',
+    'salesforce',
     // Meetings
     'fireflies',
     // HRIS
@@ -69,6 +71,7 @@ export interface OAuthIntegrationProvider {
     configured: boolean
     updatedAt: Date | null
     config: Record<string, unknown>
+    registrationRequiresInitialAccessToken: boolean
 }
 
 function providerDisplayName(provider: string, connectors: ConnectorInfo[]): string {
@@ -216,11 +219,14 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
             }
 
             oauthProviders = Array.from(sourceTypesByOAuthProvider.keys())
-                .filter(
-                    (provider) =>
+                .filter((provider) => {
+                    const manifest = oauthManifestByProvider.get(provider)
+                    return (
                         !provider.startsWith('remote_mcp:') &&
-                        !isAutoManagedOAuthProvider(oauthManifestByProvider.get(provider)),
-                )
+                        !manifest?.client_config_provider_template &&
+                        !isAutoManagedOAuthProvider(manifest)
+                    )
+                })
                 .map((provider) => {
                     const saved = savedOAuthConfigByProvider.get(provider)
                     const manifest = oauthManifestByProvider.get(provider)
@@ -234,9 +240,46 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
                         configured: isClientConfigComplete(saved?.config, tokenEndpointAuthMethod),
                         updatedAt: saved?.updatedAt ?? null,
                         config: saved?.config ?? {},
+                        registrationRequiresInitialAccessToken:
+                            manifest?.registration_requires_initial_access_token === true,
                     }
                 })
-                .sort((a, b) => a.displayName.localeCompare(b.displayName))
+
+            for (const [manifestProvider, manifest] of oauthManifestByProvider) {
+                const sourceTypes = sourceTypesByOAuthProvider.get(manifestProvider) ?? new Set()
+                if (!manifest.client_config_provider_template) continue
+                for (const source of connectedSources) {
+                    if (!sourceTypes.has(source.sourceType)) continue
+                    const provider = clientConfigProviderForSource(manifest, source.id)
+                    const saved = savedOAuthConfigByProvider.get(provider)
+                    const tokenEndpointAuthMethod = tokenEndpointAuthMethodForConfig(
+                        saved?.config,
+                        manifest,
+                    )
+                    // A source whose client is auto-registered via dynamic
+                    // client registration needs no admin attention; hide the
+                    // row unless an action is still pending (e.g. supplying
+                    // the required registration token for a DCR provider).
+                    const dcrManaged = saved?.config.oauth_dynamic_client_registration === 'true'
+                    const registrationTokenPending =
+                        manifest.registration_requires_initial_access_token === true &&
+                        !saved?.config.oauth_registration_initial_access_token
+                    if (dcrManaged && !registrationTokenPending) continue
+                    oauthProviders.push({
+                        provider,
+                        displayName: `${providerDisplayName(manifestProvider, connectors)} — ${source.name}`,
+                        configured:
+                            dcrManaged ||
+                            isClientConfigComplete(saved?.config, tokenEndpointAuthMethod),
+                        updatedAt: saved?.updatedAt ?? null,
+                        config: saved?.config ?? {},
+                        registrationRequiresInitialAccessToken:
+                            manifest.registration_requires_initial_access_token === true,
+                    })
+                }
+            }
+
+            oauthProviders.sort((a, b) => a.displayName.localeCompare(b.displayName))
 
             availableIntegrations = Array.from(integrationMap.values())
                 // Windshift is a personal OAuth source. Users connect it under My Integrations.
@@ -254,7 +297,7 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
     }
 
     // Load MCP tab data
-    let mcpTab: {
+    const mcpTab: {
         sources: {
             id: string
             name: string

@@ -689,3 +689,112 @@ async fn t15_action_exception_returns_500() -> Result<()> {
         .contains("intentional action panic"));
     Ok(())
 }
+
+#[tokio::test]
+async fn t16_native_action_wins_over_mcp_tool_with_same_name() -> Result<()> {
+    let mock = MockConnectorManager::spawn().await;
+
+    // Connector with a native "greet" action and an MCP server that also
+    // exposes a "greet" tool. Runtime dispatch must honor the native action,
+    // consistent with ActionDefinition.origin (native wins on collisions).
+    struct NativeWinsConnector;
+
+    fn stdio_server() -> omni_connector_sdk::mcp_adapter::StdioMcpServer {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let fixture = std::path::PathBuf::from(manifest_dir)
+            .join("../python/tests/test_mcp_server.py");
+        let venv_python =
+            std::path::PathBuf::from(manifest_dir).join("../python/.venv/bin/python");
+        let python = if venv_python.is_file() {
+            venv_python.to_string_lossy().into_owned()
+        } else {
+            "python3".to_string()
+        };
+        omni_connector_sdk::mcp_adapter::StdioMcpServer::new(python)
+            .with_args([fixture.to_string_lossy().into_owned()])
+    }
+
+    #[async_trait::async_trait]
+    impl Connector for NativeWinsConnector {
+        type Config = JsonValue;
+        type Credentials = JsonValue;
+        type State = JsonValue;
+
+        fn name(&self) -> &'static str {
+            "native-wins"
+        }
+
+        fn version(&self) -> &'static str {
+            "0.0.0"
+        }
+
+        fn source_types(&self) -> Vec<SourceType> {
+            vec![SourceType::Web]
+        }
+
+        fn requires_credentials(&self) -> bool {
+            false
+        }
+
+        fn actions(&self) -> Vec<omni_connector_sdk::ActionDefinition> {
+            vec![omni_connector_sdk::ActionDefinition {
+                name: "greet".to_string(),
+                description: "Native greeting shadowing the MCP tool".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                mode: omni_connector_sdk::ActionMode::Read,
+                origin: omni_connector_sdk::ActionOrigin::Native,
+                ..Default::default()
+            }]
+        }
+
+        fn mcp_server(
+            &self,
+        ) -> Option<omni_connector_sdk::mcp_adapter::McpServer> {
+            Some(omni_connector_sdk::mcp_adapter::McpServer::Stdio(stdio_server()))
+        }
+
+        async fn execute_action(
+            &self,
+            action: &str,
+            _params: JsonValue,
+            _credentials: Option<ServiceCredential>,
+            _source: Option<Source>,
+            _actor_email: Option<String>,
+        ) -> Result<axum::response::Response> {
+            use omni_connector_sdk::models::ActionResponse;
+            if action == "greet" {
+                Ok(ActionResponse::success(json!({"native": true})).into_response())
+            } else {
+                Ok(ActionResponse::not_supported(action).into_response())
+            }
+        }
+
+        async fn sync(
+            &self,
+            _source: Source,
+            _credentials: Option<ServiceCredential>,
+            _state: Option<Self::State>,
+            _ctx: SyncContext,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let connector = Arc::new(NativeWinsConnector);
+    let server = build_server(connector, &mock);
+
+    let resp = server
+        .post("/action")
+        .json(&json!({
+            "action": "greet",
+            "params": {"name": "World"},
+            "credentials": null,
+        }))
+        .await;
+
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "success");
+    assert_eq!(body["result"]["native"], true);
+    Ok(())
+}

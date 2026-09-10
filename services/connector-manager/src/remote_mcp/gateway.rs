@@ -7,7 +7,8 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::models::{
-    ActionDefinition, ActionMode, AuthType, IntegrationType, McpPromptArgument,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, IntegrationType,
+    McpPromptArgument,
     McpPromptDefinition, McpResourceDefinition, ServiceCredential, ServiceProvider, Source,
 };
 use shared::{traits::Repository, DatabasePool};
@@ -991,10 +992,13 @@ fn action_from_tool(tool: &JsonValue, write_tools_enabled: bool) -> Option<Actio
                 .unwrap_or_else(|| json!({"type":"object","properties":{}})),
         )?,
         mode,
+        credential_scope: ActionCredentialScope::User,
         required_scopes: None,
         source_types: Vec::new(),
         admin_only: false,
         hidden: false,
+        actor_scoped: false,
+        origin: ActionOrigin::Mcp,
     })
 }
 

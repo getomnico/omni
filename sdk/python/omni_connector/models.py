@@ -1,9 +1,9 @@
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Any, Literal, Self, Union
+from typing import Annotated, Any, Literal, Self
 
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
 
 
 class SyncMode(str, Enum):
@@ -58,7 +58,11 @@ class Document(BaseModel):
 class DocumentEvent(BaseModel):
     """Document create/update/delete event — mirrors Rust ConnectorEvent::Document* variants."""
 
-    type: Literal["document_created", "document_updated", "document_deleted"]
+    type: Literal[
+        EventType.DOCUMENT_CREATED,
+        EventType.DOCUMENT_UPDATED,
+        EventType.DOCUMENT_DELETED,
+    ]
     sync_run_id: str
     source_id: str
     document_id: str
@@ -70,12 +74,12 @@ class DocumentEvent(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict format matching Rust tagged enum serialization."""
         base: dict[str, Any] = {
-            "type": self.type,
+            "type": self.type.value,
             "sync_run_id": self.sync_run_id,
             "source_id": self.source_id,
             "document_id": self.document_id,
         }
-        if self.type == EventType.DOCUMENT_DELETED.value:
+        if self.type == EventType.DOCUMENT_DELETED:
             return base
 
         base["content_id"] = self.content_id
@@ -186,14 +190,43 @@ def _event_discriminator(v: Any) -> str:
 
 
 ConnectorEvent = Annotated[
-    Union[
-        Annotated[DocumentEvent, Tag("document")],
-        Annotated[GroupMembershipSyncEvent, Tag("group")],
-        Annotated[PersonSyncEvent, Tag("person_sync")],
-        Annotated[PersonDeletedEvent, Tag("person_deleted")],
-    ],
+    Annotated[DocumentEvent, Tag("document")]
+    | Annotated[GroupMembershipSyncEvent, Tag("group")]
+    | Annotated[PersonSyncEvent, Tag("person_sync")]
+    | Annotated[PersonDeletedEvent, Tag("person_deleted")],
     Discriminator(_event_discriminator),
 ]
+
+
+def connector_event(**data: Any) -> ConnectorEvent:
+    """Build the concrete source event selected by ``type``.
+
+    ``ConnectorEvent`` is the discriminated-union type used by SDK APIs;
+    this lowercase factory keeps the call-site ergonomics for connectors and
+    tests that construct events from a plain ``type`` key.
+    """
+    event_type = data.get("type")
+    event_type = event_type.value if isinstance(event_type, EventType) else event_type
+    event_model: type[BaseModel]
+    if event_type in {
+        EventType.DOCUMENT_CREATED.value,
+        EventType.DOCUMENT_UPDATED.value,
+        EventType.DOCUMENT_DELETED.value,
+    }:
+        event_model = DocumentEvent
+    elif event_type == EventType.GROUP_MEMBERSHIP_SYNC.value:
+        event_model = GroupMembershipSyncEvent
+    elif event_type == EventType.PERSON_SYNC.value:
+        event_model = PersonSyncEvent
+    elif event_type == EventType.PERSON_DELETED.value:
+        event_model = PersonDeletedEvent
+    else:
+        raise ValueError(f"Unknown connector event type: {event_type!r}")
+    return event_model(**data)
+
+
+ActionCredentialScope = Literal["user", "org"]
+ActionOrigin = Literal["native", "mcp"]
 
 
 class ActionDefinition(BaseModel):
@@ -203,6 +236,7 @@ class ActionDefinition(BaseModel):
         default_factory=lambda: {"type": "object", "properties": {}}
     )
     mode: str = "write"  # "read" or "write"
+    credential_scope: ActionCredentialScope = "user"
     # TODO: kept as list[str] on purpose — the SourceType enum lives in the Rust
     # `shared` crate (source of truth) and we don't want to hand-mirror it here.
     # Revisit if/when we generate Python types from the Rust models.
@@ -211,11 +245,18 @@ class ActionDefinition(BaseModel):
     # Hidden from every chat/agent tool surface, admins included (unlike
     # admin_only, not bypassed for admin users). Still dispatchable by name.
     hidden: bool = False
+    # The connector enforces that this action only affects records within
+    # the caller's own authority (e.g. Darwinbox self-service writes), so it
+    # may run on the org credential for regular users.
+    actor_scoped: bool = False
     # OAuth scopes required to invoke this action, when declared by the
     # connector or its upstream MCP tool metadata.
     # None means the connector has not declared action-level scopes and
     # Omni should fall back to the coarse credential-existence check.
     required_scopes: list[str] | None = None
+    # Provenance of this action: native actions are declared by the connector
+    # itself, mcp actions were discovered from its MCP server.
+    origin: ActionOrigin = "native"
 
 
 class SearchOperator(BaseModel):
@@ -283,17 +324,27 @@ class OAuthManifestConfig(BaseModel):
         default=None,
         description=(
             "OAuth Dynamic Client Registration endpoint. Set this for providers "
-            "where Omni should auto-create a client instead of asking admins "
-            "to configure one manually."
+            "where Omni may auto-create a client after any required admin "
+            "registration authorization is configured."
         ),
+    )
+    registration_requires_initial_access_token: bool = Field(
+        default=False,
+        description=(
+            "Whether dynamic registration requires an administrator-provided "
+            "initial access token."
+        ),
+    )
+    token_response_fields: list[str] = Field(
+        default_factory=list,
+        description="Additional token response fields to preserve in credentials.",
     )
     token_endpoint_auth_method: OAuthTokenEndpointAuthMethod = Field(
         default="client_secret_post",
         description=(
             "OAuth token endpoint client authentication method. Public DCR "
-            "clients usually use 'none', which tells Omni not to require or "
-            "send a client secret and to treat the provider as auto-managed "
-            "when registration_endpoint is also present."
+            "clients usually use 'none'. Confidential DCR clients must return "
+            "a client secret and use client_secret_post or client_secret_basic."
         ),
     )
     resource: str | None = Field(
@@ -303,6 +354,39 @@ class OAuthManifestConfig(BaseModel):
             "requests for providers that bind tokens to a specific resource, "
             "such as a remote MCP server."
         ),
+    )
+    issuer_source_config_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional source config key containing an OAuth issuer URL. The web "
+            "OAuth client uses standard OpenID Connect discovery when present."
+        ),
+    )
+    client_config_provider_template: str | None = Field(
+        default=None,
+        description=(
+            "Optional template for source-scoped OAuth client configuration. "
+            "The {source_id} placeholder is replaced for a persisted source."
+        ),
+    )
+    pkce_required: bool = Field(
+        default=False,
+        description="Whether authorization requests must use PKCE.",
+    )
+    grant_types: list[str] | None = Field(
+        default=None,
+        description="Optional OAuth Dynamic Client Registration grant types.",
+    )
+    validate_endpoint_urls: bool = Field(
+        default=False,
+        description=(
+            "Whether OAuth endpoints from this manifest require SSRF-safe URL "
+            "validation before server-side requests."
+        ),
+    )
+    supports_org_oauth: bool = Field(
+        default=True,
+        description="Whether this connector supports OAuth credentials for org sources.",
     )
 
 
@@ -317,15 +401,15 @@ class ConnectorManifest(BaseModel):
     description: str | None = None
     actions: list[ActionDefinition] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
-    extra_schema: dict | None = None
-    attributes_schema: dict | None = None
+    extra_schema: dict[str, Any] | None = None
+    attributes_schema: dict[str, Any] | None = None
     mcp_enabled: bool = False
     mcp_catalog_loaded: bool = Field(
         default=False,
         description=(
-            "True when the connector has an MCP catalog available in memory, "
-            "usually from live discovery or a fresh disk cache. Connector-manager "
-            "uses this to recover missing authenticated MCP catalogs."
+            "True when the connector has an MCP catalog available in memory "
+            "from live discovery. Connector-manager uses this to recover missing "
+            "authenticated MCP catalogs."
         ),
     )
     resources: list[McpResourceDefinition] = Field(default_factory=list)
@@ -406,6 +490,17 @@ class CancelResponse(BaseModel):
     status: str
 
 
+def _normalize_rust_datetime(value: object) -> object:
+    """Normalize time's expanded four-digit year representation for datetime."""
+    if not isinstance(value, str) or not value.startswith("+"):
+        return value
+    year_text, separator, remainder = value.partition("-")
+    if separator != "-" or len(year_text) != 7 or not year_text[1:].isdigit():
+        return value
+    year = int(year_text[1:])
+    return f"{year:04d}-{remainder}" if 1 <= year <= 9999 else value
+
+
 class Source(BaseModel):
     id: str
     name: str
@@ -424,6 +519,9 @@ class Source(BaseModel):
     updated_at: datetime
     created_by: str
 
+    _normalize_created_at = field_validator("created_at", mode="before")(_normalize_rust_datetime)
+    _normalize_updated_at = field_validator("updated_at", mode="before")(_normalize_rust_datetime)
+
 
 class ActionRequest(BaseModel):
     action: str
@@ -431,6 +529,36 @@ class ActionRequest(BaseModel):
     credentials: dict[str, Any]
     source: Source | None = None
     actor_email: str | None = None
+
+
+class OAuthCredentialFlow(str, Enum):
+    """Which web OAuth flow produced the credential being validated."""
+
+    ORG_SOURCE = "org_source"
+    CONNECT_SOURCE = "connect_source"
+    USER_READ = "user_read"
+    USER_WRITE = "user_write"
+
+
+# Provider-defined identity binding returned by a connector's OAuth credential
+# validation (e.g. Salesforce ``organization_id``). Mirrors
+# `shared::models::OAuthSourceBinding` (Rust). Stored verbatim under the
+# reserved `source_binding` key in source config; never merged into other
+# config keys.
+OAuthSourceBinding = dict[str, str]
+
+
+class OAuthCredentialValidationRequest(BaseModel):
+    source_id: str
+    provider: str
+    credentials: dict[str, Any]
+    flow: OAuthCredentialFlow
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    source: Source | None = None
+
+
+class OAuthCredentialValidationResponse(BaseModel):
+    source_binding: dict[str, str] | None = None
 
 
 class ActionResponse(BaseModel):

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import logging
-import os
 from abc import ABC, abstractmethod
-from pathlib import Path
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from fastapi.responses import JSONResponse
@@ -14,8 +13,12 @@ from .models import (
     ActionResponse,
     ConnectorManifest,
     ConnectorSkillDefinition,
+    OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest,
+    OAuthCredentialValidationResponse,
     OAuthManifestConfig,
+    OAuthSourceBinding,
     SearchOperator,
     Source,
 )
@@ -32,7 +35,6 @@ class Connector(ABC):
     def __init__(self) -> None:
         self._cancelled_syncs: set[str] = set()
         self._mcp_adapter: McpAdapter | None = None
-        self._mcp_catalog_cache_loaded = False
 
     @property
     @abstractmethod
@@ -128,49 +130,15 @@ class Connector(ABC):
 
             self._mcp_adapter = McpAdapter(server)
 
-        if not self._mcp_catalog_cache_loaded:
-            self._load_mcp_catalog_cache(self._mcp_adapter)
-        elif self._mcp_adapter._clear_catalog_cache_if_expired(
-            self._mcp_catalog_cache_ttl_seconds()
-        ):
-            logger.info("Expired MCP catalog cache for connector %s", self.name)
         return self._mcp_adapter
 
-    def _mcp_catalog_cache_path(self) -> Path:
-        cache_dir = Path(
-            os.environ.get("CATALOG_CACHE_DIR", "/var/lib/omni/mcp-catalogs")
-        )
-        safe_name = "".join(
-            c if c.isalnum() or c in {"-", "_"} else "_" for c in self.name
-        )
-        return cache_dir / f"{safe_name}.mcp-catalog.json"
+    def mcp_authentication_error(self, message: str) -> bool:
+        """Return whether an MCP failure requires the user's OAuth reconnect.
 
-    def _mcp_catalog_cache_ttl_seconds(self) -> int:
-        raw = os.environ.get("CATALOG_CACHE_TTL_SECONDS", "86400")
-        try:
-            return max(int(raw), 0)
-        except ValueError:
-            logger.warning("Invalid CATALOG_CACHE_TTL_SECONDS=%r, using 86400", raw)
-            return 86400
-
-    def _load_mcp_catalog_cache(self, adapter: McpAdapter) -> None:
-        self._mcp_catalog_cache_loaded = True
-        try:
-            path = self._mcp_catalog_cache_path()
-            if adapter._load_catalog_cache(path, self._mcp_catalog_cache_ttl_seconds()):
-                logger.info("Loaded MCP catalog cache from %s", path)
-        except Exception:
-            logger.warning("Failed to load MCP catalog cache", exc_info=True)
-
-    def _save_mcp_catalog_cache(self, adapter: McpAdapter) -> None:
-        ttl_seconds = self._mcp_catalog_cache_ttl_seconds()
-        if ttl_seconds <= 0:
-            return
-        try:
-            path = self._mcp_catalog_cache_path()
-            adapter._save_catalog_cache(path)
-        except Exception:
-            logger.warning("Failed to save MCP catalog cache", exc_info=True)
+        Connectors with provider-specific authentication errors can override
+        this without exposing credentials in an HTTP response.
+        """
+        return False
 
     def _prepare_mcp_auth(self, credentials: dict[str, Any]) -> dict[str, Any]:
         """Build the env-or-headers kwargs to pass to the MCP adapter.
@@ -197,16 +165,35 @@ class Connector(ABC):
         if adapter is None:
             logger.debug("bootstrap_mcp: no MCP adapter, skipping")
             return
-        auth = self._prepare_mcp_auth(credentials)
         logger.info("Bootstrapping MCP: discovering tools")
         try:
+            # Authentication is deliberately inside the failure boundary:
+            # MCP bootstrap is optional and must not prevent a native sync
+            # from starting when a credential is incomplete or unsupported.
+            auth = self._prepare_mcp_auth(credentials)
             await adapter.discover(**auth)
-            self._save_mcp_catalog_cache(adapter)
         except Exception:
             logger.warning("MCP bootstrap failed", exc_info=True)
 
+    async def validate_oauth_credential(
+        self,
+        source: Source,
+        credentials: dict[str, Any],
+        flow: OAuthCredentialFlow,
+        metadata: dict[str, Any] | None = None,
+    ) -> OAuthSourceBinding | None:
+        """Validate a freshly exchanged OAuth credential for a source.
+
+        Connectors may reject credentials that are valid at the provider but
+        belong to a different source organization by raising. They may return
+        a source binding (e.g. a provider organization identifier) that the
+        web app stores under the reserved `source_binding` source config key.
+        Return None to accept the credential without binding anything.
+        """
+        return None
+
     async def oauth_credential_ready(
-        self, request: "OAuthCredentialReadyRequest"
+        self, request: OAuthCredentialReadyRequest
     ) -> bool:
         """React to a new OAuth credential being stored for this connector.
 
@@ -233,6 +220,12 @@ class Connector(ABC):
         merged = list(manual_actions)
         for action in mcp_actions:
             if action.name not in manual_names:
+                # The connector manifest is the source-type boundary used by
+                # connector-manager during dispatch. MCP servers do not know
+                # Omni source types, so fill them in here rather than relying
+                # on an empty list (which is rejected by action dispatch).
+                if not action.source_types:
+                    action.source_types = list(self.source_types)
                 merged.append(action)
         return merged
 
@@ -252,6 +245,7 @@ class Connector(ABC):
         resources = []
         prompts = []
         skills = list(self.skills)
+        actions = await self._get_all_actions()
         if adapter is not None:
             try:
                 resources = await adapter.get_resource_definitions()
@@ -275,7 +269,7 @@ class Connector(ABC):
             connector_url=connector_url,
             source_types=self.source_types,
             description=self.description,
-            actions=await self._get_all_actions(),
+            actions=actions,
             search_operators=self.search_operators,
             mcp_enabled=adapter is not None,
             mcp_catalog_loaded=adapter._has_cached_catalog if adapter is not None else False,
@@ -341,6 +335,17 @@ class Connector(ABC):
         """
         return {}
 
+    def prepare_mcp_tool_arguments(
+        self, action: str, arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Prepare arguments before forwarding an MCP tool call.
+
+        Connectors can override this to adapt values that are meaningful in
+        the agent or connector-manager container but not in the MCP process's
+        runtime environment.
+        """
+        return dict(arguments)
+
     async def execute_action(
         self,
         action: str,
@@ -357,8 +362,10 @@ class Connector(ABC):
         """Start the HTTP server for this connector."""
         import uvicorn
 
+        from .config import SdkConfig
         from .server import create_app
 
-        app = create_app(self)
+        config = SdkConfig.from_env(port=port)
+        app = create_app(self, config=config)
         logger.info("Starting %s connector on %s:%d", self.name, host, port)
         uvicorn.run(app, host=host, port=port)

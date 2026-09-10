@@ -107,6 +107,11 @@ class ConnectorAction:
     # Org-only connectors (e.g. Darwinbox) run actions against the org
     # credential and must never surface an OAuth prompt.
     supports_user_oauth: bool = False
+    # The connector enforces that this action only affects records within
+    # the caller's own authority (e.g. Darwinbox self-service writes), so it
+    # may run on the org credential for regular users. Without it, write
+    # actions on the org-credential path are admin-only.
+    actor_scoped: bool = False
 
 
 class ConnectorToolHandler:
@@ -279,8 +284,14 @@ class ConnectorToolHandler:
                             required_scopes=action_def.get("required_scopes"),
                             admin_only=action_def.get("admin_only", False),
                             hidden=action_def.get("hidden", False),
+                            actor_scoped=action_def.get("actor_scoped", False),
                             integration_type=integration_type,
-                            supports_user_oauth=bool(manifest.get("oauth")),
+                            supports_user_oauth=(
+                                bool(manifest.get("oauth"))
+                                and not action_def.get("admin_only", False)
+                                and action_def.get("credential_scope", "user")
+                                != "org"
+                            ),
                         )
                     )
 
@@ -303,6 +314,17 @@ class ConnectorToolHandler:
 
             # Hide admin-only actions (e.g. admin-directory ops) from non-admins.
             if action.admin_only and not self._is_admin:
+                continue
+
+            # Writes that would execute with the org-level credential are
+            # admin-role-only unless the connector declares the write is
+            # server-side actor-scoped (e.g. Darwinbox self-service).
+            if (
+                action.mode == "write"
+                and not action.supports_user_oauth
+                and not action.actor_scoped
+                and not self._is_admin
+            ):
                 continue
 
             # Apply source_filter: skip actions not in allowed sources or modes
@@ -408,6 +430,10 @@ class ConnectorToolHandler:
         if (
             action is None
             or action.admin_only
+            # Actions that run on the org credential (admin-only, org-scoped,
+            # or connectors without a per-user OAuth flow) never surface an
+            # OAuth prompt — skip the credential/scopes queries entirely.
+            or not action.supports_user_oauth
             or context.user_id is None
             or context.skip_permission_check
         ):
@@ -494,12 +520,6 @@ class ConnectorToolHandler:
             provider = "remote_mcp"
         else:
             if org_credential is None:
-                return None
-            # Connectors without a per-user OAuth flow (e.g. Darwinbox) run
-            # against the org credential; connector-manager resolves the same
-            # way (`resolve_missing_user_credential`), so an OAuth prompt here
-            # would dead-end an action that would otherwise execute.
-            if not action.supports_user_oauth:
                 return None
             provider = org_credential["provider"]
 

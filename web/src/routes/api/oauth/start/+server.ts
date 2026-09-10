@@ -63,6 +63,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         if (!config) {
             throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
         }
+        if (flow === 'org_source' && config.supports_org_oauth === false) {
+            throw error(400, 'This connector does not support OAuth for org sources')
+        }
         if (!(await isProviderConfigured(config.provider, config))) {
             throw error(412, oauthClientNotConfiguredMessage(config.provider))
         }

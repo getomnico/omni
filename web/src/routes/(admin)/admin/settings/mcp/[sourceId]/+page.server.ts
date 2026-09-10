@@ -76,6 +76,8 @@ export const load: PageServerLoad = async ({ locals, fetch, params }) => {
             provider: oauthProvider,
             configured: isClientConfigComplete(oauthClient?.config, tokenEndpointAuthMethod),
             config: oauthClient?.config ?? {},
+            registrationRequiresInitialAccessToken:
+                oauthManifest?.registration_requires_initial_access_token === true,
         },
     }
 }

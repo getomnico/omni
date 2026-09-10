@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionMode, ActionResponse, Connector, HttpMcpServer, McpCredentials,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionResponse, Connector, HttpMcpServer,
+    McpCredentials,
     McpServer, OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod, SearchOperator,
     ServiceCredential, Source, SourceType, SyncContext, SyncType,
 };
@@ -71,8 +72,19 @@ impl AtlassianConnector {
             scope_separator: " ".to_string(),
             enrich_endpoint: None,
             registration_endpoint: Some(Self::ROVO_REGISTER_URL.to_string()),
+            registration_requires_initial_access_token: false,
+            token_response_fields: Vec::new(),
             token_endpoint_auth_method: OAuthTokenEndpointAuthMethod::None,
             resource: Some(Self::ROVO_MCP_URL.to_string()),
+            issuer_source_config_key: None,
+            client_config_provider_template: None,
+            pkce_required: false,
+            grant_types: Some(vec![
+                "authorization_code".to_string(),
+                "refresh_token".to_string(),
+            ]),
+            validate_endpoint_urls: false,
+            supports_org_oauth: true,
         }
     }
 
@@ -137,6 +149,7 @@ impl Connector for AtlassianConnector {
 
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![ActionDefinition {
+            origin: Default::default(),
             name: "search_spaces".to_string(),
             description: "Search Confluence spaces or Jira projects".to_string(),
             input_schema: json!({
@@ -154,9 +167,11 @@ impl Connector for AtlassianConnector {
                 "required": ["type"]
             }),
             mode: ActionMode::Read,
+            credential_scope: ActionCredentialScope::Org,
             required_scopes: None,
             source_types: Vec::new(),
             admin_only: true,
+            actor_scoped: false,
             hidden: false,
         }]
     }

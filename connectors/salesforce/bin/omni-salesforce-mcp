@@ -1,0 +1,190 @@
+#!/bin/sh
+# Run the official Salesforce MCP server with one disposable CLI state
+# directory per source/user/process. Provider secrets are used only during
+# bootstrap and are removed from the environment before the MCP child starts.
+set -eu
+umask 077
+
+: "${OMNI_SALESFORCE_SOURCE_ID:?missing OMNI_SALESFORCE_SOURCE_ID}"
+: "${OMNI_SALESFORCE_AUTH_MODE:?missing OMNI_SALESFORCE_AUTH_MODE}"
+
+state_root="${OMNI_SALESFORCE_STATE_ROOT:-/tmp/omni-salesforce-mcp}"
+source_hash=$(printf '%s' "$OMNI_SALESFORCE_SOURCE_ID" | sha256sum | cut -d ' ' -f 1)
+source_parent="$state_root/$source_hash"
+mkdir -p "$source_parent"
+chmod 700 "$state_root" "$source_parent"
+
+# Do not share Salesforce CLI's auth store or alias between concurrent users.
+# The process id plus a timestamp is sufficient inside this private state root;
+# mkdir still provides the final collision check.
+nonce="$(date +%s).$$"
+source_dir="$source_parent/$nonce"
+if ! mkdir "$source_dir"; then
+  printf '%s\n' "Unable to create private Salesforce MCP state directory" >&2
+  exit 1
+fi
+chmod 700 "$source_dir"
+
+key_file="$source_dir/jwt.key"
+auth_status_file="${OMNI_MCP_AUTH_STATUS_FILE:-}"
+preserve_auth_failure=0
+auth_failure() {
+  preserve_auth_failure=1
+  if [ -n "$auth_status_file" ]; then
+    printf '%s\n' "needs_user_auth" > "$auth_status_file"
+  fi
+  exit 78
+}
+cleanup() {
+  rm -f "$key_file"
+  if [ -n "$auth_status_file" ] && [ "$preserve_auth_failure" -eq 0 ]; then
+    rm -f "$auth_status_file"
+  fi
+  rm -rf "$source_dir"
+  rmdir "$source_parent" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# HOME is the Salesforce CLI state boundary. SF_CONFIG_DIR alone does not
+# isolate all auth files used by @salesforce/core.
+export HOME="$source_dir/home"
+export XDG_CONFIG_HOME="$HOME/.config"
+export SF_DISABLE_TELEMETRY=true
+export SF_DISABLE_LOG_FILE=true
+mkdir -p "$HOME" "$XDG_CONFIG_HOME"
+chmod 700 "$HOME" "$XDG_CONFIG_HOME"
+
+org_target=""
+
+if [ "$OMNI_SALESFORCE_AUTH_MODE" = "jwt" ]; then
+  : "${SF_CLIENT_ID:?missing SF_CLIENT_ID}"
+  : "${SF_PRIVATE_KEY:?missing SF_PRIVATE_KEY}"
+  : "${SF_USERNAME:?missing SF_USERNAME}"
+  : "${SF_LOGIN_URL:?missing SF_LOGIN_URL}"
+  printf '%s' "$SF_PRIVATE_KEY" > "$key_file"
+  chmod 600 "$key_file"
+  if ! login_output=$(sf org login jwt \
+    --username "$SF_USERNAME" \
+    --jwt-key-file "$key_file" \
+    --client-id "$SF_CLIENT_ID" \
+    --instance-url "$SF_LOGIN_URL" \
+    --set-default \
+    --no-prompt 2>&1); then
+    unset login_output
+    printf '%s\n' "Salesforce JWT login failed" >&2
+    auth_failure
+  fi
+  org_target="$SF_USERNAME"
+elif [ "$OMNI_SALESFORCE_AUTH_MODE" = "access_token" ]; then
+  : "${SF_ACCESS_TOKEN:?missing SF_ACCESS_TOKEN}"
+  : "${SF_INSTANCE_URL:?missing SF_INSTANCE_URL}"
+  : "${SF_LOGIN_URL:?missing SF_LOGIN_URL}"
+
+  # The Salesforce CLI expects the OAuth token in its native
+  # <org-id>!<access-token> format, while Salesforce authorization-code
+  # responses may contain only the token value. Keep the raw value for the
+  # userinfo request and add the verified organization id below when needed.
+  case "$SF_ACCESS_TOKEN" in
+    *'!'*)
+      token_org_id=${SF_ACCESS_TOKEN%%!*}
+      token_value=${SF_ACCESS_TOKEN#*!}
+      if [ -z "$token_org_id" ] || [ -z "$token_value" ]; then
+        printf '%s\n' "Invalid Salesforce OAuth access-token format" >&2
+        auth_failure
+      fi
+      ;;
+    *)
+      token_org_id=""
+      token_value="$SF_ACCESS_TOKEN"
+      ;;
+  esac
+
+  # Verify the token's org identity before handing it to the CLI. The token is
+  # supplied through the child environment, never a command-line argument.
+  actual_org_id=$(SF_USERINFO_URL="$SF_LOGIN_URL/services/oauth2/userinfo" \
+    SF_USER_ACCESS_TOKEN="$token_value" python3 -c '
+import json, os, urllib.request
+request = urllib.request.Request(
+    os.environ["SF_USERINFO_URL"],
+    headers={"Authorization": "Bearer " + os.environ["SF_USER_ACCESS_TOKEN"]},
+)
+with urllib.request.urlopen(request, timeout=15) as response:
+    value = json.load(response).get("organization_id")
+if not isinstance(value, str) or not value:
+    raise SystemExit("Salesforce userinfo did not return organization_id")
+print(value)
+' 2>/dev/null) || {
+      printf '%s\n' "Unable to validate Salesforce OAuth organization" >&2
+      auth_failure
+    }
+  if [ -n "$token_org_id" ] && [ "$actual_org_id" != "$token_org_id" ]; then
+    printf '%s\n' "Salesforce OAuth organization does not match its access token" >&2
+    auth_failure
+  fi
+  token_org_id="$actual_org_id"
+  if [ -n "${SF_ORG_ID:-}" ] && [ "$SF_ORG_ID" != "$actual_org_id" ]; then
+    printf '%s\n' "Salesforce OAuth organization does not match the source" >&2
+    auth_failure
+  fi
+  # The access-token CLI command requires the org-id!token representation
+  # but sends that representation to Salesforce as the bearer token. That is
+  # invalid for authorization-code tokens, so create the CLI auth record
+  # directly with the verified raw token instead.
+  if ! login_output=$(SF_ACCESS_TOKEN="$token_value" \
+    SF_INSTANCE_URL="$SF_INSTANCE_URL" \
+    SF_LOGIN_URL="$SF_LOGIN_URL" \
+    node --input-type=module <<'NODE'
+import { AuthInfo } from '/usr/local/lib/node_modules/@salesforce/cli/node_modules/@salesforce/core/lib/index.js'
+
+const accessToken = process.env.SF_ACCESS_TOKEN
+const instanceUrl = process.env.SF_INSTANCE_URL
+const loginUrl = process.env.SF_LOGIN_URL
+if (!accessToken || !instanceUrl || !loginUrl) {
+  throw new Error('Missing Salesforce CLI auth bootstrap environment')
+}
+const authInfo = await AuthInfo.create({
+  accessTokenOptions: { accessToken, instanceUrl, loginUrl },
+})
+await authInfo.save()
+await authInfo.handleAliasAndDefaultSettings({ setDefault: true })
+process.stdout.write(`OMNI_ORG_USERNAME=${authInfo.getUsername()}`)
+NODE
+  2>&1); then
+    unset login_output
+    printf '%s\n' "Salesforce access-token login failed" >&2
+    auth_failure
+  fi
+  org_target=$(printf '%s\n' "$login_output" | sed -n 's/^OMNI_ORG_USERNAME=//p' | tail -n 1)
+else
+  printf '%s\n' "Unsupported Salesforce MCP authentication mode" >&2
+  exit 2
+fi
+
+if [ -z "$org_target" ]; then
+  printf '%s\n' "Salesforce MCP did not resolve an authenticated org" >&2
+  auth_failure
+fi
+
+# The CLI has persisted the credential in its private state directory. Do not
+# pass raw credentials to sf-mcp-server, which only needs the saved username.
+unset SF_ACCESS_TOKEN SF_PRIVATE_KEY SF_CLIENT_ID SF_USERNAME SF_LOGIN_URL SF_INSTANCE_URL SF_ORG_ID
+unset login_output token_org_id token_value actual_org_id
+
+# Keep the tool surface explicit while the Salesforce integration is rolled out.
+set -- --orgs "$org_target" --toolsets data --no-telemetry
+
+# Keep the shell so the EXIT trap removes the entire CLI state directory
+# after the MCP child exits. Explicitly duplicate stdin because some
+# non-interactive POSIX shells replace stdin for asynchronous commands with
+# /dev/null.
+exec 3<&0
+sf-mcp-server "$@" <&3 3<&- &
+child=$!
+trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 143' TERM INT HUP
+if wait "$child"; then
+  status=0
+else
+  status=$?
+fi
+exec 3<&-
+exit "$status"

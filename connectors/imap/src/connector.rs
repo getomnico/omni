@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, SearchOperator, ServiceCredential, Source,
+    ActionCredentialScope, ActionDefinition, ActionResponse, Connector, SearchOperator,
+    ServiceCredential, Source,
     SourceType, SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
@@ -80,9 +81,11 @@ impl Connector for ImapConnector {
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                origin: Default::default(),
                 name: "validate_credentials".to_string(),
                 description: "Test IMAP connection with the provided credentials".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -98,12 +101,15 @@ impl Connector for ImapConnector {
                 required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
+                actor_scoped: false,
                 hidden: true,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "list_folders".to_string(),
                 description: "List accessible IMAP mailbox folders".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -119,6 +125,7 @@ impl Connector for ImapConnector {
                 required_scopes: None,
                 source_types: Vec::new(),
                 admin_only: false,
+                actor_scoped: false,
                 hidden: true,
             },
         ]

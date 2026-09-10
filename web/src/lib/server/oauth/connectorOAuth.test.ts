@@ -4,7 +4,10 @@ import {
     dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    oauthCredentialExpiry,
     oauthServiceBaseUrl,
+    parseOAuthSourceBinding,
+    revokeDynamicallyRegisteredClient,
     scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
     windshiftInternalOrigin,
@@ -19,6 +22,17 @@ const { redisMock } = vi.hoisted(() => ({
 
 vi.mock('../redis', () => ({
     getRedisClient: vi.fn().mockResolvedValue(redisMock),
+}))
+
+const { validateRemoteMock, fetchRemoteMock } = vi.hoisted(() => ({
+    validateRemoteMock: vi.fn(),
+    fetchRemoteMock: vi.fn(),
+}))
+
+vi.mock('../mcp/client', async (importOriginal) => ({
+    ...(await importOriginal()),
+    validateRemoteMcpUrlForCredentialUse: validateRemoteMock,
+    fetchWithPinnedRemoteMcpDns: fetchRemoteMock,
 }))
 
 const baseManifest: OAuthManifestConfig = {
@@ -49,7 +63,8 @@ describe('windshiftInternalOrigin', () => {
     })
 
     it('returns null when no internal route marker is advertised', () => {
-        const { internal_base_url: _marker, ...publicOnly } = windshiftManifest
+        const publicOnly = { ...windshiftManifest }
+        delete publicOnly.internal_base_url
         expect(windshiftInternalOrigin(publicOnly)).toBeNull()
     })
 
@@ -67,6 +82,83 @@ describe('windshiftInternalOrigin', () => {
 })
 
 describe('OAuth connector helpers', () => {
+    it('derives credential expiry from expires_in', () => {
+        const expiry = oauthCredentialExpiry({ expires_in: 7200 }, 'refresh-token')
+        expect(expiry).not.toBeNull()
+        const delta = (expiry as Date).getTime() - Date.now()
+        expect(delta).toBeGreaterThan(7100 * 1000)
+        expect(delta).toBeLessThanOrEqual(7200 * 1000)
+    })
+
+    it('derives credential expiry from expires_in even without a refresh token', () => {
+        const expiry = oauthCredentialExpiry({ expires_in: 7200 }, null)
+        expect(expiry).not.toBeNull()
+    })
+
+    it('falls back to the default lifetime only when a refresh token exists', () => {
+        const expiry = oauthCredentialExpiry({}, 'refresh-token')
+        expect(expiry).not.toBeNull()
+        const delta = (expiry as Date).getTime() - Date.now()
+        expect(delta).toBeGreaterThan((3600 - 1) * 1000)
+        expect(delta).toBeLessThanOrEqual(3600 * 1000)
+    })
+
+    it('persists no expiry when expires_in is missing and there is no refresh token', () => {
+        expect(oauthCredentialExpiry({}, null)).toBeNull()
+        expect(oauthCredentialExpiry({})).toBeNull()
+    })
+
+    it('treats a non-positive expires_in as missing', () => {
+        const expiry = oauthCredentialExpiry({ expires_in: 0 }, 'refresh-token')
+        expect(expiry).not.toBeNull()
+        const delta = (expiry as Date).getTime() - Date.now()
+        expect(delta).toBeGreaterThan((3600 - 1) * 1000)
+    })
+
+    describe('parseOAuthSourceBinding', () => {
+        it('returns null for an absent or null binding', () => {
+            expect(parseOAuthSourceBinding({})).toBeNull()
+            expect(parseOAuthSourceBinding({ source_binding: null })).toBeNull()
+        })
+
+        it('returns provider-defined binding fields', () => {
+            expect(
+                parseOAuthSourceBinding({
+                    source_binding: { organization_id: '00D123', instance_url: 'https://x' },
+                }),
+            ).toEqual({ organization_id: '00D123', instance_url: 'https://x' })
+            expect(
+                parseOAuthSourceBinding({ source_binding: { workspace_id: 'ws-1' } }),
+            ).toEqual({ workspace_id: 'ws-1' })
+        })
+
+        it('rejects non-string binding values', () => {
+            expect(() =>
+                parseOAuthSourceBinding({
+                    source_binding: { organization_id: '00D123', read_only: true },
+                }),
+            ).toThrow('invalid binding field: read_only')
+        })
+
+        it('rejects non-string binding values', () => {
+            expect(() =>
+                parseOAuthSourceBinding({ source_binding: { organization_id: 42 } }),
+            ).toThrow('invalid binding field: organization_id')
+        })
+
+        it('rejects empty binding field names', () => {
+            expect(() => parseOAuthSourceBinding({ source_binding: { '': 'x' } })).toThrow(
+                'invalid binding field name',
+            )
+        })
+
+        it('rejects a malformed response body', () => {
+            expect(() => parseOAuthSourceBinding('nope')).toThrow(
+                'invalid response',
+            )
+        })
+    })
+
     beforeEach(() => {
         vi.clearAllMocks()
     })
@@ -107,6 +199,8 @@ describe('OAuth connector helpers', () => {
                 'windshift',
                 'https://omni.example/api/oauth/callback',
                 'mcp:access',
+                'none',
+                ['authorization_code', 'refresh_token'],
             ),
         ).toEqual({
             client_name: 'Omni Windshift MCP',
@@ -133,6 +227,8 @@ describe('OAuth connector helpers', () => {
                 'atlassian',
                 'https://omni.example/api/oauth/callback',
                 'read:jira-work',
+                'none',
+                ['authorization_code', 'refresh_token'],
             ),
         ).toMatchObject({
             client_name: 'Omni Atlassian MCP',
@@ -202,5 +298,76 @@ describe('OAuth connector helpers', () => {
         expect(() =>
             scopesForExistingSourceUserFlow(baseManifest, 'example', 'write', ['unexpected:write']),
         ).toThrow('Unsupported write scopes')
+    })
+})
+
+describe('revokeDynamicallyRegisteredClient', () => {
+    const registrationConfig = {
+        oauth_registration_client_uri:
+            'https://login.salesforce.com/services/oauth2/register/abc123',
+        oauth_registration_access_token: 'registration-token',
+        oauth_registration_endpoint: 'https://login.salesforce.com/services/oauth2/register',
+    }
+
+    beforeEach(() => {
+        vi.clearAllMocks()
+        validateRemoteMock.mockImplementation(async (endpoint: string) => endpoint)
+        fetchRemoteMock.mockResolvedValue(new Response(null, { status: 204 }))
+    })
+
+    it('does nothing when no registration metadata is stored', async () => {
+        expect(await revokeDynamicallyRegisteredClient('salesforce:src-1', {})).toBe(false)
+        expect(fetchRemoteMock).not.toHaveBeenCalled()
+    })
+
+    it('rejects a non-HTTPS client registration URI', async () => {
+        const config = {
+            ...registrationConfig,
+            oauth_registration_client_uri:
+                'http://login.salesforce.com/services/oauth2/register/abc',
+        }
+        expect(await revokeDynamicallyRegisteredClient('salesforce:src-1', config)).toBe(false)
+        expect(fetchRemoteMock).not.toHaveBeenCalled()
+    })
+
+    it('rejects a client URI pointing at a different origin than the registration endpoint', async () => {
+        const config = {
+            ...registrationConfig,
+            oauth_registration_client_uri: 'https://evil.example.com/services/oauth2/register/abc',
+        }
+        expect(await revokeDynamicallyRegisteredClient('salesforce:src-1', config)).toBe(false)
+        expect(fetchRemoteMock).not.toHaveBeenCalled()
+    })
+
+    it('deletes the registered client with the bearer registration token', async () => {
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(true)
+        expect(fetchRemoteMock).toHaveBeenCalledTimes(1)
+        const [url, init] = fetchRemoteMock.mock.calls[0]
+        expect(url.toString()).toBe(registrationConfig.oauth_registration_client_uri)
+        expect(init.method).toBe('DELETE')
+        expect(init.headers.Authorization).toBe('Bearer registration-token')
+    })
+
+    it('treats a 404 as already revoked', async () => {
+        fetchRemoteMock.mockResolvedValue(new Response(null, { status: 404 }))
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(true)
+    })
+
+    it('fails closed when the provider rejects the deletion', async () => {
+        fetchRemoteMock.mockResolvedValue(new Response(null, { status: 500 }))
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(false)
+    })
+
+    it('fails closed when the provider is unreachable', async () => {
+        fetchRemoteMock.mockRejectedValue(new Error('network down'))
+        expect(
+            await revokeDynamicallyRegisteredClient('salesforce:src-1', registrationConfig),
+        ).toBe(false)
     })
 })

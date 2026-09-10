@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AuthType } from '$lib/types'
-import { remoteMcpPutTransition } from './+server'
+import { remoteMcpPutTransition } from '$lib/server/mcp/remoteMcpPutTransition'
 
 describe('remote MCP PUT state transitions', () => {
     it('preserves OAuth active state and credentials for name-only or write-tools edits', () => {

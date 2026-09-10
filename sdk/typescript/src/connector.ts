@@ -1,5 +1,6 @@
 import type { SyncContext } from './context.js';
 import type { McpAdapter, McpServer } from './mcp-adapter.js';
+import { MCP_AUTH_REQUIRED_MESSAGE } from './mcp-adapter.js';
 import type {
   ConnectorManifest,
   ActionDefinition,
@@ -7,6 +8,8 @@ import type {
   OAuthManifestConfig,
   Source,
   OAuthCredentialReadyRequest,
+  OAuthCredentialValidationRequest,
+  OAuthSourceBinding,
 } from './models.js';
 import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
@@ -127,6 +130,67 @@ export abstract class Connector<
     }
   }
 
+  /**
+   * Validate a freshly exchanged OAuth credential before it is persisted.
+   * Connectors may reject credentials that are valid at the provider but
+   * belong to a different source organization by throwing, and may return a
+   * source binding (e.g. a provider organization identifier) that the web app
+   * stores under the reserved `source_binding` source config key. The default
+   * accepts the credential without binding anything.
+   */
+  async validateOauthCredential(
+    _request: OAuthCredentialValidationRequest
+  ): Promise<OAuthSourceBinding | null> {
+    return null;
+  }
+
+  /**
+   * Return whether an MCP failure requires the acting user's OAuth reconnect.
+   * Connectors with provider-specific authentication errors can override this
+   * without exposing credentials in an HTTP response; failures carrying the
+   * generic auth-status marker are already recognized by the SDK.
+   */
+  mcpAuthenticationError(_message: string): boolean {
+    return false;
+  }
+
+  /**
+   * Build the stable 412 `needs_user_auth` HTTP response for a terminal MCP
+   * authentication failure. Mirrors the Python SDK's response so
+   * connector-manager invalidates the acting user's credential and the web
+   * layer surfaces the same reconnect CTA. Returns null when the failure is
+   * not an auth failure or the acting source cannot be identified.
+   */
+  private mcpAuthRequiredResponse(
+    message: string,
+    source: Source | undefined,
+    credentials: Record<string, unknown>
+  ): Response | null {
+    if (
+      message !== MCP_AUTH_REQUIRED_MESSAGE &&
+      !this.mcpAuthenticationError(message)
+    ) {
+      return null;
+    }
+    const sourceId =
+      source?.id ??
+      (typeof credentials.source_id === 'string' ? credentials.source_id : undefined);
+    const sourceType = source?.source_type ?? this.sourceTypes[0];
+    if (sourceId === undefined || sourceType === undefined) {
+      return null;
+    }
+    return new Response(
+      JSON.stringify({
+        error: 'needs_user_auth',
+        source_id: sourceId,
+        source_type: sourceType,
+        provider: this.oauthConfig?.provider ?? null,
+        oauth_start_url: `/api/oauth/start?source_id=${sourceId}`,
+      }),
+      { status: 412, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
   prepareMcpAuth(credentials: TCredentials): {
     env?: Record<string, string>;
     headers?: Record<string, string>;
@@ -159,6 +223,15 @@ export abstract class Connector<
 
   async getManifest(connectorUrl: string): Promise<ConnectorManifest> {
     const adapter = await this.getMcpAdapter();
+    const actions = await this.getAllActions();
+    const prompts = adapter ? await adapter.getPromptDefinitions() : [];
+    const skills = prompts.map((prompt) => ({
+      id: `mcp:${prompt.name}`,
+      title: prompt.name,
+      description: prompt.description,
+      mcp_prompt: prompt.name,
+      source_types: this.sourceTypes,
+    }));
     return {
       name: this.name,
       display_name: this.displayName,
@@ -166,16 +239,19 @@ export abstract class Connector<
       sync_modes: this.syncModes,
       connector_id: this.name,
       connector_url: connectorUrl,
+      integration_type: 'connector',
       source_types: this.sourceTypes,
       description: this.description,
-      actions: await this.getAllActions(),
+      actions,
       search_operators: this.searchOperators,
       extra_schema: this.extraSchema,
       attributes_schema: this.attributesSchema,
+      read_only: false,
       mcp_enabled: adapter !== undefined,
       mcp_catalog_loaded: adapter?.hasCachedCatalog() ?? false,
       resources: adapter ? await adapter.getResourceDefinitions() : [],
-      prompts: adapter ? await adapter.getPromptDefinitions() : [],
+      prompts,
+      skills,
       oauth: this.oauthConfig,
     };
   }
@@ -225,7 +301,13 @@ export abstract class Connector<
     actor_email?: string
   ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
-    if (adapter) {
+    // Native action names win on collisions: only actions outside the
+    // connector's own manifest may be dispatched to the MCP server. This
+    // keeps runtime dispatch consistent with ActionDefinition.origin.
+    const isNativeAction = this.actions.some(
+      (definition) => definition.name === action
+    );
+    if (adapter && !isNativeAction) {
       try {
         const { env, headers } = this.prepareMcpAuth(credentials);
         const mcpActions = await adapter.getActionDefinitionsLive(env, headers);
@@ -238,11 +320,32 @@ export abstract class Connector<
             ).toResponse(400);
           }
           const response = await adapter.executeTool(action, params, env, headers);
+          if (response.status !== 'success' && response.error !== undefined) {
+            // Terminal OAuth rejection: surface the standard 412 challenge
+            // instead of a generic failure so connector-manager invalidates
+            // the credential.
+            const authResponse = this.mcpAuthRequiredResponse(
+              response.error,
+              source,
+              credentials
+            );
+            if (authResponse) {
+              return authResponse;
+            }
+          }
           return response.toResponse();
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // A live-validation failure caused by a terminal OAuth rejection must
+        // produce the auth challenge; never fall through to a native action
+        // (or a not-supported reply) for a tool that needs the user's
+        // credential.
+        const authResponse = this.mcpAuthRequiredResponse(message, source, credentials);
+        if (authResponse) {
+          return authResponse;
+        }
         if (adapter.hasCachedAction(action)) {
-          const message = err instanceof Error ? err.message : String(err);
           return ActionResponse.failure(
             `MCP action '${action}' could not be validated: ${message}`
           ).toResponse(400);

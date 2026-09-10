@@ -11,6 +11,7 @@
         provider: string
         displayName: string
         configured?: boolean
+        registrationRequiresInitialAccessToken?: boolean
         config?: Record<string, unknown>
         onSaved?: () => void
         onCancel?: () => void
@@ -21,6 +22,7 @@
         provider,
         displayName,
         configured = false,
+        registrationRequiresInitialAccessToken = false,
         config = {},
         onSaved,
         onCancel,
@@ -28,20 +30,33 @@
 
     let clientIdOverride = $state<string | null>(null)
     let clientSecret = $state('')
+    let registrationInitialAccessToken = $state('')
     let isSaving = $state(false)
 
+    const requiresInitialAccessToken = $derived(registrationRequiresInitialAccessToken)
     const savedClientId = $derived(
         open && typeof config.oauth_client_id === 'string' ? config.oauth_client_id : '',
     )
     const clientId = $derived(clientIdOverride ?? savedClientId)
 
     async function save() {
-        if (!clientId.trim()) {
-            toast.error('Client ID is required')
+        if (
+            !clientId.trim() &&
+            !(requiresInitialAccessToken && registrationInitialAccessToken.trim())
+        ) {
+            toast.error(
+                `Client ID is required unless ${displayName} dynamic registration is configured`,
+            )
             return
         }
-        if (!configured && !clientSecret.trim()) {
-            toast.error('Client secret is required')
+        if (
+            !configured &&
+            !clientSecret.trim() &&
+            !(requiresInitialAccessToken && registrationInitialAccessToken.trim())
+        ) {
+            toast.error(
+                `Client secret is required unless ${displayName} dynamic registration is configured`,
+            )
             return
         }
 
@@ -49,9 +64,15 @@
         try {
             const nextConfig: Record<string, unknown> = { ...config }
             delete nextConfig.oauth_client_secret
-            nextConfig.oauth_client_id = clientId.trim()
+            delete nextConfig.oauth_registration_initial_access_token
+            if (clientId.trim()) nextConfig.oauth_client_id = clientId.trim()
+            else delete nextConfig.oauth_client_id
             if (clientSecret.trim()) {
                 nextConfig.oauth_client_secret = clientSecret.trim()
+            }
+            if (registrationInitialAccessToken.trim()) {
+                nextConfig.oauth_registration_initial_access_token =
+                    registrationInitialAccessToken.trim()
             }
 
             const response = await fetch('/api/connector-configs', {
@@ -78,6 +99,7 @@
     function cancel() {
         clientIdOverride = null
         clientSecret = ''
+        registrationInitialAccessToken = ''
         onCancel?.()
     }
 </script>
@@ -101,6 +123,22 @@
                         (clientIdOverride = (event.currentTarget as HTMLInputElement).value)}
                     placeholder={`Enter ${displayName} client ID`} />
             </div>
+
+            {#if requiresInitialAccessToken}
+                <div class="space-y-2">
+                    <Label for="oauth-registration-token"
+                        >DCR initial access token (optional)</Label>
+                    <Input
+                        id="oauth-registration-token"
+                        type="password"
+                        bind:value={registrationInitialAccessToken}
+                        placeholder="Required only when enabling dynamic registration" />
+                    <p class="text-muted-foreground text-xs">
+                        Dynamic Client Registration requires an administrator-issued initial access
+                        token. Leave blank when using a pre-created OAuth client.
+                    </p>
+                </div>
+            {/if}
 
             <div class="space-y-2">
                 <Label for="oauth-client-secret">Client secret</Label>

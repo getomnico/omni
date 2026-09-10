@@ -20,6 +20,7 @@
     import slackLogo from '$lib/images/icons/slack.svg'
     import atlassianLogo from '$lib/images/icons/atlassian.svg'
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
+    import salesforceLogo from '$lib/images/icons/salesforce.svg'
     import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import clickupLogo from '$lib/images/icons/clickup.svg'
@@ -42,7 +43,6 @@
         HardDrive,
         KeyRound,
         Mail,
-        Plus,
     } from '@lucide/svelte'
     import { toast } from 'svelte-sonner'
     import GoogleWorkspaceSetup from '$lib/components/google-workspace-setup.svelte'
@@ -51,6 +51,7 @@
     import AtlassianConnectorSetup from '$lib/components/atlassian-connector-setup.svelte'
     import SlackConnectorSetup from '$lib/components/slack-connector-setup.svelte'
     import HubspotConnectorSetup from '$lib/components/hubspot-connector-setup.svelte'
+    import SalesforceConnectorSetup from '$lib/components/salesforce-connector-setup.svelte'
     import FirefliesConnectorSetup from '$lib/components/fireflies-connector-setup.svelte'
     import ImapConnectorSetup from '$lib/components/imap-connector-setup.svelte'
     import MicrosoftConnectorSetup from '$lib/components/microsoft-connector-setup.svelte'
@@ -66,11 +67,12 @@
     import WindshiftServerSetup from '$lib/components/windshift-server-setup.svelte'
     import OAuthClientConfigDialog from '$lib/components/oauth-integrations/oauth-client-config-dialog.svelte'
     import { Badge } from '$lib/components/ui/badge'
-    import { AuthType, SourceType } from '$lib/types'
+    import { SourceType } from '$lib/types'
     import { formatDate, getSourceNoun, getStatusColor } from '$lib/utils/sources'
     import { invalidateAll } from '$app/navigation'
     import { page } from '$app/state'
     import { onMount, onDestroy } from 'svelte'
+    import { SvelteMap } from 'svelte/reactivity'
     import type { SyncRun } from '$lib/server/db/schema'
 
     let { data }: PageProps = $props()
@@ -83,7 +85,13 @@
         }
     }
 
-    type OAuthProvider = (typeof data.oauthProviders)[number]
+    type OAuthProvider = {
+        provider: string
+        displayName: string
+        configured: boolean
+        updatedAt: Date | string | null
+        config: Record<string, unknown>
+    }
 
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
     let sourceHealth = $state<Map<SourceId, 'healthy' | 'unhealthy'>>(data.sourceHealth)
@@ -117,7 +125,7 @@
             try {
                 const statusData = JSON.parse(event.data) as SyncStatusPayload
                 if (statusData.overall?.latestSyncRuns) {
-                    const updated = new Map(latestSyncRuns)
+                    const updated = new SvelteMap(latestSyncRuns)
                     for (const sync of statusData.overall.latestSyncRuns) {
                         updated.set(sync.sourceId, sync)
                     }
@@ -209,6 +217,7 @@
         slack: slackLogo,
         atlassian: atlassianLogo,
         hubspot: hubspotLogo,
+        salesforce: salesforceLogo,
         fireflies: firefliesLogo,
         microsoft: microsoftLogo,
         clickup: clickupLogo,
@@ -257,12 +266,6 @@
     function getConfigureUrl(sourceType: SourceType, sourceId: string): string {
         const slug = sourceTypeSlug[sourceType] ?? sourceType
         return `/admin/settings/integrations/${slug}/${sourceId}`
-    }
-
-    function remoteMcpAuthLabel(authType: string | null) {
-        if (authType === AuthType.BEARER_TOKEN) return 'Shared bearer'
-        if (authType === AuthType.OAUTH) return 'Per-user OAuth'
-        return 'Public'
     }
 </script>
 
@@ -665,9 +668,9 @@
                                 <div
                                     class="grid grid-cols-[1.4fr_0.8fr_1fr_0.8fr] items-center gap-4 border-t px-4 py-3 text-sm">
                                     <div class="flex items-center gap-2 font-medium">
-                                        {#if oauthProviderIcons[provider.provider]}
+                                        {#if oauthProviderIcons[provider.provider.split(':')[0]]}
                                             <img
-                                                src={oauthProviderIcons[provider.provider]}
+                                                src={oauthProviderIcons[provider.provider.split(':')[0]]}
                                                 alt={provider.displayName}
                                                 class="h-5 w-5 shrink-0 object-contain" />
                                         {:else}
@@ -780,6 +783,11 @@
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 
+<SalesforceConnectorSetup
+    open={activeSetup === 'salesforce'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
 <FirefliesConnectorSetup
     open={activeSetup === 'fireflies'}
     onSuccess={handleSetupSuccess}
@@ -842,6 +850,7 @@
         provider={activeOAuthProvider.provider}
         displayName={activeOAuthProvider.displayName}
         configured={activeOAuthProvider.configured}
+        registrationRequiresInitialAccessToken={activeOAuthProvider.registrationRequiresInitialAccessToken}
         config={activeOAuthProvider.config}
         onSaved={closeOAuthDialog}
         onCancel={closeOAuthDialog} />

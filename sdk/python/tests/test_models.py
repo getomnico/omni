@@ -1,12 +1,13 @@
 from datetime import datetime, timezone
 
 from omni_connector import (
-    ConnectorEvent,
+    connector_event,
     ConnectorManifest,
     Document,
     DocumentMetadata,
     DocumentPermissions,
     EventType,
+    Source,
     SyncRequest,
     SyncResponse,
 )
@@ -62,6 +63,24 @@ def test_document_permissions_defaults():
     assert data["groups"] == []
 
 
+def test_source_accepts_rust_expanded_year_timestamps():
+    source = Source(
+        id="source-1",
+        name="Salesforce",
+        source_type="salesforce",
+        config={},
+        is_active=True,
+        is_deleted=False,
+        scope="org",
+        created_at="+002026-09-08T10:33:57.638639000Z",
+        updated_at="+002026-09-08T10:54:05.229149000Z",
+        created_by="user-1",
+    )
+
+    assert source.created_at.year == 2026
+    assert source.updated_at.year == 2026
+
+
 def test_document():
     doc = Document(
         external_id="doc-123",
@@ -79,7 +98,7 @@ def test_document():
 
 
 def test_connector_event_created_to_dict():
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_CREATED,
         sync_run_id="sync-123",
         source_id="source-456",
@@ -100,7 +119,7 @@ def test_connector_event_created_to_dict():
 
 
 def test_connector_event_deleted_to_dict():
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_DELETED,
         sync_run_id="sync-123",
         source_id="source-456",
@@ -122,6 +141,8 @@ def test_connector_manifest():
         display_name="My Connector",
         version="1.0.0",
         sync_modes=["full", "incremental"],
+        connector_id="my-connector",
+        connector_url="http://localhost:8000",
         actions=[],
     )
 

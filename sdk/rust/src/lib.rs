@@ -8,7 +8,10 @@ pub mod server;
 pub use client::{SdkClient, SdkError, SdkResult, build_connector_url};
 pub use connector::{Connector, SyncRequestValidationError};
 pub use context::SyncContext;
-pub use mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
+pub use mcp_adapter::{
+    HttpMcpServer, MCP_AUTH_REQUIRED_MESSAGE, MCP_AUTH_STATUS_FILE_ENV, McpAdapter, McpServer,
+    StdioMcpServer,
+};
 pub use models::{
     ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials,
     OAuthCredentialReadyRequest, OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod,
@@ -19,9 +22,11 @@ pub use server::{ServerConfig, create_router, serve, serve_with_config, serve_wi
 
 pub use shared::models::DocumentAttributes;
 pub use shared::models::{
-    ActionDefinition, ActionMode, AuthType, ConnectorEvent, ConnectorManifest,
-    ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions, IntegrationType,
-    McpPromptDefinition, McpResourceDefinition, PersonSyncRecord, SearchOperator,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
+    ConnectorManifest, ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions,
+    IntegrationType, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
+    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
+    PersonSyncRecord, SearchOperator,
     ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 pub use shared::rate_limiter::{RateLimiter, RetryableError};

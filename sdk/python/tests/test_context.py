@@ -37,6 +37,7 @@ async def test_emit_creates_document_created_event(sdk_client, mock_connector_ma
     )
 
     await ctx.emit(doc)
+    await ctx.flush()
 
     # Verify the event payload
     call = mock_connector_manager.calls[0]
@@ -45,7 +46,7 @@ async def test_emit_creates_document_created_event(sdk_client, mock_connector_ma
     assert payload["sync_run_id"] == "sync-run-123"
     assert payload["source_id"] == "source-456"
 
-    event = payload["event"]
+    event = payload["events"][0]
     assert event["type"] == "document_created"
     assert event["document_id"] == "doc-external-id"
     assert event["content_id"] == "content-789"
@@ -74,11 +75,12 @@ async def test_emit_updated_creates_document_updated_event(
     )
 
     await ctx.emit_updated(doc)
+    await ctx.flush()
 
     payload = json.loads(mock_connector_manager.calls[0].request.content)
-    assert payload["event"]["type"] == "document_updated"
-    assert payload["event"]["document_id"] == "doc-123"
-    assert payload["event"]["content_id"] == "new-content-id"
+    assert payload["events"][0]["type"] == "document_updated"
+    assert payload["events"][0]["document_id"] == "doc-123"
+    assert payload["events"][0]["content_id"] == "new-content-id"
 
 
 @pytest.mark.asyncio
@@ -93,9 +95,10 @@ async def test_emit_deleted_creates_document_deleted_event(
     )
 
     await ctx.emit_deleted("doc-to-remove")
+    await ctx.flush()
 
     payload = json.loads(mock_connector_manager.calls[0].request.content)
-    event = payload["event"]
+    event = payload["events"][0]
 
     assert event["type"] == "document_deleted"
     assert event["document_id"] == "doc-to-remove"
