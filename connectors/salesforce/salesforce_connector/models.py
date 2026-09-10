@@ -787,6 +787,11 @@ class RunProgress:
     records_completed: tuple[str, ...] = ()
     deletions_completed: tuple[str, ...] = ()
     full_reconciliation: tuple[str, ...] = ()
+    # Candidate share snapshot and the parents whose grants changed. Kept out
+    # of the committed checkpoint until the affected parents have been durably
+    # re-emitted, so an interruption cannot lose the permission update.
+    pending_share_snapshot: ShareSnapshot | None = None
+    pending_changed_parents: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, raw: object) -> RunProgress | None:
@@ -812,6 +817,10 @@ class RunProgress:
             records_completed=_string_tuple(raw.get("records_completed")),
             deletions_completed=_string_tuple(raw.get("deletions_completed")),
             full_reconciliation=_string_tuple(raw.get("full_reconciliation")),
+            pending_share_snapshot=ShareSnapshot.from_mapping(
+                raw.get("pending_share_snapshot")
+            ),
+            pending_changed_parents=_string_tuple_map(raw.get("pending_changed_parents")),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -825,6 +834,14 @@ class RunProgress:
             "records_completed": list(self.records_completed),
             "deletions_completed": list(self.deletions_completed),
             "full_reconciliation": list(self.full_reconciliation),
+            "pending_share_snapshot": (
+                self.pending_share_snapshot.to_json()
+                if self.pending_share_snapshot is not None
+                else None
+            ),
+            "pending_changed_parents": {
+                key: list(value) for key, value in self.pending_changed_parents.items()
+            },
         }
 
 

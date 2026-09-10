@@ -645,55 +645,85 @@ def _project_record(record: Mapping[str, object], soql: str) -> dict[str, object
     return projected
 
 
-def _matches_where(record: Mapping[str, object], where: str) -> bool:
+def _split_top_level_and(where: str) -> list[str]:
+    """Split a WHERE expression on top-level AND, respecting parentheses."""
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    index = 0
+    while index < len(where):
+        char = where[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        if depth == 0 and where[index : index + 5].upper() == " AND ":
+            parts.append("".join(current).strip())
+            current = []
+            index += 5
+            continue
+        current.append(char)
+        index += 1
+    if current:
+        parts.append("".join(current).strip())
+    return [part for part in parts if part]
+
+
+def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
+    clause = clause.strip()
     # Keyset delta clause: (SystemModstamp > X OR (SystemModstamp = X AND Id > 'Y'))
     keyset = re.search(
         r"SystemModstamp\s*>\s*([^ )]+)\s*OR\s*\(\s*SystemModstamp\s*=\s*([^ )]+)"
         r"\s*AND\s+Id\s*>\s*'([^']+)'\s*\)",
-        where,
+        clause,
     )
     if keyset:
         threshold = _parse_ts(keyset.group(1))
-        modstamp = _soql_value(record, "SystemModstamp")
+        modstamp = record.get("SystemModstamp")
         if modstamp is None:
             return False
         value = _parse_ts(str(modstamp))
         if value > threshold:
             return True
-        if value == threshold and str(record.get("Id", "")) > keyset.group(3):
-            return True
-        return False
+        return value == threshold and str(record.get("Id", "")) > keyset.group(3)
 
-    id_gt = re.search(r"Id\s*>\s*'([^']+)'", where)
-    if id_gt and not re.search(r"SystemModstamp", where):
-        return str(record.get("Id", "")) > id_gt.group(1)
-
-    id_in = re.search(r"Id\s+IN\s*\(([^)]+)\)", where)
-    if id_in:
-        ids = {v.strip().strip("'") for v in id_in.group(1).split(",")}
-        return record.get("Id") in ids
-
-    type_in = re.search(r"Type\s+IN\s*\(([^)]+)\)", where)
-    if type_in:
-        types = {v.strip().strip("'") for v in type_in.group(1).split(",")}
-        return record.get("Type") in types
-
-    row_cause = re.search(r"RowCause\s*!=\s*'([^']+)'", where)
-    if row_cause:
-        return record.get("RowCause") != row_cause.group(1)
-
-    mod_ge = re.search(r"SystemModstamp\s*>=\s*([^ )]+)", where)
+    mod_ge = re.search(r"SystemModstamp\s*>=\s*([^ )]+)", clause)
     if mod_ge:
         threshold = _parse_ts(mod_ge.group(1))
-        modstamp = _soql_value(record, "SystemModstamp")
+        modstamp = record.get("SystemModstamp")
         if modstamp is None:
             return False
         return _parse_ts(str(modstamp)) >= threshold
 
+    mod_le = re.search(r"SystemModstamp\s*<=\s*([^ )]+)", clause)
+    if mod_le:
+        threshold = _parse_ts(mod_le.group(1))
+        modstamp = record.get("SystemModstamp")
+        if modstamp is None:
+            return False
+        return _parse_ts(str(modstamp)) <= threshold
+
+    id_gt = re.search(r"Id\s*>\s*'([^']+)'", clause)
+    if id_gt:
+        return str(record.get("Id", "")) > id_gt.group(1)
+
+    id_in = re.search(r"Id\s+IN\s*\(([^)]+)\)", clause)
+    if id_in:
+        ids = {v.strip().strip("'") for v in id_in.group(1).split(",")}
+        return record.get("Id") in ids
+
+    type_in = re.search(r"Type\s+IN\s*\(([^)]+)\)", clause)
+    if type_in:
+        types = {v.strip().strip("'") for v in type_in.group(1).split(",")}
+        return record.get("Type") in types
+
+    row_cause = re.search(r"RowCause\s*!=\s*'([^']+)'", clause)
+    if row_cause:
+        return record.get("RowCause") != row_cause.group(1)
+
     # LIKE branches: "Name LIKE '%x%' OR Email LIKE '%y%'"
-    like_branches = re.split(r"\s+OR\s+", where)
     saw_like = False
-    for branch in like_branches:
+    for branch in re.split(r"\s+OR\s+", clause):
         like = re.search(r"(\w+)\s+LIKE\s+'%([^']*)%'", branch)
         if like:
             saw_like = True
@@ -702,7 +732,12 @@ def _matches_where(record: Mapping[str, object], where: str) -> bool:
                 return True
     if saw_like:
         return False
-    return True
+    raise ValueError(f"unsupported WHERE clause: {clause}")
+
+
+def _matches_where(record: Mapping[str, object], where: str) -> bool:
+    """Evaluate every top-level AND constraint, including upper bounds."""
+    return all(_matches_clause(record, clause) for clause in _split_top_level_and(where))
 
 
 def _matches_ts_window(
@@ -749,6 +784,11 @@ class MockSalesforceAPI:
         self.queries: list[str] = []
         # Objects whose SOQL queries fail with a non-retryable 400.
         self.fail_query_objects: set[str] = set()
+        # Objects whose SOQL queries fail with a 401 (dead credential).
+        self.fail_auth_objects: set[str] = set()
+        # Remaining 429 responses to emit before serving queries.
+        self.rate_limit_remaining: int = 0
+        self.rate_limit_hits: int = 0
         # Objects whose /deleted queries fail with a non-retryable 400.
         self.fail_deleted_objects: set[str] = set()
         # Override the retention-window start reported by /deleted.
@@ -771,6 +811,9 @@ class MockSalesforceAPI:
         self.field_sets.clear()
         self.queries.clear()
         self.fail_query_objects.clear()
+        self.fail_auth_objects.clear()
+        self.rate_limit_remaining = 0
+        self.rate_limit_hits = 0
         self.fail_deleted_objects.clear()
         self.deletion_earliest_override = None
         self.deletion_latest_override = None
@@ -867,6 +910,16 @@ class MockSalesforceAPI:
         )
 
     def mark_deleted(self, object_type: str, record_id: str) -> None:
+        """Remove the live record and record its deletion timestamp.
+
+        A real Salesforce delete makes the record unreachable from SOQL, so a
+        full re-scan cannot re-emit it; the mock mirrors that.
+        """
+        self.objects[object_type] = [
+            record
+            for record in self.objects.get(object_type, [])
+            if record.get("Id") != record_id
+        ]
         self.deleted.setdefault(object_type, []).append(
             {"id": record_id, "deletedDate": _now_modstamp()}
         )
@@ -980,6 +1033,18 @@ class MockSalesforceAPI:
                 return JSONResponse(
                     [{"message": "query failed", "errorCode": "QUERY_FAILED"}],
                     status_code=400,
+                )
+            if parsed.object_type in mock.fail_auth_objects:
+                return JSONResponse(
+                    [{"message": "Session expired", "errorCode": "INVALID_SESSION_ID"}],
+                    status_code=401,
+                )
+            if mock.rate_limit_remaining > 0:
+                mock.rate_limit_remaining -= 1
+                mock.rate_limit_hits += 1
+                return JSONResponse(
+                    [{"message": "rate limited", "errorCode": "REQUEST_LIMIT_EXCEEDED"}],
+                    status_code=429,
                 )
             records = [
                 _project_record(record, soql) for record in mock._query_records(soql)

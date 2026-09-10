@@ -163,25 +163,29 @@ def test_mcp_tool_directory_rejects_symlink_escape(mcp_workspace: str, tmp_path)
     assert arguments["directory"] != str(outside)
 
 
-def test_mcp_action_classification_defaults_to_write() -> None:
+def test_mcp_action_classification_uses_explicit_allowlist() -> None:
     from omni_connector import ActionDefinition
 
     connector = SalesforceConnector()
-    read = connector._classify_mcp_action(
-        ActionDefinition(name="get_account", description="", mode="read", origin="mcp")
-    )
-    write = connector._classify_mcp_action(
-        ActionDefinition(name="create_account", description="", mode="read", origin="mcp")
-    )
-    unknown = connector._classify_mcp_action(
-        ActionDefinition(name="do_thing", description="", mode="read", origin="mcp")
-    )
+
+    def classify(name: str) -> str:
+        return connector._classify_mcp_action(
+            ActionDefinition(name=name, description="", mode="write", origin="mcp")
+        ).mode
+
+    # Known read-only Salesforce MCP data/core tools.
+    assert classify("run_soql_query") == "read"
+    assert classify("get_username") == "read"
+    # Known mutating tools stay writes even though their names look readable.
+    assert classify("assign_permission_set") == "write"
+    assert classify("run_apex_test") == "write"
+    # Unknown tools default to write.
+    assert classify("do_thing") == "write"
+    assert classify("query_something_else") == "write"
+    # Native actions are never reclassified.
     native = connector._classify_mcp_action(
         ActionDefinition(name="create_case", description="", mode="read", origin="native")
     )
-    assert read.mode == "read"
-    assert write.mode == "write"
-    assert unknown.mode == "write"
     assert native.mode == "read"
 
 

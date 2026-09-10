@@ -30,6 +30,12 @@ T = TypeVar("T")
 # Salesforce access tokens live ~2h; refresh this early to never hit expiry.
 TOKEN_REFRESH_EARLY_SECONDS = 300
 
+# Bounded retry for rate limiting. An unbounded 429 loop would keep the sync
+# from returning control for checkpoint heartbeats and could outlive the
+# manager's stale-sync timeout.
+RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_BASE_DELAY_SECONDS = 10.0
+
 
 class SalesforceClientError(Exception):
     """Base exception for Salesforce API errors."""
@@ -64,7 +70,7 @@ def with_retry(
     - 401: re-raised as AuthenticationError (non-retryable)
     - 403: re-raised as ForbiddenError (non-retryable)
     - 404: re-raised as NotFoundError (non-retryable)
-    - 429: wait then retry (unbounded)
+    - 429: exponential backoff, bounded by RATE_LIMIT_MAX_RETRIES
     - 5xx: exponential backoff, bounded by max_retries
     """
 
@@ -73,6 +79,7 @@ def with_retry(
         async def wrapper(*args: object, **kwargs: object) -> T:
             last_exception: SalesforceError | None = None
             error_retries = 0
+            rate_limit_retries = 0
             refreshed = False
 
             async def refresh_once() -> bool:
@@ -112,9 +119,21 @@ def with_retry(
                     if status == 404:
                         raise NotFoundError(str(e)) from e
                     if status == 429:
-                        retry_after = 10
-                        logger.warning("Rate limited. Waiting %ds", retry_after)
-                        await asyncio.sleep(retry_after)
+                        rate_limit_retries += 1
+                        if rate_limit_retries > RATE_LIMIT_MAX_RETRIES:
+                            raise SalesforceClientError(
+                                "Rate limited by Salesforce; max retries exceeded"
+                            ) from e
+                        delay = RATE_LIMIT_BASE_DELAY_SECONDS * (
+                            2 ** (rate_limit_retries - 1)
+                        )
+                        logger.warning(
+                            "Rate limited. Waiting %.1fs (attempt %d/%d)",
+                            delay,
+                            rate_limit_retries,
+                            RATE_LIMIT_MAX_RETRIES,
+                        )
+                        await asyncio.sleep(delay)
                         continue
                     if status >= 500:
                         error_retries += 1
@@ -476,7 +495,11 @@ class SalesforceClient:
             raise AuthenticationError(
                 f"JWT token request failed ({response.status_code}): {response.text[:200]}"
             )
-        body = response.json()
+        try:
+            body_raw: object = response.json()
+        except ValueError as e:
+            raise AuthenticationError("JWT token response was not valid JSON") from e
+        body = _require_mapping(body_raw, "JWT token response")
         token = body.get("access_token")
         instance_url = body.get("instance_url")
         if not isinstance(token, str) or not token:

@@ -131,6 +131,48 @@ async def test_update_task_status(
     assert task["Status"] == "Completed"
 
 
+async def test_get_case_returns_typed_response(
+    mock_salesforce_api, mock_salesforce_server, action_client: httpx.AsyncClient
+) -> None:
+    mock_salesforce_api.reset()
+    mock_salesforce_api.add_case()
+
+    resp = await action_client.post(
+        "/action",
+        json={
+            "action": "get_case",
+            "params": {"case_id": "500000000000001"},
+            "credentials": _credentials(mock_salesforce_server),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result == {
+        "id": "500000000000001",
+        "case_number": None,
+        "subject": "Support request",
+        "description": "Need help with integration",
+        "status": "New",
+        "priority": "High",
+    }
+
+
+async def test_get_case_missing_is_404(
+    mock_salesforce_api, mock_salesforce_server, action_client: httpx.AsyncClient
+) -> None:
+    mock_salesforce_api.reset()
+
+    resp = await action_client.post(
+        "/action",
+        json={
+            "action": "get_case",
+            "params": {"case_id": "500000000000999"},
+            "credentials": _credentials(mock_salesforce_server),
+        },
+    )
+    assert resp.status_code == 404, resp.text
+
+
 async def test_missing_required_param_is_400(
     mock_salesforce_server, action_client: httpx.AsyncClient
 ) -> None:

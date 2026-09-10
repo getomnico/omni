@@ -297,6 +297,53 @@ def _client_from_credentials(
     return SalesforceClient(SalesforceAuth.from_mapping(credentials))
 
 
+@dataclass(frozen=True)
+class CaseDetail:
+    """Typed subset of a Case returned by the get_case action."""
+
+    id: str
+    case_number: str | None = None
+    subject: str | None = None
+    description: str | None = None
+    status: str | None = None
+    priority: str | None = None
+
+    @classmethod
+    def from_record(cls, raw: Mapping[str, object]) -> CaseDetail:
+        record_id = raw.get("Id")
+        if not isinstance(record_id, str) or not record_id:
+            raise SalesforceClientError("malformed Case response: missing Id")
+        return cls(
+            id=record_id,
+            case_number=_optional_str(raw, "CaseNumber"),
+            subject=_optional_str(raw, "Subject"),
+            description=_optional_str(raw, "Description"),
+            status=_optional_str(raw, "Status"),
+            priority=_optional_str(raw, "Priority"),
+        )
+
+    def to_json(self) -> dict[str, str | None]:
+        return {
+            "id": self.id,
+            "case_number": self.case_number,
+            "subject": self.subject,
+            "description": self.description,
+            "status": self.status,
+            "priority": self.priority,
+        }
+
+
+def _optional_str(raw: Mapping[str, object], field: str) -> str | None:
+    value = raw.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SalesforceClientError(
+            f"malformed Case response: {field} expected string, got {type(value).__name__}"
+        )
+    return value
+
+
 def _summary(object_type: str, raw: Mapping[str, object]) -> dict[str, str]:
     """Small stable summary of a record for action results."""
     record_id = raw.get("Id")
@@ -368,7 +415,7 @@ async def _get_case(
             params.case_id,
             ("Id", "CaseNumber", "Subject", "Description", "Status", "Priority"),
         )
-        return ActionResponse.success(dict(raw)).to_response()
+        return ActionResponse.success(CaseDetail.from_record(raw).to_json()).to_response()
     except NotFoundError:
         return ActionResponse.failure(f"Case not found: {params.case_id}").to_response(
             status_code=404

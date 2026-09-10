@@ -87,18 +87,18 @@ async def test_full_sync_skips_unavailable_user_role_field(
     assert memberships.get(group_email("00G000000000001")) == {"agent@example.com"}
 
 
-async def test_full_sync_skips_unavailable_share_object(
+async def test_full_sync_fails_when_share_state_is_unavailable(
     harness, seed, source_id, mock_salesforce_api, cm_client: httpx.AsyncClient
 ) -> None:
-    """A hidden share object drops only sharing rows, not the records."""
+    """A share object that cannot be read must not commit under-granted docs."""
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
     mock_salesforce_api.hidden_objects.update({"AccountShare"})
 
-    row, docs = await _sync_docs(harness, cm_client, source_id)
-
-    assert row["documents_scanned"] == 1
-    account = docs["Account:001000000000001"]
-    # Visibility stays fail-closed when sharing cannot be read.
-    assert account["permissions"]["public"] is False
-    assert "owner@example.com" in account["permissions"]["users"]
+    run = await _run_sync(cm_client, source_id)
+    row = await wait_for_sync(harness.db_pool, run["sync_run_id"], timeout=40)
+    assert row["status"] == "failed"
+    events = await get_events(harness.db_pool, source_id)
+    assert not any(
+        event["payload"].get("type") == "document_created" for event in events
+    )

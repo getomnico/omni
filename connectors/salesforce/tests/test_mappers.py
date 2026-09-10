@@ -321,7 +321,12 @@ class TestPermissions:
             {"Id": "00E00000000000B", "Name": "B", "ParentRoleId": "00E00000000000A"}
         )
         directory.users_by_id["00500000000000A"] = UserRecord.from_record(
-            {"Id": "00500000000000A", "Email": "a@example.com", "UserRoleId": "00E00000000000A"}
+            {
+                "Id": "00500000000000A",
+                "Email": "a@example.com",
+                "UserRoleId": "00E00000000000A",
+                "IsActive": True,
+            }
         )
         directory.users_by_role["00E00000000000A"] = [directory.users_by_id["00500000000000A"]]
         assert directory._manager_roles("00E00000000000A") == ["00E00000000000B"]

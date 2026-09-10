@@ -83,15 +83,21 @@ class SalesforceDirectory:
     users_by_role: dict[str, list[UserRecord]] = field(default_factory=dict)
 
     def email_for_user(self, user_id: str) -> str | None:
+        """Email for a permission grant.
+
+        Omni matches document permissions by email independently of Salesforce
+        login state, so only users Salesforce reports as active may be granted
+        access. Inactive and unknown-lifecycle users are excluded.
+        """
         user = self.users_by_id.get(user_id)
-        if user is None or not user.email:
+        if user is None or not user.email or user.is_active is not True:
             return None
         return user.email
 
     def _grantable_email(self, user_id: str) -> str | None:
-        """Email for group grants. Inactive users never receive group access."""
+        """Email for group grants. Only active users receive group access."""
         user = self.users_by_id.get(user_id)
-        if user is None or not user.email or user.is_active is False:
+        if user is None or not user.email or user.is_active is not True:
             return None
         return user.email
 
@@ -136,7 +142,7 @@ class SalesforceDirectory:
         return {
             user.email
             for user in self.users_by_role.get(role_id, ())
-            if user.email and user.is_active is not False
+            if user.email and user.is_active is True
         }
 
     def _role_and_descendant_emails(self, role_id: str, seen: set[str]) -> set[str]:

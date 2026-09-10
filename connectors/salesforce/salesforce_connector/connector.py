@@ -68,7 +68,6 @@ from .models import (
     ObjectState,
     OpportunityRecord,
     PeopleState,
-    RecordCursor,
     RoleRecord,
     RunProgress,
     SalesforceAuth,
@@ -128,31 +127,26 @@ SYNCED_GROUP_TYPES = (
 
 MCP_WORKSPACE_ENV = "OMNI_SALESFORCE_MCP_WORKSPACE"
 
-# MCP tools are classified conservatively: only names matching a known
-# read-only verb are treated as reads, everything else is a write so a
-# read-scoped credential can never reach a write-capable tool.
-MCP_READ_TOOL_PREFIXES = (
-    "get_",
-    "list_",
-    "find_",
-    "search_",
-    "query_",
-    "describe_",
-    "read_",
-    "fetch_",
-    "show_",
-    "retrieve_",
-)
-MCP_WRITE_TOOL_PREFIXES = (
-    "create_",
-    "update_",
-    "delete_",
-    "insert_",
-    "upsert_",
-    "remove_",
-    "edit_",
-    "publish_",
-    "send_",
+# Explicit allowlist of read-only Salesforce MCP tools, taken from the
+# @salesforce/mcp tool catalog. Anything not listed here is treated as a
+# write so a read-scoped credential can never reach a mutating tool through a
+# heuristic prefix guess. The connector enables the `data` toolset plus the
+# always-on `core` toolset, so `run_soql_query`, `get_username`, and
+# `list_all_orgs` are the tools it actually exposes today.
+MCP_KNOWN_READ_TOOLS = frozenset(
+    {
+        "run_soql_query",
+        "get_username",
+        "list_all_orgs",
+        "list_code_analyzer_rules",
+        "describe_code_analyzer_rule",
+        "query_code_analyzer_results",
+        "list_devops_center_projects",
+        "list_devops_center_work_items",
+        "check_devops_center_commit_status",
+        "get_mobile_lwc_offline_analysis",
+        "get_mobile_lwc_offline_guidance",
+    }
 )
 
 _RECORD_PARSERS: dict[SalesforceObjectName, Callable[[Mapping[str, object]], RecordModel]] = {
@@ -183,6 +177,8 @@ class ResolvedObject:
     fields: tuple[str, ...]
     has_system_modstamp: bool
     share_plan: ShareQueryPlan | None
+    share_unresolved: bool = False
+    share_unresolved_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +187,30 @@ class ShareSyncResult:
     changed_parents: dict[str, set[str]]
     snapshot: ShareSnapshot | None
     reconciliation_objects: frozenset[str]
+    unresolved_objects: frozenset[str]
+
+
+class DeletionRetentionError(SalesforceClientError):
+    """Deletions older than Salesforce's retention window cannot be covered."""
+
+
+def resolved_fingerprint(objects: tuple[ResolvedObject, ...]) -> str:
+    """Fingerprint of the provider-confirmed query plan.
+
+    Field-level security changes alter this without changing the configured
+    schema, so a change must force a full content/attribute reconciliation.
+    """
+    payload = [
+        {
+            "name": obj.config.name.value,
+            "fields": list(obj.fields),
+            "has_system_modstamp": obj.has_system_modstamp,
+            "share_object": obj.share_plan.share_object if obj.share_plan else None,
+            "share_unresolved": obj.share_unresolved,
+        }
+        for obj in objects
+    ]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 class SalesforceConnector(Connector):
@@ -244,12 +264,7 @@ class SalesforceConnector(Connector):
 
     @staticmethod
     def _mcp_action_mode(tool_name: str) -> str:
-        lowered = tool_name.lower()
-        if lowered.startswith(MCP_WRITE_TOOL_PREFIXES):
-            return "write"
-        if lowered.startswith(MCP_READ_TOOL_PREFIXES):
-            return "read"
-        return "write"
+        return "read" if tool_name in MCP_KNOWN_READ_TOOLS else "write"
 
     def _classify_mcp_action(self, action: ActionDefinition) -> ActionDefinition:
         if action.origin != "mcp":
@@ -616,10 +631,17 @@ class SalesforceConnector(Connector):
             client.instance_url,
         )
 
-        # Schema fingerprint: when the synced field/object/visibility set
-        # changes, saved watermarks no longer cover everything the index
-        # expects, so a full resync is forced.
-        fingerprint = schema_fingerprint(config.enabled_objects, config.public_read_objects)
+        # Schema fingerprint: when the synced field/object/visibility or
+        # permission settings change, saved watermarks no longer cover
+        # everything the index expects, so a full resync is forced.
+        fingerprint = schema_fingerprint(
+            config.enabled_objects,
+            config.public_read_objects,
+            sync_users=config.sync_users,
+            sync_groups=config.sync_groups,
+            sync_shares=config.sync_shares,
+            grant_access_using_hierarchies=config.grant_access_using_hierarchies,
+        )
         run_checkpoint = SalesforceCheckpoint.from_mapping(checkpoint)
         if ctx.connector_state.get("schema_fingerprint") != fingerprint:
             logger.info("Schema fingerprint changed; forcing full resync")
@@ -656,11 +678,17 @@ class SalesforceConnector(Connector):
     # -- checkpoint helpers -------------------------------------------------
 
     @staticmethod
-    def _with_progress(checkpoint: SalesforceCheckpoint, **changes: object) -> SalesforceCheckpoint:
+    def _require_progress(checkpoint: SalesforceCheckpoint) -> RunProgress:
         progress = checkpoint.progress
         if progress is None:
             raise RuntimeError("checkpoint has no run progress")
-        return replace(checkpoint, progress=replace(progress, **changes))  # type: ignore[arg-type]
+        return progress
+
+    @staticmethod
+    def _set_progress(
+        checkpoint: SalesforceCheckpoint, progress: RunProgress
+    ) -> SalesforceCheckpoint:
+        return replace(checkpoint, progress=progress)
 
     @staticmethod
     def _with_object_state(
@@ -697,6 +725,14 @@ class SalesforceConnector(Connector):
             window_end=window_end.isoformat(),
             started_at=datetime.now(UTC).isoformat(),
         )
+
+    @staticmethod
+    def _progress_window_end(progress: RunProgress, fallback: datetime) -> datetime:
+        """Use the pass's fixed window end, falling back if it is malformed."""
+        try:
+            return datetime.fromisoformat(progress.window_end)
+        except ValueError:
+            return fallback
 
     # -- capability discovery ----------------------------------------------
 
@@ -745,8 +781,13 @@ class SalesforceConnector(Connector):
                 )
 
             share_plan: ShareQueryPlan | None = None
+            share_unresolved = False
+            share_unresolved_reason: str | None = None
             if config.sync_shares and item.share_object is not None:
-                share_plan = await self._resolve_share_plan(client, item, available, ctx)
+                share_plan, share_unresolved_reason = await self._resolve_share_plan(
+                    client, item, available, ctx
+                )
+                share_unresolved = share_plan is None
 
             resolved.append(
                 ResolvedObject(
@@ -754,6 +795,8 @@ class SalesforceConnector(Connector):
                     fields=fields,
                     has_system_modstamp=has_system_modstamp,
                     share_plan=share_plan,
+                    share_unresolved=share_unresolved,
+                    share_unresolved_reason=share_unresolved_reason,
                 )
             )
         return tuple(resolved), available
@@ -764,34 +807,41 @@ class SalesforceConnector(Connector):
         item: SalesforceObjectConfig,
         available: frozenset[str],
         ctx: SyncContext,
-    ) -> ShareQueryPlan | None:
+    ) -> tuple[ShareQueryPlan | None, str | None]:
+        """Return the share query plan and, on failure, the reason.
+
+        A configured share object that cannot be resolved is a hard failure:
+        syncing the records without their shares would commit under-granted
+        permissions.
+        """
         share_object = item.share_object
         parent_field = item.share_parent_field
         access_level_field = item.share_access_level_field
         if share_object is None or parent_field is None or access_level_field is None:
-            return None
+            return None, None
         if share_object not in available:
-            logger.info("Skipping unavailable Salesforce share object %s", share_object)
-            return None
+            reason = f"Share object {share_object} is not available to this principal"
+            logger.warning(reason)
+            await ctx.emit_error(f"{item.name.value}:*", reason)
+            return None, reason
         describe = await client.describe_object(share_object)
         fields = ("Id", parent_field, "UserOrGroupId", access_level_field, "RowCause")
         missing = [field for field in fields if not describe.can_select(field)]
         if missing:
-            logger.warning(
-                "Skipping %s shares: fields not exposed by Salesforce: %s",
-                share_object,
-                ", ".join(missing),
+            reason = (
+                f"Share object {share_object} is missing fields: {', '.join(missing)}"
             )
-            await ctx.emit_error(
-                f"{item.name.value}:*",
-                f"Share object {share_object} is missing fields: {', '.join(missing)}",
-            )
-            return None
-        return ShareQueryPlan(
-            share_object=share_object,
-            parent_field=parent_field,
-            access_level_field=access_level_field,
-            fields=fields,
+            logger.warning(reason)
+            await ctx.emit_error(f"{item.name.value}:*", reason)
+            return None, reason
+        return (
+            ShareQueryPlan(
+                share_object=share_object,
+                parent_field=parent_field,
+                access_level_field=access_level_field,
+                fields=fields,
+            ),
+            None,
         )
 
     async def _selectable_fields(
@@ -830,14 +880,18 @@ class SalesforceConnector(Connector):
             if ctx.sync_mode == SyncMode.INCREMENTAL
             else SyncRunMode.FULL
         )
-        window_end = datetime.now(UTC)
-        progress = self._resume_progress(checkpoint, ctx, mode, window_end)
-        checkpoint = replace(checkpoint, progress=progress)
+        fallback_window_end = datetime.now(UTC)
+        progress = self._resume_progress(checkpoint, ctx, mode, fallback_window_end)
+        checkpoint = self._set_progress(checkpoint, progress)
+        # A matching resume must keep the interrupted pass's fixed window; a
+        # new window would silently pull records the pass never claimed.
+        window_end = self._progress_window_end(progress, fallback_window_end)
         # Persist the run-scoped checkpoint before any provider work, so an
         # immediate restart receives an unambiguous run checkpoint.
         await ctx.save_checkpoint(checkpoint.to_json())
 
         objects, available = await self._resolve_objects(client, config, ctx)
+        checkpoint = await self._apply_capability_fingerprint(objects, ctx, checkpoint)
 
         directory, people_state = await self._sync_people(
             client, config, ctx, checkpoint.people, available
@@ -849,19 +903,33 @@ class SalesforceConnector(Connector):
         share_result = await self._sync_shares(
             client, objects, directory, ctx, checkpoint.share_snapshot
         )
-        checkpoint = replace(checkpoint, share_snapshot=share_result.snapshot)
-        if share_result.reconciliation_objects:
-            current_progress = checkpoint.progress
-            if current_progress is not None:
-                checkpoint = self._with_progress(
-                    checkpoint,
-                    full_reconciliation=tuple(
-                        sorted(
-                            set(current_progress.full_reconciliation)
-                            | share_result.reconciliation_objects
-                        )
-                    ),
-                )
+        if share_result.unresolved_objects:
+            # Committing records without their shares would silently revoke
+            # access; fail the run so nothing is published.
+            raise SalesforceClientError(
+                "Could not resolve Salesforce sharing for: "
+                + ", ".join(sorted(share_result.unresolved_objects))
+            )
+        progress = self._require_progress(checkpoint)
+        pending_changed = {
+            object_name: tuple(sorted(ids))
+            for object_name, ids in share_result.changed_parents.items()
+        }
+        checkpoint = self._set_progress(
+            checkpoint,
+            replace(
+                progress,
+                full_reconciliation=tuple(
+                    sorted(
+                        set(progress.full_reconciliation)
+                        | share_result.reconciliation_objects
+                    )
+                ),
+                pending_share_snapshot=share_result.snapshot,
+                pending_changed_parents=pending_changed,
+            ),
+        )
+        await ctx.save_checkpoint(checkpoint.to_json())
         if ctx.is_cancelled():
             return checkpoint
 
@@ -877,7 +945,52 @@ class SalesforceConnector(Connector):
             incremental=mode == SyncRunMode.INCREMENTAL,
             window_end=window_end,
         )
+        if ctx.is_cancelled():
+            return checkpoint
+
+        # The candidate snapshot becomes committed only after the affected
+        # parents were durably emitted; an interruption before this point
+        # leaves the old snapshot so a resume re-detects and re-emits them.
+        checkpoint = replace(checkpoint, share_snapshot=share_result.snapshot)
+        progress = self._require_progress(checkpoint)
+        checkpoint = self._set_progress(
+            checkpoint,
+            replace(
+                progress,
+                pending_share_snapshot=None,
+                pending_changed_parents={},
+            ),
+        )
+        await ctx.save_checkpoint(checkpoint.to_json())
         return replace(checkpoint, synced_at=datetime.now(UTC).isoformat())
+
+    async def _apply_capability_fingerprint(
+        self,
+        objects: tuple[ResolvedObject, ...],
+        ctx: SyncContext,
+        checkpoint: SalesforceCheckpoint,
+    ) -> SalesforceCheckpoint:
+        """Force a full re-emission when the resolved capability set changes."""
+        fingerprint = resolved_fingerprint(objects)
+        if ctx.connector_state.get("resolved_fingerprint") == fingerprint:
+            return checkpoint
+        logger.info("Salesforce capability set changed; forcing full reconciliation")
+        await ctx.save_connector_state(
+            {**dict(ctx.connector_state), "resolved_fingerprint": fingerprint}
+        )
+        progress = self._require_progress(checkpoint)
+        return self._set_progress(
+            checkpoint,
+            replace(
+                progress,
+                full_reconciliation=tuple(
+                    sorted(
+                        set(progress.full_reconciliation)
+                        | {obj.config.name.value for obj in objects}
+                    )
+                ),
+            ),
+        )
 
     async def _sync_people(
         self,
@@ -1045,22 +1158,41 @@ class SalesforceConnector(Connector):
         ctx: SyncContext,
         previous: ShareSnapshot | None,
     ) -> ShareSyncResult:
-        """Refresh share rows, resolve grants, and diff against committed state."""
+        """Refresh share rows, resolve grants, and diff against committed state.
+
+        An object whose configured share state cannot be resolved is reported
+        in ``unresolved_objects`` and contributes no grants, so callers never
+        emit it with an incomplete permission set.
+        """
         grants_by_parent: dict[str, RecordGrants] = {}
         changed_parents: dict[str, set[str]] = {}
         snapshot_grants: dict[str, dict[str, str]] = {}
         reconciliation: set[str] = set()
+        unresolved: set[str] = set()
+        for obj in objects:
+            if obj.share_unresolved:
+                unresolved.add(obj.config.name.value)
+                if previous is not None and obj.config.share_object is not None:
+                    prior = previous.grants.get(obj.config.share_object)
+                    if prior is not None:
+                        snapshot_grants[obj.config.share_object] = prior
         previous_grants = (
             previous.grants if previous is not None and not previous.oversized else {}
         )
-        total_entries = 0
+        total_entries = sum(len(grants) for grants in snapshot_grants.values())
 
         for obj in objects:
             plan = obj.share_plan
             if plan is None:
                 continue
             if ctx.is_cancelled():
-                return ShareSyncResult(grants_by_parent, changed_parents, previous, frozenset())
+                return ShareSyncResult(
+                    grants_by_parent,
+                    changed_parents,
+                    previous,
+                    frozenset(),
+                    frozenset(unresolved),
+                )
             object_grants: dict[str, RecordGrants] = {}
             soql = (
                 f"SELECT {', '.join(plan.fields)} FROM {plan.share_object} "
@@ -1082,8 +1214,9 @@ class SalesforceConnector(Connector):
             except SalesforceClientError as e:
                 logger.warning("Failed to sync %s shares: %s", plan.share_object, e)
                 await ctx.emit_error(f"{obj.config.name}:*", f"Failed to fetch shares: {e}")
-                # Keep the previous snapshot for this object so a transient
-                # failure does not silently reset diff state.
+                # The whole object's share state is unknown; keep its previous
+                # diff state and let the caller skip it.
+                unresolved.add(obj.config.name.value)
                 if previous is not None and plan.share_object in previous.grants:
                     snapshot_grants[plan.share_object] = previous.grants[plan.share_object]
                     total_entries += len(previous.grants[plan.share_object])
@@ -1117,7 +1250,10 @@ class SalesforceConnector(Connector):
             due = self._reconciliation_due(previous)
             if due:
                 reconciliation = {
-                    obj.config.name for obj in objects if obj.share_plan is not None
+                    obj.config.name.value
+                    for obj in objects
+                    if obj.share_plan is not None
+                    and obj.config.name.value not in unresolved
                 }
             snapshot = ShareSnapshot(
                 grants={},
@@ -1129,7 +1265,11 @@ class SalesforceConnector(Connector):
                 oversized=True,
             )
             return ShareSyncResult(
-                grants_by_parent, {}, snapshot, frozenset(reconciliation)
+                grants_by_parent,
+                {},
+                snapshot,
+                frozenset(reconciliation),
+                frozenset(unresolved),
             )
 
         snapshot = ShareSnapshot(
@@ -1137,7 +1277,13 @@ class SalesforceConnector(Connector):
             captured_at=datetime.now(UTC).isoformat(),
             oversized=False,
         )
-        return ShareSyncResult(grants_by_parent, changed_parents, snapshot, frozenset())
+        return ShareSyncResult(
+            grants_by_parent,
+            changed_parents,
+            snapshot,
+            frozenset(),
+            frozenset(unresolved),
+        )
 
     @staticmethod
     def _reconciliation_due(previous: ShareSnapshot | None) -> bool:
@@ -1167,13 +1313,16 @@ class SalesforceConnector(Connector):
         incremental: bool,
         window_end: datetime,
         tolerate_errors: bool = False,
+        skip_objects: frozenset[str] = frozenset(),
     ) -> SalesforceCheckpoint:
         for obj in objects:
             if ctx.is_cancelled():
                 return checkpoint
-            progress = checkpoint.progress
-            if progress is None:
-                raise RuntimeError("checkpoint has no run progress")
+            if obj.config.name.value in skip_objects:
+                # Sharing could not be resolved for this object; leave its
+                # committed state untouched and retry next pass.
+                continue
+            progress = self._require_progress(checkpoint)
             try:
                 if obj.config.name not in progress.records_completed:
                     checkpoint = await self._sync_object_records(
@@ -1189,9 +1338,7 @@ class SalesforceConnector(Connector):
                     )
                     if ctx.is_cancelled():
                         return checkpoint
-                progress = checkpoint.progress
-                if progress is None:
-                    raise RuntimeError("checkpoint has no run progress")
+                progress = self._require_progress(checkpoint)
                 if obj.config.name not in progress.deletions_completed:
                     checkpoint = await self._sync_object_deletions(
                         client=client,
@@ -1206,6 +1353,9 @@ class SalesforceConnector(Connector):
                     if ctx.is_cancelled():
                         return checkpoint
                 checkpoint = self._commit_object_boundary(checkpoint, obj, window_end)
+            except AuthenticationError:
+                # A dead credential is run-fatal even in isolated-error mode.
+                raise
             except Exception as e:
                 if not tolerate_errors:
                     raise
@@ -1320,8 +1470,14 @@ class SalesforceConnector(Connector):
                 cursor = cursor_from_record(raw)
                 emitted_since_checkpoint += 1
                 if emitted_since_checkpoint >= CHECKPOINT_INTERVAL:
-                    checkpoint = self._with_progress(
-                        checkpoint, current_object=config.name, record_cursor=cursor
+                    progress = self._require_progress(checkpoint)
+                    checkpoint = self._set_progress(
+                        checkpoint,
+                        replace(
+                            progress,
+                            current_object=config.name,
+                            record_cursor=cursor,
+                        ),
                     )
                     await ctx.save_checkpoint(checkpoint.to_json())
                     emitted_since_checkpoint = 0
@@ -1331,15 +1487,16 @@ class SalesforceConnector(Connector):
             if len(page.records) < PAGE_SIZE:
                 break
 
-        current_progress = checkpoint.progress
-        if current_progress is None:
-            raise RuntimeError("checkpoint has no run progress")
-        checkpoint = self._with_progress(
+        current_progress = self._require_progress(checkpoint)
+        checkpoint = self._set_progress(
             checkpoint,
-            current_object=None,
-            record_cursor=None,
-            records_completed=tuple(
-                sorted(set(current_progress.records_completed) | {config.name})
+            replace(
+                current_progress,
+                current_object=None,
+                record_cursor=None,
+                records_completed=tuple(
+                    sorted(set(current_progress.records_completed) | {config.name})
+                ),
             ),
         )
         await ctx.save_checkpoint(checkpoint.to_json())
@@ -1387,30 +1544,23 @@ class SalesforceConnector(Connector):
             > requested_start + timedelta(seconds=DELTA_OVERLAP_SECONDS)
         ):
             # Deletions between the committed boundary and the provider's
-            # retention start cannot be covered. Do not silently clamp past
-            # them: force a full record reconciliation and surface the gap.
-            logger.warning(
+            # retention start cannot be covered, and a full re-scan cannot
+            # tombstone records that no longer exist. Fail without advancing
+            # state; recovery needs a platform mechanism or a source rebuild.
+            logger.error(
                 "Salesforce deletion retention for %s starts at %s, after the "
-                "committed boundary %s; forcing full reconciliation",
+                "committed boundary %s; deletions in the gap cannot be recovered",
                 config.name,
                 earliest.isoformat(),
                 requested_start.isoformat(),
             )
-            await ctx.emit_error(
-                f"{config.name}:*",
-                "Deletion retention window no longer covers the committed boundary; "
-                "full reconciliation required",
+            raise DeletionRetentionError(
+                f"{config.name}: Salesforce deletion retention starts at "
+                f"{earliest.isoformat()}, after the last covered boundary "
+                f"{requested_start.isoformat()}; deletions in the gap cannot be "
+                "tombstoned. Recovery requires a platform-level reconciliation "
+                "mechanism or a manual source rebuild."
             )
-            checkpoint = await self._reemit_all_records(
-                client=client,
-                obj=obj,
-                directory=directory,
-                share_grants=share_grants,
-                source_config=source_config,
-                checkpoint=checkpoint,
-                ctx=ctx,
-            )
-            requested_start = earliest
 
         latest = result.latest_date_covered
         current = result
@@ -1435,51 +1585,16 @@ class SalesforceConnector(Connector):
             config.name,
             ObjectState(watermark=state.watermark, deletion_through=boundary),
         )
-        current_progress = checkpoint.progress
-        if current_progress is None:
-            raise RuntimeError("checkpoint has no run progress")
-        checkpoint = self._with_progress(
+        current_progress = self._require_progress(checkpoint)
+        checkpoint = self._set_progress(
             checkpoint,
-            deletions_completed=tuple(
-                sorted(set(current_progress.deletions_completed) | {config.name})
+            replace(
+                current_progress,
+                deletions_completed=tuple(
+                    sorted(set(current_progress.deletions_completed) | {config.name})
+                ),
             ),
         )
-        await ctx.save_checkpoint(checkpoint.to_json())
-        return checkpoint
-
-    async def _reemit_all_records(
-        self,
-        *,
-        client: SalesforceClient,
-        obj: ResolvedObject,
-        directory: SalesforceDirectory,
-        share_grants: dict[str, RecordGrants],
-        source_config: SalesforceSourceConfig,
-        checkpoint: SalesforceCheckpoint,
-        ctx: SyncContext,
-    ) -> SalesforceCheckpoint:
-        """Re-emit every current record during a forced full reconciliation."""
-        cursor: RecordCursor | None = None
-        while True:
-            if ctx.is_cancelled():
-                return checkpoint
-            page = await client.query(full_scan_soql(obj.config.name, obj.fields, cursor))
-            for raw in page.records:
-                record = _RECORD_PARSERS[obj.config.name](raw)
-                await self._emit_record(
-                    client=client,
-                    config=obj.config,
-                    record=record,
-                    directory=directory,
-                    share_grants=share_grants,
-                    source_config=source_config,
-                    ctx=ctx,
-                    emit_updated=True,
-                )
-            if page.records:
-                cursor = cursor_from_record(page.records[-1])
-            if len(page.records) < PAGE_SIZE:
-                break
         await ctx.save_checkpoint(checkpoint.to_json())
         return checkpoint
 
@@ -1642,11 +1757,18 @@ class SalesforceConnector(Connector):
 
         directory: SalesforceDirectory | None = None
         people_state = checkpoint.people
+        # ``share_snapshot`` is the committed (published) snapshot; a refreshed
+        # candidate is only published after its changed parents are emitted.
         share_snapshot = checkpoint.share_snapshot
         share_grants: dict[str, RecordGrants] = {}
+        unresolved_objects: set[str] = set()
         reconcile_objects: set[str] = set()
         last_people_refresh: datetime | None = None
         failures = 0
+
+        checkpoint = await self._apply_capability_fingerprint(objects, ctx, checkpoint)
+        progress = self._require_progress(checkpoint)
+        reconcile_objects.update(progress.full_reconciliation)
 
         async def refresh_people_and_shares(now: datetime, *, propagate: bool) -> None:
             nonlocal directory, people_state, share_snapshot, share_grants
@@ -1659,12 +1781,9 @@ class SalesforceConnector(Connector):
             if ctx.is_cancelled():
                 return
             result = await self._sync_shares(client, objects, directory, ctx, share_snapshot)
-            share_snapshot = result.snapshot
             share_grants = result.grants_by_parent
-            checkpoint = replace(checkpoint, share_snapshot=share_snapshot)
-            await ctx.save_checkpoint(checkpoint.to_json())
-            # An oversized share snapshot cannot be diffed, so the next poll
-            # must fully re-emit the affected objects to reconcile permissions.
+            unresolved_objects.clear()
+            unresolved_objects.update(result.unresolved_objects)
             reconcile_objects.update(result.reconciliation_objects)
             if propagate and result.changed_parents and not ctx.is_cancelled():
                 checkpoint = await self._emit_changed_parents(
@@ -1677,6 +1796,13 @@ class SalesforceConnector(Connector):
                     checkpoint=checkpoint,
                     ctx=ctx,
                 )
+            if ctx.is_cancelled():
+                return
+            # Publish the candidate only after the affected parents were
+            # emitted; otherwise a restart would diff it against itself.
+            share_snapshot = result.snapshot
+            checkpoint = replace(checkpoint, share_snapshot=share_snapshot)
+            await ctx.save_checkpoint(checkpoint.to_json())
             last_people_refresh = now
 
         if not any(
@@ -1703,9 +1829,10 @@ class SalesforceConnector(Connector):
                 ctx=ctx,
                 incremental=False,
                 window_end=baseline_end,
+                skip_objects=frozenset(unresolved_objects),
             )
             await ctx.save_checkpoint(checkpoint.to_json())
-            # The baseline full pass already re-emitted every record.
+            # The baseline full pass already re-emitted every resolved record.
             reconcile_objects.clear()
 
         while True:
@@ -1747,11 +1874,24 @@ class SalesforceConnector(Connector):
                     incremental=True,
                     window_end=now,
                     tolerate_errors=True,
+                    skip_objects=frozenset(unresolved_objects),
+                )
+                # Only drop reconciliation for objects that actually covered
+                # this pass; a tolerated failure must stay queued for retry.
+                progress = self._require_progress(checkpoint)
+                reconcile_objects.difference_update(progress.records_completed)
+                checkpoint = self._set_progress(
+                    checkpoint,
+                    replace(
+                        progress,
+                        full_reconciliation=tuple(sorted(reconcile_objects)),
+                    ),
                 )
                 await ctx.save_checkpoint(checkpoint.to_json())
-                reconcile_objects.clear()
                 failures = 0
                 delay = poll_seconds
+            except AuthenticationError:
+                raise
             except Exception as e:
                 logger.warning("Realtime poll failed: %s", e)
                 await ctx.emit_error("*", f"Realtime poll failed: {e}")

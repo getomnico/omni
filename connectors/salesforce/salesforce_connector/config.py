@@ -325,10 +325,21 @@ def enabled_object_configs(
     return tuple(config for config in SALESFORCE_OBJECT_CONFIGS if config.name in enabled_objects)
 
 
-def schema_fingerprint(enabled_objects: frozenset[str], public_read_objects: frozenset[str]) -> str:
-    """Hash of the synced schema. Stored in connector_state; when it changes
-    (fields/objects added or removed, visibility changed, API version bump)
-    saved watermarks are invalid and a full resync is required."""
+def schema_fingerprint(
+    enabled_objects: frozenset[str],
+    public_read_objects: frozenset[str],
+    *,
+    sync_users: bool = True,
+    sync_groups: bool = True,
+    sync_shares: bool = True,
+    grant_access_using_hierarchies: bool = True,
+) -> str:
+    """Hash of the synced schema and permission-affecting settings.
+
+    Stored in connector_state; when it changes (fields/objects added or
+    removed, visibility or sharing settings changed, API version bump) saved
+    watermarks no longer cover everything the index expects, so a full resync
+    is required to remove stale permissions and attributes."""
     payload = {
         "api_version": API_VERSION,
         "objects": [
@@ -346,5 +357,9 @@ def schema_fingerprint(enabled_objects: frozenset[str], public_read_objects: fro
         ],
         "enabled_objects": sorted(enabled_objects),
         "public_read_objects": sorted(public_read_objects),
+        "sync_users": sync_users,
+        "sync_groups": sync_groups,
+        "sync_shares": sync_shares,
+        "grant_access_using_hierarchies": grant_access_using_hierarchies,
     }
     return sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
