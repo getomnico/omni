@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 
-from .config import REALTIME_POLL_SECONDS, SyncRunMode, validate_object_names
+from .config import SyncRunMode, validate_object_names
 
 CHECKPOINT_VERSION = 2
 # Group emails are synthesized from Salesforce group/role ids because Salesforce
@@ -561,7 +561,6 @@ class SalesforceSourceConfig:
     sync_users: bool = True
     sync_groups: bool = True
     sync_shares: bool = True
-    realtime_poll_seconds: int = REALTIME_POLL_SECONDS
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> SalesforceSourceConfig:
@@ -580,7 +579,6 @@ class SalesforceSourceConfig:
             sync_users=_bool_or(raw, "sync_users", True),
             sync_groups=_bool_or(raw, "sync_groups", True),
             sync_shares=_bool_or(raw, "sync_shares", True),
-            realtime_poll_seconds=_int_or(raw, "realtime_poll_seconds", REALTIME_POLL_SECONDS),
         )
 
     def validate(self) -> None:
@@ -625,14 +623,6 @@ def _bool_or(raw: Mapping[str, object], key: str, default: bool) -> bool:
     if value is None:
         return default
     parsed = _as_bool(value)
-    return default if parsed is None else parsed
-
-
-def _int_or(raw: Mapping[str, object], key: str, default: int) -> int:
-    value = raw.get(key)
-    if value is None:
-        return default
-    parsed = _as_int(value)
     return default if parsed is None else parsed
 
 

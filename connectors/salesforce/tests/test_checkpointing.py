@@ -47,7 +47,7 @@ async def test_checkpoint_persisted_after_full_sync(
     assert checkpoint["objects"]["Account"]["deletion_through"] is not None
 
     # Correctness fingerprints live on the promoted checkpoint (not
-    # connector_state, which is shared with the realtime slot).
+    # connector_state).
     assert checkpoint["schema_fingerprint"]
     assert checkpoint["resolved_fingerprint"]
     assert checkpoint["enabled_objects"]

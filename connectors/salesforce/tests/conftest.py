@@ -742,20 +742,6 @@ def _matches_where(record: Mapping[str, object], where: str) -> bool:
     """Evaluate every top-level AND constraint, including upper bounds."""
     return all(_matches_clause(record, clause) for clause in _split_top_level_and(where))
 
-
-def _matches_ts_window(
-    record: Mapping[str, object], field: str, start: datetime, end: datetime
-) -> bool:
-    value = record.get(field)
-    if value is None:
-        return False
-    try:
-        parsed = _parse_ts(str(value))
-    except ValueError:
-        return False
-    return start <= parsed <= end
-
-
 # ---------------------------------------------------------------------------
 # Mock Salesforce API
 # ---------------------------------------------------------------------------
@@ -1060,25 +1046,6 @@ class MockSalesforceAPI:
             ]
             return JSONResponse({"totalSize": len(records), "done": True, "records": records})
 
-        async def handle_updated(request: Request) -> JSONResponse:
-            denied = auth_guard()
-            if denied:
-                return denied
-            object_type = request.path_params["object_type"]
-            start = _parse_ts(request.query_params["start"])
-            end = _parse_ts(request.query_params["end"])
-            ids = [
-                str(record["Id"])
-                for record in mock.objects.get(object_type, [])
-                if _matches_ts_window(record, "SystemModstamp", start, end)
-            ]
-            return JSONResponse(
-                {
-                    "ids": ids,
-                    "latestDateCovered": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                }
-            )
-
         async def handle_deleted(request: Request) -> JSONResponse:
             denied = auth_guard()
             if denied:
@@ -1231,10 +1198,6 @@ class MockSalesforceAPI:
             Route("/services/data/v62.0/limits/", handle_limits),
             Route("/services/data/v62.0/sobjects/", handle_describe),
             Route("/services/data/v62.0/query/", handle_query),
-            Route(
-                "/services/data/v62.0/sobjects/{object_type}/updated",
-                handle_updated,
-            ),
             Route(
                 "/services/data/v62.0/sobjects/{object_type}/deleted",
                 handle_deleted,

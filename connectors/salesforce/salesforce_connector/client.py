@@ -225,28 +225,6 @@ class QueryResult:
 
 
 @dataclass(frozen=True)
-class UpdatedResult:
-    """Typed envelope of the /updated endpoint response."""
-
-    ids: tuple[str, ...]
-    latest_date_covered: datetime | None
-
-    @classmethod
-    def from_response(cls, raw: Mapping[str, object]) -> UpdatedResult:
-        ids_value = raw.get("ids")
-        if not isinstance(ids_value, list):
-            raise SalesforceClientError(
-                f"malformed updated response: ids expected list, got {type(ids_value).__name__}"
-            )
-        ids = tuple(_as_str(item, "ids[]") for item in ids_value)
-        latest = raw.get("latestDateCovered")
-        return cls(
-            ids=ids,
-            latest_date_covered=_parse_iso(latest) if latest is not None else None,
-        )
-
-
-@dataclass(frozen=True)
 class DeletedRecord:
     id: str
     deleted_date: datetime | None
@@ -606,20 +584,6 @@ class SalesforceClient:
         sf = await self._ensure_session()
         raw = await asyncio.to_thread(sf.query_more, next_records_url, identifier_is_url=True)
         return QueryResult.from_response(_require_mapping(raw, "query page"))
-
-    @with_retry(max_retries=3)
-    async def get_updated(self, object_type: str, start: datetime, end: datetime) -> UpdatedResult:
-        """List ids of records updated within [start, end]."""
-        sf = await self._ensure_session()
-        raw = await asyncio.to_thread(
-            sf.restful,
-            f"sobjects/{object_type}/updated",
-            params={
-                "start": _format_api_datetime(start),
-                "end": _format_api_datetime(end),
-            },
-        )
-        return UpdatedResult.from_response(_require_mapping(raw, "updated"))
 
     @with_retry(max_retries=3)
     async def get_deleted(self, object_type: str, start: datetime, end: datetime) -> DeletedResult:

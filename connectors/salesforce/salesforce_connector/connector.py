@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -45,7 +44,6 @@ from .config import (
     DELTA_OVERLAP_SECONDS,
     MAX_SHARE_SNAPSHOT_ENTRIES,
     PAGE_SIZE,
-    REALTIME_HEARTBEAT_SECONDS,
     SalesforceObjectConfig,
     SalesforceObjectName,
     SyncRunMode,
@@ -264,7 +262,7 @@ class SalesforceConnector(Connector):
 
     @property
     def sync_modes(self) -> list[str]:
-        return ["full", "incremental", "realtime"]
+        return ["full", "incremental"]
 
     @property
     def search_operators(self) -> list[SearchOperator]:
@@ -637,6 +635,11 @@ class SalesforceConnector(Connector):
         checkpoint: Mapping[str, object] | None,
         ctx: SyncContext,
     ) -> None:
+        if ctx.sync_mode.value not in self.sync_modes:
+            # Reject stale/unsupported requests instead of defaulting to full.
+            await ctx.fail(f"Unsupported sync mode: {ctx.sync_mode.value}")
+            return
+
         try:
             auth = SalesforceAuth.from_mapping(credentials)
         except ValueError as e:
@@ -668,14 +671,10 @@ class SalesforceConnector(Connector):
 
         # Correctness fingerprints are committed state on the checkpoint and
         # are only promoted by complete(); they are never written to
-        # connector_state (which is shared by the concurrent realtime slot).
+        # connector_state.
         run_checkpoint = SalesforceCheckpoint.from_mapping(checkpoint)
 
         try:
-            if ctx.sync_mode == SyncMode.REALTIME:
-                await self._realtime_sync(client, config, run_checkpoint, ctx)
-                return
-
             completed = await self._run_scheduled_sync(client, config, run_checkpoint, ctx)
             if ctx.is_cancelled():
                 # A cancelled run must not promote its partially covered
@@ -1503,60 +1502,40 @@ class SalesforceConnector(Connector):
         ctx: SyncContext,
         incremental: bool,
         window_end: datetime,
-        tolerate_errors: bool = False,
-        skip_objects: frozenset[str] = frozenset(),
     ) -> SalesforceCheckpoint:
         for obj in objects:
             if ctx.is_cancelled():
                 return checkpoint
-            if obj.config.name.value in skip_objects:
-                # Sharing could not be resolved for this object; leave its
-                # committed state untouched and retry next pass.
-                continue
             progress = self._require_progress(checkpoint)
-            try:
-                if obj.config.name not in progress.records_completed:
-                    checkpoint = await self._sync_object_records(
-                        client=client,
-                        obj=obj,
-                        directory=directory,
-                        share_grants=share_grants,
-                        source_config=source_config,
-                        checkpoint=checkpoint,
-                        ctx=ctx,
-                        incremental=incremental,
-                        window_end=window_end,
-                    )
-                    if ctx.is_cancelled():
-                        return checkpoint
-                progress = self._require_progress(checkpoint)
-                if obj.config.name not in progress.deletions_completed:
-                    checkpoint = await self._sync_object_deletions(
-                        client=client,
-                        obj=obj,
-                        directory=directory,
-                        share_grants=share_grants,
-                        source_config=source_config,
-                        checkpoint=checkpoint,
-                        ctx=ctx,
-                        window_end=window_end,
-                    )
-                    if ctx.is_cancelled():
-                        return checkpoint
-                checkpoint = self._commit_object_boundary(checkpoint, obj, window_end)
-            except AuthenticationError:
-                # A dead credential is run-fatal even in isolated-error mode.
-                raise
-            except Exception as e:
-                if not tolerate_errors:
-                    raise
-                logger.warning(
-                    "Realtime pass failed for %s: %s; retaining committed boundary",
-                    obj.config.name,
-                    e,
+            if obj.config.name not in progress.records_completed:
+                checkpoint = await self._sync_object_records(
+                    client=client,
+                    obj=obj,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=source_config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                    incremental=incremental,
+                    window_end=window_end,
                 )
-                await ctx.emit_error(f"{obj.config.name}:*", f"Realtime poll failed: {e}")
-                continue
+                if ctx.is_cancelled():
+                    return checkpoint
+            progress = self._require_progress(checkpoint)
+            if obj.config.name not in progress.deletions_completed:
+                checkpoint = await self._sync_object_deletions(
+                    client=client,
+                    obj=obj,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=source_config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                    window_end=window_end,
+                )
+                if ctx.is_cancelled():
+                    return checkpoint
+            checkpoint = self._commit_object_boundary(checkpoint, obj, window_end)
             await ctx.save_checkpoint(checkpoint.to_json())
 
         if incremental and changed_parents:
@@ -1981,263 +1960,3 @@ class SalesforceConnector(Connector):
             await ctx.emit_updated(document)
         else:
             await ctx.emit(document)
-
-    # -- realtime -----------------------------------------------------------
-
-    async def _realtime_sync(
-        self,
-        client: SalesforceClient,
-        config: SalesforceSourceConfig,
-        checkpoint: SalesforceCheckpoint,
-        ctx: SyncContext,
-    ) -> None:
-        """Long-lived polling sync. The connector-manager supervises this slot
-        and restarts it if it dies; it returns only when cancelled."""
-        objects, available = await self._resolve_objects(client, config, ctx)
-        self._ensure_committed_objects_usable(checkpoint, config, objects)
-        poll_seconds = max(config.realtime_poll_seconds, 10)
-        people_interval = timedelta(seconds=max(poll_seconds * 10, 300))
-
-        # Persist run-scoped progress before any provider work so a restart gets
-        # an unambiguous run checkpoint and idle heartbeats never write a
-        # progress-less checkpoint.
-        started_at = datetime.now(UTC)
-        checkpoint = replace(
-            checkpoint,
-            progress=self._resume_progress(
-                checkpoint, ctx, SyncRunMode.INCREMENTAL, started_at
-            ),
-        )
-        await ctx.save_checkpoint(checkpoint.to_json())
-
-        directory: SalesforceDirectory | None = None
-        people_state = checkpoint.people
-        # ``share_snapshot`` is the committed (published) snapshot; a refreshed
-        # candidate is only published after its changed parents are emitted.
-        share_snapshot = checkpoint.share_snapshot
-        share_grants: dict[str, RecordGrants] = {}
-        unresolved_objects: set[str] = set()
-        reconcile_objects: set[str] = set()
-        last_people_refresh: datetime | None = None
-        failures = 0
-
-        checkpoint = self._apply_capability_fingerprint(objects, checkpoint)
-        progress = self._require_progress(checkpoint)
-        reconcile_objects.update(progress.full_reconciliation)
-        schema_fp = schema_fingerprint(
-            config.enabled_objects,
-            config.public_read_objects,
-            sync_users=config.sync_users,
-            sync_groups=config.sync_groups,
-            sync_shares=config.sync_shares,
-            grant_access_using_hierarchies=config.grant_access_using_hierarchies,
-        )
-        if checkpoint.schema_fingerprint != schema_fp:
-            # Settings changed; reconcile every object. Realtime never
-            # completes, so the committed fingerprint is only advanced by a
-            # scheduled run.
-            reconcile_objects.update(obj.config.name.value for obj in objects)
-            checkpoint = self._set_progress(
-                checkpoint,
-                replace(self._require_progress(checkpoint), pending_schema_fingerprint=schema_fp),
-            )
-
-        async def refresh_people_and_shares(now: datetime, *, propagate: bool) -> None:
-            nonlocal directory, people_state, share_snapshot, share_grants
-            nonlocal last_people_refresh, checkpoint
-            previous_people = people_state
-            try:
-                directory, candidate_people = await self._sync_people(
-                    client, config, ctx, people_state, available
-                )
-            except PermissionDependencyError as e:
-                # Required permission data is unavailable. Do not emit any
-                # document this pass; all objects are left untouched.
-                logger.warning("Realtime people/group resolution failed: %s", e)
-                await ctx.emit_error("*", f"Permission resolution failed: {e}")
-                directory = SalesforceDirectory()
-                share_grants = {}
-                unresolved_objects.clear()
-                unresolved_objects.update(obj.config.name.value for obj in objects)
-                last_people_refresh = now
-                return
-            # Resolve shares before re-emitting owner records: an unchanged
-            # share row produces no changed-parent diff, so the owner record
-            # must be emitted with the fresh share map or its valid grants are
-            # stripped (share_grants can be empty at startup or after a
-            # dependency failure).
-            try:
-                result = await self._sync_shares(
-                    client, objects, directory, ctx, share_snapshot
-                )
-            except AuthenticationError:
-                raise
-            except SalesforceClientError as e:
-                logger.warning("Realtime share refresh failed: %s", e)
-                await ctx.emit_error("*", f"Share resolution failed: {e}")
-                unresolved_objects.clear()
-                unresolved_objects.update(obj.config.name.value for obj in objects)
-                last_people_refresh = now
-                return
-            share_grants = result.grants_by_parent
-            unresolved_objects.clear()
-            unresolved_objects.update(result.unresolved_objects)
-            reconcile_objects.update(result.reconciliation_objects)
-            if result.unresolved_objects:
-                # Grants are incomplete for the unresolved objects. Do not
-                # re-emit changed owners (they would lose those shares) and do
-                # not promote the candidate PeopleState/share snapshot, so the
-                # next refresh re-detects the owner change and retries.
-                last_people_refresh = now
-                return
-            if ctx.is_cancelled():
-                return
-            changed_owners = self._changed_owner_ids(previous_people, candidate_people)
-            if propagate and changed_owners:
-                checkpoint = await self._emit_changed_owners(
-                    client=client,
-                    objects=objects,
-                    owner_ids=changed_owners,
-                    directory=directory,
-                    share_grants=share_grants,
-                    source_config=config,
-                    checkpoint=checkpoint,
-                    ctx=ctx,
-                )
-            if propagate and result.changed_parents and not ctx.is_cancelled():
-                checkpoint = await self._emit_changed_parents(
-                    client=client,
-                    objects=objects,
-                    changed_parents=result.changed_parents,
-                    directory=directory,
-                    share_grants=share_grants,
-                    source_config=config,
-                    checkpoint=checkpoint,
-                    ctx=ctx,
-                )
-            if ctx.is_cancelled():
-                return
-            # Promote the candidate PeopleState and share snapshot only after
-            # the affected records were durably emitted; otherwise a restart
-            # would diff the new state against itself and drop the update.
-            people_state = candidate_people
-            share_snapshot = result.snapshot
-            checkpoint = replace(
-                checkpoint, people=people_state, share_snapshot=share_snapshot
-            )
-            await ctx.save_checkpoint(checkpoint.to_json())
-            last_people_refresh = now
-
-        if not any(
-            checkpoint.state_for(obj.config.name).watermark is not None for obj in objects
-        ):
-            # No committed baseline yet: run a full pass so polling has
-            # watermarks to work from. This checkpoint stays run-scoped; a
-            # realtime run never completes(), so it cannot overwrite a
-            # concurrently completed scheduled checkpoint.
-            logger.info("Realtime sync: no watermarks, running baseline full sync")
-            baseline_end = datetime.now(UTC)
-            await ctx.save_checkpoint(checkpoint.to_json())
-            await refresh_people_and_shares(baseline_end, propagate=False)
-            if ctx.is_cancelled() or directory is None:
-                return
-            checkpoint = await self._sync_objects(
-                client=client,
-                objects=objects,
-                directory=directory,
-                share_grants=share_grants,
-                changed_parents={},
-                changed_owners=frozenset(),
-                source_config=config,
-                checkpoint=checkpoint,
-                ctx=ctx,
-                incremental=False,
-                window_end=baseline_end,
-                skip_objects=frozenset(unresolved_objects),
-            )
-            await ctx.save_checkpoint(checkpoint.to_json())
-            # The baseline full pass already re-emitted every resolved record.
-            reconcile_objects.clear()
-
-        while True:
-            if ctx.is_cancelled():
-                return
-            now = datetime.now(UTC)
-
-            if directory is None or (
-                last_people_refresh is not None
-                and now - last_people_refresh >= people_interval
-            ):
-                await refresh_people_and_shares(now, propagate=True)
-                if ctx.is_cancelled():
-                    return
-
-            # Each poll is an independent bounded pass: reset the pass
-            # completion markers but keep committed per-object boundaries.
-            checkpoint = replace(
-                checkpoint,
-                progress=RunProgress(
-                    run_id=ctx.sync_run_id,
-                    mode=SyncRunMode.INCREMENTAL,
-                    window_end=now.isoformat(),
-                    started_at=now.isoformat(),
-                    full_reconciliation=tuple(sorted(reconcile_objects)),
-                ),
-            )
-            assert directory is not None
-            try:
-                checkpoint = await self._sync_objects(
-                    client=client,
-                    objects=objects,
-                    directory=directory,
-                    share_grants=share_grants,
-                    changed_parents={},
-                    changed_owners=frozenset(),
-                    source_config=config,
-                    checkpoint=checkpoint,
-                    ctx=ctx,
-                    incremental=True,
-                    window_end=now,
-                    tolerate_errors=True,
-                    skip_objects=frozenset(unresolved_objects),
-                )
-                # Only drop reconciliation for objects that actually covered
-                # this pass; a tolerated failure must stay queued for retry.
-                progress = self._require_progress(checkpoint)
-                reconcile_objects.difference_update(progress.records_completed)
-                checkpoint = self._set_progress(
-                    checkpoint,
-                    replace(
-                        progress,
-                        full_reconciliation=tuple(sorted(reconcile_objects)),
-                    ),
-                )
-                await ctx.save_checkpoint(checkpoint.to_json())
-                failures = 0
-                delay = poll_seconds
-            except AuthenticationError:
-                raise
-            except Exception as e:
-                logger.warning("Realtime poll failed: %s", e)
-                await ctx.emit_error("*", f"Realtime poll failed: {e}")
-                failures += 1
-                delay = min(poll_seconds * (2**failures), 900)
-
-            if ctx.is_cancelled():
-                return
-            await self._sleep_with_heartbeat(delay, checkpoint, ctx)
-
-    async def _sleep_with_heartbeat(
-        self, delay: float, checkpoint: SalesforceCheckpoint, ctx: SyncContext
-    ) -> None:
-        remaining = delay
-        while remaining > 0:
-            if ctx.is_cancelled():
-                return
-            chunk = min(remaining, float(REALTIME_HEARTBEAT_SECONDS))
-            await asyncio.sleep(chunk)
-            remaining -= chunk
-            if ctx.is_cancelled():
-                return
-            if remaining > 0:
-                await ctx.save_checkpoint(checkpoint.to_json())

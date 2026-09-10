@@ -20,9 +20,6 @@ DELTA_OVERLAP_SECONDS = 900
 # Emit a checkpoint every N records during object scans.
 CHECKPOINT_INTERVAL = 500
 
-# Default poll interval for the realtime sync loop.
-REALTIME_POLL_SECONDS = 60
-
 # Salesforce only retains deleted records for this long. getDeleted cannot
 # cover deletions older than the provider's reported `earliestDateAvailable`.
 DELETION_RETENTION_DAYS = 30
@@ -31,10 +28,6 @@ DELETION_RETENTION_DAYS = 30
 # Beyond this the connector cannot safely diff share grants from checkpoint
 # state, so it reconciles every share-enabled object on every pass instead.
 MAX_SHARE_SNAPSHOT_ENTRIES = 20_000
-
-# Realtime heartbeats must be frequent enough that the manager's stale-sync
-# sweep never fires during provider-only work or long poll sleeps.
-REALTIME_HEARTBEAT_SECONDS = 30
 
 
 class AttributeValueType(StrEnum):

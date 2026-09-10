@@ -28,7 +28,7 @@ async def test_manifest_declares_actions_and_operators(
     assert resp.status_code == 200
     manifest = resp.json()
     assert manifest["source_types"] == ["salesforce"]
-    assert set(manifest["sync_modes"]) == {"full", "incremental", "realtime"}
+    assert set(manifest["sync_modes"]) == {"full", "incremental"}
     action_names = {a["name"] for a in manifest["actions"]}
     assert {
         "find_records",

@@ -1,4 +1,4 @@
-"""Connector-level regression tests for checkpoint, deletion, and realtime semantics.
+"""Connector-level regression tests for checkpoint, deletion, and share semantics.
 
 These tests drive ``SalesforceConnector.sync`` directly against the mock
 Salesforce HTTP API with an in-memory fake SDK client, so they control the
@@ -7,7 +7,6 @@ checkpoint and ``is_resume`` inputs the connector-manager would provide.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -79,7 +78,6 @@ async def run_connector(
     sync_run_id: str = "run-1",
     config: dict[str, object] | None = None,
     cancel_after: int | None = None,
-    cancel_on_sleep: bool = False,
     interrupt_before_propagation: bool = False,
     cancel_on_emit_object: str | None = None,
     cancel_on_changed_owners: bool = False,
@@ -121,13 +119,6 @@ async def run_connector(
                 ctx._set_cancelled()
 
         connector._emit_record = cancelled_object_emit  # type: ignore[method-assign]
-
-    if cancel_on_sleep:
-
-        async def stop_after_poll(*args: Any, **kwargs: Any) -> None:
-            ctx._set_cancelled()
-
-        connector._sleep_with_heartbeat = stop_after_poll  # type: ignore[method-assign]
 
     if interrupt_before_propagation:
 
@@ -582,113 +573,6 @@ async def test_latest_date_covered_earlier_than_window_catches_up(
     assert "Account:001000000000001" in fake2.deleted_ids
 
 
-# ---------------------------------------------------------------------------
-# Realtime
-# ---------------------------------------------------------------------------
-
-
-async def test_realtime_failed_object_retains_watermark(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(
-        mock_salesforce_server,
-        enabled_objects=["Account", "Contact"],
-        realtime_poll_seconds=10,
-    )
-    mock_salesforce_api.reset()
-    mock_salesforce_api.add_people_fixtures()
-    mock_salesforce_api.add_account()
-    mock_salesforce_api.add_contact()
-    fake0_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=None,
-        mode=SyncMode.FULL,
-        is_resume=False,
-        sync_run_id="run-1",
-        config=config,
-    )
-    published = _published(fake0_rt)
-
-    mock_salesforce_api.fail_query_objects.add("Account")
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    assert fake_rt.completed == 0
-    last = fake_rt.checkpoints[-1]
-    # The failed object keeps its committed watermark; other objects advance.
-    assert (
-        last["objects"]["Account"]["watermark"] == published["objects"]["Account"]["watermark"]
-    )
-    assert (
-        last["objects"]["Contact"]["watermark"]
-        != published["objects"]["Contact"]["watermark"]
-    )
-
-
-async def test_realtime_and_scheduled_slots_are_independent(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(mock_salesforce_server, enabled_objects=["Account"])
-    _, published = await _baseline_full(
-        mock_salesforce_api, mock_salesforce_server, config=config
-    )
-    realtime_config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-
-    async def scheduled() -> tuple[FakeSdkClient, Any, SalesforceConnector]:
-        return await run_connector(
-            mock_salesforce_server,
-            checkpoint=published,
-            mode=SyncMode.INCREMENTAL,
-            is_resume=False,
-            sync_run_id="run-sched",
-            config=config,
-        )
-
-    async def realtime() -> tuple[FakeSdkClient, Any, SalesforceConnector]:
-        return await run_connector(
-            mock_salesforce_server,
-            checkpoint=published,
-            mode=SyncMode.REALTIME,
-            is_resume=False,
-            sync_run_id="run-rt",
-            config=realtime_config,
-            cancel_on_sleep=True,
-        )
-
-    (scheduled_fake, _, _), (realtime_fake, _, _) = await asyncio.gather(
-        scheduled(), realtime()
-    )
-    # The scheduled run completes and publishes committed-state only; the
-    # long-lived realtime run never promotes its run-scoped checkpoint.
-    assert scheduled_fake.completed == 1
-    assert realtime_fake.completed == 0
-    scheduled_published = _published(scheduled_fake)
-    assert scheduled_published["progress"] is None
-    assert scheduled_published["objects"]["Account"]["watermark"] is not None
-    assert all(cp["progress"] is not None for cp in realtime_fake.checkpoints)
-    # Neither slot may advance a correctness fingerprint through the shared
-    # connector_state; each keeps its own run-scoped candidate.
-    assert scheduled_fake.connector_states == []
-    assert realtime_fake.connector_states == []
-    assert all(
-        cp["schema_fingerprint"] == published["schema_fingerprint"]
-        for cp in realtime_fake.checkpoints
-    )
-    assert all(
-        cp["resolved_fingerprint"] == published["resolved_fingerprint"]
-        for cp in realtime_fake.checkpoints
-    )
-    assert scheduled_published["schema_fingerprint"] == published["schema_fingerprint"]
-    assert scheduled_published["resolved_fingerprint"] == published["resolved_fingerprint"]
-
 
 # ---------------------------------------------------------------------------
 # Share and group reconciliation
@@ -1036,31 +920,6 @@ async def test_missing_is_active_fails_scheduled_sync(
     assert fake.documents == {}
 
 
-async def test_missing_is_active_realtime_skips_all_documents(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-    _, published = await _baseline_full(
-        mock_salesforce_api, mock_salesforce_server, config=config, accounts=2
-    )
-    mock_salesforce_api.hidden_fields.setdefault("User", set()).add("IsActive")
-
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    assert fake_rt.completed == 0
-    assert fake_rt.documents == {}
-    assert fake_rt.updated_ids == []
-
-
 async def test_unknown_visibility_object_is_rejected(
     mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
 ) -> None:
@@ -1316,59 +1175,6 @@ async def test_share_describe_failure_fails_scheduled_sync(
     assert fake.documents == {}
 
 
-async def test_share_query_failure_leaves_realtime_object_untouched(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-    mock_salesforce_api.reset()
-    mock_salesforce_api.add_people_fixtures()
-    mock_salesforce_api.add_account()
-    mock_salesforce_api.add_share(
-        "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
-    )
-    fake0, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=None,
-        mode=SyncMode.FULL,
-        is_resume=False,
-        sync_run_id="run-1",
-        config=config,
-    )
-    published = _published(fake0)
-    assert "manager@example.com" in _account_event(fake0).permissions.users
-
-    # Owner transition while the share query is broken: grants are incomplete,
-    # so the connector must not re-emit an under-granted record nor promote the
-    # candidate PeopleState (the next refresh must retry the transition).
-    _mutate_user(mock_salesforce_api, "005000000000001", Email="new.owner@example.com")
-    mock_salesforce_api.fail_query_objects.add("AccountShare")
-
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    assert fake_rt.completed == 0
-    assert "Account:001000000000001" not in fake_rt.updated_ids
-    last = fake_rt.checkpoints[-1]
-    # The committed permission signature is retained for the retry.
-    assert (
-        last["people"]["permission_signatures"]["005000000000001"]
-        == "owner@example.com|00E000000000002"
-    )
-    # Sharing is unresolved, so the object keeps its committed state.
-    assert (
-        last["objects"]["Account"]["watermark"]
-        == published["objects"]["Account"]["watermark"]
-    )
-
-
 # ---------------------------------------------------------------------------
 # Permission-setting and capability fingerprints
 # ---------------------------------------------------------------------------
@@ -1550,82 +1356,6 @@ async def test_inactive_share_target_is_not_granted(
     )
     assert "inactive@example.com" not in _account_event(fake).permissions.users
 
-
-# ---------------------------------------------------------------------------
-# Realtime reconciliation and auth
-# ---------------------------------------------------------------------------
-
-
-async def test_realtime_preserves_reconciliation_for_failed_object(
-    mock_salesforce_api: MockSalesforceAPI,
-    mock_salesforce_server: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    config = _config(
-        mock_salesforce_server,
-        enabled_objects=["Account", "Contact"],
-        realtime_poll_seconds=10,
-    )
-    mock_salesforce_api.reset()
-    mock_salesforce_api.add_people_fixtures()
-    mock_salesforce_api.add_account()
-    mock_salesforce_api.add_contact()
-    fake0, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=None,
-        mode=SyncMode.FULL,
-        is_resume=False,
-        sync_run_id="run-1",
-        config=config,
-    )
-    published = _published(fake0)
-
-    monkeypatch.setattr(connector_module, "MAX_SHARE_SNAPSHOT_ENTRIES", 0)
-    mock_salesforce_api.add_share(
-        "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
-    )
-    mock_salesforce_api.fail_query_objects.add("Contact")
-
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    assert fake_rt.completed == 0
-    assert "Account:001000000000001" in fake_rt.updated_ids
-    last = fake_rt.checkpoints[-1]
-    # The failed object stays queued for reconciliation.
-    assert last["progress"]["full_reconciliation"] == ["Contact"]
-
-
-async def test_realtime_authentication_error_is_fatal(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-    _, published = await _baseline_full(
-        mock_salesforce_api, mock_salesforce_server, config=config, accounts=1
-    )
-    mock_salesforce_api.fail_auth_objects.add("Account")
-
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    # Auth failures are run-fatal and must not be swallowed per object.
-    assert fake_rt.failures
-    assert "Authentication" in fake_rt.failures[0]
-    assert fake_rt.completed == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1946,47 +1676,6 @@ async def test_owner_role_change_reexports_unchanged_record(
     assert direct_role_email("00E000000000003") not in groups
 
 
-async def test_realtime_owner_change_preserves_unchanged_share_grants(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-    mock_salesforce_api.reset()
-    mock_salesforce_api.add_people_fixtures()
-    mock_salesforce_api.add_account()
-    mock_salesforce_api.add_share(
-        "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
-    )
-    fake0, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=None,
-        mode=SyncMode.FULL,
-        is_resume=False,
-        sync_run_id="run-1",
-        config=config,
-    )
-    published = _published(fake0)
-    assert "manager@example.com" in _account_event(fake0).permissions.users
-
-    # Only the owner changes; the share row is unchanged, so it produces no
-    # changed-parent diff. The re-emitted owner record must still carry the
-    # resolved share grant.
-    _mutate_user(mock_salesforce_api, "005000000000001", Email="new.owner@example.com")
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    event = _account_event(fake_rt)
-    assert event.attributes["owner_email"] == "new.owner@example.com"
-    assert "manager@example.com" in event.permissions.users
-
-
 # ---------------------------------------------------------------------------
 # Authentication failure during share resolution
 # ---------------------------------------------------------------------------
@@ -2016,32 +1705,6 @@ async def test_share_query_authentication_error_fails_scheduled_sync(
     assert "sharing" not in fake.failures[0].lower()
     assert fake.completed == 0
     assert fake.updated_ids == []
-
-
-async def test_share_query_authentication_error_terminates_realtime(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-    _, published = await _baseline_full(
-        mock_salesforce_api, mock_salesforce_server, config=config, accounts=1
-    )
-    mock_salesforce_api.fail_auth_objects.add("AccountShare")
-
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    assert fake_rt.failures
-    assert "Authentication" in fake_rt.failures[0]
-    assert fake_rt.completed == 0
-    assert fake_rt.updated_ids == []
 
 
 # ---------------------------------------------------------------------------
@@ -2313,13 +1976,10 @@ async def test_enabled_object_removal_fails_without_tombstones(
     assert fake.updated_ids == []
 
 
-@pytest.mark.parametrize("loss_mode", ["availability", "configured_removal"])
-async def test_committed_object_loss_fails_explicitly(
-    mock_salesforce_api: MockSalesforceAPI,
-    mock_salesforce_server: str,
-    loss_mode: str,
+async def test_unavailable_synced_object_fails_explicitly(
+    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
 ) -> None:
-    config_both = _config(mock_salesforce_server, enabled_objects=["Account", "Contact"])
+    config = _config(mock_salesforce_server, enabled_objects=["Account", "Contact"])
     mock_salesforce_api.reset()
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
@@ -2330,42 +1990,25 @@ async def test_committed_object_loss_fails_explicitly(
         mode=SyncMode.FULL,
         is_resume=False,
         sync_run_id="run-1",
-        config=config_both,
+        config=config,
     )
     published = _published(fake0)
 
-    if loss_mode == "availability":
-        # Account disappears from the principal's describe after being synced;
-        # its indexed documents cannot be reconciled, so the run must fail
-        # instead of publishing a fingerprint that omits them.
-        mock_salesforce_api.hidden_objects.add("Account")
-        fake, _, _ = await run_connector(
-            mock_salesforce_server,
-            checkpoint=published,
-            mode=SyncMode.INCREMENTAL,
-            is_resume=False,
-            sync_run_id="run-2",
-            config=config_both,
-        )
-        assert fake.failures
-        assert "Account" in fake.failures[0]
-    else:
-        # Configured removal must be enforced by the realtime slot too, not
-        # only by scheduled sync.
-        config_one = _config(mock_salesforce_server, enabled_objects=["Account"])
-        fake, _, _ = await run_connector(
-            mock_salesforce_server,
-            checkpoint=published,
-            mode=SyncMode.REALTIME,
-            is_resume=False,
-            sync_run_id="run-rt",
-            config=config_one,
-            cancel_on_sleep=True,
-        )
-        assert fake.failures
-        assert "removed" in fake.failures[0].lower()
-
+    # Account disappears from the principal's describe after being synced; its
+    # indexed documents cannot be reconciled, so the run must fail instead of
+    # publishing a fingerprint that omits them.
+    mock_salesforce_api.hidden_objects.add("Account")
+    fake, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=published,
+        mode=SyncMode.INCREMENTAL,
+        is_resume=False,
+        sync_run_id="run-2",
+        config=config,
+    )
     assert fake.completed == 0
+    assert fake.failures
+    assert "Account" in fake.failures[0]
     assert fake.deleted_ids == []
 
 
@@ -2416,46 +2059,6 @@ async def test_oversized_share_snapshot_revocation_reemits_all(
     )
     assert "manager@example.com" not in _account_event(fake1).permissions.users
     assert _published(fake1)["share_snapshot"]["oversized"] is True
-
-
-async def test_oversized_share_snapshot_realtime_revokes(
-    mock_salesforce_api: MockSalesforceAPI,
-    mock_salesforce_server: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(connector_module, "MAX_SHARE_SNAPSHOT_ENTRIES", 0)
-    config = _config(
-        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
-    )
-    mock_salesforce_api.reset()
-    mock_salesforce_api.add_people_fixtures()
-    mock_salesforce_api.add_account()
-    mock_salesforce_api.add_share(
-        "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
-    )
-    fake0, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=None,
-        mode=SyncMode.FULL,
-        is_resume=False,
-        sync_run_id="run-1",
-        config=config,
-    )
-    published = _published(fake0)
-    assert published["share_snapshot"]["oversized"] is True
-
-    mock_salesforce_api.objects["AccountShare"].clear()
-    fake_rt, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=published,
-        mode=SyncMode.REALTIME,
-        is_resume=False,
-        sync_run_id="run-rt",
-        config=config,
-        cancel_on_sleep=True,
-    )
-    assert "Account:001000000000001" in fake_rt.updated_ids
-    assert "manager@example.com" not in _account_event(fake_rt).permissions.users
 
 
 # ---------------------------------------------------------------------------
