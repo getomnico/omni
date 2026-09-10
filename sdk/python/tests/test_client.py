@@ -4,7 +4,7 @@ import pytest
 from httpx import Response
 
 from omni_connector import (
-    ConnectorEvent,
+    connector_event,
     DocumentMetadata,
     DocumentPermissions,
     EventType,
@@ -33,7 +33,7 @@ def test_sdk_config_can_be_shared_without_environment(monkeypatch):
 
 async def test_emit_event_sends_correct_payload(sdk_client, mock_connector_manager):
     """Verify the exact JSON structure sent to connector-manager."""
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_CREATED,
         sync_run_id="sync-123",
         source_id="source-456",
@@ -75,7 +75,7 @@ async def test_emit_event_sends_correct_payload(sdk_client, mock_connector_manag
 @pytest.mark.asyncio
 async def test_emit_deleted_event_minimal_payload(sdk_client, mock_connector_manager):
     """Deleted events should not include content_id, metadata, or permissions."""
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_DELETED,
         sync_run_id="sync-123",
         source_id="source-456",
@@ -206,7 +206,7 @@ async def test_emit_event_raises_on_server_error(mock_connector_manager, monkeyp
 
     client = SdkClient.from_env()
 
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_CREATED,
         sync_run_id="test",
         source_id="test",

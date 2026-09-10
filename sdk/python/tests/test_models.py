@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from omni_connector import (
-    ConnectorEvent,
+    connector_event,
     ConnectorManifest,
     Document,
     DocumentMetadata,
@@ -98,7 +98,7 @@ def test_document():
 
 
 def test_connector_event_created_to_dict():
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_CREATED,
         sync_run_id="sync-123",
         source_id="source-456",
@@ -119,7 +119,7 @@ def test_connector_event_created_to_dict():
 
 
 def test_connector_event_deleted_to_dict():
-    event = ConnectorEvent(
+    event = connector_event(
         type=EventType.DOCUMENT_DELETED,
         sync_run_id="sync-123",
         source_id="source-456",

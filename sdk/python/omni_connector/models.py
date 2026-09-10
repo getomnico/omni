@@ -189,7 +189,7 @@ def _event_discriminator(v: Any) -> str:
     return "document"
 
 
-ConnectorEventValue = Annotated[
+ConnectorEvent = Annotated[
     Annotated[DocumentEvent, Tag("document")]
     | Annotated[GroupMembershipSyncEvent, Tag("group")]
     | Annotated[PersonSyncEvent, Tag("person_sync")]
@@ -198,12 +198,12 @@ ConnectorEventValue = Annotated[
 ]
 
 
-def ConnectorEvent(**data: Any) -> ConnectorEventValue:
-    """Construct the concrete source event model selected by ``type``.
+def connector_event(**data: Any) -> ConnectorEvent:
+    """Build the concrete source event selected by ``type``.
 
-    ``ConnectorEventValue`` remains the discriminated-union type used by SDK
-    APIs, while this function preserves the ergonomic constructor used by
-    connector authors.
+    ``ConnectorEvent`` is the discriminated-union type used by SDK APIs;
+    this lowercase factory keeps the call-site ergonomics for connectors and
+    tests that construct events from a plain ``type`` key.
     """
     event_type = data.get("type")
     event_type = event_type.value if isinstance(event_type, EventType) else event_type

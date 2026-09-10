@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from .config import SdkConfig
 from .exceptions import SdkClientError, ServiceOverloadedError
-from .models import ConnectorEventValue, SdkSourceSyncData
+from .models import ConnectorEvent, SdkSourceSyncData
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class SdkClient:
         self,
         sync_run_id: str,
         source_id: str,
-        event: ConnectorEventValue,
+        event: ConnectorEvent,
     ) -> None:
         """Emit a connector event (document or group membership) to the queue."""
         logger.debug("SDK: Emitting event for sync_run=%s", sync_run_id)
@@ -104,7 +104,7 @@ class SdkClient:
         self,
         sync_run_id: str,
         source_id: str,
-        events: list[ConnectorEventValue],
+        events: list[ConnectorEvent],
     ) -> None:
         """Emit a batch of connector events to the queue in a single request."""
         if not events:
