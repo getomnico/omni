@@ -24,6 +24,12 @@ CHECKPOINT_INTERVAL = 500
 # cover deletions older than the provider's reported `earliestDateAvailable`.
 DELETION_RETENTION_DAYS = 30
 
+# Salesforce rejects a /deleted startDate older than 30 days, and the
+# unbounded first-run window is derived from the run-start timestamp. Trim the
+# requested window so a pass that starts later (or a clock that drifts) stays
+# inside the provider's limit instead of failing with INVALID_REPLICATION_DATE.
+DELETION_WINDOW_MARGIN_DAYS = 1
+
 # Maximum number of shared parents persisted in the checkpoint share snapshot.
 # Beyond this the connector cannot safely diff share grants from checkpoint
 # state, so it reconciles every share-enabled object on every pass instead.
