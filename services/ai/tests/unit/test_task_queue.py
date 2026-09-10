@@ -31,6 +31,7 @@ def _task_row(**overrides) -> dict:
         "available_at": NOW,
         "weight": 1,
         "concurrency_key": None,
+        "deduplication_key": None,
         "attempt_count": 0,
         "max_attempts": 3,
         "last_error": None,
@@ -58,6 +59,7 @@ def test_from_row_parses_string_payload_and_status():
 
     assert task.payload == {"n": 1}
     assert task.status == TaskStatus.RUNNING
+    assert task.deduplication_key is None
 
 
 @pytest.mark.asyncio
@@ -85,6 +87,10 @@ async def test_enqueue_validation_raises_before_database_access():
     with pytest.raises(ValueError, match="payload_version"):
         await repo.enqueue_bulk(
             [EnqueueTaskRequest(task_type="test", payload={}, payload_version=0)]
+        )
+    with pytest.raises(ValueError, match="deduplication_key"):
+        await repo.enqueue_bulk(
+            [EnqueueTaskRequest(task_type="test", payload={}, deduplication_key=" ")]
         )
 
 

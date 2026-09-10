@@ -50,6 +50,17 @@ mod tests {
 
         let queue_id = queue.enqueue(doc_id.clone()).await.unwrap().unwrap();
         assert!(!queue_id.is_empty());
+        let task: (String, i32, serde_json::Value, Option<String>) = sqlx::query_as(
+            "SELECT task_type, payload_version, payload, deduplication_key FROM tasks WHERE id = $1",
+        )
+        .bind(&queue_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(task.0, "document_embedding");
+        assert_eq!(task.1, 1);
+        assert_eq!(task.2["document_id"], doc_id);
+        assert_eq!(task.3.as_deref(), Some(doc_id.as_str()));
 
         let batch = queue.dequeue_batch(10).await.unwrap();
         assert_eq!(batch.len(), 1);
@@ -124,8 +135,9 @@ mod tests {
         let queued_missing_doc_count: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*)
-            FROM embedding_queue
-            WHERE document_id = ANY($1)
+            FROM tasks
+            WHERE task_type = 'document_embedding'
+              AND deduplication_key = ANY($1)
             "#,
         )
         .bind(vec![missing_doc_1, missing_doc_2])
@@ -137,8 +149,9 @@ mod tests {
         let skipped_doc_count: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*)
-            FROM embedding_queue
-            WHERE document_id = $1
+            FROM tasks
+            WHERE task_type = 'document_embedding'
+              AND deduplication_key = $1
             "#,
         )
         .bind(&doc_with_embedding)
@@ -150,8 +163,9 @@ mod tests {
         let existing_active_queue_count: (i64,) = sqlx::query_as(
             r#"
             SELECT COUNT(*)
-            FROM embedding_queue
-            WHERE document_id = $1
+            FROM tasks
+            WHERE task_type = 'document_embedding'
+              AND deduplication_key = $1
             "#,
         )
         .bind(&doc_with_active_queue)
@@ -195,8 +209,8 @@ mod tests {
         let doc_id = create_document(&pool).await;
         let queue_id = queue.enqueue(doc_id.clone()).await.unwrap().unwrap();
 
-        // Fail 3 times to exhaust retries
-        for i in 0..3 {
+        // Fail five times to exhaust the embedding task retry budget.
+        for i in 0..5 {
             let batch = queue.dequeue_batch(10).await.unwrap();
             assert_eq!(batch.len(), 1, "Should dequeue on attempt {}", i);
             queue
@@ -205,7 +219,7 @@ mod tests {
                 .unwrap();
         }
 
-        // retry_count is now 3 (>= 3), dequeue should skip it
+        // retry_count is now 5 and the task is dead-lettered.
         let batch = queue.dequeue_batch(10).await.unwrap();
         assert!(batch.is_empty());
     }
@@ -252,7 +266,7 @@ mod tests {
             .unwrap();
 
         let stats = queue.get_queue_stats().await.unwrap();
-        assert_eq!(stats.failed, 2);
+        assert_eq!(stats.pending, 2);
     }
 
     #[tokio::test]
@@ -263,13 +277,21 @@ mod tests {
         insert_active_embedding_provider(&pool).await;
 
         let doc_id = create_document(&pool).await;
-        queue.enqueue(doc_id).await.unwrap().unwrap();
+        queue.enqueue(doc_id.clone()).await.unwrap().unwrap();
 
-        // Dequeue sets processing + processing_started_at
+        // Claim the task with a 900-second lease, then make its last update
+        // older than the requested 300-second stale threshold. Recovery must
+        // honor the threshold rather than waiting for lease expiry.
         queue.dequeue_batch(10).await.unwrap();
+        sqlx::query(
+            "UPDATE tasks SET updated_at = clock_timestamp() - INTERVAL '10 minutes', lease_expires_at = clock_timestamp() + INTERVAL '10 minutes' WHERE deduplication_key = $1",
+        )
+        .bind(&doc_id)
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        // Recover with timeout=0 treats all processing items as stale
-        let recovered = queue.recover_stale_processing_items(0).await.unwrap();
+        let recovered = queue.recover_stale_processing_items(300).await.unwrap();
         assert_eq!(recovered, 1);
 
         // Should be pending again and dequeue-able

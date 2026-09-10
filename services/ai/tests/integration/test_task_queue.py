@@ -71,6 +71,38 @@ async def test_enqueue_round_trip_generated_id_and_idempotent_retry(db_pool):
 
 
 @pytest.mark.asyncio
+async def test_active_deduplication_is_per_type_and_requeues_after_completion(db_pool):
+    repo = TaskQueueRepository(pool=db_pool)
+    task_type = _unique_task_type("dedup")
+    first = await repo.enqueue(
+        EnqueueTaskRequest(
+            task_type=task_type,
+            payload={"n": 1},
+            deduplication_key="logical-work-1",
+        )
+    )
+    duplicate = await repo.enqueue(
+        EnqueueTaskRequest(
+            task_type=task_type,
+            payload={"n": 2},
+            deduplication_key="logical-work-1",
+        )
+    )
+    assert duplicate.id == first.id
+
+    claim = await repo.claim(task_type, "dedup-worker", ClaimOptions())
+    assert await repo.complete([first.id], claim.claim_token) == 1
+    replacement = await repo.enqueue(
+        EnqueueTaskRequest(
+            task_type=task_type,
+            payload={"n": 3},
+            deduplication_key="logical-work-1",
+        )
+    )
+    assert replacement.id != first.id
+
+
+@pytest.mark.asyncio
 async def test_claim_uses_provided_transaction(db_pool):
     repo = TaskQueueRepository(pool=db_pool)
     task_type = _unique_task_type("claim_transaction")

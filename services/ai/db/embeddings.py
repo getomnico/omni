@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from asyncpg import Pool
+from asyncpg import Connection, Pool
 
 from .connection import get_db_pool
 
@@ -54,14 +54,15 @@ class EmbeddingsRepository:
         )
         return [Embedding(**dict(row)) for row in rows]
 
-    async def delete_for_documents(self, document_ids: List[str]) -> None:
-        """Delete existing embeddings for documents"""
+    async def delete_for_documents(
+        self, document_ids: List[str], connection: Connection | None = None
+    ) -> None:
+        """Delete existing embeddings for documents."""
         if not document_ids:
             return
 
-        pool = await self._get_pool()
-
-        await pool.execute(
+        executor = connection or await self._get_pool()
+        await executor.execute(
             """
             DELETE FROM embeddings
             WHERE document_id = ANY($1)
@@ -70,7 +71,11 @@ class EmbeddingsRepository:
         )
         logger.info(f"Deleted existing embeddings for {len(document_ids)} documents")
 
-    async def bulk_insert(self, embeddings: List[Dict[str, Any]]) -> None:
+    async def bulk_insert(
+        self,
+        embeddings: List[Dict[str, Any]],
+        connection: Connection | None = None,
+    ) -> None:
         """Bulk insert embeddings into database using COPY for efficiency.
 
         Each embedding dict should contain:
@@ -87,7 +92,7 @@ class EmbeddingsRepository:
         if not embeddings:
             return
 
-        pool = await self._get_pool()
+        executor = connection or await self._get_pool()
 
         # Prepare data for COPY
         records = [
@@ -106,7 +111,7 @@ class EmbeddingsRepository:
         ]
 
         # Use COPY for efficient bulk insert
-        await pool.copy_records_to_table(
+        await executor.copy_records_to_table(
             "embeddings",
             records=records,
             columns=[
@@ -123,14 +128,41 @@ class EmbeddingsRepository:
         )
         logger.info(f"Bulk inserted {len(embeddings)} embeddings")
 
+    async def replace_for_document_if_claimed(
+        self,
+        document_id: str,
+        embeddings: List[Dict[str, Any]],
+        task_id: str,
+        claim_token: str,
+    ) -> None:
+        """Replace a document's vectors and fence completion in one transaction.
+
+        If the lease expired while vectors were being generated, the terminal
+        update affects no rows and the transaction rolls back the vector write.
+        """
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await self.delete_for_documents([document_id], connection=conn)
+                await self.bulk_insert(embeddings, connection=conn)
+                completed = await conn.fetchval(
+                    "SELECT task_complete_bulk($1, $2)", [task_id], claim_token
+                )
+                if int(completed) != 1:
+                    raise RuntimeError("embedding task completion was fenced")
+
     async def bulk_clone_for_documents(
-        self, clone_requests: list[tuple[str, str, str]], model_name: str
+        self,
+        clone_requests: list[tuple[str, str, str]],
+        model_name: str,
+        claim_token: str | None = None,
     ) -> dict[str, int]:
         """Clone current-model embeddings and complete queue items atomically.
 
-        clone_requests contains (source_document_id, target_document_id, queue_item_id).
-        Returns target_document_id -> cloned row count. Existing embeddings are replaced
-        for targets that successfully clone rows.
+        clone_requests contains (source_document_id, target_document_id, task_id).
+        When claim_token is provided, cloned tasks are completed in the same
+        transaction. Returns target_document_id -> cloned row count. Existing
+        embeddings are replaced for targets that successfully clone rows.
         """
         if not clone_requests:
             return {}
@@ -236,17 +268,14 @@ class EmbeddingsRepository:
                     list(clone_counts.keys()),
                 )
 
-                await conn.execute(
-                    """
-                    UPDATE embedding_queue
-                    SET status = 'completed',
-                        processed_at = CURRENT_TIMESTAMP,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ANY($1)
-                      AND status = 'processing'
-                    """,
-                    cloned_queue_item_ids,
-                )
+                if claim_token is not None:
+                    completed = await conn.fetchval(
+                        "SELECT task_complete_bulk($1, $2)",
+                        cloned_queue_item_ids,
+                        claim_token,
+                    )
+                    if int(completed) != len(cloned_queue_item_ids):
+                        raise RuntimeError("embedding task completion was fenced")
 
         logger.info(
             f"Cloned {sum(clone_counts.values())} embeddings for {len(clone_counts)} documents"

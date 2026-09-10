@@ -12,6 +12,7 @@ source document during retrieval, so they must point at clean boundaries in the
 original text.
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -92,9 +93,36 @@ class TestBatchProcessorChunkIndexTranslation:
         item.document_id = doc.id
         item.retry_count = 0
 
-        await processor._process_single_document(item, doc)
+        await processor._process_single_document(
+            item, doc, "01J00000000000000000000001", asyncio.Event()
+        )
 
-        return embeddings_repo.bulk_insert.await_args.args[0]
+        return embeddings_repo.replace_for_document_if_claimed.await_args.args[1]
+
+    async def test_heartbeat_loss_stops_batch_regardless_of_current_status(self, monkeypatch):
+        monkeypatch.setattr(bp, "HEARTBEAT_INTERVAL", 0)
+        processor = EmbeddingBatchProcessor(
+            documents_repo=AsyncMock(),
+            queue_repo=AsyncMock(),
+            embeddings_repo=AsyncMock(),
+            app_state=AppState(),
+        )
+        processor.queue_repo.heartbeat.return_value = False
+        item = MagicMock()
+        item.id = "task-1"
+        lease_lost = asyncio.Event()
+        heartbeat_task = asyncio.create_task(
+            processor._heartbeat_claim(
+                [item], "claim-token", lease_lost, {item.id}
+            )
+        )
+        try:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            assert lease_lost.is_set()
+        finally:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
 
     async def test_translated_offsets_match_window_chunk_spans(self, monkeypatch):
         """Control: the persisted offsets must be exactly the piece-relative

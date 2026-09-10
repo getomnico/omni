@@ -3,6 +3,7 @@
 Tests the embedding processor with real database and a mocked embedding provider.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -226,11 +227,16 @@ async def test_online_does_not_clone_from_donor_with_unresolved_embedding_work(
         )
         await conn.execute(
             """
-            INSERT INTO embedding_queue (id, document_id, status)
-            VALUES ($1, $2, 'processing')
+            INSERT INTO tasks (
+                id, task_type, payload, payload_version, status,
+                deduplication_key, claim_token, claimed_by, lease_expires_at
+            ) VALUES ($1, 'document_embedding', $2::jsonb, 1, 'running',
+                      $3, $4, 'test-worker', clock_timestamp() + interval '10 minutes')
             """,
             str(ulid.ULID()),
+            json.dumps({"document_id": donor_doc_id}),
             donor_doc_id,
+            str(ulid.ULID()),
         )
 
     await embeddings_repo.bulk_insert(
@@ -272,7 +278,8 @@ async def test_online_handles_empty_content(
     await online_processor._process_online_batch()
 
     queue_item = await queue_repo.get_by_id(queue_id)
-    assert queue_item.status == "failed"
+    assert queue_item.status == "pending"
+    assert queue_item.retry_count == 1
     assert queue_item.error_message is not None
 
     embeddings = await embeddings_repo.get_for_document(doc_id)
@@ -489,7 +496,7 @@ async def test_failed_items_are_retried(
     await online_processor._process_online_batch()
 
     item = await queue_repo.get_by_id(queue_id)
-    assert item.status == "failed"
+    assert item.status == "pending"
     assert item.retry_count == 1
 
     # 2) Immediate retry — should succeed now
@@ -523,14 +530,20 @@ async def test_max_retries_exhausted_items_are_not_retried(
     queue_id = str(ulid.ULID())
     async with db_pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO embedding_queue (id, document_id, status, retry_count)
-               VALUES ($1, $2, 'failed', 5)""",
+            """
+            INSERT INTO tasks (
+                id, task_type, payload, payload_version, status,
+                deduplication_key, attempt_count, max_attempts, completed_at
+            ) VALUES ($1, 'document_embedding', $2::jsonb, 1, 'dead_letter',
+                      $3, 5, 5, clock_timestamp())
+            """,
             queue_id,
+            json.dumps({"document_id": doc_id}),
             doc_id,
         )
 
     await online_processor._process_online_batch()
 
     item = await queue_repo.get_by_id(queue_id)
-    assert item.status == "failed"
+    assert item.status == "dead_letter"
     assert item.retry_count == 5

@@ -76,7 +76,7 @@ impl BenchmarkIndexer {
             "users",
             "sync_runs",
             "connector_events_queue",
-            "embedding_queue",
+            "tasks",
             "service_credentials",
         ];
 
@@ -493,11 +493,12 @@ impl BenchmarkIndexer {
             let embedding_stats: (i64, i64) = sqlx::query_as(
                 r#"
                 SELECT
-                    COUNT(*) FILTER (WHERE eq.status = 'pending') as pending,
-                    COUNT(*) FILTER (WHERE eq.status = 'processing') as processing
-                FROM embedding_queue eq
-                JOIN documents d ON eq.document_id = d.id
-                WHERE d.source_id = $1
+                    COUNT(*) FILTER (WHERE t.status = 'pending') as pending,
+                    COUNT(*) FILTER (WHERE t.status = 'running') as processing
+                FROM tasks t
+                JOIN documents d ON t.deduplication_key = d.id
+                WHERE t.task_type = 'document_embedding'
+                  AND d.source_id = $1
                 "#,
             )
             .bind(source_id)

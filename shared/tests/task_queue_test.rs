@@ -114,6 +114,32 @@ async fn test_enqueue_bulk_and_caller_id_idempotency() {
 }
 
 #[tokio::test]
+async fn test_active_deduplication_is_per_type_and_allows_terminal_requeue() {
+    let (_env, pool, queue) = new_queue().await;
+
+    let mut first = EnqueueTaskRequest::new("test", serde_json::json!({"n": 1}));
+    first.deduplication_key = Some("document-1".to_string());
+    let mut duplicate = EnqueueTaskRequest::new("test", serde_json::json!({"n": 2}));
+    duplicate.deduplication_key = Some("document-1".to_string());
+
+    assert_eq!(queue.enqueue_bulk(&[first.clone()]).await.unwrap().len(), 1);
+    assert!(queue.enqueue_bulk(&[duplicate.clone()]).await.unwrap().is_empty());
+
+    let claim = queue
+        .claim_bulk(&pool, "test", "worker", &claim_opts(1))
+        .await
+        .unwrap();
+    queue
+        .complete_bulk(&[first.id.clone()], &claim.claim_token)
+        .await
+        .unwrap();
+
+    let replacement = queue.enqueue(duplicate).await.unwrap();
+    assert_ne!(replacement.id, first.id);
+    assert_eq!(replacement.deduplication_key.as_deref(), Some("document-1"));
+}
+
+#[tokio::test]
 async fn test_enqueue_single_is_idempotent() {
     let (_env, _pool, queue) = new_queue().await;
 

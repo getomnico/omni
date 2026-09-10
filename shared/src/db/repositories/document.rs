@@ -1,7 +1,7 @@
 use crate::{
-    SourceType,
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
+    SourceType,
 };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
@@ -585,10 +585,18 @@ impl DocumentRepository {
     }
 
     pub async fn delete(&self, id: &str) -> Result<bool, DatabaseError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM tasks WHERE task_type = 'document_embedding' AND deduplication_key = $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
         let result = sqlx::query("DELETE FROM documents WHERE id = $1")
             .bind(id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -752,10 +760,18 @@ impl DocumentRepository {
             return Ok(0);
         }
 
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM tasks WHERE task_type = 'document_embedding' AND deduplication_key = ANY($1)",
+        )
+        .bind(&document_ids)
+        .execute(&mut *tx)
+        .await?;
         let result = sqlx::query("DELETE FROM documents WHERE id = ANY($1)")
             .bind(&document_ids)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
 
         Ok(result.rows_affected() as i64)
     }
