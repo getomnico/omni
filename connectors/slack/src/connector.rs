@@ -218,8 +218,16 @@ impl Connector for SlackConnector {
             scope_separator: ",".to_string(),
             enrich_endpoint: None,
             registration_endpoint: None,
+            registration_requires_initial_access_token: false,
+            token_response_fields: Vec::new(),
             token_endpoint_auth_method: OAuthTokenEndpointAuthMethod::ClientSecretPost,
             resource: None,
+            issuer_source_config_key: None,
+            client_config_provider_template: None,
+            pkce_required: false,
+            grant_types: None,
+            validate_endpoint_urls: false,
+            supports_org_oauth: true,
         })
     }
 
