@@ -67,11 +67,11 @@ async def test_full_sync_without_hierarchy_tolerates_missing_user_role_field(
     mock_salesforce_server,
     cm_client: httpx.AsyncClient,
 ) -> None:
-    """With hierarchy grants disabled, UserRoleId is not a required field.
+    """With hierarchy grants and shares disabled, UserRoleId is not required.
 
-    Organs without roles enabled do not expose UserRoleId. Once hierarchy
-    grants are explicitly disabled the SELECT list is narrowed instead of
-    aborting the sync, and non-role memberships still resolve.
+    Organs without roles enabled do not expose UserRoleId. When neither
+    hierarchy grants nor sharing need role data, the SELECT list is narrowed
+    instead of aborting the sync, and non-role memberships still resolve.
     """
     await set_source_config(
         harness,
@@ -79,6 +79,7 @@ async def test_full_sync_without_hierarchy_tolerates_missing_user_role_field(
         {
             "instance_url": mock_salesforce_server,
             "grant_access_using_hierarchies": False,
+            "sync_shares": False,
         },
     )
     mock_salesforce_api.add_people_fixtures()

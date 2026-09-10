@@ -202,6 +202,10 @@ class ObjectRemovalError(SalesforceClientError):
     """A previously enabled object was removed and its documents cannot be tombstoned."""
 
 
+class ObjectAvailabilityError(SalesforceClientError):
+    """A previously synced object is no longer available to the principal."""
+
+
 def resolved_fingerprint(objects: tuple[ResolvedObject, ...]) -> str:
     """Fingerprint of the provider-confirmed query plan.
 
@@ -781,6 +785,18 @@ class SalesforceConnector(Connector):
                     f"{item.name.value}:*", "Salesforce object Id field is not accessible"
                 )
                 continue
+            if (
+                config.sync_users
+                and item.name.value not in config.public_read_objects
+                and "OwnerId" not in fields
+            ):
+                # Owner-based grants are the only permission source for a
+                # private record; emitting without OwnerId would silently drop
+                # the owner's access, so fail closed.
+                raise PermissionDependencyError(
+                    f"Required {item.name.value} field OwnerId is not accessible; "
+                    "private document permissions cannot be resolved"
+                )
             has_system_modstamp = "SystemModstamp" in fields
             if not has_system_modstamp:
                 logger.warning(
@@ -878,6 +894,47 @@ class SalesforceConnector(Connector):
             return ()
         return selectable
 
+    @staticmethod
+    def _ensure_committed_objects_usable(
+        checkpoint: SalesforceCheckpoint,
+        config: SalesforceSourceConfig,
+        objects: tuple[ResolvedObject, ...],
+    ) -> None:
+        """Refuse to advance when committed objects can no longer be covered.
+
+        A removed enabled object and an object that disappeared from the
+        principal's describe both leave indexed documents the connector cannot
+        reconcile, so both fail explicitly instead of promoting a fingerprint.
+        Objects skipped on the very first run were never committed and so do
+        not trip this check.
+        """
+        removed = tuple(
+            sorted(
+                set(checkpoint.enabled_objects)
+                - {
+                    item.name.value
+                    for item in enabled_object_configs(config.enabled_objects)
+                }
+            )
+        )
+        if removed:
+            raise ObjectRemovalError(
+                "Salesforce object(s) removed from this source: "
+                + ", ".join(removed)
+                + ". Their indexed documents cannot be tombstoned by the connector; "
+                "the source must be rebuilt so the index is reconciled."
+            )
+        resolved = {obj.config.name.value for obj in objects}
+        lost = tuple(sorted(set(checkpoint.objects) - resolved))
+        if lost:
+            raise ObjectAvailabilityError(
+                "Salesforce object(s) previously synced are no longer available to "
+                "this principal: "
+                + ", ".join(lost)
+                + ". Their indexed documents cannot be reconciled; restore the "
+                "principal's access or rebuild the source."
+            )
+
     # -- scheduled sync -----------------------------------------------------
 
     async def _run_scheduled_sync(
@@ -905,17 +962,6 @@ class SalesforceConnector(Connector):
                 item.name.value for item in enabled_object_configs(config.enabled_objects)
             )
         )
-        removed = tuple(sorted(set(checkpoint.enabled_objects) - set(enabled_now)))
-        if removed:
-            # The connector cannot enumerate the index, so it cannot emit
-            # tombstones for an object that is no longer enabled. Fail instead
-            # of silently completing with stale documents.
-            raise ObjectRemovalError(
-                "Salesforce object(s) removed from this source: "
-                + ", ".join(removed)
-                + ". Their indexed documents cannot be tombstoned by the connector; "
-                "the source must be rebuilt so the index is reconciled."
-            )
 
         # The schema fingerprint is a candidate in run progress and only
         # becomes committed when the run completes, so a failed reconciliation
@@ -953,6 +999,7 @@ class SalesforceConnector(Connector):
         await ctx.save_checkpoint(checkpoint.to_json())
 
         objects, available = await self._resolve_objects(client, config, ctx)
+        self._ensure_committed_objects_usable(checkpoint, config, objects)
         checkpoint = self._apply_capability_fingerprint(objects, checkpoint)
         # Persist the resolved-capability candidate before provider work so a
         # same-run resume (or a later read of this run checkpoint) sees it.
@@ -963,7 +1010,9 @@ class SalesforceConnector(Connector):
             client, config, ctx, previous_people, available
         )
         changed_owners = self._changed_owner_ids(previous_people, people_state)
-        checkpoint = replace(checkpoint, people=people_state)
+        # The candidate PeopleState is promoted only after every changed-owner
+        # record was durably emitted, so an interruption cannot make a resume
+        # diff the new state against itself and lose the owner update.
         if ctx.is_cancelled():
             return checkpoint
 
@@ -1022,6 +1071,7 @@ class SalesforceConnector(Connector):
         progress = self._require_progress(checkpoint)
         checkpoint = replace(
             checkpoint,
+            people=people_state,
             share_snapshot=(
                 progress.pending_share_snapshot
                 if progress.pending_share_snapshot is not None
@@ -1107,23 +1157,24 @@ class SalesforceConnector(Connector):
         groups: list[GroupRecord] = []
         group_members: list[GroupMemberRecord] = []
         roles: list[RoleRecord] = []
+        user_fields: tuple[str, ...] = ()
 
         if config.sync_users:
             if "User" not in available_objects:
                 raise PermissionDependencyError(
                     "User object is not available; document permissions cannot be resolved"
                 )
-            fields = await self._selectable_fields(client, "User", USER_FIELDS)
+            user_fields = await self._selectable_fields(client, "User", USER_FIELDS)
             required = {"Id", "Email", "IsActive"}
             if config.grant_access_using_hierarchies:
                 required.add("UserRoleId")
-            missing = sorted(required - set(fields))
+            missing = sorted(required - set(user_fields))
             if missing:
                 raise PermissionDependencyError(
                     "Required User fields are not queryable: " + ", ".join(missing)
                 )
             async for page in iter_query_pages(
-                client, f"SELECT {', '.join(fields)} FROM User"
+                client, f"SELECT {', '.join(user_fields)} FROM User"
             ):
                 users.extend(UserRecord.from_record(r) for r in page.records)
                 await self._heartbeat(ctx)
@@ -1146,6 +1197,19 @@ class SalesforceConnector(Connector):
             ):
                 groups.extend(GroupRecord.from_record(r) for r in page.records)
                 await self._heartbeat(ctx)
+
+            # Role-group share targets need role hierarchy data even when
+            # hierarchy grants are disabled, or their members are under-granted.
+            has_role_groups = any(
+                group.type is not None and group.type.is_role_group for group in groups
+            )
+            role_data_required = config.grant_access_using_hierarchies or (
+                config.sync_shares and has_role_groups
+            )
+            if role_data_required and "UserRoleId" not in user_fields:
+                raise PermissionDependencyError(
+                    "Required User fields are not queryable: UserRoleId"
+                )
 
             if "GroupMember" not in available_objects:
                 raise PermissionDependencyError(
@@ -1175,9 +1239,10 @@ class SalesforceConnector(Connector):
                 ):
                     roles.extend(RoleRecord.from_record(r) for r in page.records)
                     await self._heartbeat(ctx)
-            elif config.grant_access_using_hierarchies:
+            elif role_data_required:
                 raise PermissionDependencyError(
-                    "UserRole object is not available; role hierarchy grants cannot be resolved"
+                    "UserRole object is not available; role hierarchy and share "
+                    "grants cannot be resolved"
                 )
 
         directory = build_directory(users, groups, group_members, roles)
@@ -1923,6 +1988,7 @@ class SalesforceConnector(Connector):
         """Long-lived polling sync. The connector-manager supervises this slot
         and restarts it if it dies; it returns only when cancelled."""
         objects, available = await self._resolve_objects(client, config, ctx)
+        self._ensure_committed_objects_usable(checkpoint, config, objects)
         poll_seconds = max(config.realtime_poll_seconds, 10)
         people_interval = timedelta(seconds=max(poll_seconds * 10, 300))
 
@@ -1975,7 +2041,7 @@ class SalesforceConnector(Connector):
             nonlocal last_people_refresh, checkpoint
             previous_people = people_state
             try:
-                directory, people_state = await self._sync_people(
+                directory, candidate_people = await self._sync_people(
                     client, config, ctx, people_state, available
                 )
             except PermissionDependencyError as e:
@@ -1989,22 +2055,11 @@ class SalesforceConnector(Connector):
                 unresolved_objects.update(obj.config.name.value for obj in objects)
                 last_people_refresh = now
                 return
-            checkpoint = replace(checkpoint, people=people_state)
-            await ctx.save_checkpoint(checkpoint.to_json())
-            if ctx.is_cancelled():
-                return
-            changed_owners = self._changed_owner_ids(previous_people, people_state)
-            if propagate and changed_owners:
-                checkpoint = await self._emit_changed_owners(
-                    client=client,
-                    objects=objects,
-                    owner_ids=changed_owners,
-                    directory=directory,
-                    share_grants=share_grants,
-                    source_config=config,
-                    checkpoint=checkpoint,
-                    ctx=ctx,
-                )
+            # Resolve shares before re-emitting owner records: an unchanged
+            # share row produces no changed-parent diff, so the owner record
+            # must be emitted with the fresh share map or its valid grants are
+            # stripped (share_grants can be empty at startup or after a
+            # dependency failure).
             try:
                 result = await self._sync_shares(
                     client, objects, directory, ctx, share_snapshot
@@ -2022,6 +2077,20 @@ class SalesforceConnector(Connector):
             unresolved_objects.clear()
             unresolved_objects.update(result.unresolved_objects)
             reconcile_objects.update(result.reconciliation_objects)
+            if ctx.is_cancelled():
+                return
+            changed_owners = self._changed_owner_ids(previous_people, candidate_people)
+            if propagate and changed_owners:
+                checkpoint = await self._emit_changed_owners(
+                    client=client,
+                    objects=objects,
+                    owner_ids=changed_owners,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                )
             if propagate and result.changed_parents and not ctx.is_cancelled():
                 checkpoint = await self._emit_changed_parents(
                     client=client,
@@ -2035,10 +2104,14 @@ class SalesforceConnector(Connector):
                 )
             if ctx.is_cancelled():
                 return
-            # Publish the candidate only after the affected parents were
-            # emitted; otherwise a restart would diff it against itself.
+            # Promote the candidate PeopleState and share snapshot only after
+            # the affected records were durably emitted; otherwise a restart
+            # would diff the new state against itself and drop the update.
+            people_state = candidate_people
             share_snapshot = result.snapshot
-            checkpoint = replace(checkpoint, share_snapshot=share_snapshot)
+            checkpoint = replace(
+                checkpoint, people=people_state, share_snapshot=share_snapshot
+            )
             await ctx.save_checkpoint(checkpoint.to_json())
             last_people_refresh = now
 

@@ -82,6 +82,7 @@ async def run_connector(
     cancel_on_sleep: bool = False,
     interrupt_before_propagation: bool = False,
     cancel_on_emit_object: str | None = None,
+    cancel_on_changed_owners: bool = False,
 ) -> tuple[FakeSdkClient, Any, SalesforceConnector]:
     connector = SalesforceConnector()
     fake = FakeSdkClient()
@@ -135,6 +136,14 @@ async def run_connector(
             return kwargs["checkpoint"]
 
         connector._emit_changed_parents = interrupted_emit_changed  # type: ignore[method-assign]
+
+    if cancel_on_changed_owners:
+
+        async def interrupted_emit_owners(**kwargs: Any) -> Any:
+            ctx._set_cancelled()
+            return kwargs["checkpoint"]
+
+        connector._emit_changed_owners = interrupted_emit_owners  # type: ignore[method-assign]
 
     await connector.sync(
         source_config,
@@ -1798,6 +1807,9 @@ async def test_owner_going_inactive_reexports_unchanged_record(
     assert "owner@example.com" in _account_event(fake0).permissions.users
 
     _mutate_user(mock_salesforce_api, "005000000000001", IsActive=False)
+    # Interrupt while changed-owner records are being re-emitted. The committed
+    # PeopleState must stay at the old signature so the resume re-detects the
+    # change instead of diffing the new state against itself and losing it.
     fake1, _, _ = await run_connector(
         mock_salesforce_server,
         checkpoint=published,
@@ -1805,14 +1817,30 @@ async def test_owner_going_inactive_reexports_unchanged_record(
         is_resume=False,
         sync_run_id="run-2",
         config=config,
+        cancel_on_changed_owners=True,
+    )
+    assert fake1.completed == 0
+    interrupted = fake1.checkpoints[-1]
+    assert (
+        interrupted["people"]["permission_signatures"]["005000000000001"]
+        == "owner@example.com|00E000000000002"
+    )
+
+    fake2, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=interrupted,
+        mode=SyncMode.INCREMENTAL,
+        is_resume=True,
+        sync_run_id="run-2",
+        config=config,
     )
     # The record itself did not change; the owner-permission change re-emits it
     # without the now-inactive direct email grant.
-    assert "Account:001000000000001" in fake1.updated_ids
-    assert "owner@example.com" not in _account_event(fake1).permissions.users
+    assert "Account:001000000000001" in fake2.updated_ids
+    assert "owner@example.com" not in _account_event(fake2).permissions.users
     assert any(
         _event_type(event) == "person_deleted" and event.email == "owner@example.com"
-        for event in fake1.events
+        for event in fake2.events
     )
 
 
@@ -1892,6 +1920,47 @@ async def test_owner_role_change_reexports_unchanged_record(
     groups = _account_event(fake1).permissions.groups
     assert direct_role_email("00E000000000001") in groups
     assert direct_role_email("00E000000000003") not in groups
+
+
+async def test_realtime_owner_change_preserves_unchanged_share_grants(
+    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
+) -> None:
+    config = _config(
+        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
+    )
+    mock_salesforce_api.reset()
+    mock_salesforce_api.add_people_fixtures()
+    mock_salesforce_api.add_account()
+    mock_salesforce_api.add_share(
+        "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
+    )
+    fake0, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=None,
+        mode=SyncMode.FULL,
+        is_resume=False,
+        sync_run_id="run-1",
+        config=config,
+    )
+    published = _published(fake0)
+    assert "manager@example.com" in _account_event(fake0).permissions.users
+
+    # Only the owner changes; the share row is unchanged, so it produces no
+    # changed-parent diff. The re-emitted owner record must still carry the
+    # resolved share grant.
+    _mutate_user(mock_salesforce_api, "005000000000001", Email="new.owner@example.com")
+    fake_rt, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=published,
+        mode=SyncMode.REALTIME,
+        is_resume=False,
+        sync_run_id="run-rt",
+        config=config,
+        cancel_on_sleep=True,
+    )
+    event = _account_event(fake_rt)
+    assert event.attributes["owner_email"] == "new.owner@example.com"
+    assert "manager@example.com" in event.permissions.users
 
 
 # ---------------------------------------------------------------------------
@@ -2002,17 +2071,37 @@ async def test_hierarchy_grants_require_sync_groups(
     assert fake.documents == {}
 
 
-@pytest.mark.parametrize("hidden_object", ["User", "Group", "GroupMember", "UserRole"])
+@pytest.mark.parametrize(
+    ("hidden_object", "hidden_field", "config_overrides"),
+    [
+        ("User", None, {}),
+        ("Group", None, {}),
+        ("GroupMember", None, {}),
+        ("UserRole", None, {}),
+        # Role groups are share targets, so role data is required even when
+        # hierarchy grants are disabled.
+        (None, ("User", "UserRoleId"), {"grant_access_using_hierarchies": False}),
+        ("UserRole", None, {"grant_access_using_hierarchies": False}),
+    ],
+)
 async def test_missing_permission_object_fails_without_documents(
     mock_salesforce_api: MockSalesforceAPI,
     mock_salesforce_server: str,
-    hidden_object: str,
+    hidden_object: str | None,
+    hidden_field: tuple[str, str] | None,
+    config_overrides: dict[str, object],
 ) -> None:
-    config = _config(mock_salesforce_server, enabled_objects=["Account"])
+    config = _config(
+        mock_salesforce_server, enabled_objects=["Account"], **config_overrides
+    )
     mock_salesforce_api.reset()
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
-    mock_salesforce_api.hidden_objects.add(hidden_object)
+    if hidden_object is not None:
+        mock_salesforce_api.hidden_objects.add(hidden_object)
+    if hidden_field is not None:
+        field_object, field_name = hidden_field
+        mock_salesforce_api.hidden_fields.setdefault(field_object, set()).add(field_name)
 
     fake, _, _ = await run_connector(
         mock_salesforce_server,
@@ -2025,18 +2114,26 @@ async def test_missing_permission_object_fails_without_documents(
     # Required permission data is unavailable, so no document may be emitted
     # with an incomplete permission set.
     assert fake.failures
-    assert hidden_object in fake.failures[0]
+    expected = hidden_object if hidden_object is not None else hidden_field[1]
+    assert expected in fake.failures[0]
     assert fake.documents == {}
 
 
+@pytest.mark.parametrize(
+    ("object_name", "field_name"),
+    [("Group", "RelatedId"), ("Account", "OwnerId")],
+)
 async def test_missing_required_permission_field_fails_without_documents(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
+    mock_salesforce_api: MockSalesforceAPI,
+    mock_salesforce_server: str,
+    object_name: str,
+    field_name: str,
 ) -> None:
     config = _config(mock_salesforce_server, enabled_objects=["Account"])
     mock_salesforce_api.reset()
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
-    mock_salesforce_api.hidden_fields.setdefault("Group", set()).add("RelatedId")
+    mock_salesforce_api.hidden_fields.setdefault(object_name, set()).add(field_name)
 
     fake, _, _ = await run_connector(
         mock_salesforce_server,
@@ -2047,7 +2144,7 @@ async def test_missing_required_permission_field_fails_without_documents(
         config=config,
     )
     assert fake.failures
-    assert "RelatedId" in fake.failures[0]
+    assert field_name in fake.failures[0]
     assert fake.documents == {}
 
 
@@ -2183,6 +2280,62 @@ async def test_enabled_object_removal_fails_without_tombstones(
     assert "removed" in fake.failures[0].lower()
     assert fake.deleted_ids == []
     assert fake.updated_ids == []
+
+
+@pytest.mark.parametrize("loss_mode", ["availability", "configured_removal"])
+async def test_committed_object_loss_fails_explicitly(
+    mock_salesforce_api: MockSalesforceAPI,
+    mock_salesforce_server: str,
+    loss_mode: str,
+) -> None:
+    config_both = _config(mock_salesforce_server, enabled_objects=["Account", "Contact"])
+    mock_salesforce_api.reset()
+    mock_salesforce_api.add_people_fixtures()
+    mock_salesforce_api.add_account()
+    mock_salesforce_api.add_contact()
+    fake0, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=None,
+        mode=SyncMode.FULL,
+        is_resume=False,
+        sync_run_id="run-1",
+        config=config_both,
+    )
+    published = _published(fake0)
+
+    if loss_mode == "availability":
+        # Account disappears from the principal's describe after being synced;
+        # its indexed documents cannot be reconciled, so the run must fail
+        # instead of publishing a fingerprint that omits them.
+        mock_salesforce_api.hidden_objects.add("Account")
+        fake, _, _ = await run_connector(
+            mock_salesforce_server,
+            checkpoint=published,
+            mode=SyncMode.INCREMENTAL,
+            is_resume=False,
+            sync_run_id="run-2",
+            config=config_both,
+        )
+        assert fake.failures
+        assert "Account" in fake.failures[0]
+    else:
+        # Configured removal must be enforced by the realtime slot too, not
+        # only by scheduled sync.
+        config_one = _config(mock_salesforce_server, enabled_objects=["Account"])
+        fake, _, _ = await run_connector(
+            mock_salesforce_server,
+            checkpoint=published,
+            mode=SyncMode.REALTIME,
+            is_resume=False,
+            sync_run_id="run-rt",
+            config=config_one,
+            cancel_on_sleep=True,
+        )
+        assert fake.failures
+        assert "removed" in fake.failures[0].lower()
+
+    assert fake.completed == 0
+    assert fake.deleted_ids == []
 
 
 # ---------------------------------------------------------------------------
