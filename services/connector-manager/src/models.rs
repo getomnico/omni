@@ -307,7 +307,4 @@ pub struct ExecuteSkillRequest {
     pub user_id: Option<String>,
     #[serde(default)]
     pub arguments: Option<JsonValue>,
-    /// Actor for per-user credential resolution on native MCP skills.
-    #[serde(default)]
-    pub user_id: Option<String>,
 }
