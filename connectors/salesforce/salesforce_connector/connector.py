@@ -11,6 +11,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from urllib.parse import urlparse
 
 from fastapi.responses import JSONResponse
@@ -220,6 +221,20 @@ def resolved_fingerprint(objects: tuple[ResolvedObject, ...]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _build_source_binding(organization_id: str | None) -> OAuthSourceBinding:
+    """Construct the SDK's source-binding value for the installed SDK.
+
+    Newer SDKs model the binding as a pydantic object (the web layer calls
+    ``model_dump``); older ones alias it to ``dict[str, str]``. Detect which
+    is installed so the OAuth validation endpoint can serialize the result.
+    """
+    payload = {"organization_id": organization_id}
+    model_validate = getattr(OAuthSourceBinding, "model_validate", None)
+    if model_validate is not None:
+        return model_validate(payload)  # type: ignore[no-any-return]
+    return cast(OAuthSourceBinding, payload)
+
+
 class SalesforceConnector(Connector):
     """Salesforce CRM connector for Omni."""
 
@@ -415,7 +430,10 @@ class SalesforceConnector(Connector):
         ):
             raise ValueError("Salesforce OAuth organization does not match the credential")
 
-        binding: OAuthSourceBinding = {"organization_id": actual_org_id}
+        # The SDK source-binding contract is a field bag (organization_id,
+        # instance_url); build it in whichever representation the installed
+        # SDK expects.
+        binding = _build_source_binding(actual_org_id)
 
         if expected_instance is None and expected_org_id is None:
             return binding
@@ -895,7 +913,7 @@ class SalesforceConnector(Connector):
             raise ObjectRemovalError(
                 "Salesforce object(s) removed from this source: "
                 + ", ".join(removed)
-                + ". Their indexed documents cannot be tombstones by the connector; "
+                + ". Their indexed documents cannot be tombstoned by the connector; "
                 "the source must be rebuilt so the index is reconciled."
             )
 
@@ -915,12 +933,17 @@ class SalesforceConnector(Connector):
         if checkpoint.schema_fingerprint != schema_fp:
             logger.info("Salesforce schema/settings changed; forcing full re-emission")
             forced = enabled_now
+        full_reconciliation = set(progress.full_reconciliation) | set(forced)
         checkpoint = self._set_progress(
             checkpoint,
             replace(
                 progress,
-                full_reconciliation=tuple(
-                    sorted(set(progress.full_reconciliation) | set(forced))
+                full_reconciliation=tuple(sorted(full_reconciliation)),
+                # A same-run resume may already have marked an object complete
+                # under the old fingerprint. Forcing reconciliation must
+                # invalidate that marker so the object is re-scanned.
+                records_completed=tuple(
+                    name for name in progress.records_completed if name not in full_reconciliation
                 ),
                 pending_schema_fingerprint=schema_fp,
             ),
@@ -931,6 +954,9 @@ class SalesforceConnector(Connector):
 
         objects, available = await self._resolve_objects(client, config, ctx)
         checkpoint = self._apply_capability_fingerprint(objects, checkpoint)
+        # Persist the resolved-capability candidate before provider work so a
+        # same-run resume (or a later read of this run checkpoint) sees it.
+        await ctx.save_checkpoint(checkpoint.to_json())
 
         previous_people = checkpoint.people
         directory, people_state = await self._sync_people(
@@ -1039,15 +1065,17 @@ class SalesforceConnector(Connector):
             return checkpoint
         logger.info("Salesforce capability set changed; forcing full reconciliation")
         progress = self._require_progress(checkpoint)
+        forced = {obj.config.name.value for obj in objects}
+        full_reconciliation = set(progress.full_reconciliation) | forced
         return self._set_progress(
             checkpoint,
             replace(
                 progress,
-                full_reconciliation=tuple(
-                    sorted(
-                        set(progress.full_reconciliation)
-                        | {obj.config.name.value for obj in objects}
-                    )
+                full_reconciliation=tuple(sorted(full_reconciliation)),
+                # Field-level security may have changed for an object this run
+                # already completed, so drop its completion marker.
+                records_completed=tuple(
+                    name for name in progress.records_completed if name not in forced
                 ),
                 pending_resolved_fingerprint=fingerprint,
             ),
@@ -1344,13 +1372,16 @@ class SalesforceConnector(Connector):
             if changed:
                 changed_parents[obj.config.name] = changed
 
-        if total_entries > MAX_SHARE_SNAPSHOT_ENTRIES:
-            # The per-parent snapshot cannot be persisted, so diffing is
-            # unavailable. Reconcile every share-enabled object on every pass
-            # rather than knowingly retaining a revoked grant until a timer
-            # expires.
+        if total_entries > MAX_SHARE_SNAPSHOT_ENTRIES or (
+            previous is not None and previous.oversized
+        ):
+            # The per-parent snapshot cannot be persisted (or was already
+            # dropped), so diffing is unavailable. Reconcile every
+            # share-enabled object on every pass rather than knowingly
+            # retaining a revoked grant until a timer expires.
             logger.warning(
-                "Salesforce share snapshot exceeds %d entries; reconciling every pass",
+                "Salesforce share snapshot exceeds %d entries or was already "
+                "oversized; reconciling every pass",
                 MAX_SHARE_SNAPSHOT_ENTRIES,
             )
             reconciliation = {
@@ -1534,6 +1565,10 @@ class SalesforceConnector(Connector):
             window_start = None
 
         cursor = progress.record_cursor if progress.current_object == config.name else None
+        if force_full:
+            # A forced reconciliation restarts from the committed boundary; a
+            # cursor from an interrupted delta pass is not a valid Id keyset.
+            cursor = None
         if delta:
             # A malformed or partial delta cursor cannot prove where the scan
             # stopped; restart the fixed window from the committed boundary.
@@ -1581,6 +1616,10 @@ class SalesforceConnector(Connector):
                     )
                     await ctx.save_checkpoint(checkpoint.to_json())
                     emitted_since_checkpoint = 0
+                if ctx.is_cancelled():
+                    # Stop promptly once cancellation is observed; the
+                    # checkpoint we just saved never claims unflushed events.
+                    return checkpoint
 
             if ctx.is_cancelled():
                 return checkpoint

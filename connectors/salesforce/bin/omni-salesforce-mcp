@@ -17,7 +17,7 @@ chmod 700 "$state_root" "$source_parent"
 # Do not share Salesforce CLI's auth store or alias between concurrent users.
 # The process id plus a timestamp is sufficient inside this private state root;
 # mkdir still provides the final collision check.
-nonce="$(date +%s)\.$$"
+nonce="$(date +%s).$$"
 source_dir="$source_parent/$nonce"
 if ! mkdir "$source_dir"; then
   printf '%s\n' "Unable to create private Salesforce MCP state directory" >&2
@@ -72,7 +72,7 @@ if [ "$OMNI_SALESFORCE_AUTH_MODE" = "jwt" ]; then
     --no-prompt 2>&1); then
     unset login_output
     printf '%s\n' "Salesforce JWT login failed" >&2
-    exit 1
+    auth_failure
   fi
   org_target="$SF_USERNAME"
 elif [ "$OMNI_SALESFORCE_AUTH_MODE" = "access_token" ]; then
@@ -90,7 +90,7 @@ elif [ "$OMNI_SALESFORCE_AUTH_MODE" = "access_token" ]; then
       token_value=${SF_ACCESS_TOKEN#*!}
       if [ -z "$token_org_id" ] || [ -z "$token_value" ]; then
         printf '%s\n' "Invalid Salesforce OAuth access-token format" >&2
-        exit 1
+        auth_failure
       fi
       ;;
     *)
@@ -119,12 +119,12 @@ print(value)
     }
   if [ -n "$token_org_id" ] && [ "$actual_org_id" != "$token_org_id" ]; then
     printf '%s\n' "Salesforce OAuth organization does not match its access token" >&2
-    exit 1
+    auth_failure
   fi
   token_org_id="$actual_org_id"
   if [ -n "${SF_ORG_ID:-}" ] && [ "$SF_ORG_ID" != "$actual_org_id" ]; then
     printf '%s\n' "Salesforce OAuth organization does not match the source" >&2
-    exit 1
+    auth_failure
   fi
   # The access-token CLI command requires the org-id!token representation
   # but sends that representation to Salesforce as the bearer token. That is
@@ -162,7 +162,7 @@ fi
 
 if [ -z "$org_target" ]; then
   printf '%s\n' "Salesforce MCP did not resolve an authenticated org" >&2
-  exit 1
+  auth_failure
 fi
 
 # The CLI has persisted the credential in its private state directory. Do not

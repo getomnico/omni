@@ -28,6 +28,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from salesforce_connector.config import API_VERSION
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,6 +66,9 @@ class FakeSdkClient:
     def __init__(self) -> None:
         self.events: list[Any] = []
         self.checkpoints: list[dict[str, Any]] = []
+        # Number of flushed events captured at each checkpoint, so tests can
+        # prove events were flushed before a cursor advanced.
+        self.checkpoint_event_counts: list[int] = []
         self.connector_states: list[dict[str, Any]] = []
         self.heartbeats = 0
         self.completed = 0
@@ -86,6 +91,7 @@ class FakeSdkClient:
         self, sync_run_id: str, checkpoint: dict[str, Any]
     ) -> None:
         self.checkpoints.append(checkpoint)
+        self.checkpoint_event_counts.append(len(self.events))
 
     async def update_connector_state(
         self, source_id: str, connector_state: dict[str, Any]
@@ -707,15 +713,12 @@ def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
     if id_gt:
         return str(record.get("Id", "")) > id_gt.group(1)
 
-    id_in = re.search(r"Id\s+IN\s*\(([^)]+)\)", clause)
-    if id_in:
-        ids = {v.strip().strip("'") for v in id_in.group(1).split(",")}
-        return record.get("Id") in ids
-
-    type_in = re.search(r"Type\s+IN\s*\(([^)]+)\)", clause)
-    if type_in:
-        types = {v.strip().strip("'") for v in type_in.group(1).split(",")}
-        return record.get("Type") in types
+    # Generic field IN (...) filter, anchored on the whole field name so
+    # OwnerId IN (...) is not mistaken for Id IN (...).
+    field_in = re.search(r"(\w+)\s+IN\s*\(([^)]+)\)", clause)
+    if field_in:
+        values = {v.strip().strip("'") for v in field_in.group(2).split(",")}
+        return record.get(field_in.group(1)) in values
 
     row_cause = re.search(r"RowCause\s*!=\s*'([^']+)'", clause)
     if row_cause:
@@ -795,6 +798,10 @@ class MockSalesforceAPI:
         self.deletion_earliest_override: str | None = None
         # Override the latest covered deletion timestamp reported by /deleted.
         self.deletion_latest_override: str | None = None
+        # When set, /deleted returns at most this many records per page and a
+        # nextRecordsUrl, exercising the connector's pagination path.
+        self.deleted_page_size: int | None = None
+        self._deleted_windows: dict[str, tuple[datetime, datetime]] = {}
 
     def reset(self) -> None:
         self.objects.clear()
@@ -817,6 +824,8 @@ class MockSalesforceAPI:
         self.fail_deleted_objects.clear()
         self.deletion_earliest_override = None
         self.deletion_latest_override = None
+        self.deleted_page_size = None
+        self._deleted_windows.clear()
 
     def add_record(self, object_type: str, payload: dict[str, object]) -> None:
         self.objects.setdefault(object_type, []).append(payload)
@@ -1080,8 +1089,40 @@ class MockSalesforceAPI:
                     [{"message": "deleted failed", "errorCode": "QUERY_FAILED"}],
                     status_code=400,
                 )
-            start = _parse_ts(request.query_params["start"])
-            end = _parse_ts(request.query_params["end"])
+            # Salesforce returns a nextRecordsUrl for large delete sets. The
+            # follow-up request carries only the locator, so the original
+            # window is looked up from the mock's per-object state.
+            query_id = request.query_params.get("queryId")
+            offset = 0
+            if query_id is None:
+                start = _parse_ts(request.query_params["start"])
+                end = _parse_ts(request.query_params["end"])
+                mock._deleted_windows[object_type] = (start, end)
+            else:
+                window = mock._deleted_windows.get(object_type)
+                if window is None:
+                    return JSONResponse(
+                        [
+                            {
+                                "message": "invalid query locator",
+                                "errorCode": "INVALID_QUERY_LOCATOR",
+                            }
+                        ],
+                        status_code=400,
+                    )
+                start, end = window
+                try:
+                    offset = int(query_id)
+                except ValueError:
+                    return JSONResponse(
+                        [
+                            {
+                                "message": "invalid query locator",
+                                "errorCode": "INVALID_QUERY_LOCATOR",
+                            }
+                        ],
+                        status_code=400,
+                    )
             latest = mock.deletion_latest_override or end.strftime("%Y-%m-%dT%H:%M:%SZ")
             latest_dt = _parse_ts(latest)
             # Only deletions Salesforce reports as covered are returned.
@@ -1091,16 +1132,28 @@ class MockSalesforceAPI:
                 for entry in mock.deleted.get(object_type, [])
                 if start <= _parse_ts(entry["deletedDate"]) <= effective_end
             ]
+            next_records_url: str | None = None
+            if mock.deleted_page_size is not None:
+                page = deleted_records[offset : offset + mock.deleted_page_size]
+                next_offset = offset + len(page)
+                if next_offset < len(deleted_records):
+                    next_records_url = (
+                        f"/services/data/{API_VERSION}/sobjects/{object_type}/deleted"
+                        f"?queryId={next_offset}"
+                    )
+            else:
+                page = deleted_records
             earliest = mock.deletion_earliest_override or start.strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
-            return JSONResponse(
-                {
-                    "deletedRecords": deleted_records,
-                    "earliestDateAvailable": earliest,
-                    "latestDateCovered": latest,
-                }
-            )
+            body: dict[str, object] = {
+                "deletedRecords": page,
+                "earliestDateAvailable": earliest,
+                "latestDateCovered": latest,
+            }
+            if next_records_url is not None:
+                body["nextRecordsUrl"] = next_records_url
+            return JSONResponse(body)
 
         async def handle_get_record(request: Request) -> JSONResponse:
             denied = auth_guard()

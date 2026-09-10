@@ -401,7 +401,12 @@ def _normalize_next_records_path(next_records_url: str) -> tuple[str, dict[str, 
             f"unexpected Salesforce next-records URL: {next_records_url!r}"
         )
     relative = parsed.path[len(prefix) :]
-    if not relative:
+    segments = relative.split("/")
+    if (
+        not relative
+        or relative.startswith("/")
+        or any(segment in {"", ".", ".."} for segment in segments)
+    ):
         raise SalesforceClientError(
             f"unexpected Salesforce next-records URL: {next_records_url!r}"
         )

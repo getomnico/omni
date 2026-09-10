@@ -26,6 +26,23 @@ def _source(config: dict[str, object]) -> Source:
     )
 
 
+def _binding_dict(binding: object) -> dict[str, str]:
+    """Normalize a source binding for either SDK representation.
+
+    Newer SDKs return a pydantic object (serialized with ``model_dump``) and
+    older ones return a plain mapping. The web layer stores the serialized
+    field bag, so assert on that shape.
+    """
+    if binding is None:
+        return {}
+    model_dump = getattr(binding, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(exclude_none=True)
+        return {str(key): str(value) for key, value in dumped.items()}
+    assert isinstance(binding, dict)
+    return {str(key): str(value) for key, value in binding.items()}
+
+
 def test_source_binding_prefers_reserved_key_over_legacy_keys() -> None:
     config = {
         "source_binding": {"organization_id": "00D000000000001"},
@@ -57,7 +74,7 @@ async def test_validate_binds_first_seen_organization_id() -> None:
         OAuthCredentialFlow.ORG_SOURCE,
         {"organization_id": "00D000000000001"},
     )
-    assert binding == {"organization_id": "00D000000000001"}
+    assert _binding_dict(binding) == {"organization_id": "00D000000000001"}
 
 
 @pytest.mark.asyncio
@@ -139,7 +156,7 @@ async def test_validate_does_not_trust_credential_org_without_userinfo(
         {},
     )
     assert calls == 1
-    assert binding == {"organization_id": "00D000000000001"}
+    assert _binding_dict(binding) == {"organization_id": "00D000000000001"}
 
 
 @pytest.mark.asyncio
@@ -190,7 +207,7 @@ async def test_validate_derives_organization_id_from_org_credential(
         OAuthCredentialFlow.ORG_SOURCE,
         {},
     )
-    assert binding == {"organization_id": "00D000000000001"}
+    assert _binding_dict(binding) == {"organization_id": "00D000000000001"}
 
 
 @pytest.mark.asyncio

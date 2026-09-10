@@ -29,9 +29,11 @@ def full_scan_soql(
     object_type: str,
     fields: tuple[str, ...],
     cursor: RecordCursor | None,
-    page_size: int = PAGE_SIZE,
+    page_size: int | None = None,
 ) -> str:
     """SOQL for a resumable full scan ordered by Id (keyset pagination)."""
+    if page_size is None:
+        page_size = PAGE_SIZE
     clauses = []
     if cursor is not None and cursor.last_id is not None:
         clauses.append(f"Id > '{cursor.last_id}'")
@@ -45,7 +47,7 @@ def delta_scan_soql(
     cursor: RecordCursor | None,
     window_start: datetime,
     window_end: datetime,
-    page_size: int = PAGE_SIZE,
+    page_size: int | None = None,
 ) -> str:
     """SOQL for a resumable bounded incremental scan.
 
@@ -55,6 +57,8 @@ def delta_scan_soql(
     malformed or partial resume restarts the window instead of skipping
     records.
     """
+    if page_size is None:
+        page_size = PAGE_SIZE
     start_literal = soql_datetime(window_start)
     end_literal = soql_datetime(window_end)
     clauses = [f"SystemModstamp >= {start_literal}", f"SystemModstamp <= {end_literal}"]
