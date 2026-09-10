@@ -41,6 +41,7 @@ from .client import (
 from .config import (
     CHECKPOINT_INTERVAL,
     DELETION_RETENTION_DAYS,
+    DELETION_WINDOW_MARGIN_DAYS,
     DELTA_OVERLAP_SECONDS,
     MAX_SHARE_SNAPSHOT_ENTRIES,
     PAGE_SIZE,
@@ -1718,7 +1719,9 @@ class SalesforceConnector(Connector):
         elif state.watermark is not None:
             base = datetime.fromisoformat(state.watermark)
         else:
-            base = window_end - timedelta(days=DELETION_RETENTION_DAYS)
+            base = window_end - timedelta(
+                days=DELETION_RETENTION_DAYS - DELETION_WINDOW_MARGIN_DAYS
+            )
             bounded = False
         requested_start = (
             base - timedelta(seconds=DELTA_OVERLAP_SECONDS) if bounded else base
