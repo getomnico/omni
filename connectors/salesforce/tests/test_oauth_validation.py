@@ -65,12 +65,27 @@ def test_source_binding_falls_back_to_legacy_top_level_keys() -> None:
     }
 
 
+@pytest.fixture
+def mock_fetch_org_id(monkeypatch: pytest.MonkeyPatch):
+    """Install a fake provider userinfo lookup returning a fixed org id."""
+    import salesforce_connector.connector as connector_module
+
+    def install(value: str) -> None:
+        async def fake_fetch(auth: object) -> str:
+            return value
+
+        monkeypatch.setattr(connector_module, "fetch_organization_id", fake_fetch)
+
+    return install
+
+
 @pytest.mark.asyncio
-async def test_validate_binds_first_seen_organization_id() -> None:
+async def test_validate_binds_first_seen_organization_id(mock_fetch_org_id) -> None:
+    mock_fetch_org_id("00D000000000001")
     connector = SalesforceConnector()
     binding = await connector.validate_oauth_credential(
         _source({}),
-        {"instance_url": "https://acme.my.salesforce.com"},
+        {"access_token": "token", "instance_url": "https://acme.my.salesforce.com"},
         OAuthCredentialFlow.ORG_SOURCE,
         {"organization_id": "00D000000000001"},
     )
@@ -78,19 +93,21 @@ async def test_validate_binds_first_seen_organization_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validate_rejects_mismatched_organization_id() -> None:
+async def test_validate_rejects_mismatched_organization_id(mock_fetch_org_id) -> None:
+    mock_fetch_org_id("00D000000000002")
     connector = SalesforceConnector()
     with pytest.raises(ValueError, match="organization does not match"):
         await connector.validate_oauth_credential(
             _source({"source_binding": {"organization_id": "00D000000000001"}}),
-            {"instance_url": "https://acme.my.salesforce.com"},
+            {"access_token": "token", "instance_url": "https://acme.my.salesforce.com"},
             OAuthCredentialFlow.USER_READ,
             {"organization_id": "00D000000000002"},
         )
 
 
 @pytest.mark.asyncio
-async def test_validate_rejects_mismatched_instance() -> None:
+async def test_validate_rejects_mismatched_instance(mock_fetch_org_id) -> None:
+    mock_fetch_org_id("00D000000000001")
     connector = SalesforceConnector()
     with pytest.raises(ValueError, match="instance does not match"):
         await connector.validate_oauth_credential(
@@ -103,6 +120,7 @@ async def test_validate_rejects_mismatched_instance() -> None:
                 }
             ),
             {
+                "access_token": "token",
                 "instance_url": "https://other.my.salesforce.com",
                 "organization_id": "00D000000000001",
             },
@@ -112,18 +130,37 @@ async def test_validate_rejects_mismatched_instance() -> None:
 
 
 @pytest.mark.asyncio
-async def test_validate_rejects_credential_org_assertion_mismatch() -> None:
+async def test_validate_rejects_credential_org_assertion_mismatch(
+    mock_fetch_org_id,
+) -> None:
     """A credential's own organization_id is an assertion, never proof."""
+    mock_fetch_org_id("00D000000000001")
     connector = SalesforceConnector()
     with pytest.raises(ValueError, match="does not match the credential"):
         await connector.validate_oauth_credential(
             _source({}),
             {
+                "access_token": "token",
                 "instance_url": "https://acme.my.salesforce.com",
                 "organization_id": "00D000000000002",
             },
             OAuthCredentialFlow.USER_READ,
             {"organization_id": "00D000000000001"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_forged_metadata_org_id(mock_fetch_org_id) -> None:
+    """Metadata is caller-supplied at the connector boundary, so it is
+    cross-checked against the provider rather than trusted."""
+    mock_fetch_org_id("00D000000000001")
+    connector = SalesforceConnector()
+    with pytest.raises(ValueError, match="does not match the credential metadata"):
+        await connector.validate_oauth_credential(
+            _source({}),
+            {"access_token": "token", "instance_url": "https://acme.my.salesforce.com"},
+            OAuthCredentialFlow.USER_READ,
+            {"organization_id": "00Dforged00000001"},
         )
 
 

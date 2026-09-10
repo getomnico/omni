@@ -1322,9 +1322,27 @@ async def test_share_query_failure_leaves_realtime_object_untouched(
     config = _config(
         mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
     )
-    _, published = await _baseline_full(
-        mock_salesforce_api, mock_salesforce_server, config=config, accounts=2
+    mock_salesforce_api.reset()
+    mock_salesforce_api.add_people_fixtures()
+    mock_salesforce_api.add_account()
+    mock_salesforce_api.add_share(
+        "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
     )
+    fake0, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=None,
+        mode=SyncMode.FULL,
+        is_resume=False,
+        sync_run_id="run-1",
+        config=config,
+    )
+    published = _published(fake0)
+    assert "manager@example.com" in _account_event(fake0).permissions.users
+
+    # Owner transition while the share query is broken: grants are incomplete,
+    # so the connector must not re-emit an under-granted record nor promote the
+    # candidate PeopleState (the next refresh must retry the transition).
+    _mutate_user(mock_salesforce_api, "005000000000001", Email="new.owner@example.com")
     mock_salesforce_api.fail_query_objects.add("AccountShare")
 
     fake_rt, _, _ = await run_connector(
@@ -1337,7 +1355,13 @@ async def test_share_query_failure_leaves_realtime_object_untouched(
         cancel_on_sleep=True,
     )
     assert fake_rt.completed == 0
+    assert "Account:001000000000001" not in fake_rt.updated_ids
     last = fake_rt.checkpoints[-1]
+    # The committed permission signature is retained for the retry.
+    assert (
+        last["people"]["permission_signatures"]["005000000000001"]
+        == "owner@example.com|00E000000000002"
+    )
     # Sharing is unresolved, so the object keeps its committed state.
     assert (
         last["objects"]["Account"]["watermark"]
@@ -2248,20 +2272,24 @@ async def test_unknown_share_group_target_grants_nothing(
 async def test_enabled_object_removal_fails_without_tombstones(
     mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
 ) -> None:
-    config_both = _config(mock_salesforce_server, enabled_objects=["Account", "Contact"])
+    # Default-all baseline where Task is unsupported and therefore never
+    # indexed, while the committed enabled set still names it.
     mock_salesforce_api.reset()
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
     mock_salesforce_api.add_contact()
+    mock_salesforce_api.hidden_objects.add("Task")
     fake0, _, _ = await run_connector(
         mock_salesforce_server,
         checkpoint=None,
         mode=SyncMode.FULL,
         is_resume=False,
         sync_run_id="run-1",
-        config=config_both,
+        config=_config(mock_salesforce_server),
     )
     published = _published(fake0)
+    assert "Task" not in published["objects"]
+    assert "Task" in published["enabled_objects"]
 
     config_one = _config(mock_salesforce_server, enabled_objects=["Account"])
     fake, _, _ = await run_connector(
@@ -2274,10 +2302,13 @@ async def test_enabled_object_removal_fails_without_tombstones(
     )
     # The connector cannot enumerate the index to tombstone Contact's
     # documents, so it must fail explicitly rather than complete as if the
-    # stale documents had been removed.
+    # stale documents had been removed. The never-indexed Task must not force
+    # a rebuild.
     assert fake.completed == 0
     assert fake.failures
     assert "removed" in fake.failures[0].lower()
+    assert "Contact" in fake.failures[0]
+    assert "Task" not in fake.failures[0]
     assert fake.deleted_ids == []
     assert fake.updated_ids == []
 

@@ -211,7 +211,7 @@ class SalesforceDirectory:
         users: set[str] = set()
         groups: set[str] = set()
         for share in shares:
-            if share.access_level is not None and not share.access_level.grants_access:
+            if not share.access_level.grants_access:
                 continue
             target = share.user_or_group_id
             if target.startswith(USER_ID_PREFIX):

@@ -422,25 +422,32 @@ class RoleRecord:
         )
 
 
-@dataclass(frozen=True)
-class AccessLevel:
-    """A validated Salesforce share access level.
+class AccessLevel(StrEnum):
+    """A Salesforce share access level.
 
-    Only the explicit no-access value is treated as a non-grant; every other
-    value (including future read-capable levels) grants access so a provider
-    addition cannot silently hide a document from an authorized user.
+    Only the four documented values are accepted. Missing or unknown values
+    are rejected at the API boundary so a malformed share row can never be
+    granted by falling through the old "not None" check.
     """
 
-    value: str
+    READ = "Read"
+    EDIT = "Edit"
+    ALL = "All"
+    NONE = "None"
 
     @classmethod
-    def parse(cls, value: object) -> AccessLevel | None:
+    def parse(cls, value: object) -> AccessLevel:
         parsed = _as_str(value)
-        return cls(parsed) if parsed is not None else None
+        if parsed is None:
+            raise ValueError("missing share access level")
+        try:
+            return cls(parsed)
+        except ValueError as e:
+            raise ValueError(f"unknown share access level {parsed!r}") from e
 
     @property
     def grants_access(self) -> bool:
-        return self.value.strip().lower() != "none"
+        return self is not AccessLevel.NONE
 
 
 @dataclass(frozen=True)
@@ -460,7 +467,7 @@ class ShareRecord:
     id: str
     parent_id: str
     user_or_group_id: str
-    access_level: AccessLevel | None
+    access_level: AccessLevel
     row_cause: RowCause | None
 
     @classmethod

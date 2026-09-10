@@ -397,8 +397,8 @@ class TestPermissions:
         assert grants.users == ()
         assert grants.groups == ()
 
-    @pytest.mark.parametrize("access_level", ["Read", "Edit", "All", "ReadWrite"])
-    def test_any_non_no_access_level_grants(self, access_level: str) -> None:
+    @pytest.mark.parametrize("access_level", ["Read", "Edit", "All"])
+    def test_known_access_levels_grant(self, access_level: str) -> None:
         directory = self._directory()
         from salesforce_connector.models import ShareRecord
 
@@ -415,10 +415,28 @@ class TestPermissions:
         )
         assert directory.share_grants([share]).users == ("peer@example.com",)
 
-    def test_access_level_none_is_not_a_grant(self) -> None:
-        assert AccessLevel.parse("None") is not None
+    @pytest.mark.parametrize("access_level", ["ReadWrite", "Bogus", None])
+    def test_unknown_or_missing_access_level_is_rejected(
+        self, access_level: str | None
+    ) -> None:
+        from salesforce_connector.models import ShareRecord
+
+        raw: dict[str, object] = {
+            "Id": "s1",
+            "AccountId": "001000000000001",
+            "UserOrGroupId": "005000000000003",
+            "RowCause": "Manual",
+        }
+        if access_level is not None:
+            raw["AccountAccessLevel"] = access_level
+        with pytest.raises(ValueError):
+            ShareRecord.from_record(raw, "AccountId", "AccountAccessLevel")
+
+    def test_access_level_parsing(self) -> None:
         assert AccessLevel.parse("None").grants_access is False
         assert AccessLevel.parse("Read").grants_access is True
+        with pytest.raises(ValueError):
+            AccessLevel.parse("ReadWrite")
 
 
 class TestCheckpoint:

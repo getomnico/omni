@@ -415,16 +415,22 @@ class SalesforceConnector(Connector):
             expected_org_id if isinstance(expected_org_id, str) and expected_org_id else None
         )
 
-        # Organization identity only ever comes from provider-verified OAuth
-        # userinfo: either the metadata captured during the OAuth exchange or a
-        # fresh userinfo request with the supplied credential. A value carried
-        # in the credential itself is an assertion to compare, never proof.
-        actual_org_id: str | None = None
+        # Organization identity only ever comes from a provider-verified
+        # userinfo request with the supplied credential. Metadata is supplied
+        # by the caller at the connector boundary, and a credential's own
+        # organization_id is likewise an assertion; both are cross-checked
+        # against the provider, never trusted as proof.
+        actual_org_id = await self._organization_id_from_credential(credentials)
+
         metadata_org_id = (metadata or {}).get("organization_id")
-        if isinstance(metadata_org_id, str) and metadata_org_id:
-            actual_org_id = metadata_org_id
-        if actual_org_id is None:
-            actual_org_id = await self._organization_id_from_credential(credentials)
+        if (
+            isinstance(metadata_org_id, str)
+            and metadata_org_id
+            and metadata_org_id != actual_org_id
+        ):
+            raise ValueError(
+                "Salesforce OAuth organization does not match the credential metadata"
+            )
 
         asserted_org_id = credentials.get("organization_id")
         if (
@@ -910,7 +916,7 @@ class SalesforceConnector(Connector):
         """
         removed = tuple(
             sorted(
-                set(checkpoint.enabled_objects)
+                set(checkpoint.objects)
                 - {
                     item.name.value
                     for item in enabled_object_configs(config.enabled_objects)
@@ -2077,6 +2083,13 @@ class SalesforceConnector(Connector):
             unresolved_objects.clear()
             unresolved_objects.update(result.unresolved_objects)
             reconcile_objects.update(result.reconciliation_objects)
+            if result.unresolved_objects:
+                # Grants are incomplete for the unresolved objects. Do not
+                # re-emit changed owners (they would lose those shares) and do
+                # not promote the candidate PeopleState/share snapshot, so the
+                # next refresh re-detects the owner change and retries.
+                last_people_refresh = now
+                return
             if ctx.is_cancelled():
                 return
             changed_owners = self._changed_owner_ids(previous_people, candidate_people)
