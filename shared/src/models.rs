@@ -867,14 +867,18 @@ impl Default for ActionMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionCredentialScope {
+    /// User-facing (default). The platform decides resolution: per-user
+    /// OAuth when the connector supports it, otherwise the org credential
+    /// with the actor identity carried downstream.
     User,
+    /// Runs on the source's org-level credential (org-wide reads, setup
+    /// surfaces that are not admin-only).
     Org,
-    UserOrOrg,
 }
 
 impl Default for ActionCredentialScope {
     fn default() -> Self {
-        Self::UserOrOrg
+        Self::User
     }
 }
 

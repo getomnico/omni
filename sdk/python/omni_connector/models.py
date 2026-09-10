@@ -225,7 +225,7 @@ def ConnectorEvent(**data: Any) -> ConnectorEventValue:
     return event_model(**data)
 
 
-ActionCredentialScope = Literal["user", "org", "user_or_org"]
+ActionCredentialScope = Literal["user", "org"]
 
 
 class ActionDefinition(BaseModel):
@@ -235,7 +235,7 @@ class ActionDefinition(BaseModel):
         default_factory=lambda: {"type": "object", "properties": {}}
     )
     mode: str = "write"  # "read" or "write"
-    credential_scope: ActionCredentialScope = "user_or_org"
+    credential_scope: ActionCredentialScope = "user"
     # TODO: kept as list[str] on purpose — the SourceType enum lives in the Rust
     # `shared` crate (source of truth) and we don't want to hand-mirror it here.
     # Revisit if/when we generate Python types from the Rust models.

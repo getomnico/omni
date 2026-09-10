@@ -139,11 +139,7 @@ export const ConnectorEventSchema = z.union([
 ]);
 export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
 
-export const ActionCredentialScopeSchema = z.enum([
-  'user',
-  'org',
-  'user_or_org',
-]);
+export const ActionCredentialScopeSchema = z.enum(['user', 'org']);
 export type ActionCredentialScope = z.infer<typeof ActionCredentialScopeSchema>;
 
 export const ActionDefinitionSchema = z.object({
@@ -151,7 +147,7 @@ export const ActionDefinitionSchema = z.object({
   description: z.string(),
   input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
-  credential_scope: ActionCredentialScopeSchema.default('user_or_org'),
+  credential_scope: ActionCredentialScopeSchema.default('user'),
   required_scopes: z.array(z.string()).optional(),
   source_types: z.array(z.string()).default([]),
   admin_only: z.boolean().default(false),

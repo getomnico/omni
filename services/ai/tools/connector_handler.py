@@ -289,7 +289,7 @@ class ConnectorToolHandler:
                             supports_user_oauth=(
                                 bool(manifest.get("oauth"))
                                 and not action_def.get("admin_only", False)
-                                and action_def.get("credential_scope", "user_or_org")
+                                and action_def.get("credential_scope", "user")
                                 != "org"
                             ),
                         )
