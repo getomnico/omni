@@ -8,6 +8,8 @@ import httpx
 import pytest
 from omni_connector.testing import wait_for_sync
 
+from tests.conftest import set_source_config
+
 pytestmark = pytest.mark.integration
 
 
@@ -44,13 +46,11 @@ async def test_checkpoint_persisted_after_full_sync(
     assert checkpoint["objects"]["Account"]["watermark"] is not None
     assert checkpoint["objects"]["Account"]["deletion_through"] is not None
 
-    # connector_state carries the schema fingerprint for invalidation checks.
-    state_row = await harness.db_pool.fetchrow(
-        "SELECT connector_state FROM sources WHERE id = $1::char(26)", source_id
-    )
-    state = _as_object(state_row["connector_state"])
-    assert state is not None
-    assert state["schema_fingerprint"]
+    # Correctness fingerprints live on the promoted checkpoint (not
+    # connector_state, which is shared with the realtime slot).
+    assert checkpoint["schema_fingerprint"]
+    assert checkpoint["resolved_fingerprint"]
+    assert checkpoint["enabled_objects"]
 
 
 async def test_completed_checkpoint_has_no_run_progress(
@@ -83,7 +83,12 @@ async def test_completed_checkpoint_has_no_run_progress(
 async def test_schema_change_invalidates_watermarks(
     harness, seed, source_id, mock_salesforce_api, mock_salesforce_server, cm_client
 ) -> None:
-    """Changing the object set forces a full rescan even for an incremental run."""
+    """Adding an object forces a full re-emission even for an incremental run."""
+    await set_source_config(
+        harness,
+        source_id,
+        {"instance_url": mock_salesforce_server, "enabled_objects": ["Account"]},
+    )
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
 
@@ -97,20 +102,16 @@ async def test_schema_change_invalidates_watermarks(
     assert row["status"] == "completed"
     assert row["documents_scanned"] == 0
 
-    # Change the enabled object set -> schema fingerprint changes.
-    await harness.db_pool.execute(
-        "UPDATE sources SET config = $2::jsonb WHERE id = $1::char(26)",
+    # Add Contact (adding never leaves stale documents). The schema fingerprint
+    # changes, so the enabled objects are fully re-emitted.
+    await set_source_config(
+        harness,
         source_id,
-        json.dumps(
-            {
-                "instance_url": mock_salesforce_server,
-                "enabled_objects": ["Account", "Contact"],
-            }
-        ),
+        {"instance_url": mock_salesforce_server, "enabled_objects": ["Account", "Contact"]},
     )
+    mock_salesforce_api.add_contact()
 
     run = await _run_sync(cm_client, source_id, "incremental")
     row = await wait_for_sync(harness.db_pool, run["sync_run_id"], timeout=40)
     assert row["status"] == "completed"
-    # Watermarks were dropped: the Account set is rescanned in full.
-    assert row["documents_scanned"] == 1
+    assert row["documents_scanned"] == 2

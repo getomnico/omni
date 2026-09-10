@@ -29,13 +29,8 @@ DELETION_RETENTION_DAYS = 30
 
 # Maximum number of shared parents persisted in the checkpoint share snapshot.
 # Beyond this the connector cannot safely diff share grants from checkpoint
-# state and falls back to periodic full permission reconciliation.
+# state, so it reconciles every share-enabled object on every pass instead.
 MAX_SHARE_SNAPSHOT_ENTRIES = 20_000
-
-# How often a realtime or incremental run re-emits every record of a
-# share-enabled object to reconcile permissions when no safe share diff state
-# is available (restart after an oversized snapshot).
-PERMISSION_RECONCILIATION_INTERVAL_SECONDS = 24 * 60 * 60
 
 # Realtime heartbeats must be frequent enough that the manager's stale-sync
 # sweep never fires during provider-only work or long poll sleeps.

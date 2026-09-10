@@ -13,6 +13,7 @@ import pytest
 from omni_connector.testing import get_events, wait_for_sync
 
 from salesforce_connector.models import group_email
+from tests.conftest import set_source_config
 
 pytestmark = pytest.mark.integration
 
@@ -58,15 +59,28 @@ async def test_full_sync_skips_records_unavailable_to_principal(
     )
 
 
-async def test_full_sync_skips_unavailable_user_role_field(
-    harness, seed, source_id, mock_salesforce_api, cm_client: httpx.AsyncClient
+async def test_full_sync_without_hierarchy_tolerates_missing_user_role_field(
+    harness,
+    seed,
+    source_id,
+    mock_salesforce_api,
+    mock_salesforce_server,
+    cm_client: httpx.AsyncClient,
 ) -> None:
-    """A field for a disabled feature (role hierarchy) is dropped, not fatal.
+    """With hierarchy grants disabled, UserRoleId is not a required field.
 
-    Organs without roles enabled do not expose UserRoleId; SELECTing it fails
-    the whole User query with INVALID_FIELD. Field discovery via per-object
-    describe must narrow the SELECT list instead of aborting the sync.
+    Organs without roles enabled do not expose UserRoleId. Once hierarchy
+    grants are explicitly disabled the SELECT list is narrowed instead of
+    aborting the sync, and non-role memberships still resolve.
     """
+    await set_source_config(
+        harness,
+        source_id,
+        {
+            "instance_url": mock_salesforce_server,
+            "grant_access_using_hierarchies": False,
+        },
+    )
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
     mock_salesforce_api.hidden_fields.setdefault("User", set()).add("UserRoleId")

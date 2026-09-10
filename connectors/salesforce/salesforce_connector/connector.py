@@ -44,7 +44,6 @@ from .config import (
     DELTA_OVERLAP_SECONDS,
     MAX_SHARE_SNAPSHOT_ENTRIES,
     PAGE_SIZE,
-    PERMISSION_RECONCILIATION_INTERVAL_SECONDS,
     REALTIME_HEARTBEAT_SECONDS,
     SalesforceObjectConfig,
     SalesforceObjectName,
@@ -192,6 +191,14 @@ class ShareSyncResult:
 
 class DeletionRetentionError(SalesforceClientError):
     """Deletions older than Salesforce's retention window cannot be covered."""
+
+
+class PermissionDependencyError(SalesforceClientError):
+    """Required people/group data could not be queried for permission resolution."""
+
+
+class ObjectRemovalError(SalesforceClientError):
+    """A previously enabled object was removed and its documents cannot be tombstoned."""
 
 
 def resolved_fingerprint(objects: tuple[ResolvedObject, ...]) -> str:
@@ -631,22 +638,10 @@ class SalesforceConnector(Connector):
             client.instance_url,
         )
 
-        # Schema fingerprint: when the synced field/object/visibility or
-        # permission settings change, saved watermarks no longer cover
-        # everything the index expects, so a full resync is forced.
-        fingerprint = schema_fingerprint(
-            config.enabled_objects,
-            config.public_read_objects,
-            sync_users=config.sync_users,
-            sync_groups=config.sync_groups,
-            sync_shares=config.sync_shares,
-            grant_access_using_hierarchies=config.grant_access_using_hierarchies,
-        )
+        # Correctness fingerprints are committed state on the checkpoint and
+        # are only promoted by complete(); they are never written to
+        # connector_state (which is shared by the concurrent realtime slot).
         run_checkpoint = SalesforceCheckpoint.from_mapping(checkpoint)
-        if ctx.connector_state.get("schema_fingerprint") != fingerprint:
-            logger.info("Schema fingerprint changed; forcing full resync")
-            run_checkpoint = SalesforceCheckpoint()
-            await ctx.save_connector_state({"schema_fingerprint": fingerprint})
 
         try:
             if ctx.sync_mode == SyncMode.REALTIME:
@@ -886,16 +881,62 @@ class SalesforceConnector(Connector):
         # A matching resume must keep the interrupted pass's fixed window; a
         # new window would silently pull records the pass never claimed.
         window_end = self._progress_window_end(progress, fallback_window_end)
+
+        enabled_now = tuple(
+            sorted(
+                item.name.value for item in enabled_object_configs(config.enabled_objects)
+            )
+        )
+        removed = tuple(sorted(set(checkpoint.enabled_objects) - set(enabled_now)))
+        if removed:
+            # The connector cannot enumerate the index, so it cannot emit
+            # tombstones for an object that is no longer enabled. Fail instead
+            # of silently completing with stale documents.
+            raise ObjectRemovalError(
+                "Salesforce object(s) removed from this source: "
+                + ", ".join(removed)
+                + ". Their indexed documents cannot be tombstones by the connector; "
+                "the source must be rebuilt so the index is reconciled."
+            )
+
+        # The schema fingerprint is a candidate in run progress and only
+        # becomes committed when the run completes, so a failed reconciliation
+        # is retried rather than being recorded as done.
+        schema_fp = schema_fingerprint(
+            config.enabled_objects,
+            config.public_read_objects,
+            sync_users=config.sync_users,
+            sync_groups=config.sync_groups,
+            sync_shares=config.sync_shares,
+            grant_access_using_hierarchies=config.grant_access_using_hierarchies,
+        )
+        progress = self._require_progress(checkpoint)
+        forced: tuple[str, ...] = ()
+        if checkpoint.schema_fingerprint != schema_fp:
+            logger.info("Salesforce schema/settings changed; forcing full re-emission")
+            forced = enabled_now
+        checkpoint = self._set_progress(
+            checkpoint,
+            replace(
+                progress,
+                full_reconciliation=tuple(
+                    sorted(set(progress.full_reconciliation) | set(forced))
+                ),
+                pending_schema_fingerprint=schema_fp,
+            ),
+        )
         # Persist the run-scoped checkpoint before any provider work, so an
         # immediate restart receives an unambiguous run checkpoint.
         await ctx.save_checkpoint(checkpoint.to_json())
 
         objects, available = await self._resolve_objects(client, config, ctx)
-        checkpoint = await self._apply_capability_fingerprint(objects, ctx, checkpoint)
+        checkpoint = self._apply_capability_fingerprint(objects, checkpoint)
 
+        previous_people = checkpoint.people
         directory, people_state = await self._sync_people(
-            client, config, ctx, checkpoint.people, available
+            client, config, ctx, previous_people, available
         )
+        changed_owners = self._changed_owner_ids(previous_people, people_state)
         checkpoint = replace(checkpoint, people=people_state)
         if ctx.is_cancelled():
             return checkpoint
@@ -939,6 +980,7 @@ class SalesforceConnector(Connector):
             directory=directory,
             share_grants=share_result.grants_by_parent,
             changed_parents=share_result.changed_parents,
+            changed_owners=changed_owners,
             source_config=config,
             checkpoint=checkpoint,
             ctx=ctx,
@@ -948,10 +990,25 @@ class SalesforceConnector(Connector):
         if ctx.is_cancelled():
             return checkpoint
 
-        # The candidate snapshot becomes committed only after the affected
-        # parents were durably emitted; an interruption before this point
-        # leaves the old snapshot so a resume re-detects and re-emits them.
-        checkpoint = replace(checkpoint, share_snapshot=share_result.snapshot)
+        # Promote candidates only after every affected record was durably
+        # emitted; an interruption earlier leaves the old committed state so a
+        # resume re-detects and re-emits.
+        progress = self._require_progress(checkpoint)
+        checkpoint = replace(
+            checkpoint,
+            share_snapshot=(
+                progress.pending_share_snapshot
+                if progress.pending_share_snapshot is not None
+                else checkpoint.share_snapshot
+            ),
+            schema_fingerprint=(
+                progress.pending_schema_fingerprint or checkpoint.schema_fingerprint
+            ),
+            resolved_fingerprint=(
+                progress.pending_resolved_fingerprint or checkpoint.resolved_fingerprint
+            ),
+            enabled_objects=enabled_now,
+        )
         progress = self._require_progress(checkpoint)
         checkpoint = self._set_progress(
             checkpoint,
@@ -959,25 +1016,28 @@ class SalesforceConnector(Connector):
                 progress,
                 pending_share_snapshot=None,
                 pending_changed_parents={},
+                pending_schema_fingerprint=None,
+                pending_resolved_fingerprint=None,
             ),
         )
         await ctx.save_checkpoint(checkpoint.to_json())
         return replace(checkpoint, synced_at=datetime.now(UTC).isoformat())
 
-    async def _apply_capability_fingerprint(
+    def _apply_capability_fingerprint(
         self,
         objects: tuple[ResolvedObject, ...],
-        ctx: SyncContext,
         checkpoint: SalesforceCheckpoint,
     ) -> SalesforceCheckpoint:
-        """Force a full re-emission when the resolved capability set changes."""
+        """Queue a full re-emission when the resolved capability set changes.
+
+        Field-level security changes alter the resolved fields without changing
+        the configured schema, so records must be re-emitted to drop stale
+        attributes. The candidate fingerprint is run-scoped until completion.
+        """
         fingerprint = resolved_fingerprint(objects)
-        if ctx.connector_state.get("resolved_fingerprint") == fingerprint:
+        if checkpoint.resolved_fingerprint == fingerprint:
             return checkpoint
         logger.info("Salesforce capability set changed; forcing full reconciliation")
-        await ctx.save_connector_state(
-            {**dict(ctx.connector_state), "resolved_fingerprint": fingerprint}
-        )
         progress = self._require_progress(checkpoint)
         return self._set_progress(
             checkpoint,
@@ -989,7 +1049,21 @@ class SalesforceConnector(Connector):
                         | {obj.config.name.value for obj in objects}
                     )
                 ),
+                pending_resolved_fingerprint=fingerprint,
             ),
+        )
+
+    @staticmethod
+    def _changed_owner_ids(
+        previous: PeopleState | None, current: PeopleState
+    ) -> frozenset[str]:
+        """Owners whose email/role/active permission signature changed."""
+        if previous is None:
+            return frozenset()
+        prev = previous.permission_signatures
+        cur = current.permission_signatures
+        return frozenset(
+            user_id for user_id in set(prev) | set(cur) if prev.get(user_id) != cur.get(user_id)
         )
 
     async def _sync_people(
@@ -1006,55 +1080,77 @@ class SalesforceConnector(Connector):
         group_members: list[GroupMemberRecord] = []
         roles: list[RoleRecord] = []
 
-        if config.sync_users and "User" in available_objects:
-            fields = await self._selectable_fields(client, "User", USER_FIELDS)
-            if fields:
-                if "IsActive" not in fields:
-                    logger.warning(
-                        "Salesforce User.IsActive is unavailable; lifecycle state is "
-                        "unknown and memberships cannot be resolved safely"
-                    )
-                    await ctx.emit_error(
-                        "User:*",
-                        "User.IsActive is unavailable; treating active state as unknown",
-                    )
-                async for page in iter_query_pages(
-                    client, f"SELECT {', '.join(fields)} FROM User"
-                ):
-                    users.extend(UserRecord.from_record(r) for r in page.records)
-                    await self._heartbeat(ctx)
-        if config.sync_groups:
-            if "Group" in available_objects:
-                fields = await self._selectable_fields(client, "Group", GROUP_FIELDS)
-                if fields:
-                    group_types = ", ".join(f"'{value}'" for value in SYNCED_GROUP_TYPES)
-                    async for page in iter_query_pages(
-                        client,
-                        f"SELECT {', '.join(fields)} FROM Group "
-                        f"WHERE Type IN ({group_types})",
-                    ):
-                        groups.extend(GroupRecord.from_record(r) for r in page.records)
-                        await self._heartbeat(ctx)
-            if "GroupMember" in available_objects:
-                fields = await self._selectable_fields(
-                    client, "GroupMember", GROUP_MEMBER_FIELDS
+        if config.sync_users:
+            if "User" not in available_objects:
+                raise PermissionDependencyError(
+                    "User object is not available; document permissions cannot be resolved"
                 )
-                if fields:
-                    async for page in iter_query_pages(
-                        client, f"SELECT {', '.join(fields)} FROM GroupMember"
-                    ):
-                        group_members.extend(
-                            GroupMemberRecord.from_record(r) for r in page.records
-                        )
-                        await self._heartbeat(ctx)
+            fields = await self._selectable_fields(client, "User", USER_FIELDS)
+            required = {"Id", "Email", "IsActive"}
+            if config.grant_access_using_hierarchies:
+                required.add("UserRoleId")
+            missing = sorted(required - set(fields))
+            if missing:
+                raise PermissionDependencyError(
+                    "Required User fields are not queryable: " + ", ".join(missing)
+                )
+            async for page in iter_query_pages(
+                client, f"SELECT {', '.join(fields)} FROM User"
+            ):
+                users.extend(UserRecord.from_record(r) for r in page.records)
+                await self._heartbeat(ctx)
+        if config.sync_groups:
+            if "Group" not in available_objects:
+                raise PermissionDependencyError(
+                    "Group object is not available; group and share grants cannot be resolved"
+                )
+            fields = await self._selectable_fields(client, "Group", GROUP_FIELDS)
+            missing = sorted({"Id", "Type", "RelatedId"} - set(fields))
+            if missing:
+                raise PermissionDependencyError(
+                    "Required Group fields are not queryable: " + ", ".join(missing)
+                )
+            group_types = ", ".join(f"'{value}'" for value in SYNCED_GROUP_TYPES)
+            async for page in iter_query_pages(
+                client,
+                f"SELECT {', '.join(fields)} FROM Group "
+                f"WHERE Type IN ({group_types})",
+            ):
+                groups.extend(GroupRecord.from_record(r) for r in page.records)
+                await self._heartbeat(ctx)
+
+            if "GroupMember" not in available_objects:
+                raise PermissionDependencyError(
+                    "GroupMember object is not available; group membership cannot be resolved"
+                )
+            fields = await self._selectable_fields(client, "GroupMember", GROUP_MEMBER_FIELDS)
+            missing = sorted({"Id", "GroupId", "UserOrGroupId"} - set(fields))
+            if missing:
+                raise PermissionDependencyError(
+                    "Required GroupMember fields are not queryable: " + ", ".join(missing)
+                )
+            async for page in iter_query_pages(
+                client, f"SELECT {', '.join(fields)} FROM GroupMember"
+            ):
+                group_members.extend(GroupMemberRecord.from_record(r) for r in page.records)
+                await self._heartbeat(ctx)
+
             if "UserRole" in available_objects:
                 fields = await self._selectable_fields(client, "UserRole", ROLE_FIELDS)
-                if fields:
-                    async for page in iter_query_pages(
-                        client, f"SELECT {', '.join(fields)} FROM UserRole"
-                    ):
-                        roles.extend(RoleRecord.from_record(r) for r in page.records)
-                        await self._heartbeat(ctx)
+                missing = sorted({"Id", "ParentRoleId"} - set(fields))
+                if missing:
+                    raise PermissionDependencyError(
+                        "Required UserRole fields are not queryable: " + ", ".join(missing)
+                    )
+                async for page in iter_query_pages(
+                    client, f"SELECT {', '.join(fields)} FROM UserRole"
+                ):
+                    roles.extend(RoleRecord.from_record(r) for r in page.records)
+                    await self._heartbeat(ctx)
+            elif config.grant_access_using_hierarchies:
+                raise PermissionDependencyError(
+                    "UserRole object is not available; role hierarchy grants cannot be resolved"
+                )
 
         directory = build_directory(users, groups, group_members, roles)
         snapshot = self._people_state(directory, users)
@@ -1076,11 +1172,16 @@ class SalesforceConnector(Connector):
         for group_email, member_emails, _name in directory.group_memberships():
             memberships[group_email] = tuple(sorted(member_emails))
             group_emails.add(group_email)
+        permission_signatures: dict[str, str] = {}
+        for user in users:
+            email = directory.email_for_user(user.id)
+            permission_signatures[user.id] = f"{email or ''}|{user.user_role_id or ''}"
         return PeopleState(
             user_fingerprints=user_fingerprints,
             active_emails=frozenset(active_emails),
             group_emails=frozenset(group_emails),
             memberships=memberships,
+            permission_signatures=permission_signatures,
         )
 
     async def _emit_people(
@@ -1211,6 +1312,10 @@ class SalesforceConnector(Connector):
                             share.parent_id, RecordGrants()
                         ).merge(grants)
                     await self._heartbeat(ctx)
+            except AuthenticationError:
+                # A dead credential is run-fatal; never mask it as an
+                # unresolved share object.
+                raise
             except SalesforceClientError as e:
                 logger.warning("Failed to sync %s shares: %s", plan.share_object, e)
                 await ctx.emit_error(f"{obj.config.name}:*", f"Failed to fetch shares: {e}")
@@ -1240,28 +1345,23 @@ class SalesforceConnector(Connector):
                 changed_parents[obj.config.name] = changed
 
         if total_entries > MAX_SHARE_SNAPSHOT_ENTRIES:
-            # Persisting an unbounded per-parent snapshot is not safe; fall back
-            # to periodic full permission reconciliation.
+            # The per-parent snapshot cannot be persisted, so diffing is
+            # unavailable. Reconcile every share-enabled object on every pass
+            # rather than knowingly retaining a revoked grant until a timer
+            # expires.
             logger.warning(
-                "Salesforce share snapshot exceeds %d entries; using periodic "
-                "full permission reconciliation",
+                "Salesforce share snapshot exceeds %d entries; reconciling every pass",
                 MAX_SHARE_SNAPSHOT_ENTRIES,
             )
-            due = self._reconciliation_due(previous)
-            if due:
-                reconciliation = {
-                    obj.config.name.value
-                    for obj in objects
-                    if obj.share_plan is not None
-                    and obj.config.name.value not in unresolved
-                }
+            reconciliation = {
+                obj.config.name.value
+                for obj in objects
+                if obj.share_plan is not None
+                and obj.config.name.value not in unresolved
+            }
             snapshot = ShareSnapshot(
                 grants={},
-                captured_at=(
-                    datetime.now(UTC).isoformat()
-                    if due or previous is None or previous.captured_at is None
-                    else previous.captured_at
-                ),
+                captured_at=datetime.now(UTC).isoformat(),
                 oversized=True,
             )
             return ShareSyncResult(
@@ -1285,18 +1385,6 @@ class SalesforceConnector(Connector):
             frozenset(unresolved),
         )
 
-    @staticmethod
-    def _reconciliation_due(previous: ShareSnapshot | None) -> bool:
-        if previous is None or not previous.oversized or previous.captured_at is None:
-            return True
-        try:
-            captured = datetime.fromisoformat(previous.captured_at)
-        except ValueError:
-            return True
-        return (
-            datetime.now(UTC) - captured
-        ).total_seconds() >= PERMISSION_RECONCILIATION_INTERVAL_SECONDS
-
     # -- record + deletion passes ------------------------------------------
 
     async def _sync_objects(
@@ -1307,6 +1395,7 @@ class SalesforceConnector(Connector):
         directory: SalesforceDirectory,
         share_grants: dict[str, RecordGrants],
         changed_parents: dict[str, set[str]],
+        changed_owners: frozenset[str],
         source_config: SalesforceSourceConfig,
         checkpoint: SalesforceCheckpoint,
         ctx: SyncContext,
@@ -1373,6 +1462,17 @@ class SalesforceConnector(Connector):
                 client=client,
                 objects=objects,
                 changed_parents=changed_parents,
+                directory=directory,
+                share_grants=share_grants,
+                source_config=source_config,
+                checkpoint=checkpoint,
+                ctx=ctx,
+            )
+        if incremental and changed_owners:
+            checkpoint = await self._emit_changed_owners(
+                client=client,
+                objects=objects,
+                owner_ids=changed_owners,
                 directory=directory,
                 share_grants=share_grants,
                 source_config=source_config,
@@ -1574,6 +1674,9 @@ class SalesforceConnector(Connector):
             if current.next_records_url is None:
                 break
             current = await client.get_deleted_more(current.next_records_url)
+            # A long deletion walk must keep heartbeating so the run is not
+            # marked stale while it is doing provider work.
+            await self._heartbeat(ctx)
 
         boundary = state.deletion_through
         if latest is not None and latest >= requested_start:
@@ -1596,6 +1699,47 @@ class SalesforceConnector(Connector):
             ),
         )
         await ctx.save_checkpoint(checkpoint.to_json())
+        return checkpoint
+
+    async def _emit_changed_owners(
+        self,
+        *,
+        client: SalesforceClient,
+        objects: tuple[ResolvedObject, ...],
+        owner_ids: frozenset[str],
+        directory: SalesforceDirectory,
+        share_grants: dict[str, RecordGrants],
+        source_config: SalesforceSourceConfig,
+        checkpoint: SalesforceCheckpoint,
+        ctx: SyncContext,
+    ) -> SalesforceCheckpoint:
+        """Re-emit records whose owner's permission signature changed."""
+        ids = sorted(owner_ids)
+        for obj in objects:
+            parser = _RECORD_PARSERS[obj.config.name]
+            for offset in range(0, len(ids), 200):
+                if ctx.is_cancelled():
+                    return checkpoint
+                batch = ids[offset : offset + 200]
+                in_clause = ", ".join(f"'{owner_id}'" for owner_id in batch)
+                soql = (
+                    f"SELECT {', '.join(obj.fields)} FROM {obj.config.name} "
+                    f"WHERE OwnerId IN ({in_clause})"
+                )
+                async for page in iter_query_pages(client, soql):
+                    for raw in page.records:
+                        record = parser(raw)
+                        await self._emit_record(
+                            client=client,
+                            config=obj.config,
+                            record=record,
+                            directory=directory,
+                            share_grants=share_grants,
+                            source_config=source_config,
+                            ctx=ctx,
+                            emit_updated=True,
+                        )
+                    await self._heartbeat(ctx)
         return checkpoint
 
     async def _emit_changed_parents(
@@ -1766,21 +1910,75 @@ class SalesforceConnector(Connector):
         last_people_refresh: datetime | None = None
         failures = 0
 
-        checkpoint = await self._apply_capability_fingerprint(objects, ctx, checkpoint)
+        checkpoint = self._apply_capability_fingerprint(objects, checkpoint)
         progress = self._require_progress(checkpoint)
         reconcile_objects.update(progress.full_reconciliation)
+        schema_fp = schema_fingerprint(
+            config.enabled_objects,
+            config.public_read_objects,
+            sync_users=config.sync_users,
+            sync_groups=config.sync_groups,
+            sync_shares=config.sync_shares,
+            grant_access_using_hierarchies=config.grant_access_using_hierarchies,
+        )
+        if checkpoint.schema_fingerprint != schema_fp:
+            # Settings changed; reconcile every object. Realtime never
+            # completes, so the committed fingerprint is only advanced by a
+            # scheduled run.
+            reconcile_objects.update(obj.config.name.value for obj in objects)
+            checkpoint = self._set_progress(
+                checkpoint,
+                replace(self._require_progress(checkpoint), pending_schema_fingerprint=schema_fp),
+            )
 
         async def refresh_people_and_shares(now: datetime, *, propagate: bool) -> None:
             nonlocal directory, people_state, share_snapshot, share_grants
             nonlocal last_people_refresh, checkpoint
-            directory, people_state = await self._sync_people(
-                client, config, ctx, people_state, available
-            )
+            previous_people = people_state
+            try:
+                directory, people_state = await self._sync_people(
+                    client, config, ctx, people_state, available
+                )
+            except PermissionDependencyError as e:
+                # Required permission data is unavailable. Do not emit any
+                # document this pass; all objects are left untouched.
+                logger.warning("Realtime people/group resolution failed: %s", e)
+                await ctx.emit_error("*", f"Permission resolution failed: {e}")
+                directory = SalesforceDirectory()
+                share_grants = {}
+                unresolved_objects.clear()
+                unresolved_objects.update(obj.config.name.value for obj in objects)
+                last_people_refresh = now
+                return
             checkpoint = replace(checkpoint, people=people_state)
             await ctx.save_checkpoint(checkpoint.to_json())
             if ctx.is_cancelled():
                 return
-            result = await self._sync_shares(client, objects, directory, ctx, share_snapshot)
+            changed_owners = self._changed_owner_ids(previous_people, people_state)
+            if propagate and changed_owners:
+                checkpoint = await self._emit_changed_owners(
+                    client=client,
+                    objects=objects,
+                    owner_ids=changed_owners,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                )
+            try:
+                result = await self._sync_shares(
+                    client, objects, directory, ctx, share_snapshot
+                )
+            except AuthenticationError:
+                raise
+            except SalesforceClientError as e:
+                logger.warning("Realtime share refresh failed: %s", e)
+                await ctx.emit_error("*", f"Share resolution failed: {e}")
+                unresolved_objects.clear()
+                unresolved_objects.update(obj.config.name.value for obj in objects)
+                last_people_refresh = now
+                return
             share_grants = result.grants_by_parent
             unresolved_objects.clear()
             unresolved_objects.update(result.unresolved_objects)
@@ -1824,6 +2022,7 @@ class SalesforceConnector(Connector):
                 directory=directory,
                 share_grants=share_grants,
                 changed_parents={},
+                changed_owners=frozenset(),
                 source_config=config,
                 checkpoint=checkpoint,
                 ctx=ctx,
@@ -1868,6 +2067,7 @@ class SalesforceConnector(Connector):
                     directory=directory,
                     share_grants=share_grants,
                     changed_parents={},
+                    changed_owners=frozenset(),
                     source_config=config,
                     checkpoint=checkpoint,
                     ctx=ctx,

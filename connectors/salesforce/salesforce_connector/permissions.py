@@ -185,18 +185,25 @@ class SalesforceDirectory:
         if owner_id is None:
             return RecordGrants()
         if owner_id.startswith(GROUP_ID_PREFIX):
-            # Queue-owned record: visible to the queue's members via the
-            # queue's synced group membership.
+            # Queue-owned record. Only grant the queue group when its members
+            # were actually synced; otherwise the group email would reference
+            # a stale or unknown membership.
+            if owner_id not in self.groups_by_id:
+                return RecordGrants()
             return RecordGrants(groups=(group_email(owner_id),))
         email = self.email_for_user(owner_id)
         users: list[str] = [email] if email else []
         groups: list[str] = []
         role_id = self.role_of(owner_id)
-        if role_id is not None and include_hierarchy:
+        if role_id is not None and include_hierarchy and role_id in self.roles_by_id:
             # Only managers in ancestor roles see an owner's record. Each
             # direct-role group contains exactly that role's members, so peers,
             # subordinates, and sibling branches are excluded.
-            groups.extend(direct_role_email(role) for role in self._manager_roles(role_id))
+            groups.extend(
+                direct_role_email(role)
+                for role in self._manager_roles(role_id)
+                if role in self.roles_by_id
+            )
         return RecordGrants(users=tuple(users), groups=tuple(groups))
 
     def share_grants(self, shares: Iterable[ShareRecord]) -> RecordGrants:
@@ -212,10 +219,15 @@ class SalesforceDirectory:
                 if email:
                     users.add(email)
             elif target.startswith(GROUP_ID_PREFIX):
-                groups.add(group_email(target))
+                # Only grant groups whose membership was synced; an unknown
+                # group would grant a stale membership set.
+                if target in self.groups_by_id:
+                    groups.add(group_email(target))
             elif target.startswith(ROLE_ID_PREFIX):
-                # Sharing to a role grants the role and everything below it.
-                groups.add(role_email(target))
+                # Sharing to a role grants the role and everything below it,
+                # but only when the role hierarchy was synced.
+                if target in self.roles_by_id:
+                    groups.add(role_email(target))
         return RecordGrants(users=tuple(sorted(users)), groups=tuple(sorted(groups)))
 
     def group_memberships(self) -> list[tuple[str, set[str], str | None]]:

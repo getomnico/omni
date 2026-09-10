@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
 from typing import TypeVar
+from urllib.parse import parse_qsl, urlparse
 
 import jwt
 import requests
@@ -386,6 +387,28 @@ def _parse_iso(value: object) -> datetime:
         raise SalesforceClientError(f"malformed timestamp in API response: {value!r}") from e
 
 
+def _normalize_next_records_path(next_records_url: str) -> tuple[str, dict[str, str]]:
+    """Split a Salesforce next-records URL into a restful-relative path/params.
+
+    ``simple_salesforce.restful`` prepends ``base_url`` (which already ends in
+    ``/services/data/<version>/``), so passing the raw URL would duplicate the
+    API path. Require the expected versioned prefix and return the remainder.
+    """
+    parsed = urlparse(next_records_url)
+    prefix = f"/services/data/{API_VERSION}/"
+    if not parsed.path.startswith(prefix):
+        raise SalesforceClientError(
+            f"unexpected Salesforce next-records URL: {next_records_url!r}"
+        )
+    relative = parsed.path[len(prefix) :]
+    if not relative:
+        raise SalesforceClientError(
+            f"unexpected Salesforce next-records URL: {next_records_url!r}"
+        )
+    params = dict(parse_qsl(parsed.query))
+    return relative, params
+
+
 class SalesforceClient:
     """Async wrapper around simple-salesforce with typed responses and auth.
 
@@ -610,8 +633,9 @@ class SalesforceClient:
     @with_retry(max_retries=3)
     async def get_deleted_more(self, next_records_url: str) -> DeletedResult:
         """Fetch the next page of a deleted-records result."""
+        path, params = _normalize_next_records_path(next_records_url)
         sf = await self._ensure_session()
-        raw = await asyncio.to_thread(sf.restful, next_records_url.lstrip("/"))
+        raw = await asyncio.to_thread(sf.restful, path, params=params or None)
         return DeletedResult.from_response(_require_mapping(raw, "deleted page"))
 
     @with_retry(max_retries=3)

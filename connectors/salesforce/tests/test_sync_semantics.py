@@ -8,7 +8,6 @@ checkpoint and ``is_resume`` inputs the connector-manager would provide.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -984,10 +983,8 @@ async def test_missing_system_modstamp_uses_full_only_fallback(
     assert account_queries and all("SystemModstamp" not in query for query in account_queries)
 
 
-async def test_missing_is_active_does_not_delete_users(
-    mock_salesforce_api: MockSalesforceAPI,
-    mock_salesforce_server: str,
-    caplog: pytest.LogCaptureFixture,
+async def test_missing_is_active_fails_scheduled_sync(
+    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
 ) -> None:
     config = _config(mock_salesforce_server, enabled_objects=["Account"])
     mock_salesforce_api.reset()
@@ -995,22 +992,44 @@ async def test_missing_is_active_does_not_delete_users(
     mock_salesforce_api.add_account()
     mock_salesforce_api.hidden_fields.setdefault("User", set()).add("IsActive")
 
-    with caplog.at_level(logging.WARNING, logger="salesforce_connector.connector"):
-        fake, _, _ = await run_connector(
-            mock_salesforce_server,
-            checkpoint=None,
-            mode=SyncMode.FULL,
-            is_resume=False,
-            sync_run_id="run-1",
-            config=config,
-        )
-    # The unknown-lifecycle path was actually taken...
-    assert any("IsActive is unavailable" in record.message for record in caplog.records)
-    # ...and unknown users are kept (indexed), never treated as deleted.
-    person_events = [e for e in fake.events if _event_type(e) == "person_sync"]
-    deleted_events = [e for e in fake.events if _event_type(e) == "person_deleted"]
-    assert len(person_events) == 3
-    assert deleted_events == []
+    fake, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=None,
+        mode=SyncMode.FULL,
+        is_resume=False,
+        sync_run_id="run-1",
+        config=config,
+    )
+    # IsActive is required to decide grants; a scheduled run must not commit
+    # documents with incomplete permissions.
+    assert fake.failures
+    assert "IsActive" in fake.failures[0]
+    assert fake.documents == {}
+
+
+async def test_missing_is_active_realtime_skips_all_documents(
+    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
+) -> None:
+    config = _config(
+        mock_salesforce_server, enabled_objects=["Account"], realtime_poll_seconds=10
+    )
+    _, published = await _baseline_full(
+        mock_salesforce_api, mock_salesforce_server, config=config, accounts=2
+    )
+    mock_salesforce_api.hidden_fields.setdefault("User", set()).add("IsActive")
+
+    fake_rt, _, _ = await run_connector(
+        mock_salesforce_server,
+        checkpoint=published,
+        mode=SyncMode.REALTIME,
+        is_resume=False,
+        sync_run_id="run-rt",
+        config=config,
+        cancel_on_sleep=True,
+    )
+    assert fake_rt.completed == 0
+    assert fake_rt.documents == {}
+    assert fake_rt.updated_ids == []
 
 
 async def test_unknown_visibility_object_is_rejected(
@@ -1448,30 +1467,6 @@ async def test_inactive_owner_is_not_granted(
     )
     assert "inactive@example.com" not in _account_event(fake).permissions.users
     assert _event_type(_document_event(fake, "Account:001000000000001")) == "document_created"
-
-
-async def test_unknown_is_active_owner_is_not_granted(
-    mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
-) -> None:
-    config = _config(mock_salesforce_server, enabled_objects=["Account"])
-    mock_salesforce_api.reset()
-    mock_salesforce_api.add_people_fixtures()
-    mock_salesforce_api.add_account()
-    mock_salesforce_api.hidden_fields.setdefault("User", set()).add("IsActive")
-
-    fake, _, _ = await run_connector(
-        mock_salesforce_server,
-        checkpoint=None,
-        mode=SyncMode.FULL,
-        is_resume=False,
-        sync_run_id="run-1",
-        config=config,
-    )
-    # Unknown lifecycle never grants access...
-    assert "owner@example.com" not in _account_event(fake).permissions.users
-    # ...but it also must not be emitted as a deletion.
-    assert [e for e in fake.events if _event_type(e) == "person_deleted"] == []
-    assert len([e for e in fake.events if _event_type(e) == "person_sync"]) == 3
 
 
 async def test_inactive_share_target_is_not_granted(

@@ -577,11 +577,21 @@ class SalesforceSourceConfig:
         )
 
     def validate(self) -> None:
-        """Reject settings that cannot be resolved without user data."""
+        """Reject settings that cannot be resolved without user/group data."""
         if not self.sync_users and (self.sync_groups or self.sync_shares):
             raise ValueError(
                 "sync_groups/sync_shares require sync_users: without user data "
                 "group and share memberships cannot be resolved"
+            )
+        if self.sync_shares and not self.sync_groups:
+            raise ValueError(
+                "sync_shares requires sync_groups: share targets reference groups "
+                "and roles, so sharing cannot be resolved without group data"
+            )
+        if self.grant_access_using_hierarchies and not self.sync_groups:
+            raise ValueError(
+                "grant_access_using_hierarchies requires sync_groups: role and "
+                "group membership cannot be resolved without group data"
             )
         if not self.sync_users and self.grant_access_using_hierarchies:
             raise ValueError(
@@ -707,6 +717,10 @@ class PeopleState:
     active_emails: frozenset[str] = field(default_factory=frozenset)
     group_emails: frozenset[str] = field(default_factory=frozenset)
     memberships: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Owner-permission signature per user (grantable email + role). A change
+    # here alters the permissions of records the user owns even though the
+    # record itself did not change.
+    permission_signatures: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, raw: object) -> PeopleState | None:
@@ -717,6 +731,7 @@ class PeopleState:
             active_emails=frozenset(_string_list(raw.get("active_emails"))),
             group_emails=frozenset(_string_list(raw.get("group_emails"))),
             memberships=_string_tuple_map(raw.get("memberships")),
+            permission_signatures=_string_map(raw.get("permission_signatures")),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -725,6 +740,7 @@ class PeopleState:
             "active_emails": sorted(self.active_emails),
             "group_emails": sorted(self.group_emails),
             "memberships": {key: list(value) for key, value in self.memberships.items()},
+            "permission_signatures": self.permission_signatures,
         }
 
 
@@ -792,6 +808,10 @@ class RunProgress:
     # re-emitted, so an interruption cannot lose the permission update.
     pending_share_snapshot: ShareSnapshot | None = None
     pending_changed_parents: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Candidate fingerprints. Only promoted to the committed checkpoint when
+    # the run completes, so a failed reconciliation is retried.
+    pending_schema_fingerprint: str | None = None
+    pending_resolved_fingerprint: str | None = None
 
     @classmethod
     def from_mapping(cls, raw: object) -> RunProgress | None:
@@ -821,6 +841,10 @@ class RunProgress:
                 raw.get("pending_share_snapshot")
             ),
             pending_changed_parents=_string_tuple_map(raw.get("pending_changed_parents")),
+            pending_schema_fingerprint=_as_str(raw.get("pending_schema_fingerprint")),
+            pending_resolved_fingerprint=_as_str(
+                raw.get("pending_resolved_fingerprint")
+            ),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -842,6 +866,8 @@ class RunProgress:
             "pending_changed_parents": {
                 key: list(value) for key, value in self.pending_changed_parents.items()
             },
+            "pending_schema_fingerprint": self.pending_schema_fingerprint,
+            "pending_resolved_fingerprint": self.pending_resolved_fingerprint,
         }
 
 
@@ -861,6 +887,11 @@ class SalesforceCheckpoint:
     people: PeopleState | None = None
     share_snapshot: ShareSnapshot | None = None
     synced_at: str | None = None
+    # Committed fingerprints and object set. Promoted only by complete(); a
+    # failed or concurrent run cannot mark reconciliation as done.
+    schema_fingerprint: str | None = None
+    resolved_fingerprint: str | None = None
+    enabled_objects: tuple[str, ...] = ()
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, object] | None) -> SalesforceCheckpoint:
@@ -882,6 +913,9 @@ class SalesforceCheckpoint:
             people=PeopleState.from_mapping(raw.get("people")),
             share_snapshot=ShareSnapshot.from_mapping(raw.get("share_snapshot")),
             synced_at=_as_str(raw.get("synced_at")),
+            schema_fingerprint=_as_str(raw.get("schema_fingerprint")),
+            resolved_fingerprint=_as_str(raw.get("resolved_fingerprint")),
+            enabled_objects=_string_tuple(raw.get("enabled_objects")),
         )
 
     def without_progress(self) -> SalesforceCheckpoint:
@@ -900,6 +934,9 @@ class SalesforceCheckpoint:
                 self.share_snapshot.to_json() if self.share_snapshot is not None else None
             ),
             "synced_at": self.synced_at,
+            "schema_fingerprint": self.schema_fingerprint,
+            "resolved_fingerprint": self.resolved_fingerprint,
+            "enabled_objects": list(self.enabled_objects),
         }
 
 
