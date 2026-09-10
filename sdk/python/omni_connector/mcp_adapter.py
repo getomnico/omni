@@ -385,6 +385,7 @@ class McpAdapter:
                     credential_scope="user",
                     # MCP tools are not admin-only by default.
                     admin_only=False,
+                    origin="mcp",
                 )
             )
         return actions

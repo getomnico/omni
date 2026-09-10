@@ -9,12 +9,14 @@ import {
   CancelRequestSchema,
   ActionRequestSchema,
   OAuthCredentialReadyRequestSchema,
+  OAuthCredentialValidationRequestSchema,
   ResourceRequestSchema,
   PromptRequestSchema,
   createSyncResponseStarted,
   createSyncResponseError,
   ActionResponse,
   type ConnectorManifest,
+  type OAuthCredentialValidationResponse,
   type SdkSourceSyncData,
 } from "./models.js";
 import { getLogger } from "./logger.js";
@@ -81,6 +83,26 @@ export function createServer(connector: Connector): Express {
   app.get("/manifest", async (_req: Request, res: Response) => {
     const manifest = await connector.getManifest(connectorUrl);
     res.json(manifest);
+  });
+
+  app.post("/oauth/validate", async (req: Request, res: Response) => {
+    const parseResult = OAuthCredentialValidationRequestSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: "Invalid request body" });
+      return;
+    }
+    if (!parseResult.data.source) {
+      res.status(400).json({ error: "source is required for OAuth validation" });
+      return;
+    }
+
+    try {
+      const binding = await connector.validateOauthCredential(parseResult.data);
+      res.json({ source_binding: binding } satisfies OAuthCredentialValidationResponse);
+    } catch (err) {
+      logger.warn({ err }, "OAuth credential validation failed");
+      res.status(400).json({ error: String(err) });
+    }
   });
 
   app.post("/oauth/credential-ready", async (req: Request, res: Response) => {

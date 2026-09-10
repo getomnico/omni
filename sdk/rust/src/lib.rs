@@ -22,9 +22,11 @@ pub use server::{ServerConfig, create_router, serve, serve_with_config, serve_wi
 
 pub use shared::models::DocumentAttributes;
 pub use shared::models::{
-    ActionCredentialScope, ActionDefinition, ActionMode, AuthType, ConnectorEvent,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
     ConnectorManifest, ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions,
-    IntegrationType, McpPromptDefinition, McpResourceDefinition, PersonSyncRecord, SearchOperator,
+    IntegrationType, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
+    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
+    PersonSyncRecord, SearchOperator,
     ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 pub use shared::rate_limiter::{RateLimiter, RetryableError};

@@ -8,6 +8,8 @@ import type {
   OAuthManifestConfig,
   Source,
   OAuthCredentialReadyRequest,
+  OAuthCredentialValidationRequest,
+  OAuthSourceBinding,
 } from './models.js';
 import { ActionResponse } from './models.js';
 import { createServer } from './server.js';
@@ -129,6 +131,20 @@ export abstract class Connector<
   }
 
   /**
+   * Validate a freshly exchanged OAuth credential before it is persisted.
+   * Connectors may reject credentials that are valid at the provider but
+   * belong to a different source organization by throwing, and may return a
+   * source binding (e.g. a provider organization identifier) that the web app
+   * stores under the reserved `source_binding` source config key. The default
+   * accepts the credential without binding anything.
+   */
+  async validateOauthCredential(
+    _request: OAuthCredentialValidationRequest
+  ): Promise<OAuthSourceBinding | null> {
+    return null;
+  }
+
+  /**
    * Return whether an MCP failure requires the acting user's OAuth reconnect.
    * Connectors with provider-specific authentication errors can override this
    * without exposing credentials in an HTTP response; failures carrying the
@@ -208,12 +224,7 @@ export abstract class Connector<
   async getManifest(connectorUrl: string): Promise<ConnectorManifest> {
     const adapter = await this.getMcpAdapter();
     const actions = await this.getAllActions();
-    const manualActionNames = new Set(this.actions.map((action) => action.name));
-    const mcpActions = adapter ? await adapter.getActionDefinitions() : [];
     const prompts = adapter ? await adapter.getPromptDefinitions() : [];
-    const mcpActionNames = mcpActions
-      .filter((action) => !manualActionNames.has(action.name))
-      .map((action) => action.name);
     const skills = prompts.map((prompt) => ({
       id: `mcp:${prompt.name}`,
       title: prompt.name,
@@ -232,7 +243,6 @@ export abstract class Connector<
       source_types: this.sourceTypes,
       description: this.description,
       actions,
-      mcp_action_names: mcpActionNames,
       search_operators: this.searchOperators,
       extra_schema: this.extraSchema,
       attributes_schema: this.attributesSchema,
@@ -291,7 +301,13 @@ export abstract class Connector<
     actor_email?: string
   ): Promise<Response> {
     const adapter = await this.getMcpAdapter();
-    if (adapter) {
+    // Native action names win on collisions: only actions outside the
+    // connector's own manifest may be dispatched to the MCP server. This
+    // keeps runtime dispatch consistent with ActionDefinition.origin.
+    const isNativeAction = this.actions.some(
+      (definition) => definition.name === action
+    );
+    if (adapter && !isNativeAction) {
       try {
         const { env, headers } = this.prepareMcpAuth(credentials);
         const mcpActions = await adapter.getActionDefinitionsLive(env, headers);

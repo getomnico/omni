@@ -2,9 +2,8 @@ use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
     ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, OAuthCredentialReadyRequest,
-    OAuthCredentialValidationRequest,
-    PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress,
-    TriggerSyncRequest, TriggerSyncResponse, TriggerType,
+    OAuthCredentialValidationRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
+    SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
@@ -29,9 +28,9 @@ use shared::db::repositories::{
     person::SOURCE_MUTATION_LOCK_NAMESPACE, ConfigurationRepository, SyncRunRepository,
 };
 use shared::models::{
-    ActionCredentialScope, ActionMode, ConnectorManifest, GlobalConfiguration, IntegrationType,
-    SearchOperator, ServiceCredential, ServiceProvider, Source, SourceType, SyncRun, SyncStatus,
-    SyncType,
+    ActionCredentialScope, ActionMode, ActionOrigin, ConnectorManifest, GlobalConfiguration,
+    IntegrationType, OAuthCredentialValidationResponse, SearchOperator, ServiceCredential,
+    ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -537,7 +536,7 @@ pub async fn execute_action(
         }
         let action_admin_only = action_def.admin_only;
         let action_mode = action_def.mode;
-        if manifest.mcp_action_names.contains(&request.action) {
+        if action_def.origin == ActionOrigin::Mcp {
             return Err(ApiError::BadRequest(
                 "MCP actions cannot be executed with transient credentials".to_string(),
             ));
@@ -680,7 +679,7 @@ pub async fn execute_action(
                 "user_id is required for admin-only actions".to_string(),
             ));
         }
-        is_mcp_action = manifest.mcp_action_names.contains(&request.action);
+        is_mcp_action = action_def.origin == ActionOrigin::Mcp;
 
         // Credential policy: admin-only and connector-declared Org actions
         // execute with the source's org credential. Every other action is
@@ -965,12 +964,9 @@ async fn invalidate_native_mcp_catalog(
     }) else {
         return Ok(());
     };
-    let mcp_names: std::collections::HashSet<_> =
-        manifest.mcp_action_names.iter().cloned().collect();
     manifest
         .actions
-        .retain(|action| !mcp_names.contains(&action.name));
-    manifest.mcp_action_names.clear();
+        .retain(|action| action.origin != ActionOrigin::Mcp);
     manifest.resources.clear();
     manifest.prompts.clear();
     manifest.mcp_catalog_loaded = false;
@@ -993,13 +989,15 @@ async fn invalidate_native_mcp_catalog(
 async fn mcp_client_error_to_api_error(
     err: ClientError,
     cred_service: &CredentialService,
-    credentials: &ServiceCredential,
+    credentials: Option<&ServiceCredential>,
     source: &Source,
 ) -> ApiError {
     if let ClientError::ConnectorError { status: 412, message } = &err {
         if let Ok(body) = serde_json::from_str::<Value>(message) {
             if body.get("error").and_then(Value::as_str) == Some("needs_user_auth") {
-                if let Some(user_id) = credentials.user_id.as_deref() {
+                // Only a real (persisted) credential can be invalidated;
+                // empty envelopes carry no credential row.
+                if let Some(user_id) = credentials.and_then(|creds| creds.user_id.as_deref()) {
                     if let Err(delete_err) = cred_service
                         .delete_user_credential(&source.id, user_id)
                         .await
@@ -1011,7 +1009,8 @@ async fn mcp_client_error_to_api_error(
                     .get("provider")
                     .cloned()
                     .and_then(|value| serde_json::from_value(value).ok())
-                    .unwrap_or(credentials.provider);
+                    .or_else(|| credentials.map(|creds| creds.provider))
+                    .unwrap_or(ServiceProvider::RemoteMcp);
                 return ApiError::PreconditionFailedJson(needs_user_auth_json(
                     &source.id,
                     &source.source_type,
@@ -1626,7 +1625,7 @@ pub async fn read_resource(
         Ok(result) => result,
         Err(err) => {
             return Err(
-                mcp_client_error_to_api_error(err, &cred_service, &creds, &source).await,
+                mcp_client_error_to_api_error(err, &cred_service, Some(&creds), &source).await,
             )
         }
     };
@@ -1776,7 +1775,7 @@ pub async fn get_prompt(
         Ok(result) => result,
         Err(err) => {
             return Err(
-                mcp_client_error_to_api_error(err, &cred_service, &creds, &source).await,
+                mcp_client_error_to_api_error(err, &cred_service, Some(&creds), &source).await,
             )
         }
     };
@@ -1785,12 +1784,13 @@ pub async fn get_prompt(
 }
 
 /// Validate a freshly exchanged OAuth credential through the connector before
-/// it is persisted. Connectors may return source config updates discovered from
-/// the credential (for example, a stable provider organization identifier).
+/// it is persisted. Connectors may reject the credential and may return a
+/// source binding discovered from it (for example, a stable provider
+/// organization identifier); the caller decides whether the binding applies.
 pub async fn validate_oauth_credential(
     State(state): State<AppState>,
     Json(mut request): Json<OAuthCredentialValidationRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<OAuthCredentialValidationResponse>, ApiError> {
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let source = source_repo
         .find_by_id(request.source_id.clone())
@@ -1813,10 +1813,6 @@ pub async fn validate_oauth_credential(
         .await
     {
         Ok(result) => Ok(Json(result)),
-        Err(ClientError::ConnectorError { status: 404, .. }) => {
-            // Older connector SDKs do not implement this optional hook.
-            Ok(Json(json!({"config_updates": {}})))
-        }
         Err(ClientError::ConnectorError { status: 400, message }) => {
             Err(ApiError::BadRequest(message))
         }
@@ -1922,7 +1918,7 @@ pub async fn oauth_credential_ready(
         .await
     {
         Ok(Some(manifest)) => {
-            if let Err(e) = validate_connector_manifest_action_schemas(&manifest) {
+            if let Err(e) = validate_connector_manifest(&manifest) {
                 warn!("OAuth credential-ready returned invalid manifest: {}", e);
                 return Ok(Json(json!({"status": "invalid_manifest"})));
             }
@@ -2110,21 +2106,22 @@ pub async fn get_skill(
                 request.skill_id, source.source_type
             )));
         }
-        let requires_user_oauth = skill.mcp_prompt.is_some();
-        if requires_user_oauth && oauth_provider_from_manifest(&manifest).is_none() {
-            return Err(ApiError::BadRequest(
-                "MCP-backed skill has no declared OAuth provider".to_string(),
-            ));
-        }
-        if requires_user_oauth && request.user_id.is_none() {
+        let is_mcp_backed = skill.mcp_prompt.is_some();
+        // Dynamic MCP prompts resolve per-actor state, so they always need an
+        // acting user, even when the connector has no per-user OAuth flow.
+        if is_mcp_backed && request.user_id.is_none() {
             return Err(ApiError::BadRequest(
                 "user_id is required for MCP-backed skills".to_string(),
             ));
         }
+        // Per-user OAuth is only mandatory when the connector declares an OAuth
+        // manifest; otherwise the org credential (or no credential at all, for
+        // unauthenticated MCP servers) is used with the actor identity intact.
+        let requires_user_oauth = is_mcp_backed && oauth_provider_from_manifest(&manifest).is_some();
 
         let cred_service = CredentialService::new(state.db_pool.clone());
-        let creds = if requires_user_oauth {
-            match resolve_credentials_with_policy(
+        let (auth_error_credential, skill_credentials) = if requires_user_oauth {
+            let creds = match resolve_credentials_with_policy(
                 &cred_service,
                 &source.id,
                 request.user_id.as_deref(),
@@ -2149,22 +2146,37 @@ pub async fn get_skill(
                         source_id
                     )));
                 }
-            }
+            };
+            (Some(creds.clone()), McpCredentials::from_service_credential(&creds))
         } else {
-            cred_service
+            match cred_service
                 .get_owner_credential(&source)
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?
-                .ok_or_else(|| {
-                    ApiError::NotFound(format!("Credentials not found for source: {}", source_id))
-                })?
+            {
+                Some(credentials) => (
+                    Some(credentials.clone()),
+                    McpCredentials::from_service_credential(&credentials),
+                ),
+                None => (
+                    // Unauthenticated MCP server: execute with an empty
+                    // credential envelope. Auth-failure invalidation below
+                    // must not apply (no credential row exists).
+                    None,
+                    McpCredentials {
+                        source_id: Some(source.id.clone()),
+                        user_id: request.user_id.clone(),
+                        ..Default::default()
+                    },
+                ),
+            }
         };
 
         let client = ConnectorClient::new();
         let skill_request = shared::models::SkillRequest {
             skill_id: request.skill_id,
             arguments: request.arguments,
-            credentials: McpCredentials::from_service_credential(&creds),
+            credentials: skill_credentials,
         };
         let result = match client
             .get_skill(&manifest.connector_url, &skill_request)
@@ -2173,7 +2185,13 @@ pub async fn get_skill(
             Ok(result) => result,
             Err(err) => {
                 return Err(
-                    mcp_client_error_to_api_error(err, &cred_service, &creds, &source).await,
+                    mcp_client_error_to_api_error(
+                        err,
+                        &cred_service,
+                        auth_error_credential.as_ref(),
+                        &source,
+                    )
+                    .await,
                 )
             }
         };
@@ -2396,6 +2414,44 @@ fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> R
     Ok(())
 }
 
+/// Reject manifests whose action declarations cannot be honored safely by
+/// connector-manager's credential policy: an `actor_scoped` action claims the
+/// connector derives the affected records from the acting user server-side,
+/// which only holds for user-facing writes on the org-credential path.
+fn validate_connector_manifest_action_policy(
+    manifest: &ConnectorManifest,
+) -> Result<(), String> {
+    for action in &manifest.actions {
+        if !action.actor_scoped {
+            continue;
+        }
+        let mut conflicts: Vec<&'static str> = Vec::new();
+        if action.credential_scope == ActionCredentialScope::Org {
+            conflicts.push("org credential_scope");
+        }
+        if action.admin_only {
+            conflicts.push("admin_only");
+        }
+        if action.mode != ActionMode::Write {
+            conflicts.push("a non-write mode");
+        }
+        if !conflicts.is_empty() {
+            return Err(format!(
+                "Connector '{}' action '{}': actor_scoped cannot be combined with {}",
+                manifest.connector_id,
+                action.name,
+                conflicts.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), String> {
+    validate_connector_manifest_action_schemas(manifest)?;
+    validate_connector_manifest_action_policy(manifest)
+}
+
 pub async fn sdk_register(
     State(state): State<AppState>,
     Json(manifest): Json<ConnectorManifest>,
@@ -2410,7 +2466,7 @@ pub async fn sdk_register(
             "connector_url is required for registration".to_string(),
         ));
     }
-    validate_connector_manifest_action_schemas(&manifest).map_err(ApiError::BadRequest)?;
+    validate_connector_manifest(&manifest).map_err(ApiError::BadRequest)?;
 
     // Validate the connector is reachable before accepting registration
     let client = ConnectorClient::new();
@@ -2527,7 +2583,7 @@ pub async fn sdk_register(
                                 {
                                     Ok(Some(refreshed_manifest)) => {
                                         if let Err(error) =
-                                            validate_connector_manifest_action_schemas(
+                                            validate_connector_manifest(
                                                 &refreshed_manifest,
                                             )
                                         {
@@ -3926,8 +3982,8 @@ mod tests {
                 admin_only: false,
                 hidden: false,
                 actor_scoped: false,
+                origin: shared::models::ActionOrigin::Native,
             }],
-            mcp_action_names: Vec::new(),
             search_operators: Vec::new(),
             read_only: false,
             extra_schema: None,
@@ -4015,6 +4071,42 @@ mod tests {
         let manifest = manifest_with_action_schema(json!({}));
 
         assert!(validate_connector_manifest_action_schemas(&manifest).is_ok());
+    }
+
+    #[test]
+    fn manifest_policy_accepts_plain_actor_scoped_write() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.actions[0].actor_scoped = true;
+        manifest.actions[0].mode = ActionMode::Write;
+
+        assert!(validate_connector_manifest(&manifest).is_ok());
+    }
+
+    #[test]
+    fn manifest_policy_rejects_actor_scoped_with_org_credential_scope() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.actions[0].actor_scoped = true;
+        manifest.actions[0].credential_scope = ActionCredentialScope::Org;
+
+        assert!(validate_connector_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn manifest_policy_rejects_actor_scoped_with_admin_only() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.actions[0].actor_scoped = true;
+        manifest.actions[0].admin_only = true;
+
+        assert!(validate_connector_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn manifest_policy_rejects_actor_scoped_with_non_write_mode() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.actions[0].actor_scoped = true;
+        manifest.actions[0].mode = ActionMode::Read;
+
+        assert!(validate_connector_manifest(&manifest).is_err());
     }
 
     #[tokio::test]

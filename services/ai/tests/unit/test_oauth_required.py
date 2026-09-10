@@ -105,7 +105,6 @@ async def test_manifest_mcp_actions_populate_supports_user_oauth():
                     {"name": "create_draft"},
                     {"name": "org_action", "credential_scope": "org"},
                 ],
-                "mcp_action_names": ["send_email"],
             },
         },
     ]
@@ -211,6 +210,7 @@ class TestConnectorHandlerOAuthRequired:
             input_schema={"type": "object", "properties": {}},
             mode="write",
             required_scopes=["items:write"],
+            supports_user_oauth=True,
         )
         handler._initialized = True
 
@@ -256,6 +256,7 @@ class TestConnectorHandlerOAuthRequired:
             input_schema={"type": "object", "properties": {}},
             mode="write",
             required_scopes=["items:write"],
+            supports_user_oauth=True,
         )
         handler._initialized = True
 
@@ -321,6 +322,75 @@ class TestConnectorHandlerOAuthRequired:
 
         payload = await handler.check_oauth_required(
             "darwinbox__get_my_leave_balance",
+            {},
+            ToolContext(chat_id="c1", user_id="user-1"),
+        )
+
+        assert payload is None
+
+    @pytest.mark.asyncio
+    async def test_org_only_action_never_queries_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Actions that do not use per-user OAuth must short-circuit before
+        any credential or scope queries (no DB pool acquisition at all)."""
+        handler = ConnectorToolHandler(
+            connector_manager_url="http://cm.test",
+            user_id="user-1",
+        )
+        handler._actions["darwinbox__get_my_leave_balance"] = ConnectorAction(
+            source_id="src-1",
+            source_type="darwinbox",
+            source_name="Darwinbox",
+            action_name="get_my_leave_balance",
+            description="Get leave balances",
+            input_schema={"type": "object", "properties": {}},
+            mode="read",
+            supports_user_oauth=False,
+        )
+        handler._initialized = True
+
+        async def failing_get_db_pool() -> _CredentialPool:
+            raise AssertionError("credential queries must not run for org-only actions")
+
+        monkeypatch.setattr(connector_handler_module, "get_db_pool", failing_get_db_pool)
+
+        payload = await handler.check_oauth_required(
+            "darwinbox__get_my_leave_balance",
+            {},
+            ToolContext(chat_id="c1", user_id="user-1"),
+        )
+
+        assert payload is None
+
+    @pytest.mark.asyncio
+    async def test_admin_only_action_never_queries_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        handler = ConnectorToolHandler(
+            connector_manager_url="http://cm.test",
+            user_id="user-1",
+        )
+        handler._actions["google__list_domain_users"] = ConnectorAction(
+            source_id="src-1",
+            source_type="google",
+            source_name="Google",
+            action_name="list_domain_users",
+            description="List users",
+            input_schema={"type": "object", "properties": {}},
+            mode="read",
+            admin_only=True,
+            supports_user_oauth=True,
+        )
+        handler._initialized = True
+
+        async def failing_get_db_pool() -> _CredentialPool:
+            raise AssertionError("credential queries must not run for admin-only actions")
+
+        monkeypatch.setattr(connector_handler_module, "get_db_pool", failing_get_db_pool)
+
+        payload = await handler.check_oauth_required(
+            "google__list_domain_users",
             {},
             ToolContext(chat_id="c1", user_id="user-1"),
         )

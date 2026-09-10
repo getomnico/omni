@@ -105,7 +105,6 @@ describe("Connector Server", () => {
         integration_type: "connector",
         description: "",
         actions: [],
-        mcp_action_names: [],
         search_operators: [],
         mcp_enabled: false,
         mcp_catalog_loaded: false,
@@ -114,6 +113,66 @@ describe("Connector Server", () => {
         prompts: [],
         skills: [],
       });
+    });
+  });
+
+  describe("POST /oauth/validate", () => {
+    const requestBody = () => ({
+      source_id: "source-456",
+      provider: "mock",
+      credentials: { access_token: "token" },
+      flow: "org_source",
+      metadata: {},
+      source: {
+        id: "source-456",
+        name: "Mock Source",
+        source_type: "mock",
+        config: {},
+        is_active: true,
+      },
+    });
+
+    it("returns an empty binding by default", async () => {
+      const connector = new MockConnector();
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post("/oauth/validate")
+        .send(requestBody());
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ source_binding: null });
+    });
+
+    it("returns the connector's binding", async () => {
+      const connector = new MockConnector();
+      vi.spyOn(connector, "validateOauthCredential").mockResolvedValue({
+        organization_id: "00D123",
+      });
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post("/oauth/validate")
+        .send(requestBody());
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        source_binding: { organization_id: "00D123" },
+      });
+    });
+
+    it("surfaces connector rejection as a 400", async () => {
+      const connector = new MockConnector();
+      vi.spyOn(connector, "validateOauthCredential").mockRejectedValue(
+        new Error("OAuth organization does not match the source"),
+      );
+      const app = createServer(connector);
+
+      const response = await request(app)
+        .post("/oauth/validate")
+        .send(requestBody());
+
+      expect(response.status).toBe(400);
     });
   });
 

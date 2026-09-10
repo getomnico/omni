@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from omni_connector import (
     ActionDefinition,
     Connector,
+    OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
@@ -34,6 +35,7 @@ from .client import (
     DeletedRecord,
     SalesforceClient,
     SalesforceClientError,
+    fetch_organization_id,
 )
 from .config import (
     CHECKPOINT_INTERVAL,
@@ -242,30 +244,66 @@ class SalesforceConnector(Connector):
                     login_url = f"{parsed.scheme}://{parsed.netloc}"
         return cls._mcp_login_url(login_url or "https://login.salesforce.com")
 
+    @staticmethod
+    def _source_binding(config: Mapping[str, object]) -> dict[str, str]:
+        """Read the stored provider binding, preferring the reserved
+        `source_binding` key and falling back to the legacy top-level keys
+        written by older web versions."""
+        binding = config.get("source_binding")
+        if isinstance(binding, Mapping) and all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in binding.items()
+        ):
+            return dict(binding)
+        legacy: dict[str, str] = {}
+        organization_id = config.get("organization_id")
+        if isinstance(organization_id, str) and organization_id:
+            legacy["organization_id"] = organization_id
+        instance_url = config.get("instance_url")
+        if isinstance(instance_url, str) and instance_url:
+            legacy["instance_url"] = instance_url
+        return legacy
+
     async def validate_oauth_credential(
         self,
         source: Source,
         credentials: dict[str, object],
+        flow: OAuthCredentialFlow,
         metadata: dict[str, object] | None = None,
-    ) -> dict[str, object]:
+    ) -> dict[str, str] | None:
         config = source.config
-        expected_instance = config.get("instance_url")
+        stored_binding = self._source_binding(config)
+        expected_instance = stored_binding.get("instance_url")
         expected_instance = (
             expected_instance.strip().rstrip("/")
             if isinstance(expected_instance, str) and expected_instance.strip()
             else None
         )
-        expected_org_id = config.get("organization_id")
+        expected_org_id = stored_binding.get("organization_id")
         expected_org_id = (
             expected_org_id if isinstance(expected_org_id, str) and expected_org_id else None
         )
         actual_org_id = (metadata or {}).get("organization_id")
         actual_org_id = actual_org_id if isinstance(actual_org_id, str) else None
+        if actual_org_id is None:
+            credential_org_id = credentials.get("organization_id")
+            actual_org_id = (
+                credential_org_id if isinstance(credential_org_id, str) else None
+            )
         actual_instance = credentials.get("instance_url")
         actual_instance = actual_instance if isinstance(actual_instance, str) else None
 
+        if actual_org_id is None:
+            # Setup-time credentials (admin JWT / static token) carry no
+            # userinfo metadata; derive the org identity from the credential
+            # itself so the admin-owned binding can be established before any
+            # per-user OAuth credential is validated against it.
+            actual_org_id = await self._organization_id_from_credential(credentials)
+
+        binding: dict[str, str] = {"organization_id": actual_org_id}
+
         if expected_instance is None and expected_org_id is None:
-            return {"organization_id": actual_org_id} if actual_org_id else {}
+            return binding
         if expected_org_id is not None and actual_org_id != expected_org_id:
             raise ValueError("Salesforce OAuth organization does not match the source")
         if expected_instance is not None:
@@ -279,11 +317,18 @@ class SalesforceConnector(Connector):
             if urlparse(expected_url).hostname != urlparse(actual_url).hostname:
                 raise ValueError("Salesforce OAuth instance does not match the source")
 
-        return (
-            {"organization_id": actual_org_id}
-            if actual_org_id and expected_org_id is None
-            else {}
-        )
+        return binding
+
+    async def _organization_id_from_credential(
+        self, credentials: dict[str, object]
+    ) -> str:
+        try:
+            auth = SalesforceAuth.from_mapping(self._credential_payload(credentials))
+            return await fetch_organization_id(auth)
+        except (SalesforceClientError, ValueError) as exc:
+            raise ValueError(
+                "Salesforce credential could not be verified against its Salesforce org"
+            ) from exc
 
     def mcp_authentication_error(self, message: str) -> bool:
         """Recognize terminal Salesforce OAuth failures for MCP responses."""

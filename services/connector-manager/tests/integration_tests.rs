@@ -8,7 +8,7 @@ use redis::AsyncCommands;
 use serde_json::json;
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
-    ActionCredentialScope, ActionDefinition, ActionMode, AuthType, ConnectorEvent,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
     ConnectorManifest, DocumentMetadata,
     DocumentPermissions, IntegrationType, PersonSyncRecord, ServiceCredential, ServiceProvider,
     SourceType, SyncStatus, SyncType,
@@ -1834,8 +1834,8 @@ async fn register_action_manifest(
             admin_only,
             hidden: false,
             actor_scoped,
+            origin: ActionOrigin::Native,
         }],
-        mcp_action_names: vec![],
         search_operators: vec![],
         read_only: false,
         extra_schema: None,

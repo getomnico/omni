@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { McpAdapter, type HttpMcpServer, type StdioMcpServer } from '../src/mcp-adapter.js';
 import { Connector } from '../src/connector.js';
-import type { ConnectorManifest } from '../src/models.js';
+import { ActionResponse, type ActionDefinition, type ConnectorManifest, type Source } from '../src/models.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -286,6 +286,55 @@ describe('Connector MCP integration', () => {
     expect((await connector.getManifest('http://test:8000')).mcp_catalog_loaded).toBe(
       false
     );
+  });
+
+  it('stdio: native actions win on MCP name collisions', async () => {
+    class NativeWinsConnector extends Connector {
+      readonly name = 'mcp-test-stdio';
+      readonly version = '0.1.0';
+      readonly sourceTypes = ['mcp_test'];
+
+      readonly actions: ActionDefinition[] = [
+        {
+          name: 'greet',
+          description: 'Native greeting that shadows the MCP tool',
+          input_schema: { type: 'object', properties: {} },
+          mode: 'read',
+          credential_scope: 'user',
+          source_types: [],
+          admin_only: false,
+          hidden: false,
+          actor_scoped: false,
+          origin: 'native',
+        },
+      ];
+
+      get mcpServer(): StdioMcpServer {
+        return STDIO_SERVER;
+      }
+
+      async sync(): Promise<void> {}
+
+      override async executeAction(
+        action: string,
+        params: Record<string, unknown>,
+        credentials: Record<string, unknown>,
+        source?: Source,
+        actor_email?: string
+      ): Promise<Response> {
+        if (action === 'greet') {
+          return ActionResponse.success({ native: true, params }).toResponse(200);
+        }
+        return super.executeAction(action, params, credentials, source, actor_email);
+      }
+    }
+
+    const connector = new NativeWinsConnector();
+    const result = await connector.executeAction('greet', { name: 'Omni' }, {});
+    expect(result.status).toBe(200);
+    const body = JSON.parse(await result.text());
+    expect(body.status).toBe('success');
+    expect(body.result).toEqual({ native: true, params: { name: 'Omni' } });
   });
 
   it('stdio: delegates action execution to MCP tool', async () => {

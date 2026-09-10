@@ -7,6 +7,7 @@ use crate::models::{
     OAuthCredentialReadyRequest, PromptRequest, ResourceRequest, SkillRequest, SkillResponse,
     SyncRequest, SyncResponse, SyncStatusResponse,
 };
+use shared::models::OAuthCredentialValidationRequest;
 use anyhow::{Context, Result};
 use axum::{
     Router,
@@ -181,6 +182,7 @@ where
         .route("/sync/:sync_run_id", get(sync_status::<C>))
         .route("/cancel", post(cancel_sync::<C>))
         .route("/oauth/credential-ready", post(oauth_credential_ready::<C>))
+        .route("/oauth/validate", post(oauth_validate::<C>))
         .route("/action", post(execute_action::<C>))
         .route("/resource", post(read_resource::<C>))
         .route("/prompt", post(get_prompt::<C>))
@@ -211,7 +213,8 @@ where
 /// Start the connector server with additional HTTP routes merged in alongside
 /// the SDK-provided routes. Extra paths must not collide with the SDK's
 /// reserved paths (`/health`, `/manifest`, `/sync`, `/sync/:sync_run_id`,
-/// `/cancel`, `/action`, `/resource`, `/prompt`, `/skill`) — collisions cause axum to
+/// `/cancel`, `/action`, `/resource`, `/prompt`, `/skill`, `/oauth/validate`,
+/// `/oauth/credential-ready`) — collisions cause axum to
 /// panic at startup.
 ///
 /// Connectors that need to return binary data from actions should return
@@ -309,7 +312,6 @@ where
             Ok(mcp_actions) => {
                 let manual: std::collections::HashSet<String> =
                     manifest.actions.iter().map(|a| a.name.clone()).collect();
-                let mut mcp_action_names = Vec::new();
                 for mut action in mcp_actions {
                     if action.source_types.is_empty() {
                         action.source_types = manifest
@@ -321,11 +323,10 @@ where
                             .collect();
                     }
                     if !manual.contains(&action.name) {
-                        mcp_action_names.push(action.name.clone());
+                        action.origin = shared::models::ActionOrigin::Mcp;
                         manifest.actions.push(action);
                     }
                 }
-                manifest.mcp_action_names = mcp_action_names;
             }
             Err(e) => warn!("Failed to merge MCP actions into manifest: {}", e),
         }
@@ -695,6 +696,25 @@ where
     Ok(Json(build_manifest_with_mcp(&state).await).into_response())
 }
 
+/// Validate a freshly exchanged OAuth credential. The default implementation
+/// accepts the credential without binding anything; connectors override
+/// `Connector::validate_oauth_credential` to enforce source bindings.
+async fn oauth_validate<C>(
+    State(state): State<Arc<ServerState<C>>>,
+    Json(request): Json<OAuthCredentialValidationRequest>,
+) -> Result<Json<shared::models::OAuthCredentialValidationResponse>, (StatusCode, Json<serde_json::Value>)>
+where
+    C: Connector,
+{
+    match state.connector.validate_oauth_credential(&request).await {
+        Ok(response) => Ok(Json(response)),
+        Err(error) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": error.to_string() })),
+        )),
+    }
+}
+
 async fn execute_action<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<ActionRequest>,
@@ -704,10 +724,22 @@ where
 {
     info!("Action requested: {}", request.action);
 
-    // MCP-first dispatch: if the action matches a tool exposed by the
-    // connector's MCP server, delegate to the adapter. Falls through to the
-    // connector's own `execute_action` for connector-defined actions.
-    if let Some(adapter) = state.mcp_adapter() {
+    // Native action names win on collisions: only actions outside the
+    // connector's own manifest may be dispatched to the MCP server. This
+    // keeps runtime dispatch consistent with ActionDefinition.origin, which
+    // marks MCP-discovered manifest actions only when no native action of
+    // the same name exists.
+    let is_native_action = state
+        .connector
+        .actions()
+        .iter()
+        .any(|action| action.name == request.action);
+
+    // MCP dispatch: if the action matches a tool exposed by the connector's
+    // MCP server (and is not a native action), delegate to the adapter. Falls
+    // through to the connector's own `execute_action` for connector-defined
+    // actions.
+    if let Some(adapter) = state.mcp_adapter().filter(|_| !is_native_action) {
         let creds = request
             .credentials
             .as_ref()

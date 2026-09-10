@@ -226,6 +226,7 @@ def connector_event(**data: Any) -> ConnectorEvent:
 
 
 ActionCredentialScope = Literal["user", "org"]
+ActionOrigin = Literal["native", "mcp"]
 
 
 class ActionDefinition(BaseModel):
@@ -253,6 +254,9 @@ class ActionDefinition(BaseModel):
     # None means the connector has not declared action-level scopes and
     # Omni should fall back to the coarse credential-existence check.
     required_scopes: list[str] | None = None
+    # Provenance of this action: native actions are declared by the connector
+    # itself, mcp actions were discovered from its MCP server.
+    origin: ActionOrigin = "native"
 
 
 class SearchOperator(BaseModel):
@@ -396,10 +400,6 @@ class ConnectorManifest(BaseModel):
     source_types: list[str] = Field(default_factory=list)
     description: str | None = None
     actions: list[ActionDefinition] = Field(default_factory=list)
-    # Names of actions discovered from the connector's MCP server. This is
-    # explicit provenance for connector-manager authorization; it must not be
-    # inferred from source_types or action names.
-    mcp_action_names: list[str] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
     extra_schema: dict[str, Any] | None = None
     attributes_schema: dict[str, Any] | None = None
@@ -531,12 +531,34 @@ class ActionRequest(BaseModel):
     actor_email: str | None = None
 
 
+class OAuthCredentialFlow(str, Enum):
+    """Which web OAuth flow produced the credential being validated."""
+
+    ORG_SOURCE = "org_source"
+    CONNECT_SOURCE = "connect_source"
+    USER_READ = "user_read"
+    USER_WRITE = "user_write"
+
+
+# Provider-defined identity binding returned by a connector's OAuth credential
+# validation (e.g. Salesforce ``organization_id``). Mirrors
+# `shared::models::OAuthSourceBinding` (Rust). Stored verbatim under the
+# reserved `source_binding` key in source config; never merged into other
+# config keys.
+OAuthSourceBinding = dict[str, str]
+
+
 class OAuthCredentialValidationRequest(BaseModel):
     source_id: str
     provider: str
     credentials: dict[str, Any]
+    flow: OAuthCredentialFlow
     metadata: dict[str, Any] = Field(default_factory=dict)
-    source: Source
+    source: Source | None = None
+
+
+class OAuthCredentialValidationResponse(BaseModel):
+    source_binding: dict[str, str] | None = None
 
 
 class ActionResponse(BaseModel):

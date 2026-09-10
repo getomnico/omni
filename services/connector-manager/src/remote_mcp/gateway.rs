@@ -7,7 +7,7 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use shared::models::{
-    ActionCredentialScope, ActionDefinition, ActionMode, AuthType, IntegrationType,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, IntegrationType,
     McpPromptArgument,
     McpPromptDefinition, McpResourceDefinition, ServiceCredential, ServiceProvider, Source,
 };
@@ -939,7 +939,6 @@ pub fn build_manifest(
         source_types: vec![source.source_type.clone()],
         description: None,
         actions,
-        mcp_action_names: Vec::new(),
         search_operators: Vec::new(),
         read_only: !config.write_tools_enabled,
         extra_schema: None,
@@ -999,6 +998,7 @@ fn action_from_tool(tool: &JsonValue, write_tools_enabled: bool) -> Option<Actio
         admin_only: false,
         hidden: false,
         actor_scoped: false,
+        origin: ActionOrigin::Mcp,
     })
 }
 

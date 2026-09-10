@@ -390,6 +390,7 @@ export class McpAdapter {
         admin_only: false,
         actor_scoped: false,
         hidden: false,
+        origin: 'mcp',
       });
     }
     return actions;

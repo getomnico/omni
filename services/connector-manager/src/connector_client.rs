@@ -1,7 +1,7 @@
 use crate::models::{
     ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, OAuthCredentialReadyRequest,
-    OAuthCredentialValidationRequest,
-    PromptRequest, ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
+    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, PromptRequest,
+    ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
 use shared::models::SyncType;
@@ -272,13 +272,13 @@ impl ConnectorClient {
     }
 
     /// Ask a connector to validate a freshly exchanged OAuth credential before
-    /// the credential is persisted. Older SDKs do not implement this optional
-    /// endpoint and are treated as accepting the credential.
+    /// it is persisted. Connectors without the endpoint (or that reject the
+    /// credential) fail the flow; there is no fail-open acceptance.
     pub async fn validate_oauth_credential(
         &self,
         connector_url: &str,
         request: &OAuthCredentialValidationRequest,
-    ) -> Result<serde_json::Value, ClientError> {
+    ) -> Result<OAuthCredentialValidationResponse, ClientError> {
         let url = format!("{}/oauth/validate", connector_url);
         debug!("Validating OAuth credential at {}", url);
 

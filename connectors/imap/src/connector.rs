@@ -81,6 +81,7 @@ impl Connector for ImapConnector {
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                origin: Default::default(),
                 name: "validate_credentials".to_string(),
                 description: "Test IMAP connection with the provided credentials".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,
@@ -104,6 +105,7 @@ impl Connector for ImapConnector {
                 hidden: true,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "list_folders".to_string(),
                 description: "List accessible IMAP mailbox folders".to_string(),
                 mode: omni_connector_sdk::ActionMode::Read,

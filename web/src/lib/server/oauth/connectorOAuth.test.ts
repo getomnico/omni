@@ -6,6 +6,7 @@ import {
     isClientConfigComplete,
     oauthCredentialExpiry,
     oauthServiceBaseUrl,
+    parseOAuthSourceBinding,
     revokeDynamicallyRegisteredClient,
     scopesForExistingSourceUserFlow,
     tokenEndpointAuthMethodForConfig,
@@ -82,23 +83,80 @@ describe('windshiftInternalOrigin', () => {
 
 describe('OAuth connector helpers', () => {
     it('derives credential expiry from expires_in', () => {
-        const expiry = oauthCredentialExpiry({ expires_in: 7200 })
-        const delta = expiry.getTime() - Date.now()
+        const expiry = oauthCredentialExpiry({ expires_in: 7200 }, 'refresh-token')
+        expect(expiry).not.toBeNull()
+        const delta = (expiry as Date).getTime() - Date.now()
         expect(delta).toBeGreaterThan(7100 * 1000)
         expect(delta).toBeLessThanOrEqual(7200 * 1000)
     })
 
-    it('falls back to the default lifetime when the provider omits expires_in', () => {
-        const expiry = oauthCredentialExpiry({})
-        const delta = expiry.getTime() - Date.now()
+    it('derives credential expiry from expires_in even without a refresh token', () => {
+        const expiry = oauthCredentialExpiry({ expires_in: 7200 }, null)
+        expect(expiry).not.toBeNull()
+    })
+
+    it('falls back to the default lifetime only when a refresh token exists', () => {
+        const expiry = oauthCredentialExpiry({}, 'refresh-token')
+        expect(expiry).not.toBeNull()
+        const delta = (expiry as Date).getTime() - Date.now()
         expect(delta).toBeGreaterThan((3600 - 1) * 1000)
         expect(delta).toBeLessThanOrEqual(3600 * 1000)
     })
 
+    it('persists no expiry when expires_in is missing and there is no refresh token', () => {
+        expect(oauthCredentialExpiry({}, null)).toBeNull()
+        expect(oauthCredentialExpiry({})).toBeNull()
+    })
+
     it('treats a non-positive expires_in as missing', () => {
-        const expiry = oauthCredentialExpiry({ expires_in: 0 })
-        const delta = expiry.getTime() - Date.now()
+        const expiry = oauthCredentialExpiry({ expires_in: 0 }, 'refresh-token')
+        expect(expiry).not.toBeNull()
+        const delta = (expiry as Date).getTime() - Date.now()
         expect(delta).toBeGreaterThan((3600 - 1) * 1000)
+    })
+
+    describe('parseOAuthSourceBinding', () => {
+        it('returns null for an absent or null binding', () => {
+            expect(parseOAuthSourceBinding({})).toBeNull()
+            expect(parseOAuthSourceBinding({ source_binding: null })).toBeNull()
+        })
+
+        it('returns provider-defined binding fields', () => {
+            expect(
+                parseOAuthSourceBinding({
+                    source_binding: { organization_id: '00D123', instance_url: 'https://x' },
+                }),
+            ).toEqual({ organization_id: '00D123', instance_url: 'https://x' })
+            expect(
+                parseOAuthSourceBinding({ source_binding: { workspace_id: 'ws-1' } }),
+            ).toEqual({ workspace_id: 'ws-1' })
+        })
+
+        it('rejects non-string binding values', () => {
+            expect(() =>
+                parseOAuthSourceBinding({
+                    source_binding: { organization_id: '00D123', read_only: true },
+                }),
+            ).toThrow('invalid binding field: read_only')
+        })
+
+        it('rejects non-string binding values', () => {
+            expect(() =>
+                parseOAuthSourceBinding({ source_binding: { organization_id: 42 } }),
+            ).toThrow('invalid binding field: organization_id')
+        })
+
+        it('rejects empty binding field names', () => {
+            expect(() => parseOAuthSourceBinding({ source_binding: { '': 'x' } })).toThrow(
+                'invalid binding field name',
+            )
+        })
+
+        it('rejects a malformed response body', () => {
+            expect(() => parseOAuthSourceBinding('nope')).toThrow(
+                'invalid response',
+            )
+        })
     })
 
     beforeEach(() => {

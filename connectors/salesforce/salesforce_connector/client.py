@@ -489,6 +489,16 @@ class SalesforceClient:
             and time.time() >= self._token_expires_at - TOKEN_REFRESH_EARLY_SECONDS
         )
 
+    async def session_credentials(self) -> tuple[str, str]:
+        """Return a valid ``(access_token, instance_url)`` pair.
+
+        Public view of the auth machinery so callers outside the sync flow
+        (e.g. OAuth credential validation) can obtain a usable access token
+        for both bearer and JWT credentials without duplicating the JWT
+        bearer grant.
+        """
+        return await self._session_credentials()
+
     @with_retry(max_retries=3)
     async def query(self, soql: str) -> QueryResult:
         """Execute a SOQL query and return a typed result."""
@@ -610,6 +620,40 @@ class SalesforceClient:
 
 def _format_api_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def fetch_organization_id(
+    auth: SalesforceAuth, timeout: float = 15.0
+) -> str:
+    """Resolve the Salesforce organization id a credential belongs to.
+
+    Obtains a usable access token (minting one via the JWT bearer grant for
+    JWT credentials) and asks the provider's userinfo endpoint. Raises when
+    the credential cannot be used or the provider does not report an
+    organization id — OAuth credential validation is fail-closed.
+    """
+    client = SalesforceClient(auth)
+    token, _instance_url = await client.session_credentials()
+
+    def _fetch() -> object:
+        response = requests.get(
+            f"{auth.login_url.rstrip('/')}/services/oauth2/userinfo",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            raise SalesforceClientError(
+                f"Salesforce userinfo request failed ({response.status_code})"
+            )
+        return _require_mapping(response.json(), "userinfo")
+
+    userinfo = await asyncio.to_thread(_fetch)
+    organization_id = userinfo.get("organization_id")
+    if not isinstance(organization_id, str) or not organization_id:
+        raise SalesforceClientError(
+            "Salesforce userinfo did not report an organization id"
+        )
+    return organization_id
 
 
 def _require_mapping(raw: object, what: str) -> Mapping[str, object]:

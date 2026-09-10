@@ -13,7 +13,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, IntegrationType, SearchOperator,
+    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, IntegrationType,
+    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, SearchOperator,
     ServiceCredential, Source, SourceType, SyncType,
 };
 
@@ -126,6 +127,19 @@ pub trait Connector: Send + Sync + 'static {
         false
     }
 
+    /// Validate a freshly exchanged OAuth credential before it is persisted.
+    /// Connectors may reject credentials that are valid at the provider but
+    /// belong to a different source organization by returning an error, and
+    /// may return a source binding (e.g. a provider organization identifier)
+    /// that the caller stores under the reserved `source_binding` config key.
+    /// The default accepts the credential without binding anything.
+    async fn validate_oauth_credential(
+        &self,
+        _request: &OAuthCredentialValidationRequest,
+    ) -> Result<OAuthCredentialValidationResponse> {
+        Ok(OAuthCredentialValidationResponse::default())
+    }
+
     /// Connector-specific gate run before the SDK reserves a sync slot or
     /// starts `sync()`. Use this for request-level availability checks, such as
     /// optional realtime prerequisites that should return 404 instead of
@@ -183,7 +197,6 @@ pub trait Connector: Send + Sync + 'static {
                 .collect(),
             description: self.description(),
             actions: self.actions(),
-            mcp_action_names: vec![],
             search_operators: self.search_operators(),
             read_only: self.read_only(),
             extra_schema: self.extra_schema(),

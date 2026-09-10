@@ -183,11 +183,30 @@ def create_app(
     async def validate_oauth_credential(
         request: OAuthCredentialValidationRequest,
     ) -> JSONResponse:
-        try:
-            config_updates = await connector.validate_oauth_credential(
-                request.source, request.credentials, request.metadata
+        if request.source is None:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": "source is required for OAuth credential validation"},
             )
-            return JSONResponse(content={"config_updates": config_updates})
+        try:
+            binding = await connector.validate_oauth_credential(
+                request.source, request.credentials, request.flow, request.metadata
+            )
+            if binding is not None:
+                if not isinstance(binding, dict) or not all(
+                    isinstance(key, str) and isinstance(value, str)
+                    for key, value in binding.items()
+                ):
+                    raise ValueError(
+                        "OAuth credential validation returned an invalid source binding"
+                    )
+            return JSONResponse(
+                content={
+                    "source_binding": (
+                        dict(binding) if binding else None
+                    )
+                }
+            )
         except Exception as exc:
             logger.warning("OAuth credential validation failed", exc_info=True)
             return JSONResponse(

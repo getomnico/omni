@@ -537,3 +537,70 @@ class TestConnectorBaseClass:
         connector = MinimalConnector()
         assert connector.actions == []
         assert connector.sync_modes == ["full"]
+
+
+class TestOauthValidateEndpoint:
+    def _source_payload(self) -> dict[str, Any]:
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        return {
+            "id": "src-1",
+            "name": "Test Source",
+            "source_type": "test",
+            "config": {},
+            "is_active": True,
+            "is_deleted": False,
+            "scope": "org",
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "created_by": "user-1",
+        }
+
+    def _request_body(self) -> dict[str, Any]:
+        return {
+            "source_id": "src-1",
+            "provider": "test",
+            "credentials": {"token": "t"},
+            "flow": "org_source",
+            "metadata": {},
+            "source": self._source_payload(),
+        }
+
+    def test_default_noop_returns_empty_binding(self, client):
+        response = client.post("/oauth/validate", json=self._request_body())
+
+        assert response.status_code == 200
+        assert response.json() == {"source_binding": None}
+
+    def test_connector_binding_is_returned(self, mock_connector, monkeypatch):
+        async def validate(source, credentials, flow, metadata):
+            return {"organization_id": "00D123"}
+
+        mock_connector.validate_oauth_credential = validate
+        monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
+        client = TestClient(create_app(mock_connector))
+
+        response = client.post("/oauth/validate", json=self._request_body())
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "source_binding": {"organization_id": "00D123"}
+        }
+
+    def test_connector_rejection_returns_400(self, mock_connector, monkeypatch):
+        async def validate(source, credentials, flow, metadata):
+            raise ValueError("OAuth organization does not match the source")
+
+        mock_connector.validate_oauth_credential = validate
+        monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
+        client = TestClient(create_app(mock_connector))
+
+        response = client.post("/oauth/validate", json=self._request_body())
+
+        assert response.status_code == 400
+        assert "organization" in response.json()["error"]

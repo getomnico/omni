@@ -13,8 +13,8 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionCredentialScope, ActionDefinition, ActionMode, McpPromptArgument, McpPromptDefinition,
-    McpResourceDefinition,
+    ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, McpPromptArgument,
+    McpPromptDefinition, McpResourceDefinition,
 };
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -553,6 +553,7 @@ async fn fetch_actions(client: &RmcpClient) -> Result<Vec<ActionDefinition>> {
             admin_only: false,
             actor_scoped: false,
             hidden: false,
+            origin: ActionOrigin::Mcp,
         });
     }
     Ok(actions)

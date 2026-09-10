@@ -149,6 +149,7 @@ impl Connector for AtlassianConnector {
 
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![ActionDefinition {
+            origin: Default::default(),
             name: "search_spaces".to_string(),
             description: "Search Confluence spaces or Jira projects".to_string(),
             input_schema: json!({

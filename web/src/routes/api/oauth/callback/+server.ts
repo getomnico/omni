@@ -3,10 +3,13 @@ import type { RequestHandler } from './$types'
 import { db } from '$lib/server/db'
 import { serviceCredentials, sources } from '$lib/server/db/schema'
 import { ulid } from 'ulid'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import {
     exchangeCodeAndIdentify,
     oauthCredentialExpiry,
+    requestOAuthCredentialValidation,
+    SOURCE_BINDING_CONFIG_KEY,
+    type OAuthSourceBinding,
 } from '$lib/server/oauth/connectorOAuth'
 import { OAuthStateManager } from '$lib/server/oauth/state'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
@@ -152,11 +155,6 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         }
     }
 
-    // Salesforce and some other providers omit `expires_in`; without an
-    // expiry the stored credential is never refreshed (the manager only
-    // refreshes rows whose expires_at has arrived) and the access token dies
-    // silently. Fall back to the shared default lifetime.
-    const expiresAt = oauthCredentialExpiry(tokens)
     const tokenResponseMetadata = Object.fromEntries(
         (config.token_response_fields ?? [])
             .filter((field) => !['access_token', 'refresh_token', 'token_type'].includes(field))
@@ -177,59 +175,28 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         ...(config.resource ? { resource: config.resource } : {}),
     })
 
+    // Salesforce and some other providers omit `expires_in`; without an expiry
+    // the stored credential is never refreshed (the manager only refreshes
+    // rows whose expires_at has arrived) and the access token dies silently.
+    // The default lifetime applies only when the credential carries a refresh
+    // token; otherwise no expiry is persisted rather than a fabricated one.
+    const credentialExpiryFor = (existingCredentials: Record<string, unknown>) =>
+        oauthCredentialExpiry(tokens, tokens.refresh_token ?? existingCredentials.refresh_token)
+
     const validateOAuthCredentialForSource = async (
         sourceId: string,
         credentials: Record<string, unknown>,
-    ): Promise<Record<string, unknown>> => {
-        const response = await fetch(`${getConfig().services.connectorManagerUrl}/oauth/validate`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-                source_id: sourceId,
-                provider: config.provider,
-                credentials,
-                metadata:
-                    typeof userinfo === 'object' && userinfo !== null && !Array.isArray(userinfo)
-                        ? userinfo
-                        : {},
-            }),
+    ): Promise<OAuthSourceBinding | null> =>
+        requestOAuthCredentialValidation({
+            sourceId,
+            provider: config.provider,
+            credentials,
+            flow: flow.type,
+            metadata:
+                typeof userinfo === 'object' && userinfo !== null && !Array.isArray(userinfo)
+                    ? (userinfo as Record<string, unknown>)
+                    : {},
         })
-        const body = (await response.json().catch(() => null)) as unknown
-        if (!response.ok) {
-            const message =
-                typeof body === 'object' && body !== null
-                    ? 'message' in body
-                        ? (body as { message?: unknown }).message
-                        : 'error' in body
-                          ? (body as { error?: unknown }).error
-                          : undefined
-                    : undefined
-            throw new Error(
-                typeof message === 'string' && message ? message : 'OAuth credential rejected',
-            )
-        }
-        if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-            throw new Error('OAuth validation returned an invalid response')
-        }
-        const updates = (body as { config_updates?: unknown }).config_updates
-        if (updates === undefined) return {}
-        if (typeof updates !== 'object' || updates === null || Array.isArray(updates)) {
-            throw new Error('OAuth validation returned invalid config updates')
-        }
-        return updates as Record<string, unknown>
-    }
-
-    const applySourceConfigUpdates = async (
-        source: Awaited<ReturnType<typeof getSourceById>>,
-        updates: Record<string, unknown>,
-    ): Promise<void> => {
-        if (!source || Object.keys(updates).length === 0) return
-        const config = { ...((source.config ?? {}) as Record<string, unknown>), ...updates }
-        await db
-            .update(sources)
-            .set({ config, updatedAt: new Date() })
-            .where(eq(sources.id, source.id))
-    }
 
     const notifyOAuthCredentialReady = async (
         sourceId: string,
@@ -277,24 +244,50 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         const existing = await serviceCredentialsRepository.getOrgCredsBySourceId(flow.sourceId)
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
         const credentials = credentialsWithRefreshFallback(existingCredentials)
-        let configUpdates: Record<string, unknown>
+        let binding: OAuthSourceBinding | null
         try {
-            configUpdates = await validateOAuthCredentialForSource(flow.sourceId, credentials)
-            await applySourceConfigUpdates(source, configUpdates)
+            binding = await validateOAuthCredentialForSource(flow.sourceId, credentials)
         } catch (err) {
             return redirectOAuthFailure(
                 err instanceof Error ? err.message : 'OAuth credential rejected',
             )
         }
 
-        await serviceCredentialsRepository.create({
-            sourceId: flow.sourceId,
-            provider: credentialProvider,
-            authType: 'oauth',
-            principalEmail,
-            credentials,
-            config: (existing?.config as Record<string, unknown> | undefined) ?? {},
-            expiresAt,
+        // The binding and the credential must land together: a source that
+        // carries the binding without its credential (or vice versa) would
+        // fail validation on the next connect.
+        await db.transaction(async (tx) => {
+            if (binding) {
+                await tx
+                    .update(sources)
+                    .set({
+                        config: {
+                            ...((source.config ?? {}) as Record<string, unknown>),
+                            [SOURCE_BINDING_CONFIG_KEY]: binding,
+                        },
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(sources.id, source.id))
+            }
+            await tx
+                .delete(serviceCredentials)
+                .where(
+                    and(
+                        eq(serviceCredentials.sourceId, flow.sourceId),
+                        isNull(serviceCredentials.userId),
+                    ),
+                )
+            await tx.insert(serviceCredentials).values({
+                id: ulid(),
+                sourceId: flow.sourceId,
+                userId: null,
+                provider: credentialProvider,
+                authType: 'oauth',
+                principalEmail,
+                credentials: encryptConfig(credentials),
+                config: (existing?.config as Record<string, unknown> | undefined) ?? {},
+                expiresAt: credentialExpiryFor(existingCredentials),
+            })
         })
 
         const credentialReady = await notifyOAuthCredentialReady(flow.sourceId)
@@ -338,10 +331,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         )
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
         const credentials = credentialsWithRefreshFallback(existingCredentials)
-        let configUpdates: Record<string, unknown>
+        // Validation runs for user flows too, but a returned binding is not
+        // applied: the source-level binding belongs to the org connect flows.
         try {
-            configUpdates = await validateOAuthCredentialForSource(flow.sourceId, credentials)
-            await applySourceConfigUpdates(source, configUpdates)
+            await validateOAuthCredentialForSource(flow.sourceId, credentials)
         } catch (err) {
             return redirectOAuthFailure(
                 err instanceof Error ? err.message : 'OAuth credential rejected',
@@ -356,7 +349,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             principalEmail,
             credentials,
             config: { granted_scopes: storedGrantedScopes },
-            expiresAt,
+            expiresAt: credentialExpiryFor(existingCredentials),
         })
         if (flow.type === 'user_write' && flow.approvalId) {
             if (!flow.approvalChatId || !flow.sourceType) {
@@ -442,7 +435,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                         principalEmail,
                         credentials: encryptConfig(replacementCredentials),
                         config: { granted_scopes: effectiveGrantedScopes },
-                        expiresAt,
+                        expiresAt: credentialExpiryFor({}),
                     })
                     await tx
                         .update(sources)
@@ -456,13 +449,12 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 continue
             }
 
-            let configUpdates: Record<string, unknown>
+            let binding: OAuthSourceBinding | null
             try {
-                configUpdates = await validateOAuthCredentialForSource(
+                binding = await validateOAuthCredentialForSource(
                     existing.id,
                     credentialsWithRefreshFallback(existingCredentials),
                 )
-                await applySourceConfigUpdates(existing, configUpdates)
             } catch (err) {
                 return redirectOAuthFailure(
                     err instanceof Error ? err.message : 'OAuth credential rejected',
@@ -470,18 +462,42 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             }
 
             // Same identity — refresh its creds in place and preserve scope.
-            await serviceCredentialsRepository.createForUser({
-                sourceId: existing.id,
-                userId: user.id,
-                provider: credentialProvider,
-                authType: 'oauth',
-                principalEmail,
-                credentials: {
-                    ...existingCredentials,
-                    ...credentialsWithRefreshFallback(existingCredentials),
-                },
-                config: { granted_scopes: effectiveGrantedScopes },
-                expiresAt,
+            // The binding and the credential must land together.
+            await db.transaction(async (tx) => {
+                if (binding) {
+                    await tx
+                        .update(sources)
+                        .set({
+                            config: {
+                                ...((existing.config ?? {}) as Record<string, unknown>),
+                                [SOURCE_BINDING_CONFIG_KEY]: binding,
+                            },
+                            updatedAt: new Date(),
+                        })
+                        .where(eq(sources.id, existing.id))
+                }
+                await tx
+                    .delete(serviceCredentials)
+                    .where(
+                        and(
+                            eq(serviceCredentials.sourceId, existing.id),
+                            eq(serviceCredentials.userId, user.id),
+                        ),
+                    )
+                await tx.insert(serviceCredentials).values({
+                    id: ulid(),
+                    sourceId: existing.id,
+                    userId: user.id,
+                    provider: credentialProvider,
+                    authType: 'oauth',
+                    principalEmail,
+                    credentials: encryptConfig({
+                        ...existingCredentials,
+                        ...credentialsWithRefreshFallback(existingCredentials),
+                    }),
+                    config: { granted_scopes: effectiveGrantedScopes },
+                    expiresAt: credentialExpiryFor(existingCredentials),
+                })
             })
             connectedSourceIds.push(existing.id)
             if (sourceType === SourceType.GOOGLE_DRIVE) {
@@ -508,10 +524,9 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             .returning()
 
         const newCredentials = credentialsWithRefreshFallback({})
-        let configUpdates: Record<string, unknown>
+        let binding: OAuthSourceBinding | null
         try {
-            configUpdates = await validateOAuthCredentialForSource(newSource.id, newCredentials)
-            await applySourceConfigUpdates(newSource, configUpdates)
+            binding = await validateOAuthCredentialForSource(newSource.id, newCredentials)
         } catch (err) {
             await db.delete(sources).where(eq(sources.id, newSource.id))
             return redirectOAuthFailure(
@@ -519,15 +534,31 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             )
         }
 
-        await serviceCredentialsRepository.createForUser({
-            sourceId: newSource.id,
-            userId: user.id,
-            provider: credentialProvider,
-            authType: 'oauth',
-            principalEmail,
-            credentials: newCredentials,
-            config: { granted_scopes: effectiveGrantedScopes },
-            expiresAt,
+        // The binding and the credential must land together.
+        await db.transaction(async (tx) => {
+            if (binding) {
+                await tx
+                    .update(sources)
+                    .set({
+                        config: {
+                            ...((newSource.config ?? {}) as Record<string, unknown>),
+                            [SOURCE_BINDING_CONFIG_KEY]: binding,
+                        },
+                        updatedAt: new Date(),
+                    })
+                    .where(eq(sources.id, newSource.id))
+            }
+            await tx.insert(serviceCredentials).values({
+                id: ulid(),
+                sourceId: newSource.id,
+                userId: user.id,
+                provider: credentialProvider,
+                authType: 'oauth',
+                principalEmail,
+                credentials: encryptConfig(newCredentials),
+                config: { granted_scopes: effectiveGrantedScopes },
+                expiresAt: credentialExpiryFor({}),
+            })
         })
         if (!isGoogleDrive) {
             await db

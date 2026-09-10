@@ -1910,6 +1910,7 @@ fn action(
     actor_scoped: bool,
 ) -> ActionDefinition {
     ActionDefinition {
+        origin: Default::default(),
         name: name.to_string(),
         description: description.to_string(),
         input_schema,

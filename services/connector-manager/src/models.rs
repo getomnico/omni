@@ -3,9 +3,11 @@ use serde_json::Value as JsonValue;
 use shared::models::{Source, SourceType, SyncRun, SyncType};
 
 pub use shared::models::{
-    ActionDefinition, ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
-    McpCredentials, McpPromptDefinition, McpResourceDefinition, PromptRequest, ResourceRequest,
-    SearchOperator, SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
+    ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
+    McpCredentials, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
+    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
+    PromptRequest, ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest,
+    SyncResponse, SyncStatusResponse,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -140,17 +142,6 @@ pub struct OAuthCredentialReadyRequest {
     /// this; connector-manager fills it after resolving stored credentials.
     #[serde(default)]
     pub credentials: JsonValue,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OAuthCredentialValidationRequest {
-    pub source_id: String,
-    pub provider: String,
-    pub credentials: JsonValue,
-    #[serde(default)]
-    pub metadata: JsonValue,
-    #[serde(default)]
-    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

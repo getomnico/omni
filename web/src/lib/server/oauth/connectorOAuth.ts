@@ -34,17 +34,105 @@ const OAUTH_RESPONSE_MAX_BYTES = 1024 * 1024
  */
 export const DEFAULT_OAUTH_EXPIRES_IN_SECONDS = 3600
 
+/// Source config key under which a connector-validated OAuth source binding
+/// is stored verbatim. Nothing else in source config is written from the
+/// validation response.
+export const SOURCE_BINDING_CONFIG_KEY = 'source_binding'
+
+/** Typed provider-defined identity binding returned by OAuth validation. */
+export type OAuthSourceBinding = Record<string, string>
+
 /**
- * Credential expiry derived from a token response. Without an expiry the
- * stored credential is never refreshed and the access token dies silently.
- * Treat missing/non-positive `expires_in` as the default lifetime.
+ * Parse the `source_binding` field of a connector's OAuth validation
+ * response. Bindings are provider-defined string→string maps (e.g. a
+ * Salesforce `organization_id`); they are stored verbatim under the reserved
+ * `source_binding` source config key. Returns null when absent; throws on
+ * malformed bindings so a misbehaving connector cannot smuggle arbitrary
+ * config through.
  */
-export function oauthCredentialExpiry(tokens: { expires_in?: unknown }): Date {
-    const expiresIn =
-        typeof tokens.expires_in === 'number' && tokens.expires_in > 0
-            ? tokens.expires_in
-            : DEFAULT_OAUTH_EXPIRES_IN_SECONDS
-    return new Date(Date.now() + expiresIn * 1000)
+export function parseOAuthSourceBinding(body: unknown): OAuthSourceBinding | null {
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+        throw new Error('OAuth validation returned an invalid response')
+    }
+    const binding = (body as { source_binding?: unknown }).source_binding
+    if (binding === undefined || binding === null) {
+        return null
+    }
+    if (typeof binding !== 'object' || Array.isArray(binding)) {
+        throw new Error('OAuth validation returned an invalid source binding')
+    }
+    const result: OAuthSourceBinding = {}
+    for (const [key, value] of Object.entries(binding as Record<string, unknown>)) {
+        if (!key) {
+            throw new Error('OAuth validation returned an invalid binding field name')
+        }
+        if (typeof value !== 'string') {
+            throw new Error(`OAuth validation returned an invalid binding field: ${key}`)
+        }
+        result[key] = value
+    }
+    return result
+}
+
+/**
+ * Ask the connector (via connector-manager) to validate an OAuth credential
+ * and return the source binding it discovered, if any. `flow` is passed
+ * through typed so connectors can tell setup-time org credentials apart from
+ * user-attached ones.
+ */
+export async function requestOAuthCredentialValidation(args: {
+    sourceId: string
+    provider: string
+    credentials: Record<string, unknown>
+    flow: 'org_source' | 'connect_source' | 'user_read' | 'user_write'
+    metadata?: Record<string, unknown>
+}): Promise<OAuthSourceBinding | null> {
+    const response = await fetch(`${getConfig().services.connectorManagerUrl}/oauth/validate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            source_id: args.sourceId,
+            provider: args.provider,
+            credentials: args.credentials,
+            flow: args.flow,
+            metadata: args.metadata ?? {},
+        }),
+    })
+    const body = (await response.json().catch(() => null)) as unknown
+    if (!response.ok) {
+        const message =
+            typeof body === 'object' && body !== null
+                ? 'message' in body
+                    ? (body as { message?: unknown }).message
+                    : 'error' in body
+                      ? (body as { error?: unknown }).error
+                      : undefined
+                : undefined
+        throw new Error(
+            typeof message === 'string' && message ? message : 'OAuth credential rejected',
+        )
+    }
+    return parseOAuthSourceBinding(body)
+}
+
+/**
+ * Credential expiry derived from a token response. When the provider omits
+ * `expires_in`, fall back to the shared default lifetime — but only when a
+ * refresh token exists (the manager only refreshes rows whose expires_at has
+ * arrived). Without a refresh token there is nothing to refresh, so the
+ * credential is stored with no expiry instead of a fabricated one.
+ */
+export function oauthCredentialExpiry(
+    tokens: { expires_in?: unknown },
+    refreshToken?: unknown,
+): Date | null {
+    if (typeof tokens.expires_in === 'number' && tokens.expires_in > 0) {
+        return new Date(Date.now() + tokens.expires_in * 1000)
+    }
+    if (typeof refreshToken === 'string' && refreshToken.length > 0) {
+        return new Date(Date.now() + DEFAULT_OAUTH_EXPIRES_IN_SECONDS * 1000)
+    }
+    return null
 }
 
 function isOAuthTokenEndpointAuthMethod(value: unknown): value is OAuthTokenEndpointAuthMethod {
@@ -753,8 +841,7 @@ export function dynamicRegistrationPayload(
     return {
         client_name: `Omni ${providerName} MCP`,
         redirect_uris: [redirectUri],
-        grant_types:
-            grantTypes ?? ['authorization_code'],
+        grant_types: grantTypes ?? ['authorization_code'],
         response_types: ['code'],
         token_endpoint_auth_method: tokenEndpointAuthMethod,
         scope,

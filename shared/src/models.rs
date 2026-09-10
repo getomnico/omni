@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -882,7 +882,7 @@ impl Default for ActionCredentialScope {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ActionDefinition {
     pub name: String,
     pub description: String,
@@ -923,6 +923,23 @@ pub struct ActionDefinition {
     /// org-credential path are restricted to admin callers.
     #[serde(default)]
     pub actor_scoped: bool,
+    /// Provenance of this action: `native` actions are declared by the
+    /// connector itself, `mcp` actions were discovered from its MCP server.
+    /// Lets dispatch enforce per-user credentials, block transient
+    /// credentials, and invalidate stale MCP catalogs without separate
+    /// name lists.
+    #[serde(default)]
+    pub origin: ActionOrigin,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionOrigin {
+    #[default]
+    Native,
+    Mcp,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -983,11 +1000,6 @@ pub struct ConnectorManifest {
     pub description: Option<String>,
     #[serde(default)]
     pub actions: Vec<ActionDefinition>,
-    /// Action names discovered from this connector's MCP server. Explicit
-    /// provenance lets dispatch enforce user-scoped credentials without
-    /// affecting native connector actions.
-    #[serde(default)]
-    pub mcp_action_names: Vec<String>,
     #[serde(default)]
     pub search_operators: Vec<SearchOperator>,
     #[serde(default)]
@@ -1016,6 +1028,48 @@ pub struct ConnectorManifest {
     /// connector-manager need typed access to its fields.
     #[serde(default)]
     pub oauth: Option<JsonValue>,
+}
+
+/// Which web OAuth flow produced a credential. Passed to the connector's
+/// validation hook so it can decide whether a binding claim applies.
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthCredentialFlow {
+    OrgSource,
+    ConnectSource,
+    UserRead,
+    UserWrite,
+}
+
+/// Provider-defined identity binding returned by a connector's OAuth
+/// credential validation (e.g. Salesforce `organization_id`, a workspace id
+/// for another provider). Stored verbatim under the reserved `source_binding`
+/// key in source config; never merged into other config keys.
+pub type OAuthSourceBinding = BTreeMap<String, String>;
+
+/// Sent by connector-manager to a connector so it can validate a freshly
+/// exchanged OAuth credential before it is persisted (for example, rejecting
+/// credentials that belong to a different provider organization).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthCredentialValidationRequest {
+    pub source_id: String,
+    pub provider: String,
+    pub credentials: JsonValue,
+    pub flow: OAuthCredentialFlow,
+    #[serde(default)]
+    pub metadata: JsonValue,
+    #[serde(default)]
+    pub source: Option<Source>,
+}
+
+/// Connector response for `OAuthCredentialValidationRequest`. An error must be
+/// surfaced as an HTTP error; an empty binding means "accepted, nothing to bind".
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OAuthCredentialValidationResponse {
+    #[serde(default)]
+    pub source_binding: Option<OAuthSourceBinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

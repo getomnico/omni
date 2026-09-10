@@ -116,6 +116,7 @@ impl Connector for NextcloudConnector {
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![
             ActionDefinition {
+                origin: Default::default(),
                 name: "validate_credentials".into(),
                 description: "Verify that the provided Nextcloud credentials are valid".into(),
                 input_schema: json!({}),
@@ -128,6 +129,7 @@ impl Connector for NextcloudConnector {
                 hidden: false,
             },
             ActionDefinition {
+                origin: Default::default(),
                 name: "fetch_file".into(),
                 description: "Download a file from Nextcloud by its document ID".into(),
                 credential_scope: omni_connector_sdk::ActionCredentialScope::Org,

@@ -246,8 +246,8 @@ class TestConnectorMcpIntegration:
         manifest = await stdio_connector.get_manifest(connector_url="http://test:8000")
         assert manifest.mcp_enabled is True
         assert manifest.mcp_catalog_loaded is False
-        assert manifest.mcp_action_names == []
         assert {a.name for a in manifest.actions}.isdisjoint({"greet", "add"})
+        assert all(a.origin == "native" for a in manifest.actions)
 
     async def test_manifest_includes_mcp_tools_as_actions(
         self, stdio_connector: Connector
@@ -258,6 +258,9 @@ class TestConnectorMcpIntegration:
         action_names = {a.name for a in manifest.actions}
         assert "greet" in action_names
         assert "add" in action_names
+        assert all(
+            a.origin == "mcp" for a in manifest.actions if a.name in {"greet", "add"}
+        )
 
     async def test_manifest_includes_resources(self, stdio_connector: Connector):
         await stdio_connector.bootstrap_mcp({"token": "test"})

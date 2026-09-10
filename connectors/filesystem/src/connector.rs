@@ -53,6 +53,7 @@ impl Connector for FileSystemConnector {
 
     fn actions(&self) -> Vec<ActionDefinition> {
         vec![ActionDefinition {
+            origin: Default::default(),
             name: "validate_path".to_string(),
             description: "Validate that the configured filesystem path exists and is a directory"
                 .to_string(),

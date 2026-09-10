@@ -430,6 +430,10 @@ class ConnectorToolHandler:
         if (
             action is None
             or action.admin_only
+            # Actions that run on the org credential (admin-only, org-scoped,
+            # or connectors without a per-user OAuth flow) never surface an
+            # OAuth prompt — skip the credential/scopes queries entirely.
+            or not action.supports_user_oauth
             or context.user_id is None
             or context.skip_permission_check
         ):
@@ -516,12 +520,6 @@ class ConnectorToolHandler:
             provider = "remote_mcp"
         else:
             if org_credential is None:
-                return None
-            # Connectors without a per-user OAuth flow (e.g. Darwinbox) run
-            # against the org credential; connector-manager resolves the same
-            # way (`resolve_missing_user_credential`), so an OAuth prompt here
-            # would dead-end an action that would otherwise execute.
-            if not action.supports_user_oauth:
                 return None
             provider = org_credential["provider"]
 

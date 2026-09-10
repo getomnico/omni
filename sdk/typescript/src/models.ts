@@ -142,6 +142,9 @@ export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
 export const ActionCredentialScopeSchema = z.enum(['user', 'org']);
 export type ActionCredentialScope = z.infer<typeof ActionCredentialScopeSchema>;
 
+export const ActionOriginSchema = z.enum(['native', 'mcp']);
+export type ActionOrigin = z.infer<typeof ActionOriginSchema>;
+
 export const ActionDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
@@ -153,6 +156,7 @@ export const ActionDefinitionSchema = z.object({
   admin_only: z.boolean().default(false),
   hidden: z.boolean().default(false),
   actor_scoped: z.boolean().default(false),
+  origin: ActionOriginSchema.default('native'),
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 
@@ -266,7 +270,6 @@ export const ConnectorManifestSchema = z.object({
   source_types: z.array(z.string()).default([]),
   description: z.string().optional(),
   actions: z.array(ActionDefinitionSchema).default([]),
-  mcp_action_names: z.array(z.string()).default([]),
   search_operators: z.array(SearchOperatorSchema).default([]),
   extra_schema: z.record(z.unknown()).optional(),
   attributes_schema: z.record(z.unknown()).optional(),
@@ -344,6 +347,36 @@ export const OAuthCredentialReadyRequestSchema = z.object({
 });
 export type OAuthCredentialReadyRequest = z.infer<
   typeof OAuthCredentialReadyRequestSchema
+>;
+
+export const OAuthCredentialFlowSchema = z.enum([
+  'org_source',
+  'connect_source',
+  'user_read',
+  'user_write',
+]);
+export type OAuthCredentialFlow = z.infer<typeof OAuthCredentialFlowSchema>;
+
+export const OAuthSourceBindingSchema = z.record(z.string());
+export type OAuthSourceBinding = z.infer<typeof OAuthSourceBindingSchema>;
+
+export const OAuthCredentialValidationRequestSchema = z.object({
+  source_id: z.string(),
+  provider: z.string(),
+  credentials: z.record(z.unknown()).default({}),
+  flow: OAuthCredentialFlowSchema,
+  metadata: z.record(z.unknown()).default({}),
+  source: SourceSchema.nullable().optional(),
+});
+export type OAuthCredentialValidationRequest = z.infer<
+  typeof OAuthCredentialValidationRequestSchema
+>;
+
+export const OAuthCredentialValidationResponseSchema = z.object({
+  source_binding: OAuthSourceBindingSchema.nullable().optional(),
+});
+export type OAuthCredentialValidationResponse = z.infer<
+  typeof OAuthCredentialValidationResponseSchema
 >;
 
 export const ActionResponseSchema = z.object({

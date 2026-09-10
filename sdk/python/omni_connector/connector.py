@@ -13,8 +13,12 @@ from .models import (
     ActionResponse,
     ConnectorManifest,
     ConnectorSkillDefinition,
+    OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest,
+    OAuthCredentialValidationResponse,
     OAuthManifestConfig,
+    OAuthSourceBinding,
     SearchOperator,
     Source,
 )
@@ -175,15 +179,18 @@ class Connector(ABC):
         self,
         source: Source,
         credentials: dict[str, Any],
+        flow: OAuthCredentialFlow,
         metadata: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> OAuthSourceBinding | None:
         """Validate a freshly exchanged OAuth credential for a source.
 
         Connectors may reject credentials that are valid at the provider but
-        belong to a different source organization. The returned config updates
-        are merged into the source by the caller.
+        belong to a different source organization by raising. They may return
+        a source binding (e.g. a provider organization identifier) that the
+        web app stores under the reserved `source_binding` source config key.
+        Return None to accept the credential without binding anything.
         """
-        return {}
+        return None
 
     async def oauth_credential_ready(
         self, request: OAuthCredentialReadyRequest
@@ -239,17 +246,6 @@ class Connector(ABC):
         prompts = []
         skills = list(self.skills)
         actions = await self._get_all_actions()
-        mcp_action_names: list[str] = []
-        if adapter is not None:
-            try:
-                manual_names = {action.name for action in self.actions}
-                mcp_action_names = [
-                    action.name
-                    for action in await adapter.get_action_definitions()
-                    if action.name not in manual_names
-                ]
-            except Exception:
-                logger.warning("Failed to identify MCP tools", exc_info=True)
         if adapter is not None:
             try:
                 resources = await adapter.get_resource_definitions()
@@ -274,7 +270,6 @@ class Connector(ABC):
             source_types=self.source_types,
             description=self.description,
             actions=actions,
-            mcp_action_names=mcp_action_names,
             search_operators=self.search_operators,
             mcp_enabled=adapter is not None,
             mcp_catalog_loaded=adapter._has_cached_catalog if adapter is not None else False,

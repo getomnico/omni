@@ -49,6 +49,7 @@ export class LinearConnector extends Connector<LinearSourceConfig, LinearCredent
       admin_only: false,
       hidden: false,
       actor_scoped: false,
+      origin: 'native',
     },
   ];
 
