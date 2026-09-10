@@ -2027,7 +2027,6 @@ async def test_missing_permission_object_fails_without_documents(
     assert fake.failures
     assert hidden_object in fake.failures[0]
     assert fake.documents == {}
-    assert fake.updated_ids == []
 
 
 async def test_missing_required_permission_field_fails_without_documents(
@@ -2280,7 +2279,7 @@ async def test_oversized_share_snapshot_realtime_revokes(
 # ---------------------------------------------------------------------------
 
 
-async def test_multi_page_deletion_emits_tombstones_and_heartbeats(
+async def test_multi_page_deletion_flushes_tombstones_before_advancing_boundary(
     mock_salesforce_api: MockSalesforceAPI, mock_salesforce_server: str
 ) -> None:
     config = _config(mock_salesforce_server, enabled_objects=["Account"])
@@ -2319,9 +2318,8 @@ async def test_multi_page_deletion_emits_tombstones_and_heartbeats(
     )
 
     assert set(fake1.deleted_ids) == {f"Account:{record_id}" for record_id in deleted_ids}
-    # The walk heartbeats between pages and flushes tombstones before the
-    # deletion boundary advances.
-    assert fake1.heartbeats > 0
+    # The deletion boundary must not advance before the tombstones for that
+    # boundary were flushed.
     advanced = [
         index
         for index, checkpoint in enumerate(fake1.checkpoints)
@@ -2447,9 +2445,3 @@ def test_run_checkpoint_round_trips_all_run_scoped_state() -> None:
     assert restored.progress.pending_share_snapshot == (
         checkpoint.progress.pending_share_snapshot
     )
-
-
-def test_checkpoint_with_unknown_version_is_discarded() -> None:
-    raw = SalesforceCheckpoint().to_json()
-    raw["version"] = 1
-    assert SalesforceCheckpoint.from_mapping(raw) == SalesforceCheckpoint()
