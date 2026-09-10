@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
@@ -17,10 +17,12 @@ from fastapi.responses import JSONResponse
 from omni_connector import (
     ActionDefinition,
     Connector,
+    ConnectorManifest,
     OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
+    OAuthSourceBinding,
     PersonSyncRecord,
     SearchOperator,
     StdioMcpServer,
@@ -32,16 +34,21 @@ from omni_connector.models import Source
 from .actions import ACTION_DEFINITIONS, execute_action
 from .client import (
     AuthenticationError,
-    DeletedRecord,
     SalesforceClient,
     SalesforceClientError,
     fetch_organization_id,
 )
 from .config import (
     CHECKPOINT_INTERVAL,
+    DELETION_RETENTION_DAYS,
     DELTA_OVERLAP_SECONDS,
+    MAX_SHARE_SNAPSHOT_ENTRIES,
     PAGE_SIZE,
+    PERMISSION_RECONCILIATION_INTERVAL_SECONDS,
+    REALTIME_HEARTBEAT_SECONDS,
     SalesforceObjectConfig,
+    SalesforceObjectName,
+    SyncRunMode,
     enabled_object_configs,
     schema_fingerprint,
 )
@@ -58,15 +65,20 @@ from .models import (
     GroupMemberRecord,
     GroupRecord,
     LeadRecord,
+    ObjectState,
     OpportunityRecord,
+    PeopleState,
     RecordCursor,
     RoleRecord,
+    RunProgress,
     SalesforceAuth,
     SalesforceCheckpoint,
     SalesforceSourceConfig,
     ShareRecord,
+    ShareSnapshot,
     TaskRecord,
     UserRecord,
+    person_fingerprint,
 )
 from .pagination import (
     cursor_from_record,
@@ -98,28 +110,87 @@ USER_FIELDS = (
     "EmployeeNumber",
     "SystemModstamp",
 )
-GROUP_FIELDS = ("Id", "Name", "Type")
+GROUP_FIELDS = ("Id", "Name", "Type", "RelatedId")
 GROUP_MEMBER_FIELDS = ("Id", "GroupId", "UserOrGroupId")
 ROLE_FIELDS = ("Id", "Name", "ParentRoleId")
 
-_RECORD_PARSERS: dict[str, Callable[[Mapping[str, object]], RecordModel]] = {
-    "Account": AccountRecord.from_record,
-    "Contact": ContactRecord.from_record,
-    "Opportunity": OpportunityRecord.from_record,
-    "Lead": LeadRecord.from_record,
-    "Case": CaseRecord.from_record,
-    "Task": TaskRecord.from_record,
+# Group types whose membership is needed to resolve share rows. The
+# Organization group (all users) is deliberately excluded: fail-closed
+# visibility is configured explicitly via public_read_objects.
+SYNCED_GROUP_TYPES = (
+    "Public",
+    "Queue",
+    "Regular",
+    "Role",
+    "RoleAndSubordinates",
+    "RoleAndSubordinatesInternal",
+)
+
+MCP_WORKSPACE_ENV = "OMNI_SALESFORCE_MCP_WORKSPACE"
+
+# MCP tools are classified conservatively: only names matching a known
+# read-only verb are treated as reads, everything else is a write so a
+# read-scoped credential can never reach a write-capable tool.
+MCP_READ_TOOL_PREFIXES = (
+    "get_",
+    "list_",
+    "find_",
+    "search_",
+    "query_",
+    "describe_",
+    "read_",
+    "fetch_",
+    "show_",
+    "retrieve_",
+)
+MCP_WRITE_TOOL_PREFIXES = (
+    "create_",
+    "update_",
+    "delete_",
+    "insert_",
+    "upsert_",
+    "remove_",
+    "edit_",
+    "publish_",
+    "send_",
+)
+
+_RECORD_PARSERS: dict[SalesforceObjectName, Callable[[Mapping[str, object]], RecordModel]] = {
+    SalesforceObjectName.ACCOUNT: AccountRecord.from_record,
+    SalesforceObjectName.CONTACT: ContactRecord.from_record,
+    SalesforceObjectName.OPPORTUNITY: OpportunityRecord.from_record,
+    SalesforceObjectName.LEAD: LeadRecord.from_record,
+    SalesforceObjectName.CASE: CaseRecord.from_record,
+    SalesforceObjectName.TASK: TaskRecord.from_record,
 }
 
 
 @dataclass(frozen=True)
-class PeopleSnapshot:
-    """Previous people state, used to emit only changed person/group events."""
+class ShareQueryPlan:
+    """Validated SELECT plan for one object's share table."""
 
-    user_modstamps: dict[str, str]  # user id -> SystemModstamp ISO
-    active_emails: frozenset[str]
-    memberships: dict[str, frozenset[str]]  # group email -> member emails
-    group_names: dict[str, str]
+    share_object: str
+    parent_field: str
+    access_level_field: str
+    fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedObject:
+    """A record object with the provider-confirmed fields it can be queried by."""
+
+    config: SalesforceObjectConfig
+    fields: tuple[str, ...]
+    has_system_modstamp: bool
+    share_plan: ShareQueryPlan | None
+
+
+@dataclass(frozen=True)
+class ShareSyncResult:
+    grants_by_parent: dict[str, RecordGrants]
+    changed_parents: dict[str, set[str]]
+    snapshot: ShareSnapshot | None
+    reconciliation_objects: frozenset[str]
 
 
 class SalesforceConnector(Connector):
@@ -164,6 +235,26 @@ class SalesforceConnector(Connector):
     @property
     def actions(self) -> list[ActionDefinition]:
         return list(ACTION_DEFINITIONS)
+
+    async def get_manifest(self, connector_url: str) -> ConnectorManifest:
+        """Reclassify discovered MCP tools so read authorization cannot reach writes."""
+        manifest = await super().get_manifest(connector_url)
+        manifest.actions = [self._classify_mcp_action(action) for action in manifest.actions]
+        return manifest
+
+    @staticmethod
+    def _mcp_action_mode(tool_name: str) -> str:
+        lowered = tool_name.lower()
+        if lowered.startswith(MCP_WRITE_TOOL_PREFIXES):
+            return "write"
+        if lowered.startswith(MCP_READ_TOOL_PREFIXES):
+            return "read"
+        return "write"
+
+    def _classify_mcp_action(self, action: ActionDefinition) -> ActionDefinition:
+        if action.origin != "mcp":
+            return action
+        return action.model_copy(update={"mode": self._mcp_action_mode(action.name)})
 
     def oauth_config(self) -> OAuthManifestConfig | None:
         """Declare Salesforce's per-user OAuth/PKCE flow for MCP actions."""
@@ -270,9 +361,8 @@ class SalesforceConnector(Connector):
         credentials: dict[str, object],
         flow: OAuthCredentialFlow,
         metadata: dict[str, object] | None = None,
-    ) -> dict[str, str] | None:
-        config = source.config
-        stored_binding = self._source_binding(config)
+    ) -> OAuthSourceBinding | None:
+        stored_binding = self._source_binding(source.config)
         expected_instance = stored_binding.get("instance_url")
         expected_instance = (
             expected_instance.strip().rstrip("/")
@@ -283,29 +373,35 @@ class SalesforceConnector(Connector):
         expected_org_id = (
             expected_org_id if isinstance(expected_org_id, str) and expected_org_id else None
         )
-        actual_org_id = (metadata or {}).get("organization_id")
-        actual_org_id = actual_org_id if isinstance(actual_org_id, str) else None
-        if actual_org_id is None:
-            credential_org_id = credentials.get("organization_id")
-            actual_org_id = (
-                credential_org_id if isinstance(credential_org_id, str) else None
-            )
-        actual_instance = credentials.get("instance_url")
-        actual_instance = actual_instance if isinstance(actual_instance, str) else None
 
+        # Organization identity only ever comes from provider-verified OAuth
+        # userinfo: either the metadata captured during the OAuth exchange or a
+        # fresh userinfo request with the supplied credential. A value carried
+        # in the credential itself is an assertion to compare, never proof.
+        actual_org_id: str | None = None
+        metadata_org_id = (metadata or {}).get("organization_id")
+        if isinstance(metadata_org_id, str) and metadata_org_id:
+            actual_org_id = metadata_org_id
         if actual_org_id is None:
-            # Setup-time credentials (admin JWT / static token) carry no
-            # userinfo metadata; derive the org identity from the credential
-            # itself so the admin-owned binding can be established before any
-            # per-user OAuth credential is validated against it.
             actual_org_id = await self._organization_id_from_credential(credentials)
 
-        binding: dict[str, str] = {"organization_id": actual_org_id}
+        asserted_org_id = credentials.get("organization_id")
+        if (
+            isinstance(asserted_org_id, str)
+            and asserted_org_id
+            and asserted_org_id != actual_org_id
+        ):
+            raise ValueError("Salesforce OAuth organization does not match the credential")
+
+        binding: OAuthSourceBinding = {"organization_id": actual_org_id}
 
         if expected_instance is None and expected_org_id is None:
             return binding
         if expected_org_id is not None and actual_org_id != expected_org_id:
             raise ValueError("Salesforce OAuth organization does not match the source")
+
+        actual_instance = credentials.get("instance_url")
+        actual_instance = actual_instance if isinstance(actual_instance, str) else None
         if expected_instance is not None:
             if actual_instance is None:
                 raise ValueError("Salesforce OAuth credential has no instance URL")
@@ -420,6 +516,10 @@ class SalesforceConnector(Connector):
             raise ValueError("Salesforce MCP requires an HTTPS Salesforce instance URL")
         return value.rstrip("/")
 
+    @staticmethod
+    def _mcp_workspace() -> str:
+        return os.environ.get(MCP_WORKSPACE_ENV) or os.path.join(os.getcwd(), "salesforce-mcp")
+
     def prepare_mcp_tool_arguments(
         self, action: str, arguments: Mapping[str, object]
     ) -> dict[str, object]:
@@ -429,12 +529,20 @@ class SalesforceConnector(Connector):
             return prepared
         if not isinstance(directory, str) or not directory:
             raise ValueError(f"Salesforce MCP tool {action} requires a directory path")
-        # The official Salesforce MCP schema asks the agent for a path in the
-        # sandbox container, which is not mounted in this connector container.
-        # Preserve usable connector-local paths and map inaccessible ones to
-        # the connector's working directory where the CLI auth state lives.
-        if not os.path.isdir(directory):
-            prepared["directory"] = os.getcwd()
+
+        workspace = os.path.realpath(self._mcp_workspace())
+        os.makedirs(workspace, mode=0o700, exist_ok=True)
+        candidate = os.path.realpath(
+            directory if os.path.isabs(directory) else os.path.join(workspace, directory)
+        )
+        # The official Salesforce MCP schema asks for a sandbox-container path
+        # that is not mounted here, and a caller-supplied path may attempt to
+        # escape via traversal or symlinks. Confine every tool to the
+        # connector-owned workspace instead of trusting the requested path.
+        if candidate != workspace and not candidate.startswith(workspace + os.sep):
+            candidate = workspace
+        os.makedirs(candidate, mode=0o700, exist_ok=True)
+        prepared["directory"] = candidate
         return prepared
 
     async def bootstrap_mcp(self, credentials: dict[str, object]) -> None:
@@ -485,7 +593,12 @@ class SalesforceConnector(Connector):
             await ctx.fail(str(e))
             return
 
-        config = SalesforceSourceConfig.from_mapping(source_config)
+        try:
+            config = SalesforceSourceConfig.from_mapping(source_config)
+            config.validate()
+        except ValueError as e:
+            await ctx.fail(str(e))
+            return
         client = SalesforceClient(auth, instance_url=config.instance_url)
 
         try:
@@ -503,9 +616,9 @@ class SalesforceConnector(Connector):
             client.instance_url,
         )
 
-        # Schema fingerprint: when the synced field/object set changes, saved
-        # watermarks no longer cover everything the index expects, so a full
-        # resync is forced.
+        # Schema fingerprint: when the synced field/object/visibility set
+        # changes, saved watermarks no longer cover everything the index
+        # expects, so a full resync is forced.
         fingerprint = schema_fingerprint(config.enabled_objects, config.public_read_objects)
         run_checkpoint = SalesforceCheckpoint.from_mapping(checkpoint)
         if ctx.connector_state.get("schema_fingerprint") != fingerprint:
@@ -513,18 +626,18 @@ class SalesforceConnector(Connector):
             run_checkpoint = SalesforceCheckpoint()
             await ctx.save_connector_state({"schema_fingerprint": fingerprint})
 
-        # Persist the run-scoped checkpoint before any work, so a crash before
-        # the first page cannot resume from stale watermarks.
-        await ctx.save_checkpoint(run_checkpoint.to_json())
-
         try:
             if ctx.sync_mode == SyncMode.REALTIME:
                 await self._realtime_sync(client, config, run_checkpoint, ctx)
                 return
 
-            run_checkpoint = await self._run_scheduled_sync(client, config, run_checkpoint, ctx)
-
-            await ctx.complete(checkpoint=run_checkpoint.to_json())
+            completed = await self._run_scheduled_sync(client, config, run_checkpoint, ctx)
+            if ctx.is_cancelled():
+                # A cancelled run must not promote its partially covered
+                # checkpoint to the source baseline.
+                logger.info("Sync cancelled before completion; not publishing checkpoint")
+                return
+            await ctx.complete(checkpoint=completed.without_progress().to_json())
             logger.info(
                 "Sync completed: %d scanned, %d emitted",
                 ctx.documents_scanned,
@@ -540,138 +653,146 @@ class SalesforceConnector(Connector):
             logger.exception("Sync failed with unexpected error")
             await ctx.fail(str(e))
 
-    async def _available_object_configs(
-        self,
-        client: SalesforceClient,
-        config: SalesforceSourceConfig,
-        ctx: SyncContext,
-    ) -> tuple[tuple[SalesforceObjectConfig, ...], frozenset[str]]:
-        """Limit sync work to objects exposed by this Salesforce org/user.
+    # -- checkpoint helpers -------------------------------------------------
 
-        Salesforce editions and licenses do not expose the same standard CRM
-        objects. Global describe is the authoritative capability boundary;
-        without it, a missing object such as Account aborts the entire sync.
-        """
-        available = await client.available_object_types()
-        requested = enabled_object_configs(config.enabled_objects)
-        configs = tuple(item for item in requested if item.name in available)
-        missing = tuple(item.name for item in requested if item.name not in available)
-        if missing:
-            logger.warning(
-                "Skipping Salesforce objects unavailable to this principal: %s",
-                ", ".join(missing),
-            )
-            if config.enabled_objects:
-                for object_type in missing:
-                    await ctx.emit_error(
-                        f"{object_type}:*",
-                        "Salesforce object is not available to this principal",
-                    )
-        return configs, available
+    @staticmethod
+    def _with_progress(checkpoint: SalesforceCheckpoint, **changes: object) -> SalesforceCheckpoint:
+        progress = checkpoint.progress
+        if progress is None:
+            raise RuntimeError("checkpoint has no run progress")
+        return replace(checkpoint, progress=replace(progress, **changes))  # type: ignore[arg-type]
 
-    async def _run_scheduled_sync(
+    @staticmethod
+    def _with_object_state(
+        checkpoint: SalesforceCheckpoint, object_name: str, state: ObjectState
+    ) -> SalesforceCheckpoint:
+        return replace(
+            checkpoint, objects={**checkpoint.objects, object_name: state}
+        )
+
+    @staticmethod
+    async def _heartbeat(ctx: SyncContext) -> None:
+        """Persist the current run checkpoint to keep the manager from marking
+        the run stale during provider-only work."""
+        await ctx.save_checkpoint(ctx.checkpoint)
+
+    def _resume_progress(
         self,
-        client: SalesforceClient,
-        config: SalesforceSourceConfig,
         checkpoint: SalesforceCheckpoint,
         ctx: SyncContext,
-    ) -> SalesforceCheckpoint:
-        """One-shot sync: people, shares, records (full or delta), deletes."""
-        configs, available_objects = await self._available_object_configs(client, config, ctx)
-
-        directory, _ = await self._sync_people(
-            client, config, ctx, previous=None, available_objects=available_objects
+        mode: SyncRunMode,
+        window_end: datetime,
+    ) -> RunProgress:
+        progress = checkpoint.progress
+        if (
+            ctx.is_resume
+            and progress is not None
+            and progress.run_id == ctx.sync_run_id
+            and progress.mode == mode
+        ):
+            return progress
+        return RunProgress(
+            run_id=ctx.sync_run_id,
+            mode=mode,
+            window_end=window_end.isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
         )
-        if ctx.is_cancelled():
-            return checkpoint
 
-        share_grants = await self._sync_shares(
-            client, configs, directory, ctx, available_objects=available_objects
-        )
-        if ctx.is_cancelled():
-            return checkpoint
+    # -- capability discovery ----------------------------------------------
 
-        pass_started_at = datetime.now(UTC)
-        checkpoint = await self._sync_records(
-            client=client,
-            configs=configs,
-            directory=directory,
-            share_grants=share_grants,
-            source_config=config,
-            checkpoint=checkpoint,
-            ctx=ctx,
-            incremental=ctx.sync_mode == SyncMode.INCREMENTAL,
-            pass_started_at=pass_started_at,
-        )
-        if ctx.is_cancelled():
-            return checkpoint
-
-        await self._sync_deletes(
-            client=client,
-            configs=configs,
-            checkpoint=checkpoint,
-            ctx=ctx,
-            window_end=pass_started_at,
-        )
-        return checkpoint
-
-    async def _sync_people(
+    async def _resolve_objects(
         self,
         client: SalesforceClient,
         config: SalesforceSourceConfig,
         ctx: SyncContext,
-        previous: PeopleSnapshot | None,
-        available_objects: frozenset[str],
-    ) -> tuple[SalesforceDirectory, PeopleSnapshot]:
-        """Query users/groups/roles and emit person and group-membership events.
-
-        With ``previous`` set, only changed people and memberships are emitted;
-        otherwise everything is emitted (full/incremental runs).
-        """
-        users: list[UserRecord] = []
-        groups: list[GroupRecord] = []
-        group_members: list[GroupMemberRecord] = []
-        roles: list[RoleRecord] = []
-
-        if config.sync_users and "User" in available_objects:
-            fields = await self._selectable_fields(client, "User", USER_FIELDS)
-            if fields:
-                async for page in iter_query_pages(
-                    client, f"SELECT {', '.join(fields)} FROM User"
-                ):
-                    users.extend(UserRecord.from_record(r) for r in page.records)
-        if config.sync_groups:
-            if "Group" in available_objects:
-                fields = await self._selectable_fields(client, "Group", GROUP_FIELDS)
-                if fields:
-                    async for page in iter_query_pages(
-                        client,
-                        f"SELECT {', '.join(fields)} FROM Group "
-                        "WHERE Type IN ('Public', 'Queue', 'Regular')",
-                    ):
-                        groups.extend(GroupRecord.from_record(r) for r in page.records)
-            if "GroupMember" in available_objects:
-                fields = await self._selectable_fields(
-                    client, "GroupMember", GROUP_MEMBER_FIELDS
+    ) -> tuple[tuple[ResolvedObject, ...], frozenset[str]]:
+        """Resolve a typed query plan for every enabled record and share object."""
+        available = await client.available_object_types()
+        requested = enabled_object_configs(config.enabled_objects)
+        resolved: list[ResolvedObject] = []
+        for item in requested:
+            if item.name.value not in available:
+                logger.warning(
+                    "Skipping Salesforce object unavailable to this principal: %s",
+                    item.name.value,
                 )
-                if fields:
-                    async for page in iter_query_pages(
-                        client, f"SELECT {', '.join(fields)} FROM GroupMember"
-                    ):
-                        group_members.extend(GroupMemberRecord.from_record(r) for r in page.records)
-            if "UserRole" in available_objects:
-                fields = await self._selectable_fields(client, "UserRole", ROLE_FIELDS)
-                if fields:
-                    async for page in iter_query_pages(
-                        client, f"SELECT {', '.join(fields)} FROM UserRole"
-                    ):
-                        roles.extend(RoleRecord.from_record(r) for r in page.records)
+                if config.enabled_objects:
+                    await ctx.emit_error(
+                        f"{item.name.value}:*",
+                        "Salesforce object is not available to this principal",
+                    )
+                continue
 
-        directory = build_directory(users, groups, group_members, roles)
-        snapshot = self._snapshot(directory, users)
+            describe = await client.describe_object(item.name.value)
+            fields = tuple(field for field in item.all_fields() if describe.can_select(field))
+            required = {"Id"}
+            if not required.issubset(fields):
+                logger.warning("Skipping %s: Id field is not accessible", item.name.value)
+                await ctx.emit_error(
+                    f"{item.name.value}:*", "Salesforce object Id field is not accessible"
+                )
+                continue
+            has_system_modstamp = "SystemModstamp" in fields
+            if not has_system_modstamp:
+                logger.warning(
+                    "Salesforce %s does not expose SystemModstamp; falling back to "
+                    "full scans for this object",
+                    item.name.value,
+                )
+                await ctx.emit_error(
+                    f"{item.name.value}:*",
+                    "SystemModstamp is unavailable; using full-only reconciliation",
+                )
 
-        await self._emit_people(client, directory, users, snapshot, previous, ctx)
-        return directory, snapshot
+            share_plan: ShareQueryPlan | None = None
+            if config.sync_shares and item.share_object is not None:
+                share_plan = await self._resolve_share_plan(client, item, available, ctx)
+
+            resolved.append(
+                ResolvedObject(
+                    config=item,
+                    fields=fields,
+                    has_system_modstamp=has_system_modstamp,
+                    share_plan=share_plan,
+                )
+            )
+        return tuple(resolved), available
+
+    async def _resolve_share_plan(
+        self,
+        client: SalesforceClient,
+        item: SalesforceObjectConfig,
+        available: frozenset[str],
+        ctx: SyncContext,
+    ) -> ShareQueryPlan | None:
+        share_object = item.share_object
+        parent_field = item.share_parent_field
+        access_level_field = item.share_access_level_field
+        if share_object is None or parent_field is None or access_level_field is None:
+            return None
+        if share_object not in available:
+            logger.info("Skipping unavailable Salesforce share object %s", share_object)
+            return None
+        describe = await client.describe_object(share_object)
+        fields = ("Id", parent_field, "UserOrGroupId", access_level_field, "RowCause")
+        missing = [field for field in fields if not describe.can_select(field)]
+        if missing:
+            logger.warning(
+                "Skipping %s shares: fields not exposed by Salesforce: %s",
+                share_object,
+                ", ".join(missing),
+            )
+            await ctx.emit_error(
+                f"{item.name.value}:*",
+                f"Share object {share_object} is missing fields: {', '.join(missing)}",
+            )
+            return None
+        return ShareQueryPlan(
+            share_object=share_object,
+            parent_field=parent_field,
+            access_level_field=access_level_field,
+            fields=fields,
+        )
 
     async def _selectable_fields(
         self,
@@ -679,23 +800,10 @@ class SalesforceConnector(Connector):
         object_type: str,
         candidates: tuple[str, ...],
     ) -> tuple[str, ...]:
-        """Narrow a SELECT list to fields the principal can actually query.
-
-        Salesforce omits fields for disabled features (e.g. UserRoleId without
-        role hierarchy) from describe; selecting them fails the whole query
-        with INVALID_FIELD. Id is always required: every parser and the
-        pagination cursors depend on it. If describe itself fails the sync
-        falls back to the candidate list and lets the query surface errors.
-        """
-        try:
-            available = await client.available_fields(object_type)
-        except SalesforceClientError as e:
-            logger.warning(
-                "Could not describe %s fields (%s); using defaults", object_type, e
-            )
-            return candidates
-        selectable = tuple(field for field in candidates if field in available)
-        missing = tuple(field for field in candidates if field not in available)
+        """Narrow a SELECT list to fields the principal can actually query."""
+        describe = await client.describe_object(object_type)
+        selectable = tuple(field for field in candidates if describe.can_select(field))
+        missing = tuple(field for field in candidates if field not in selectable)
         if missing:
             logger.warning(
                 "Skipping Salesforce fields unavailable on %s: %s",
@@ -707,49 +815,185 @@ class SalesforceConnector(Connector):
             return ()
         return selectable
 
-    def _snapshot(self, directory: SalesforceDirectory, users: list[UserRecord]) -> PeopleSnapshot:
-        user_modstamps: dict[str, str] = {}
+    # -- scheduled sync -----------------------------------------------------
+
+    async def _run_scheduled_sync(
+        self,
+        client: SalesforceClient,
+        config: SalesforceSourceConfig,
+        checkpoint: SalesforceCheckpoint,
+        ctx: SyncContext,
+    ) -> SalesforceCheckpoint:
+        """One-shot sync: people, shares, records, deletes."""
+        mode = (
+            SyncRunMode.INCREMENTAL
+            if ctx.sync_mode == SyncMode.INCREMENTAL
+            else SyncRunMode.FULL
+        )
+        window_end = datetime.now(UTC)
+        progress = self._resume_progress(checkpoint, ctx, mode, window_end)
+        checkpoint = replace(checkpoint, progress=progress)
+        # Persist the run-scoped checkpoint before any provider work, so an
+        # immediate restart receives an unambiguous run checkpoint.
+        await ctx.save_checkpoint(checkpoint.to_json())
+
+        objects, available = await self._resolve_objects(client, config, ctx)
+
+        directory, people_state = await self._sync_people(
+            client, config, ctx, checkpoint.people, available
+        )
+        checkpoint = replace(checkpoint, people=people_state)
+        if ctx.is_cancelled():
+            return checkpoint
+
+        share_result = await self._sync_shares(
+            client, objects, directory, ctx, checkpoint.share_snapshot
+        )
+        checkpoint = replace(checkpoint, share_snapshot=share_result.snapshot)
+        if share_result.reconciliation_objects:
+            current_progress = checkpoint.progress
+            if current_progress is not None:
+                checkpoint = self._with_progress(
+                    checkpoint,
+                    full_reconciliation=tuple(
+                        sorted(
+                            set(current_progress.full_reconciliation)
+                            | share_result.reconciliation_objects
+                        )
+                    ),
+                )
+        if ctx.is_cancelled():
+            return checkpoint
+
+        checkpoint = await self._sync_objects(
+            client=client,
+            objects=objects,
+            directory=directory,
+            share_grants=share_result.grants_by_parent,
+            changed_parents=share_result.changed_parents,
+            source_config=config,
+            checkpoint=checkpoint,
+            ctx=ctx,
+            incremental=mode == SyncRunMode.INCREMENTAL,
+            window_end=window_end,
+        )
+        return replace(checkpoint, synced_at=datetime.now(UTC).isoformat())
+
+    async def _sync_people(
+        self,
+        client: SalesforceClient,
+        config: SalesforceSourceConfig,
+        ctx: SyncContext,
+        previous: PeopleState | None,
+        available_objects: frozenset[str],
+    ) -> tuple[SalesforceDirectory, PeopleState]:
+        """Query users/groups/roles and emit person and group-membership events."""
+        users: list[UserRecord] = []
+        groups: list[GroupRecord] = []
+        group_members: list[GroupMemberRecord] = []
+        roles: list[RoleRecord] = []
+
+        if config.sync_users and "User" in available_objects:
+            fields = await self._selectable_fields(client, "User", USER_FIELDS)
+            if fields:
+                if "IsActive" not in fields:
+                    logger.warning(
+                        "Salesforce User.IsActive is unavailable; lifecycle state is "
+                        "unknown and memberships cannot be resolved safely"
+                    )
+                    await ctx.emit_error(
+                        "User:*",
+                        "User.IsActive is unavailable; treating active state as unknown",
+                    )
+                async for page in iter_query_pages(
+                    client, f"SELECT {', '.join(fields)} FROM User"
+                ):
+                    users.extend(UserRecord.from_record(r) for r in page.records)
+                    await self._heartbeat(ctx)
+        if config.sync_groups:
+            if "Group" in available_objects:
+                fields = await self._selectable_fields(client, "Group", GROUP_FIELDS)
+                if fields:
+                    group_types = ", ".join(f"'{value}'" for value in SYNCED_GROUP_TYPES)
+                    async for page in iter_query_pages(
+                        client,
+                        f"SELECT {', '.join(fields)} FROM Group "
+                        f"WHERE Type IN ({group_types})",
+                    ):
+                        groups.extend(GroupRecord.from_record(r) for r in page.records)
+                        await self._heartbeat(ctx)
+            if "GroupMember" in available_objects:
+                fields = await self._selectable_fields(
+                    client, "GroupMember", GROUP_MEMBER_FIELDS
+                )
+                if fields:
+                    async for page in iter_query_pages(
+                        client, f"SELECT {', '.join(fields)} FROM GroupMember"
+                    ):
+                        group_members.extend(
+                            GroupMemberRecord.from_record(r) for r in page.records
+                        )
+                        await self._heartbeat(ctx)
+            if "UserRole" in available_objects:
+                fields = await self._selectable_fields(client, "UserRole", ROLE_FIELDS)
+                if fields:
+                    async for page in iter_query_pages(
+                        client, f"SELECT {', '.join(fields)} FROM UserRole"
+                    ):
+                        roles.extend(RoleRecord.from_record(r) for r in page.records)
+                        await self._heartbeat(ctx)
+
+        directory = build_directory(users, groups, group_members, roles)
+        snapshot = self._people_state(directory, users)
+
+        await self._emit_people(directory, users, snapshot, previous, ctx)
+        return directory, snapshot
+
+    def _people_state(
+        self, directory: SalesforceDirectory, users: list[UserRecord]
+    ) -> PeopleState:
+        user_fingerprints: dict[str, str] = {}
         active_emails: set[str] = set()
         for user in users:
-            if user.system_modstamp is not None:
-                user_modstamps[user.id] = user.system_modstamp.isoformat()
-            if user.email and user.is_active:
+            user_fingerprints[user.id] = person_fingerprint(user)
+            if user.email and user.is_active is not False:
                 active_emails.add(user.email)
-        memberships: dict[str, frozenset[str]] = {}
-        group_names: dict[str, str] = {}
-        for group_email, member_emails, name in directory.group_memberships():
-            memberships[group_email] = frozenset(member_emails)
-            if name:
-                group_names[group_email] = name
-        return PeopleSnapshot(
-            user_modstamps=user_modstamps,
+        memberships: dict[str, tuple[str, ...]] = {}
+        group_emails: set[str] = set()
+        for group_email, member_emails, _name in directory.group_memberships():
+            memberships[group_email] = tuple(sorted(member_emails))
+            group_emails.add(group_email)
+        return PeopleState(
+            user_fingerprints=user_fingerprints,
             active_emails=frozenset(active_emails),
+            group_emails=frozenset(group_emails),
             memberships=memberships,
-            group_names=group_names,
         )
 
     async def _emit_people(
         self,
-        client: SalesforceClient,
         directory: SalesforceDirectory,
         users: list[UserRecord],
-        snapshot: PeopleSnapshot,
-        previous: PeopleSnapshot | None,
+        snapshot: PeopleState,
+        previous: PeopleState | None,
         ctx: SyncContext,
     ) -> None:
         changed_users = (
             users
             if previous is None
             else [
-                u
-                for u in users
-                if snapshot.user_modstamps.get(u.id) != previous.user_modstamps.get(u.id)
+                user
+                for user in users
+                if snapshot.user_fingerprints.get(user.id)
+                != previous.user_fingerprints.get(user.id)
             ]
         )
         for user in changed_users:
             if not user.email:
                 continue
-            if user.is_active:
+            if user.is_active is False:
+                await ctx.emit_person_deleted(user.email)
+            else:
                 await ctx.emit_person_sync(
                     PersonSyncRecord(
                         external_id=user.id,
@@ -768,161 +1012,561 @@ class SalesforceConnector(Connector):
                         ),
                     )
                 )
-            else:
-                await ctx.emit_person_deleted(user.email)
 
         if previous is not None:
-            for email in previous.active_emails - snapshot.active_emails:
+            for email in sorted(previous.active_emails - snapshot.active_emails):
                 await ctx.emit_person_deleted(email)
 
         for group_email, member_emails, name in directory.group_memberships():
-            if previous is not None and previous.memberships.get(group_email) == frozenset(
-                member_emails
-            ):
+            members = tuple(sorted(member_emails))
+            if previous is not None and previous.memberships.get(group_email) == members:
                 continue
             await ctx.emit_group_membership(
                 group_email=group_email,
-                member_emails=sorted(member_emails),
+                member_emails=list(members),
                 group_name=name,
             )
+
+        if previous is not None:
+            for removed in sorted(previous.group_emails - snapshot.group_emails):
+                # A group that disappeared must revoke its memberships rather
+                # than leaving the last known membership in place forever.
+                await ctx.emit_group_membership(
+                    group_email=removed,
+                    member_emails=[],
+                    group_name=None,
+                )
 
     async def _sync_shares(
         self,
         client: SalesforceClient,
-        configs: tuple[SalesforceObjectConfig, ...],
+        objects: tuple[ResolvedObject, ...],
         directory: SalesforceDirectory,
         ctx: SyncContext,
-        available_objects: frozenset[str],
-    ) -> dict[str, RecordGrants]:
-        """Query share rows for every share-enabled object and resolve grants."""
+        previous: ShareSnapshot | None,
+    ) -> ShareSyncResult:
+        """Refresh share rows, resolve grants, and diff against committed state."""
         grants_by_parent: dict[str, RecordGrants] = {}
-        for config in configs:
-            if config.share_object is None or config.share_parent_field is None:
-                continue
-            if config.share_object not in available_objects:
-                logger.info("Skipping unavailable Salesforce share object %s", config.share_object)
+        changed_parents: dict[str, set[str]] = {}
+        snapshot_grants: dict[str, dict[str, str]] = {}
+        reconciliation: set[str] = set()
+        previous_grants = (
+            previous.grants if previous is not None and not previous.oversized else {}
+        )
+        total_entries = 0
+
+        for obj in objects:
+            plan = obj.share_plan
+            if plan is None:
                 continue
             if ctx.is_cancelled():
-                return grants_by_parent
+                return ShareSyncResult(grants_by_parent, changed_parents, previous, frozenset())
+            object_grants: dict[str, RecordGrants] = {}
             soql = (
-                f"SELECT Id, {config.share_parent_field}, UserOrGroupId, "
-                f"AccessLevel, RowCause FROM {config.share_object} "
+                f"SELECT {', '.join(plan.fields)} FROM {plan.share_object} "
                 "WHERE RowCause != 'Owner' ORDER BY Id"
             )
             try:
                 async for page in iter_query_pages(client, soql):
                     for raw in page.records:
-                        share = ShareRecord.from_record(raw, config.share_parent_field)
+                        share = ShareRecord.from_record(
+                            raw, plan.parent_field, plan.access_level_field
+                        )
                         grants = directory.share_grants((share,))
                         if not grants.users and not grants.groups:
                             continue
-                        grants_by_parent[share.parent_id] = grants_by_parent.get(
+                        object_grants[share.parent_id] = object_grants.get(
                             share.parent_id, RecordGrants()
                         ).merge(grants)
+                    await self._heartbeat(ctx)
             except SalesforceClientError as e:
-                logger.warning("Failed to sync %s shares: %s", config.share_object, e)
-                await ctx.emit_error(f"{config.name}:*", f"Failed to fetch shares: {e}")
-        return grants_by_parent
+                logger.warning("Failed to sync %s shares: %s", plan.share_object, e)
+                await ctx.emit_error(f"{obj.config.name}:*", f"Failed to fetch shares: {e}")
+                # Keep the previous snapshot for this object so a transient
+                # failure does not silently reset diff state.
+                if previous is not None and plan.share_object in previous.grants:
+                    snapshot_grants[plan.share_object] = previous.grants[plan.share_object]
+                    total_entries += len(previous.grants[plan.share_object])
+                continue
 
-    async def _sync_records(
+            fingerprint_map = {
+                parent_id: grants.fingerprint() for parent_id, grants in object_grants.items()
+            }
+            snapshot_grants[plan.share_object] = fingerprint_map
+            total_entries += len(fingerprint_map)
+            for parent_id, grants in object_grants.items():
+                grants_by_parent[parent_id] = grants
+
+            prior = previous_grants.get(plan.share_object, {})
+            changed = {
+                parent_id
+                for parent_id in set(prior) | set(fingerprint_map)
+                if prior.get(parent_id) != fingerprint_map.get(parent_id)
+            }
+            if changed:
+                changed_parents[obj.config.name] = changed
+
+        if total_entries > MAX_SHARE_SNAPSHOT_ENTRIES:
+            # Persisting an unbounded per-parent snapshot is not safe; fall back
+            # to periodic full permission reconciliation.
+            logger.warning(
+                "Salesforce share snapshot exceeds %d entries; using periodic "
+                "full permission reconciliation",
+                MAX_SHARE_SNAPSHOT_ENTRIES,
+            )
+            due = self._reconciliation_due(previous)
+            if due:
+                reconciliation = {
+                    obj.config.name for obj in objects if obj.share_plan is not None
+                }
+            snapshot = ShareSnapshot(
+                grants={},
+                captured_at=(
+                    datetime.now(UTC).isoformat()
+                    if due or previous is None or previous.captured_at is None
+                    else previous.captured_at
+                ),
+                oversized=True,
+            )
+            return ShareSyncResult(
+                grants_by_parent, {}, snapshot, frozenset(reconciliation)
+            )
+
+        snapshot = ShareSnapshot(
+            grants=snapshot_grants,
+            captured_at=datetime.now(UTC).isoformat(),
+            oversized=False,
+        )
+        return ShareSyncResult(grants_by_parent, changed_parents, snapshot, frozenset())
+
+    @staticmethod
+    def _reconciliation_due(previous: ShareSnapshot | None) -> bool:
+        if previous is None or not previous.oversized or previous.captured_at is None:
+            return True
+        try:
+            captured = datetime.fromisoformat(previous.captured_at)
+        except ValueError:
+            return True
+        return (
+            datetime.now(UTC) - captured
+        ).total_seconds() >= PERMISSION_RECONCILIATION_INTERVAL_SECONDS
+
+    # -- record + deletion passes ------------------------------------------
+
+    async def _sync_objects(
         self,
         *,
         client: SalesforceClient,
-        configs: tuple[SalesforceObjectConfig, ...],
+        objects: tuple[ResolvedObject, ...],
+        directory: SalesforceDirectory,
+        share_grants: dict[str, RecordGrants],
+        changed_parents: dict[str, set[str]],
+        source_config: SalesforceSourceConfig,
+        checkpoint: SalesforceCheckpoint,
+        ctx: SyncContext,
+        incremental: bool,
+        window_end: datetime,
+        tolerate_errors: bool = False,
+    ) -> SalesforceCheckpoint:
+        for obj in objects:
+            if ctx.is_cancelled():
+                return checkpoint
+            progress = checkpoint.progress
+            if progress is None:
+                raise RuntimeError("checkpoint has no run progress")
+            try:
+                if obj.config.name not in progress.records_completed:
+                    checkpoint = await self._sync_object_records(
+                        client=client,
+                        obj=obj,
+                        directory=directory,
+                        share_grants=share_grants,
+                        source_config=source_config,
+                        checkpoint=checkpoint,
+                        ctx=ctx,
+                        incremental=incremental,
+                        window_end=window_end,
+                    )
+                    if ctx.is_cancelled():
+                        return checkpoint
+                progress = checkpoint.progress
+                if progress is None:
+                    raise RuntimeError("checkpoint has no run progress")
+                if obj.config.name not in progress.deletions_completed:
+                    checkpoint = await self._sync_object_deletions(
+                        client=client,
+                        obj=obj,
+                        directory=directory,
+                        share_grants=share_grants,
+                        source_config=source_config,
+                        checkpoint=checkpoint,
+                        ctx=ctx,
+                        window_end=window_end,
+                    )
+                    if ctx.is_cancelled():
+                        return checkpoint
+                checkpoint = self._commit_object_boundary(checkpoint, obj, window_end)
+            except Exception as e:
+                if not tolerate_errors:
+                    raise
+                logger.warning(
+                    "Realtime pass failed for %s: %s; retaining committed boundary",
+                    obj.config.name,
+                    e,
+                )
+                await ctx.emit_error(f"{obj.config.name}:*", f"Realtime poll failed: {e}")
+                continue
+            await ctx.save_checkpoint(checkpoint.to_json())
+
+        if incremental and changed_parents:
+            checkpoint = await self._emit_changed_parents(
+                client=client,
+                objects=objects,
+                changed_parents=changed_parents,
+                directory=directory,
+                share_grants=share_grants,
+                source_config=source_config,
+                checkpoint=checkpoint,
+                ctx=ctx,
+            )
+        return checkpoint
+
+    def _commit_object_boundary(
+        self,
+        checkpoint: SalesforceCheckpoint,
+        obj: ResolvedObject,
+        window_end: datetime,
+    ) -> SalesforceCheckpoint:
+        """Advance the record watermark only after records and deletions succeeded."""
+        state = checkpoint.state_for(obj.config.name)
+        watermark = state.watermark
+        if obj.has_system_modstamp:
+            watermark = (
+                window_end - timedelta(seconds=DELTA_OVERLAP_SECONDS)
+            ).isoformat()
+        return self._with_object_state(
+            checkpoint,
+            obj.config.name,
+            ObjectState(watermark=watermark, deletion_through=state.deletion_through),
+        )
+
+    async def _sync_object_records(
+        self,
+        *,
+        client: SalesforceClient,
+        obj: ResolvedObject,
         directory: SalesforceDirectory,
         share_grants: dict[str, RecordGrants],
         source_config: SalesforceSourceConfig,
         checkpoint: SalesforceCheckpoint,
         ctx: SyncContext,
         incremental: bool,
-        pass_started_at: datetime,
+        window_end: datetime,
     ) -> SalesforceCheckpoint:
-        for config in configs:
+        config = obj.config
+        progress = checkpoint.progress
+        if progress is None:
+            raise RuntimeError("checkpoint has no run progress")
+        state = checkpoint.state_for(config.name)
+
+        force_full = config.name in progress.full_reconciliation
+        delta = (
+            incremental
+            and obj.has_system_modstamp
+            and state.watermark is not None
+            and not force_full
+        )
+        if delta and state.watermark is not None:
+            window_start = datetime.fromisoformat(state.watermark) - timedelta(
+                seconds=DELTA_OVERLAP_SECONDS
+            )
+        else:
+            window_start = None
+
+        cursor = progress.record_cursor if progress.current_object == config.name else None
+        if delta:
+            # A malformed or partial delta cursor cannot prove where the scan
+            # stopped; restart the fixed window from the committed boundary.
+            if cursor is not None and not cursor.is_delta_ready:
+                cursor = None
+        elif cursor is not None and cursor.last_id is None:
+            cursor = None
+
+        parser = _RECORD_PARSERS[config.name]
+        emitted_since_checkpoint = 0
+        while True:
             if ctx.is_cancelled():
                 return checkpoint
-            # Completed-object markers matter only when resuming a crashed run
-            # of THIS pass. A fresh full/delta pass (even with a stored
-            # checkpoint) must scan again: watermarks and cursors, not the
-            # completed set, decide what changed.
-            if ctx.is_resume and checkpoint.records_synced.get(config.name):
-                continue
-
-            parser = _RECORD_PARSERS[config.name]
-            fields = config.all_fields()
-            cursor = checkpoint.record_cursors.get(config.name)
-            watermark = checkpoint.watermarks.get(config.name)
-            delta = incremental and watermark is not None
             if delta:
-                assert watermark is not None
-                soql = delta_scan_soql(config.name, fields, cursor, watermark)
+                assert window_start is not None
+                soql = delta_scan_soql(
+                    config.name, obj.fields, cursor, window_start, window_end
+                )
             else:
-                soql = full_scan_soql(config.name, fields, cursor)
-
-            emitted_since_checkpoint = 0
-            while True:
-                if ctx.is_cancelled():
-                    return checkpoint
-                page = await client.query(soql)
-                for raw in page.records:
-                    record = parser(raw)
-                    await self._emit_record(
-                        client=client,
-                        config=config,
-                        record=record,
-                        directory=directory,
-                        share_grants=share_grants,
-                        source_config=source_config,
-                        ctx=ctx,
-                        emit_updated=delta,
+                soql = full_scan_soql(config.name, obj.fields, cursor)
+            page = await client.query(soql)
+            for raw in page.records:
+                record = parser(raw)
+                await self._emit_record(
+                    client=client,
+                    config=config,
+                    record=record,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=source_config,
+                    ctx=ctx,
+                    emit_updated=incremental,
+                )
+                cursor = cursor_from_record(raw)
+                emitted_since_checkpoint += 1
+                if emitted_since_checkpoint >= CHECKPOINT_INTERVAL:
+                    checkpoint = self._with_progress(
+                        checkpoint, current_object=config.name, record_cursor=cursor
                     )
-                    cursor = cursor_from_record(raw)
-                    emitted_since_checkpoint += 1
-                    if emitted_since_checkpoint >= CHECKPOINT_INTERVAL:
-                        checkpoint = self._with_cursor(checkpoint, config.name, cursor)
-                        await ctx.save_checkpoint(checkpoint.to_json())
-                        emitted_since_checkpoint = 0
+                    await ctx.save_checkpoint(checkpoint.to_json())
+                    emitted_since_checkpoint = 0
 
-                if len(page.records) < PAGE_SIZE:
-                    break
-                if delta:
-                    assert watermark is not None
-                    soql = delta_scan_soql(config.name, fields, cursor, watermark)
-                else:
-                    soql = full_scan_soql(config.name, fields, cursor)
+            if ctx.is_cancelled():
+                return checkpoint
+            if len(page.records) < PAGE_SIZE:
+                break
 
-            checkpoint = self._with_cursor(checkpoint, config.name, cursor)
-            checkpoint = replace(
-                checkpoint,
-                records_synced={**checkpoint.records_synced, config.name: True},
-                watermarks={
-                    **checkpoint.watermarks,
-                    config.name: (
-                        pass_started_at - timedelta(seconds=DELTA_OVERLAP_SECONDS)
-                    ).isoformat(),
-                },
-            )
-            await ctx.save_checkpoint(checkpoint.to_json())
-            logger.info(
-                "Finished syncing %s (%s): watermark %s",
-                config.name,
-                "delta" if delta else "full",
-                checkpoint.watermarks[config.name],
-            )
+        current_progress = checkpoint.progress
+        if current_progress is None:
+            raise RuntimeError("checkpoint has no run progress")
+        checkpoint = self._with_progress(
+            checkpoint,
+            current_object=None,
+            record_cursor=None,
+            records_completed=tuple(
+                sorted(set(current_progress.records_completed) | {config.name})
+            ),
+        )
+        await ctx.save_checkpoint(checkpoint.to_json())
+        logger.info(
+            "Finished scanning %s (%s)",
+            config.name,
+            "delta" if delta else "full",
+        )
         return checkpoint
 
-    @staticmethod
-    def _with_cursor(
+    async def _sync_object_deletions(
+        self,
+        *,
+        client: SalesforceClient,
+        obj: ResolvedObject,
+        directory: SalesforceDirectory,
+        share_grants: dict[str, RecordGrants],
+        source_config: SalesforceSourceConfig,
         checkpoint: SalesforceCheckpoint,
-        object_type: str,
-        cursor: RecordCursor | None,
+        ctx: SyncContext,
+        window_end: datetime,
     ) -> SalesforceCheckpoint:
-        return replace(
-            checkpoint,
-            record_cursors={
-                **checkpoint.record_cursors,
-                object_type: cursor or RecordCursor(),
-            },
+        """Emit tombstones for records deleted since the committed boundary."""
+        config = obj.config
+        state = checkpoint.state_for(config.name)
+
+        bounded = True
+        if state.deletion_through is not None:
+            base = datetime.fromisoformat(state.deletion_through)
+        elif state.watermark is not None:
+            base = datetime.fromisoformat(state.watermark)
+        else:
+            base = window_end - timedelta(days=DELETION_RETENTION_DAYS)
+            bounded = False
+        requested_start = (
+            base - timedelta(seconds=DELTA_OVERLAP_SECONDS) if bounded else base
         )
+
+        result = await client.get_deleted(config.name, requested_start, window_end)
+        earliest = result.earliest_date_available
+        if (
+            bounded
+            and earliest is not None
+            and earliest
+            > requested_start + timedelta(seconds=DELTA_OVERLAP_SECONDS)
+        ):
+            # Deletions between the committed boundary and the provider's
+            # retention start cannot be covered. Do not silently clamp past
+            # them: force a full record reconciliation and surface the gap.
+            logger.warning(
+                "Salesforce deletion retention for %s starts at %s, after the "
+                "committed boundary %s; forcing full reconciliation",
+                config.name,
+                earliest.isoformat(),
+                requested_start.isoformat(),
+            )
+            await ctx.emit_error(
+                f"{config.name}:*",
+                "Deletion retention window no longer covers the committed boundary; "
+                "full reconciliation required",
+            )
+            checkpoint = await self._reemit_all_records(
+                client=client,
+                obj=obj,
+                directory=directory,
+                share_grants=share_grants,
+                source_config=source_config,
+                checkpoint=checkpoint,
+                ctx=ctx,
+            )
+            requested_start = earliest
+
+        latest = result.latest_date_covered
+        current = result
+        while True:
+            if ctx.is_cancelled():
+                return checkpoint
+            for deleted in current.deleted_records:
+                await ctx.emit_deleted(f"{config.name}:{deleted.id}")
+            if current.latest_date_covered is not None:
+                latest = current.latest_date_covered
+            if current.next_records_url is None:
+                break
+            current = await client.get_deleted_more(current.next_records_url)
+
+        boundary = state.deletion_through
+        if latest is not None and latest >= requested_start:
+            # Advance only to provider-confirmed coverage; anything the provider
+            # has not covered is picked up by the next pass.
+            boundary = latest.isoformat()
+        checkpoint = self._with_object_state(
+            checkpoint,
+            config.name,
+            ObjectState(watermark=state.watermark, deletion_through=boundary),
+        )
+        current_progress = checkpoint.progress
+        if current_progress is None:
+            raise RuntimeError("checkpoint has no run progress")
+        checkpoint = self._with_progress(
+            checkpoint,
+            deletions_completed=tuple(
+                sorted(set(current_progress.deletions_completed) | {config.name})
+            ),
+        )
+        await ctx.save_checkpoint(checkpoint.to_json())
+        return checkpoint
+
+    async def _reemit_all_records(
+        self,
+        *,
+        client: SalesforceClient,
+        obj: ResolvedObject,
+        directory: SalesforceDirectory,
+        share_grants: dict[str, RecordGrants],
+        source_config: SalesforceSourceConfig,
+        checkpoint: SalesforceCheckpoint,
+        ctx: SyncContext,
+    ) -> SalesforceCheckpoint:
+        """Re-emit every current record during a forced full reconciliation."""
+        cursor: RecordCursor | None = None
+        while True:
+            if ctx.is_cancelled():
+                return checkpoint
+            page = await client.query(full_scan_soql(obj.config.name, obj.fields, cursor))
+            for raw in page.records:
+                record = _RECORD_PARSERS[obj.config.name](raw)
+                await self._emit_record(
+                    client=client,
+                    config=obj.config,
+                    record=record,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=source_config,
+                    ctx=ctx,
+                    emit_updated=True,
+                )
+            if page.records:
+                cursor = cursor_from_record(page.records[-1])
+            if len(page.records) < PAGE_SIZE:
+                break
+        await ctx.save_checkpoint(checkpoint.to_json())
+        return checkpoint
+
+    async def _emit_changed_parents(
+        self,
+        *,
+        client: SalesforceClient,
+        objects: tuple[ResolvedObject, ...],
+        changed_parents: dict[str, set[str]],
+        directory: SalesforceDirectory,
+        share_grants: dict[str, RecordGrants],
+        source_config: SalesforceSourceConfig,
+        checkpoint: SalesforceCheckpoint,
+        ctx: SyncContext,
+    ) -> SalesforceCheckpoint:
+        """Re-emit records whose sharing changed without a parent modstamp bump."""
+        for obj in objects:
+            ids = changed_parents.get(obj.config.name)
+            if not ids:
+                continue
+            parser = _RECORD_PARSERS[obj.config.name]
+            batch: list[str] = []
+            for parent_id in sorted(ids):
+                batch.append(parent_id)
+                if len(batch) < 200:
+                    continue
+                checkpoint = await self._emit_parent_batch(
+                    client=client,
+                    obj=obj,
+                    parser=parser,
+                    ids=batch,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=source_config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                )
+                batch = []
+                if ctx.is_cancelled():
+                    return checkpoint
+            if batch:
+                checkpoint = await self._emit_parent_batch(
+                    client=client,
+                    obj=obj,
+                    parser=parser,
+                    ids=batch,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=source_config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                )
+        return checkpoint
+
+    async def _emit_parent_batch(
+        self,
+        *,
+        client: SalesforceClient,
+        obj: ResolvedObject,
+        parser: Callable[[Mapping[str, object]], RecordModel],
+        ids: list[str],
+        directory: SalesforceDirectory,
+        share_grants: dict[str, RecordGrants],
+        source_config: SalesforceSourceConfig,
+        checkpoint: SalesforceCheckpoint,
+        ctx: SyncContext,
+    ) -> SalesforceCheckpoint:
+        in_clause = ", ".join(f"'{record_id}'" for record_id in ids)
+        soql = (
+            f"SELECT {', '.join(obj.fields)} FROM {obj.config.name} "
+            f"WHERE Id IN ({in_clause})"
+        )
+        page = await client.query(soql)
+        for raw in page.records:
+            record = parser(raw)
+            await self._emit_record(
+                client=client,
+                config=obj.config,
+                record=record,
+                directory=directory,
+                share_grants=share_grants,
+                source_config=source_config,
+                ctx=ctx,
+                emit_updated=True,
+            )
+        await ctx.save_checkpoint(checkpoint.to_json())
+        return checkpoint
 
     async def _emit_record(
         self,
@@ -937,7 +1581,7 @@ class SalesforceConnector(Connector):
         emit_updated: bool,
     ) -> None:
         await ctx.increment_scanned()
-        owner_id = getattr(record, "owner_id", None)
+        owner_id = record.owner_id
         owner_email = (
             directory.email_for_user(owner_id)
             if isinstance(owner_id, str) and owner_id.startswith(USER_ID_PREFIX)
@@ -947,7 +1591,9 @@ class SalesforceConnector(Connector):
         share_grant = share_grants.get(record.id)
         if share_grant is not None:
             grants = grants.merge(share_grant)
-        public = config.name in source_config.public_read_objects or config.public_read_default
+        # Visibility is fail-closed: only objects explicitly configured as
+        # public-read are visible to everyone.
+        public = config.name in source_config.public_read_objects
         permissions = grants.to_permissions(public)
 
         content = generate_content(config.name, record)
@@ -967,52 +1613,7 @@ class SalesforceConnector(Connector):
         else:
             await ctx.emit(document)
 
-    async def _sync_deletes(
-        self,
-        *,
-        client: SalesforceClient,
-        configs: tuple[SalesforceObjectConfig, ...],
-        checkpoint: SalesforceCheckpoint,
-        ctx: SyncContext,
-        window_end: datetime,
-    ) -> None:
-        """Emit tombstones for records deleted since the previous watermark."""
-        for config in configs:
-            if ctx.is_cancelled():
-                return
-            previous_watermark = checkpoint.watermarks.get(config.name)
-            if previous_watermark is None:
-                continue
-            try:
-                window_start = datetime.fromisoformat(previous_watermark) - timedelta(
-                    seconds=DELTA_OVERLAP_SECONDS
-                )
-            except ValueError:
-                continue
-            # getDeleted only covers the last 30 days.
-            window_start = max(window_start, datetime.now(UTC) - timedelta(days=30))
-            async for deleted in self._iter_deleted(client, config.name, window_start, window_end):
-                await ctx.emit_deleted(f"{config.name}:{deleted.id}")
-            checkpoint = replace(
-                checkpoint,
-                deleted_through=window_end.isoformat(),
-            )
-            await ctx.save_checkpoint(checkpoint.to_json())
-
-    async def _iter_deleted(
-        self,
-        client: SalesforceClient,
-        object_type: str,
-        start: datetime,
-        end: datetime,
-    ) -> AsyncIterator[DeletedRecord]:
-        result = await client.get_deleted(object_type, start, end)
-        while True:
-            for deleted in result.deleted_records:
-                yield deleted
-            if result.next_records_url is None:
-                return
-            result = await client.get_deleted_more(result.next_records_url)
+    # -- realtime -----------------------------------------------------------
 
     async def _realtime_sync(
         self,
@@ -1023,37 +1624,89 @@ class SalesforceConnector(Connector):
     ) -> None:
         """Long-lived polling sync. The connector-manager supervises this slot
         and restarts it if it dies; it returns only when cancelled."""
-        configs, available_objects = await self._available_object_configs(client, config, ctx)
+        objects, available = await self._resolve_objects(client, config, ctx)
         poll_seconds = max(config.realtime_poll_seconds, 10)
+        people_interval = timedelta(seconds=max(poll_seconds * 10, 300))
+
+        # Persist run-scoped progress before any provider work so a restart gets
+        # an unambiguous run checkpoint and idle heartbeats never write a
+        # progress-less checkpoint.
+        started_at = datetime.now(UTC)
+        checkpoint = replace(
+            checkpoint,
+            progress=self._resume_progress(
+                checkpoint, ctx, SyncRunMode.INCREMENTAL, started_at
+            ),
+        )
+        await ctx.save_checkpoint(checkpoint.to_json())
 
         directory: SalesforceDirectory | None = None
+        people_state = checkpoint.people
+        share_snapshot = checkpoint.share_snapshot
         share_grants: dict[str, RecordGrants] = {}
-        previous: PeopleSnapshot | None = None
+        reconcile_objects: set[str] = set()
         last_people_refresh: datetime | None = None
-        people_refresh_interval = timedelta(seconds=max(poll_seconds * 10, 300))
+        failures = 0
 
-        if not checkpoint.watermarks:
-            # No baseline yet: run a full pass so polling has watermarks to
-            # work from.
+        async def refresh_people_and_shares(now: datetime, *, propagate: bool) -> None:
+            nonlocal directory, people_state, share_snapshot, share_grants
+            nonlocal last_people_refresh, checkpoint
+            directory, people_state = await self._sync_people(
+                client, config, ctx, people_state, available
+            )
+            checkpoint = replace(checkpoint, people=people_state)
+            await ctx.save_checkpoint(checkpoint.to_json())
+            if ctx.is_cancelled():
+                return
+            result = await self._sync_shares(client, objects, directory, ctx, share_snapshot)
+            share_snapshot = result.snapshot
+            share_grants = result.grants_by_parent
+            checkpoint = replace(checkpoint, share_snapshot=share_snapshot)
+            await ctx.save_checkpoint(checkpoint.to_json())
+            # An oversized share snapshot cannot be diffed, so the next poll
+            # must fully re-emit the affected objects to reconcile permissions.
+            reconcile_objects.update(result.reconciliation_objects)
+            if propagate and result.changed_parents and not ctx.is_cancelled():
+                checkpoint = await self._emit_changed_parents(
+                    client=client,
+                    objects=objects,
+                    changed_parents=result.changed_parents,
+                    directory=directory,
+                    share_grants=share_grants,
+                    source_config=config,
+                    checkpoint=checkpoint,
+                    ctx=ctx,
+                )
+            last_people_refresh = now
+
+        if not any(
+            checkpoint.state_for(obj.config.name).watermark is not None for obj in objects
+        ):
+            # No committed baseline yet: run a full pass so polling has
+            # watermarks to work from. This checkpoint stays run-scoped; a
+            # realtime run never completes(), so it cannot overwrite a
+            # concurrently completed scheduled checkpoint.
             logger.info("Realtime sync: no watermarks, running baseline full sync")
-            directory, previous = await self._sync_people(
-                client, config, ctx, None, available_objects=available_objects
-            )
-            share_grants = await self._sync_shares(
-                client, configs, directory, ctx, available_objects=available_objects
-            )
-            checkpoint = await self._sync_records(
+            baseline_end = datetime.now(UTC)
+            await ctx.save_checkpoint(checkpoint.to_json())
+            await refresh_people_and_shares(baseline_end, propagate=False)
+            if ctx.is_cancelled() or directory is None:
+                return
+            checkpoint = await self._sync_objects(
                 client=client,
-                configs=configs,
+                objects=objects,
                 directory=directory,
                 share_grants=share_grants,
+                changed_parents={},
                 source_config=config,
                 checkpoint=checkpoint,
                 ctx=ctx,
                 incremental=False,
-                pass_started_at=datetime.now(UTC),
+                window_end=baseline_end,
             )
-            last_people_refresh = datetime.now(UTC)
+            await ctx.save_checkpoint(checkpoint.to_json())
+            # The baseline full pass already re-emitted every record.
+            reconcile_objects.clear()
 
         while True:
             if ctx.is_cancelled():
@@ -1062,98 +1715,64 @@ class SalesforceConnector(Connector):
 
             if directory is None or (
                 last_people_refresh is not None
-                and now - last_people_refresh >= people_refresh_interval
+                and now - last_people_refresh >= people_interval
             ):
-                directory, previous = await self._sync_people(
-                    client, config, ctx, previous, available_objects=available_objects
-                )
-                share_grants = await self._sync_shares(
-                    client, configs, directory, ctx, available_objects=available_objects
-                )
-                last_people_refresh = now
+                await refresh_people_and_shares(now, propagate=True)
                 if ctx.is_cancelled():
                     return
 
-            for obj_config in configs:
-                watermark = checkpoint.watermarks.get(obj_config.name)
-                if watermark is None:
-                    continue
-                try:
-                    since = datetime.fromisoformat(watermark) - timedelta(
-                        seconds=DELTA_OVERLAP_SECONDS
-                    )
-                except ValueError:
-                    continue
-                await self._poll_object_changes(
+            # Each poll is an independent bounded pass: reset the pass
+            # completion markers but keep committed per-object boundaries.
+            checkpoint = replace(
+                checkpoint,
+                progress=RunProgress(
+                    run_id=ctx.sync_run_id,
+                    mode=SyncRunMode.INCREMENTAL,
+                    window_end=now.isoformat(),
+                    started_at=now.isoformat(),
+                    full_reconciliation=tuple(sorted(reconcile_objects)),
+                ),
+            )
+            assert directory is not None
+            try:
+                checkpoint = await self._sync_objects(
                     client=client,
-                    config=obj_config,
+                    objects=objects,
                     directory=directory,
                     share_grants=share_grants,
+                    changed_parents={},
                     source_config=config,
                     checkpoint=checkpoint,
                     ctx=ctx,
-                    since=since,
-                    until=now,
+                    incremental=True,
+                    window_end=now,
+                    tolerate_errors=True,
                 )
+                await ctx.save_checkpoint(checkpoint.to_json())
+                reconcile_objects.clear()
+                failures = 0
+                delay = poll_seconds
+            except Exception as e:
+                logger.warning("Realtime poll failed: %s", e)
+                await ctx.emit_error("*", f"Realtime poll failed: {e}")
+                failures += 1
+                delay = min(poll_seconds * (2**failures), 900)
 
-            checkpoint = replace(
-                checkpoint,
-                deleted_through=now.isoformat(),
-                watermarks={
-                    **checkpoint.watermarks,
-                    **{c.name: now.isoformat() for c in configs},
-                },
-            )
-            await ctx.save_checkpoint(checkpoint.to_json())
-            await ctx.increment_scanned()
+            if ctx.is_cancelled():
+                return
+            await self._sleep_with_heartbeat(delay, checkpoint, ctx)
 
-            await asyncio.sleep(poll_seconds)
-
-    async def _poll_object_changes(
-        self,
-        *,
-        client: SalesforceClient,
-        config: SalesforceObjectConfig,
-        directory: SalesforceDirectory,
-        share_grants: dict[str, RecordGrants],
-        source_config: SalesforceSourceConfig,
-        checkpoint: SalesforceCheckpoint,
-        ctx: SyncContext,
-        since: datetime,
-        until: datetime,
+    async def _sleep_with_heartbeat(
+        self, delay: float, checkpoint: SalesforceCheckpoint, ctx: SyncContext
     ) -> None:
-        if ctx.is_cancelled():
-            return
-        try:
-            updated = await client.get_updated(config.name, since, until)
-            parser = _RECORD_PARSERS[config.name]
-            fields = config.all_fields()
-            ids = list(updated.ids)
-            for offset in range(0, len(ids), 200):
-                batch = ids[offset : offset + 200]
-                in_clause = ", ".join(f"'{i}'" for i in batch)
-                page = await client.query(
-                    f"SELECT {', '.join(fields)} FROM {config.name} WHERE Id IN ({in_clause})"
-                )
-                for raw in page.records:
-                    record = parser(raw)
-                    await self._emit_record(
-                        client=client,
-                        config=config,
-                        record=record,
-                        directory=directory,
-                        share_grants=share_grants,
-                        source_config=source_config,
-                        ctx=ctx,
-                        emit_updated=True,
-                    )
-        except SalesforceClientError as e:
-            logger.warning("Realtime poll failed for %s: %s", config.name, e)
-            await ctx.emit_error(f"{config.name}:*", f"Realtime poll failed: {e}")
-
-        try:
-            async for deleted in self._iter_deleted(client, config.name, since, until):
-                await ctx.emit_deleted(f"{config.name}:{deleted.id}")
-        except SalesforceClientError as e:
-            logger.warning("Realtime delete poll failed for %s: %s", config.name, e)
-            await ctx.emit_error(f"{config.name}:*", f"Realtime delete poll failed: {e}")
+        remaining = delay
+        while remaining > 0:
+            if ctx.is_cancelled():
+                return
+            chunk = min(remaining, float(REALTIME_HEARTBEAT_SECONDS))
+            await asyncio.sleep(chunk)
+            remaining -= chunk
+            if ctx.is_cancelled():
+                return
+            if remaining > 0:
+                await ctx.save_checkpoint(checkpoint.to_json())

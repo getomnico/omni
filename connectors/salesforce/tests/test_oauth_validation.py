@@ -90,6 +90,79 @@ async def test_validate_rejects_mismatched_instance() -> None:
                 "organization_id": "00D000000000001",
             },
             OAuthCredentialFlow.USER_WRITE,
+            {"organization_id": "00D000000000001"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_credential_org_assertion_mismatch() -> None:
+    """A credential's own organization_id is an assertion, never proof."""
+    connector = SalesforceConnector()
+    with pytest.raises(ValueError, match="does not match the credential"):
+        await connector.validate_oauth_credential(
+            _source({}),
+            {
+                "instance_url": "https://acme.my.salesforce.com",
+                "organization_id": "00D000000000002",
+            },
+            OAuthCredentialFlow.USER_READ,
+            {"organization_id": "00D000000000001"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_validate_does_not_trust_credential_org_without_userinfo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without verified userinfo the credential must be verified against the
+    provider, even when the credential carries an organization id."""
+    import salesforce_connector.connector as connector_module
+
+    calls = 0
+
+    async def fake_fetch_organization_id(auth: object) -> str:
+        nonlocal calls
+        calls += 1
+        return "00D000000000001"
+
+    monkeypatch.setattr(connector_module, "fetch_organization_id", fake_fetch_organization_id)
+
+    connector = SalesforceConnector()
+    binding = await connector.validate_oauth_credential(
+        _source({"source_binding": {"organization_id": "00D000000000001"}}),
+        {
+            "access_token": "token",
+            "instance_url": "https://acme.my.salesforce.com",
+            "organization_id": "00D000000000001",
+        },
+        OAuthCredentialFlow.USER_READ,
+        {},
+    )
+    assert calls == 1
+    assert binding == {"organization_id": "00D000000000001"}
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_unverifiable_credential_that_asserts_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import salesforce_connector.connector as connector_module
+
+    async def failing_fetch(auth: object) -> str:
+        raise connector_module.SalesforceClientError("userinfo failed")
+
+    monkeypatch.setattr(connector_module, "fetch_organization_id", failing_fetch)
+
+    connector = SalesforceConnector()
+    with pytest.raises(ValueError, match="could not be verified"):
+        await connector.validate_oauth_credential(
+            _source({}),
+            {
+                "access_token": "token",
+                "instance_url": "https://acme.my.salesforce.com",
+                "organization_id": "00D000000000001",
+            },
+            OAuthCredentialFlow.USER_READ,
             {},
         )
 
@@ -124,7 +197,6 @@ async def test_validate_derives_organization_id_from_org_credential(
 async def test_validate_fails_when_org_credential_cannot_be_verified(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import salesforce_connector.client as client_module
     import salesforce_connector.connector as connector_module
 
     async def failing_fetch(auth: object) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import fields
+from typing import cast
 
 from omni_connector import Document, DocumentMetadata, DocumentPermissions
 
@@ -21,6 +22,9 @@ from .models import (
 RecordModel = (
     AccountRecord | ContactRecord | OpportunityRecord | LeadRecord | CaseRecord | TaskRecord
 )
+
+_NAMED_RECORDS = (AccountRecord, ContactRecord, OpportunityRecord, LeadRecord)
+_SUBJECT_RECORDS = (CaseRecord, TaskRecord)
 
 # Fields never rendered into content or attributes; they are either structural
 # (Id) or carried as metadata/attributes under cleaner keys.
@@ -52,10 +56,10 @@ def attributes_for(
         "source_type": "salesforce",
         "object_type": object_type,
         "salesforce_id": record.id,
-        "owner_id": _attribute_value(getattr(record, "owner_id", None)),
+        "owner_id": _attribute_value(record.owner_id),
         "owner_email": _attribute_value(owner_email),
-        "created_date": _attribute_value(getattr(record, "created_date", None)),
-        "modified_date": _attribute_value(getattr(record, "system_modstamp", None)),
+        "created_date": _attribute_value(record.created_date),
+        "modified_date": _attribute_value(record.system_modstamp),
     }
     for spec in config.attributes:
         value = _attribute_value(_field_value(record, spec.field))
@@ -66,11 +70,18 @@ def attributes_for(
 
 def _field_value(record: RecordModel, field_name: str) -> object:
     if field_name == "Account.Name":
-        return getattr(record, "account_name", None)
+        if isinstance(record, (ContactRecord, OpportunityRecord, CaseRecord)):
+            return record.account_name
+        return None
     # Salesforce field names (e.g. "NumberOfEmployees") map to snake_case
-    # dataclass attributes (e.g. "number_of_employees").
+    # dataclass attributes (e.g. "number_of_employees"). Fail loudly if the
+    # configuration and the record models drift apart.
     attribute = re.sub(r"(?<!^)(?=[A-Z])", "_", field_name).lower()
-    return getattr(record, attribute, None)
+    if not hasattr(record, attribute):
+        raise ValueError(
+            f"object config field {field_name!r} does not exist on {type(record).__name__}"
+        )
+    return cast(object, getattr(record, attribute))
 
 
 def map_record_to_document(
@@ -96,8 +107,8 @@ def map_record_to_document(
         metadata=DocumentMetadata(
             title=title,
             author=owner_email,
-            created_at=getattr(record, "created_date", None),
-            updated_at=getattr(record, "system_modstamp", None),
+            created_at=record.created_date,
+            updated_at=record.system_modstamp,
             content_type=object_type,
             mime_type="text/plain",
             url=f"{instance_url}/{record.id}",
@@ -114,9 +125,10 @@ def _title_for(config: SalesforceObjectConfig, record: RecordModel) -> str:
             return value
     if isinstance(record, (ContactRecord, LeadRecord)) and record.email:
         return record.email
-    fallback = getattr(record, "name", None) or getattr(record, "subject", None)
-    if isinstance(fallback, str) and fallback:
-        return fallback
+    if isinstance(record, _NAMED_RECORDS) and record.name:
+        return record.name
+    if isinstance(record, _SUBJECT_RECORDS) and record.subject:
+        return record.subject
     return f"{config.name} {record.id}"
 
 

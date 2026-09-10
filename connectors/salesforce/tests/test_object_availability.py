@@ -99,5 +99,6 @@ async def test_full_sync_skips_unavailable_share_object(
 
     assert row["documents_scanned"] == 1
     account = docs["Account:001000000000001"]
-    assert account["permissions"]["public"] is True
+    # Visibility stays fail-closed when sharing cannot be read.
+    assert account["permissions"]["public"] is False
     assert "owner@example.com" in account["permissions"]["users"]

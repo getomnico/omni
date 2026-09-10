@@ -1,9 +1,10 @@
-"""Configuration constants for the Salesforce connector."""
+"""Configuration constants and typed object configs for the Salesforce connector."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from enum import StrEnum
 from hashlib import sha256
 
 # Salesforce REST API version
@@ -22,6 +23,50 @@ CHECKPOINT_INTERVAL = 500
 # Default poll interval for the realtime sync loop.
 REALTIME_POLL_SECONDS = 60
 
+# Salesforce only retains deleted records for this long. getDeleted cannot
+# cover deletions older than the provider's reported `earliestDateAvailable`.
+DELETION_RETENTION_DAYS = 30
+
+# Maximum number of shared parents persisted in the checkpoint share snapshot.
+# Beyond this the connector cannot safely diff share grants from checkpoint
+# state and falls back to periodic full permission reconciliation.
+MAX_SHARE_SNAPSHOT_ENTRIES = 20_000
+
+# How often a realtime or incremental run re-emits every record of a
+# share-enabled object to reconcile permissions when no safe share diff state
+# is available (restart after an oversized snapshot).
+PERMISSION_RECONCILIATION_INTERVAL_SECONDS = 24 * 60 * 60
+
+# Realtime heartbeats must be frequent enough that the manager's stale-sync
+# sweep never fires during provider-only work or long poll sleeps.
+REALTIME_HEARTBEAT_SECONDS = 30
+
+
+class AttributeValueType(StrEnum):
+    """Type of one structured document attribute."""
+
+    TEXT = "text"
+    NUMBER = "number"
+    DATETIME = "datetime"
+
+
+class SalesforceObjectName(StrEnum):
+    """Salesforce objects this connector can sync as records."""
+
+    ACCOUNT = "Account"
+    CONTACT = "Contact"
+    OPPORTUNITY = "Opportunity"
+    LEAD = "Lead"
+    CASE = "Case"
+    TASK = "Task"
+
+
+class SyncRunMode(StrEnum):
+    """The record-scan mode of one in-progress pass."""
+
+    FULL = "full"
+    INCREMENTAL = "incremental"
+
 
 @dataclass(frozen=True)
 class SalesforceAttribute:
@@ -29,15 +74,14 @@ class SalesforceAttribute:
 
     key: str
     field: str
-    value_type: str = "text"  # "text" | "number" | "datetime"
+    value_type: AttributeValueType = AttributeValueType.TEXT
 
 
 @dataclass(frozen=True)
 class SalesforceObjectConfig:
     """Configuration for one Salesforce object type."""
 
-    name: str
-    record_model: str
+    name: SalesforceObjectName
     title_fields: tuple[str, ...] = ()
     fields: tuple[str, ...] = ()
     # Optional relationship field to traverse for account names (e.g. "Account").
@@ -45,7 +89,9 @@ class SalesforceObjectConfig:
     # Optional share object (e.g. "AccountShare") and its parent lookup field.
     share_object: str | None = None
     share_parent_field: str | None = None
-    public_read_default: bool = False
+    # Standard share objects expose object-specific access-level columns
+    # (AccountAccessLevel, CaseAccessLevel, ...), not a generic AccessLevel.
+    share_access_level_field: str | None = None
     attributes: tuple[SalesforceAttribute, ...] = ()
 
     def all_fields(self) -> tuple[str, ...]:
@@ -61,8 +107,7 @@ def _attrs(*items: SalesforceAttribute) -> tuple[SalesforceAttribute, ...]:
 
 SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
     SalesforceObjectConfig(
-        name="Account",
-        record_model="AccountRecord",
+        name=SalesforceObjectName.ACCOUNT,
         title_fields=("Name",),
         fields=(
             "Id",
@@ -83,20 +128,19 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         ),
         share_object="AccountShare",
         share_parent_field="AccountId",
-        public_read_default=True,
+        share_access_level_field="AccountAccessLevel",
         attributes=_attrs(
             SalesforceAttribute("account_name", "Name"),
             SalesforceAttribute("industry", "Industry"),
             SalesforceAttribute("type", "Type"),
             SalesforceAttribute("billing_country", "BillingCountry"),
-            SalesforceAttribute("annual_revenue", "AnnualRevenue", "number"),
+            SalesforceAttribute("annual_revenue", "AnnualRevenue", AttributeValueType.NUMBER),
             SalesforceAttribute("phone", "Phone"),
             SalesforceAttribute("website", "Website"),
         ),
     ),
     SalesforceObjectConfig(
-        name="Contact",
-        record_model="ContactRecord",
+        name=SalesforceObjectName.CONTACT,
         title_fields=("Name",),
         fields=(
             "Id",
@@ -118,7 +162,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         account_relationship="Account",
         share_object="ContactShare",
         share_parent_field="ContactId",
-        public_read_default=True,
+        share_access_level_field="ContactAccessLevel",
         attributes=_attrs(
             SalesforceAttribute("account_name", "Account.Name"),
             SalesforceAttribute("account_id", "AccountId"),
@@ -128,8 +172,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         ),
     ),
     SalesforceObjectConfig(
-        name="Opportunity",
-        record_model="OpportunityRecord",
+        name=SalesforceObjectName.OPPORTUNITY,
         title_fields=("Name",),
         fields=(
             "Id",
@@ -149,21 +192,20 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         account_relationship="Account",
         share_object="OpportunityShare",
         share_parent_field="OpportunityId",
-        public_read_default=False,
+        share_access_level_field="OpportunityAccessLevel",
         attributes=_attrs(
             SalesforceAttribute("account_name", "Account.Name"),
             SalesforceAttribute("account_id", "AccountId"),
             SalesforceAttribute("stage", "StageName"),
-            SalesforceAttribute("amount", "Amount", "number"),
-            SalesforceAttribute("close_date", "CloseDate", "datetime"),
-            SalesforceAttribute("probability", "Probability", "number"),
+            SalesforceAttribute("amount", "Amount", AttributeValueType.NUMBER),
+            SalesforceAttribute("close_date", "CloseDate", AttributeValueType.DATETIME),
+            SalesforceAttribute("probability", "Probability", AttributeValueType.NUMBER),
             SalesforceAttribute("type", "Type"),
             SalesforceAttribute("lead_source", "LeadSource"),
         ),
     ),
     SalesforceObjectConfig(
-        name="Lead",
-        record_model="LeadRecord",
+        name=SalesforceObjectName.LEAD,
         title_fields=("Name",),
         fields=(
             "Id",
@@ -184,7 +226,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         ),
         share_object="LeadShare",
         share_parent_field="LeadId",
-        public_read_default=False,
+        share_access_level_field="LeadAccessLevel",
         attributes=_attrs(
             SalesforceAttribute("company", "Company"),
             SalesforceAttribute("lead_source", "LeadSource"),
@@ -195,8 +237,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         ),
     ),
     SalesforceObjectConfig(
-        name="Case",
-        record_model="CaseRecord",
+        name=SalesforceObjectName.CASE,
         title_fields=("Subject",),
         fields=(
             "Id",
@@ -216,7 +257,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         account_relationship="Account",
         share_object="CaseShare",
         share_parent_field="CaseId",
-        public_read_default=False,
+        share_access_level_field="CaseAccessLevel",
         attributes=_attrs(
             SalesforceAttribute("case_number", "CaseNumber"),
             SalesforceAttribute("status", "Status"),
@@ -229,8 +270,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
         ),
     ),
     SalesforceObjectConfig(
-        name="Task",
-        record_model="TaskRecord",
+        name=SalesforceObjectName.TASK,
         title_fields=("Subject",),
         fields=(
             "Id",
@@ -245,11 +285,10 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
             "CreatedDate",
             "SystemModstamp",
         ),
-        public_read_default=False,
         attributes=_attrs(
             SalesforceAttribute("status", "Status"),
             SalesforceAttribute("priority", "Priority"),
-            SalesforceAttribute("activity_date", "ActivityDate", "datetime"),
+            SalesforceAttribute("activity_date", "ActivityDate", AttributeValueType.DATETIME),
             SalesforceAttribute("who_id", "WhoId"),
             SalesforceAttribute("what_id", "WhatId"),
         ),
@@ -259,7 +298,7 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
 # Objects always synced in addition to the configurable record objects.
 PEOPLE_OBJECTS = ("User", "Group", "GroupMember", "UserRole")
 
-SALESFORCE_OBJECT_TYPES: tuple[str, ...] = tuple(
+SALESFORCE_OBJECT_TYPES: tuple[SalesforceObjectName, ...] = tuple(
     config.name for config in SALESFORCE_OBJECT_CONFIGS
 )
 
@@ -269,6 +308,13 @@ def config_for(object_type: str) -> SalesforceObjectConfig | None:
         if config.name == object_type:
             return config
     return None
+
+
+def validate_object_names(object_names: frozenset[str], setting: str) -> None:
+    """Reject unknown object names instead of silently ignoring them."""
+    unknown = sorted(object_names.difference({name.value for name in SALESFORCE_OBJECT_TYPES}))
+    if unknown:
+        raise ValueError(f"Unknown {setting}: {', '.join(unknown)}")
 
 
 def enabled_object_configs(
@@ -281,20 +327,20 @@ def enabled_object_configs(
 
 def schema_fingerprint(enabled_objects: frozenset[str], public_read_objects: frozenset[str]) -> str:
     """Hash of the synced schema. Stored in connector_state; when it changes
-    (fields/objects added or removed, API version bump) saved watermarks are
-    invalid and a full resync is required."""
+    (fields/objects added or removed, visibility changed, API version bump)
+    saved watermarks are invalid and a full resync is required."""
     payload = {
         "api_version": API_VERSION,
         "objects": [
             {
-                "name": config.name,
+                "name": config.name.value,
                 "fields": sorted(config.all_fields()),
                 "share_object": config.share_object,
+                "share_access_level_field": config.share_access_level_field,
                 "attributes": [
-                    {"key": attr.key, "field": attr.field, "type": attr.value_type}
+                    {"key": attr.key, "field": attr.field, "type": attr.value_type.value}
                     for attr in config.attributes
                 ],
-                "public_read_default": config.public_read_default,
             }
             for config in enabled_object_configs(enabled_objects)
         ],

@@ -4,12 +4,16 @@ Salesforce visibility is granted through four mechanisms, mirrored here:
 
 1. Record ownership — the owner (user) is granted; when the owner is a queue,
    the queue's members are granted.
-2. Role hierarchy — with "Grant Access Using Hierarchies" enabled, users in the
-   owner's role and every ancestor role can see the record.
+2. Role hierarchy — with "Grant Access Using Hierarchies" enabled, users in
+   ancestor roles of the owner's role can see the record. Hierarchy access
+   never flows to peers in the owner's role or to subordinate roles, so it is
+   modeled with dedicated direct-role groups rather than a role-and-descendants
+   group.
 3. Sharing rules / manual shares — rows in the per-object *Share tables grant
    access to a user, a public group, or a role (role shares include all roles
    below it in the hierarchy).
-4. Org-wide defaults — objects configured as public-read grant everyone.
+4. Org-wide defaults — only objects explicitly configured as public-read grant
+   everyone; everything else is private by default.
 
 Group emails are synthesized from Salesforce ids because groups and roles have
 no email addresses; Omni matches these opaque strings exactly.
@@ -28,6 +32,7 @@ from .models import (
     RoleRecord,
     ShareRecord,
     UserRecord,
+    direct_role_email,
     group_email,
     role_email,
 )
@@ -50,6 +55,14 @@ class RecordGrants:
             users=tuple(sorted(set(self.users) | set(other.users))),
             groups=tuple(sorted(set(self.groups) | set(other.groups))),
         )
+
+    def fingerprint(self) -> str:
+        import hashlib
+
+        payload = ",".join(f"u:{user}" for user in self.users) + "|" + ",".join(
+            f"g:{group}" for group in self.groups
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def to_permissions(self, public: bool) -> DocumentPermissions:
         return DocumentPermissions(
@@ -75,6 +88,13 @@ class SalesforceDirectory:
             return None
         return user.email
 
+    def _grantable_email(self, user_id: str) -> str | None:
+        """Email for group grants. Inactive users never receive group access."""
+        user = self.users_by_id.get(user_id)
+        if user is None or not user.email or user.is_active is False:
+            return None
+        return user.email
+
     def role_of(self, user_id: str) -> str | None:
         user = self.users_by_id.get(user_id)
         if user is None:
@@ -83,35 +103,48 @@ class SalesforceDirectory:
 
     def _expand_group(self, group_id: str, seen: set[str]) -> set[str]:
         """Expand a group to member emails, following nested groups and roles
-        with cycle protection. Roles inside a group contribute their direct
-        members."""
+        with cycle protection."""
         if group_id in seen:
             return set()
         seen.add(group_id)
+
+        group = self.groups_by_id.get(group_id)
+        if group is not None and group.type is not None and group.type.is_role_group:
+            related = group.related_id
+            if related is not None:
+                if group.type.value == "Role":
+                    return self._direct_role_emails(related)
+                return self._role_and_descendant_emails(related, seen)
+
         emails: set[str] = set()
         for member in self.group_members_by_id.get(group_id, ()):
             target = member.user_or_group_id
             if target.startswith(USER_ID_PREFIX):
-                email = self.email_for_user(target)
+                email = self._grantable_email(target)
                 if email:
                     emails.add(email)
             elif target.startswith(GROUP_ID_PREFIX):
                 emails.update(self._expand_group(target, seen))
             elif target.startswith(ROLE_ID_PREFIX):
-                for user in self.users_by_role.get(target, ()):
-                    if user.email:
-                        emails.add(user.email)
+                emails.update(self._direct_role_emails(target))
         return emails
 
     def group_member_emails(self, group_id: str) -> set[str]:
         return self._expand_group(group_id, set())
+
+    def _direct_role_emails(self, role_id: str) -> set[str]:
+        return {
+            user.email
+            for user in self.users_by_role.get(role_id, ())
+            if user.email and user.is_active is not False
+        }
 
     def _role_and_descendant_emails(self, role_id: str, seen: set[str]) -> set[str]:
         """Emails of everyone in the role and all roles below it."""
         if role_id in seen:
             return set()
         seen.add(role_id)
-        emails = {u.email for u in self.users_by_role.get(role_id, ()) if u.email}
+        emails = self._direct_role_emails(role_id)
         for other_id, role in self.roles_by_id.items():
             if role.parent_role_id == role_id:
                 emails.update(self._role_and_descendant_emails(other_id, seen))
@@ -120,16 +153,25 @@ class SalesforceDirectory:
     def role_and_descendants(self, role_id: str) -> set[str]:
         return self._role_and_descendant_emails(role_id, set())
 
-    def _ancestor_roles(self, role_id: str) -> list[str]:
-        """The role and every ancestor role up the hierarchy."""
+    def direct_role_members(self, role_id: str) -> set[str]:
+        return self._direct_role_emails(role_id)
+
+    def _manager_roles(self, role_id: str) -> list[str]:
+        """Strict ancestor roles of ``role_id``, closest first, cycle-safe.
+
+        The owner's own role is excluded: peers in the same role must not
+        automatically see one another's records.
+        """
         chain: list[str] = []
-        current: str | None = role_id
-        seen: set[str] = set()
-        while current is not None and current not in seen:
-            chain.append(current)
-            seen.add(current)
-            role = self.roles_by_id.get(current)
-            current = role.parent_role_id if role is not None else None
+        current = self.roles_by_id.get(role_id)
+        seen: set[str] = {role_id}
+        while current is not None and current.parent_role_id is not None:
+            parent = current.parent_role_id
+            if parent in seen:
+                break
+            seen.add(parent)
+            chain.append(parent)
+            current = self.roles_by_id.get(parent)
         return chain
 
     def owner_grants(self, owner_id: str | None, include_hierarchy: bool = True) -> RecordGrants:
@@ -145,11 +187,10 @@ class SalesforceDirectory:
         groups: list[str] = []
         role_id = self.role_of(owner_id)
         if role_id is not None and include_hierarchy:
-            # Role hierarchy: the owner's role and every ancestor role. Each
-            # direct-role group contains only that role's own members, so a
-            # record is visible exactly to the owner's peers and managers —
-            # not to peers of managers (who are not on this record's chain).
-            groups.extend(role_email(role) for role in self._ancestor_roles(role_id))
+            # Only managers in ancestor roles see an owner's record. Each
+            # direct-role group contains exactly that role's members, so peers,
+            # subordinates, and sibling branches are excluded.
+            groups.extend(direct_role_email(role) for role in self._manager_roles(role_id))
         return RecordGrants(users=tuple(users), groups=tuple(groups))
 
     def share_grants(self, shares: Iterable[ShareRecord]) -> RecordGrants:
@@ -157,7 +198,7 @@ class SalesforceDirectory:
         users: set[str] = set()
         groups: set[str] = set()
         for share in shares:
-            if share.access_level in ("None", "ReadOnly", None):
+            if share.access_level is not None and not share.access_level.grants_access:
                 continue
             target = share.user_or_group_id
             if target.startswith(USER_ID_PREFIX):
@@ -182,6 +223,9 @@ class SalesforceDirectory:
             # The role group (role + descendants) backs role-based shares; the
             # direct group backs owner hierarchy grants.
             memberships.append((role_email(role_id), self.role_and_descendants(role_id), role.name))
+            memberships.append(
+                (direct_role_email(role_id), self.direct_role_members(role_id), role.name)
+            )
         return memberships
 
 
@@ -197,6 +241,12 @@ def build_directory(
     for group in groups:
         directory.groups_by_id[group.id] = group
     for member in group_members:
+        if member.group_id.startswith(GROUP_ID_PREFIX):
+            parent = directory.groups_by_id.get(member.group_id)
+            # Role-group membership is derived from the role hierarchy, not
+            # from GroupMember rows, to avoid double counting descendants.
+            if parent is not None and parent.type is not None and parent.type.is_role_group:
+                continue
         directory.group_members_by_id.setdefault(member.group_id, []).append(member)
     for role in roles:
         directory.roles_by_id[role.id] = role

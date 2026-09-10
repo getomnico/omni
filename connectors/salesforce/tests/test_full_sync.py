@@ -6,7 +6,8 @@ import httpx
 import pytest
 from omni_connector.testing import count_events, get_events, wait_for_sync
 
-from salesforce_connector.models import group_email, role_email
+from salesforce_connector.models import direct_role_email, group_email, role_email
+from tests.conftest import set_source_config
 
 pytestmark = pytest.mark.integration
 
@@ -30,8 +31,52 @@ async def _sync_docs(harness, cm_client, source_id, sync_type="full") -> dict:
     return docs
 
 
-async def test_full_sync_emits_documents_with_permissions(
+async def test_account_and_contact_are_private_by_default(
     harness, seed, source_id, mock_salesforce_api, cm_client: httpx.AsyncClient
+) -> None:
+    mock_salesforce_api.add_people_fixtures()
+    mock_salesforce_api.add_account()
+    mock_salesforce_api.add_contact()
+
+    docs = await _sync_docs(harness, cm_client, source_id)
+
+    # Omitted visibility configuration must be private, not org public.
+    assert docs["Account:001000000000001"]["permissions"]["public"] is False
+    assert docs["Contact:003000000000001"]["permissions"]["public"] is False
+    # The owner is still granted explicitly.
+    assert "owner@example.com" in docs["Account:001000000000001"]["permissions"]["users"]
+
+
+async def test_explicit_public_read_configuration(
+    harness,
+    seed,
+    source_id,
+    mock_salesforce_api,
+    mock_salesforce_server,
+    cm_client: httpx.AsyncClient,
+) -> None:
+    mock_salesforce_api.add_people_fixtures()
+    mock_salesforce_api.add_account()
+    mock_salesforce_api.add_contact()
+    await set_source_config(
+        harness,
+        source_id,
+        {"instance_url": mock_salesforce_server, "public_read_objects": ["Account"]},
+    )
+
+    docs = await _sync_docs(harness, cm_client, source_id)
+    assert docs["Account:001000000000001"]["permissions"]["public"] is True
+    # Only the explicitly listed object becomes public; Contact stays private.
+    assert docs["Contact:003000000000001"]["permissions"]["public"] is False
+
+
+async def test_full_sync_emits_documents_with_permissions(
+    harness,
+    seed,
+    source_id,
+    mock_salesforce_api,
+    mock_salesforce_server,
+    cm_client: httpx.AsyncClient,
 ) -> None:
     mock_salesforce_api.add_people_fixtures()
     mock_salesforce_api.add_account()
@@ -40,6 +85,11 @@ async def test_full_sync_emits_documents_with_permissions(
     mock_salesforce_api.add_lead()
     mock_salesforce_api.add_case()
     mock_salesforce_api.add_task()
+    await set_source_config(
+        harness,
+        source_id,
+        {"instance_url": mock_salesforce_server, "public_read_objects": ["Account"]},
+    )
     # Share the account with manager@example.com; the case with the Execs group.
     mock_salesforce_api.add_share(
         "AccountShare", parent_id="001000000000001", user_or_group_id="005000000000003"
@@ -59,28 +109,27 @@ async def test_full_sync_emits_documents_with_permissions(
         "Task:00T000000000001",
     }
 
-    # Account: org-wide public read by default, owned by owner@example.com,
-    # and shared with manager@example.com.
+    # Account: explicitly public-read, owned by owner@example.com, and shared
+    # with manager@example.com.
     account = docs["Account:001000000000001"]
     assert account["permissions"]["public"] is True
     assert "owner@example.com" in account["permissions"]["users"]
-    assert (
-        "manager@example.com" in account["permissions"]["users"]
-        or "manager@example.com" in account["permissions"]["groups"]
-    )
+    assert "manager@example.com" in account["permissions"]["users"]
     assert account["attributes"]["industry"] == "Technology"
     assert account["attributes"]["account_name"] == "Acme Corp"
     assert account["attributes"]["owner_email"] == "owner@example.com"
     assert account["attributes"]["object_type"] == "Account"
 
-    # Case: priority/status attributes and role-hierarchy groups for the owner.
+    # Case: priority/status attributes and ancestor-role grants for the owner.
     case = docs["Case:500000000000001"]
     assert case["attributes"]["status"] == "New"
     assert case["attributes"]["priority"] == "High"
     assert case["permissions"]["public"] is False
     assert "owner@example.com" in case["permissions"]["users"]
-    assert role_email("00E000000000002") in case["permissions"]["groups"]
-    assert role_email("00E000000000003") in case["permissions"]["groups"]
+    # Only strict ancestor roles of the owner's role (Support Rep) are granted:
+    # Support Manager. The owner's own role and subordinates are not.
+    assert direct_role_email("00E000000000003") in case["permissions"]["groups"]
+    assert direct_role_email("00E000000000002") not in case["permissions"]["groups"]
     # Manual share to the Execs public group.
     assert group_email("00G000000000002") in case["permissions"]["groups"]
 

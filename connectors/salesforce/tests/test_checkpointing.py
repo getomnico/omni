@@ -39,9 +39,10 @@ async def test_checkpoint_persisted_after_full_sync(
     )
     checkpoint = _as_object(checkpoint_row["checkpoint"])
     assert checkpoint is not None
-    assert checkpoint["version"] == 1
-    assert checkpoint["records_synced"]["Account"] is True
-    assert "Account" in checkpoint["watermarks"]
+    assert checkpoint["version"] == 2
+    assert checkpoint["progress"] is None
+    assert checkpoint["objects"]["Account"]["watermark"] is not None
+    assert checkpoint["objects"]["Account"]["deletion_through"] is not None
 
     # connector_state carries the schema fingerprint for invalidation checks.
     state_row = await harness.db_pool.fetchrow(
@@ -52,11 +53,11 @@ async def test_checkpoint_persisted_after_full_sync(
     assert state["schema_fingerprint"]
 
 
-async def test_mid_sync_checkpoint_is_granular(
+async def test_completed_checkpoint_has_no_run_progress(
     harness, seed, source_id, mock_salesforce_api, cm_client: httpx.AsyncClient
 ) -> None:
-    """A run over many pages persists record_cursors, so a resume can pick
-    up mid-object rather than redoing the object."""
+    """A run over many pages commits per-object coverage but never leaks
+    in-progress run state into the published source checkpoint."""
     mock_salesforce_api.add_people_fixtures()
     # 2500 accounts: a full page (2000) plus a partial page.
     for i in range(2500):
@@ -72,9 +73,11 @@ async def test_mid_sync_checkpoint_is_granular(
     )
     checkpoint = _as_object(checkpoint_row["checkpoint"])
     assert checkpoint is not None
-    cursor = checkpoint["record_cursors"]["Account"]
-    # The final keyset cursor matches the last synced record.
-    assert cursor["last_id"] == "00100000002499"
+    # Published source checkpoints are committed-state-only; run cursors are
+    # discarded on completion so a later fresh run cannot resume an old pass.
+    assert checkpoint["progress"] is None
+    assert checkpoint["objects"]["Account"]["watermark"] is not None
+    assert checkpoint["objects"]["Account"]["deletion_through"] is not None
 
 
 async def test_schema_change_invalidates_watermarks(

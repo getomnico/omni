@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from omni_connector import DocumentPermissions
 
-from salesforce_connector.config import schema_fingerprint
+from salesforce_connector.config import SyncRunMode, schema_fingerprint
 from salesforce_connector.mappers import (
     attributes_for,
     generate_content,
     map_record_to_document,
 )
 from salesforce_connector.models import (
+    AccessLevel,
     AccountRecord,
     CaseRecord,
     ContactRecord,
     GroupMemberRecord,
     GroupRecord,
+    ObjectState,
     OpportunityRecord,
+    PeopleState,
     RecordCursor,
     RoleRecord,
+    RunProgress,
     SalesforceCheckpoint,
+    ShareSnapshot,
     UserRecord,
+    direct_role_email,
     group_email,
     role_email,
 )
@@ -35,6 +43,10 @@ from tests.conftest import _account_payload, _case_payload, _contact_payload
 
 def _parse_account() -> AccountRecord:
     return AccountRecord.from_record(_account_payload())
+
+
+def _dt(value: str) -> datetime:
+    return datetime.fromisoformat(value).astimezone(UTC)
 
 
 class TestRecordParsing:
@@ -192,16 +204,47 @@ class TestPermissions:
         ]
         return build_directory(users, groups, members, roles)
 
-    def test_owner_grants_user_and_hierarchy(self) -> None:
+    def test_owner_grants_user_and_ancestor_roles_only(self) -> None:
         directory = self._directory()
         grants = directory.owner_grants("005000000000001")
         assert grants.users == ("rep@example.com",)
-        # Hierarchy chain: Rep role -> Manager role -> VP role.
+        # Hierarchy grants go to strict ancestor roles only: the owner's own
+        # role (peers) and subordinate roles must never receive access.
         assert grants.groups == (
-            role_email("00E000000000001"),
-            role_email("00E000000000002"),
-            role_email("00E000000000003"),
+            direct_role_email("00E000000000002"),
+            direct_role_email("00E000000000003"),
         )
+        assert direct_role_email("00E000000000001") not in grants.groups
+
+    def test_owner_peer_does_not_receive_hierarchy_access(self) -> None:
+        directory = self._directory()
+        grants = directory.owner_grants("005000000000001")
+        # The owner's own role group must not be granted, so peers never see
+        # this record through the hierarchy.
+        assert direct_role_email("00E000000000001") not in grants.groups
+        assert directory.direct_role_members("00E000000000001") == {"rep@example.com"}
+
+    def test_sibling_branch_does_not_receive_hierarchy_access(self) -> None:
+        directory = self._directory()
+        # Add a sibling role under the VP with its own member.
+        directory.roles_by_id["00E000000000004"] = RoleRecord.from_record(
+            {"Id": "00E000000000004", "Name": "Ops", "ParentRoleId": "00E000000000003"}
+        )
+        directory.users_by_id["005000000000004"] = UserRecord.from_record(
+            {
+                "Id": "005000000000004",
+                "Email": "ops@example.com",
+                "UserRoleId": "00E000000000004",
+                "IsActive": True,
+            }
+        )
+        directory.users_by_role["00E000000000004"] = [directory.users_by_id["005000000000004"]]
+        groups = directory.owner_grants("005000000000001").groups
+        assert direct_role_email("00E000000000004") not in groups
+        # ops is a member of the sibling role only, and the owner's ancestor
+        # chain never reaches the sibling branch.
+        assert directory.direct_role_members("00E000000000004") == {"ops@example.com"}
+        assert "ops@example.com" not in directory.direct_role_members("00E000000000003")
 
     def test_owner_grants_without_hierarchy(self) -> None:
         directory = self._directory()
@@ -230,6 +273,60 @@ class TestPermissions:
             "rep@example.com",
         }
 
+    def test_direct_role_group_excludes_descendants(self) -> None:
+        directory = self._directory()
+        assert directory.direct_role_members("00E000000000002") == {"manager@example.com"}
+
+    def test_salesforce_role_group_resolves_through_related_id(self) -> None:
+        directory = self._directory()
+        directory.groups_by_id["00G000000000009"] = GroupRecord.from_record(
+            {
+                "Id": "00G000000000009",
+                "Name": "Manager and Subordinates",
+                "Type": "RoleAndSubordinates",
+                "RelatedId": "00E000000000002",
+            }
+        )
+        assert directory.group_member_emails("00G000000000009") == {
+            "manager@example.com",
+            "rep@example.com",
+        }
+
+    def test_group_cycle_is_safe(self) -> None:
+        directory = SalesforceDirectory()
+        directory.groups_by_id["00G00000000000A"] = GroupRecord.from_record(
+            {"Id": "00G00000000000A", "Name": "A", "Type": "Public"}
+        )
+        directory.groups_by_id["00G00000000000B"] = GroupRecord.from_record(
+            {"Id": "00G00000000000B", "Name": "B", "Type": "Public"}
+        )
+        directory.group_members_by_id["00G00000000000A"] = [
+            GroupMemberRecord.from_record(
+                {"Id": "m1", "GroupId": "00G00000000000A", "UserOrGroupId": "00G00000000000B"}
+            )
+        ]
+        directory.group_members_by_id["00G00000000000B"] = [
+            GroupMemberRecord.from_record(
+                {"Id": "m2", "GroupId": "00G00000000000B", "UserOrGroupId": "00G00000000000A"}
+            )
+        ]
+        assert directory.group_member_emails("00G00000000000A") == set()
+
+    def test_role_cycle_is_safe(self) -> None:
+        directory = SalesforceDirectory()
+        directory.roles_by_id["00E00000000000A"] = RoleRecord.from_record(
+            {"Id": "00E00000000000A", "Name": "A", "ParentRoleId": "00E00000000000B"}
+        )
+        directory.roles_by_id["00E00000000000B"] = RoleRecord.from_record(
+            {"Id": "00E00000000000B", "Name": "B", "ParentRoleId": "00E00000000000A"}
+        )
+        directory.users_by_id["00500000000000A"] = UserRecord.from_record(
+            {"Id": "00500000000000A", "Email": "a@example.com", "UserRoleId": "00E00000000000A"}
+        )
+        directory.users_by_role["00E00000000000A"] = [directory.users_by_id["00500000000000A"]]
+        assert directory._manager_roles("00E00000000000A") == ["00E00000000000B"]
+        assert directory.role_and_descendants("00E00000000000A") == {"a@example.com"}
+
     def test_share_grants_resolve_users_groups_and_roles(self) -> None:
         directory = self._directory()
         from salesforce_connector.models import ShareRecord
@@ -240,30 +337,33 @@ class TestPermissions:
                     "Id": "s1",
                     "AccountId": "001000000000001",
                     "UserOrGroupId": "005000000000003",
-                    "AccessLevel": "Read",
+                    "AccountAccessLevel": "Read",
                     "RowCause": "Manual",
                 },
                 "AccountId",
+                "AccountAccessLevel",
             ),
             ShareRecord.from_record(
                 {
                     "Id": "s2",
                     "AccountId": "001000000000001",
                     "UserOrGroupId": "00G000000000002",
-                    "AccessLevel": "Edit",
+                    "AccountAccessLevel": "Edit",
                     "RowCause": "Rule",
                 },
                 "AccountId",
+                "AccountAccessLevel",
             ),
             ShareRecord.from_record(
                 {
                     "Id": "s3",
                     "AccountId": "001000000000001",
                     "UserOrGroupId": "00E000000000003",
-                    "AccessLevel": "Read",
+                    "AccountAccessLevel": "Read",
                     "RowCause": "Manual",
                 },
                 "AccountId",
+                "AccountAccessLevel",
             ),
         ]
         grants = directory.share_grants(shares)
@@ -272,7 +372,8 @@ class TestPermissions:
         # Role shares grant the role and everything below it.
         assert role_email("00E000000000003") in grants.groups
 
-    def test_none_access_shares_are_ignored(self) -> None:
+    @pytest.mark.parametrize("access_level", ["None"])
+    def test_explicit_no_access_shares_are_ignored(self, access_level: str) -> None:
         directory = self._directory()
         from salesforce_connector.models import ShareRecord
 
@@ -281,43 +382,113 @@ class TestPermissions:
                 "Id": "s1",
                 "AccountId": "001000000000001",
                 "UserOrGroupId": "005000000000003",
-                "AccessLevel": "None",
+                "AccountAccessLevel": access_level,
                 "RowCause": "Manual",
             },
             "AccountId",
+            "AccountAccessLevel",
         )
         grants = directory.share_grants([share])
         assert grants.users == ()
         assert grants.groups == ()
 
+    @pytest.mark.parametrize("access_level", ["Read", "Edit", "All", "ReadWrite"])
+    def test_any_non_no_access_level_grants(self, access_level: str) -> None:
+        directory = self._directory()
+        from salesforce_connector.models import ShareRecord
+
+        share = ShareRecord.from_record(
+            {
+                "Id": "s1",
+                "AccountId": "001000000000001",
+                "UserOrGroupId": "005000000000003",
+                "AccountAccessLevel": access_level,
+                "RowCause": "Manual",
+            },
+            "AccountId",
+            "AccountAccessLevel",
+        )
+        assert directory.share_grants([share]).users == ("peer@example.com",)
+
+    def test_access_level_none_is_not_a_grant(self) -> None:
+        assert AccessLevel.parse("None") is not None
+        assert AccessLevel.parse("None").grants_access is False
+        assert AccessLevel.parse("Read").grants_access is True
+
 
 class TestCheckpoint:
     def test_round_trip(self) -> None:
         checkpoint = SalesforceCheckpoint(
-            records_synced={"Account": True},
-            record_cursors={
-                "Contact": RecordCursor(
-                    last_id="003000000000001",
-                    last_system_modstamp="2024-01-01T00:00:00+00:00",
+            objects={
+                "Account": ObjectState(
+                    watermark="2024-01-01T00:00:00+00:00",
+                    deletion_through="2024-01-02T00:00:00+00:00",
                 )
             },
-            watermarks={"Account": "2024-01-01T00:00:00+00:00"},
-            deleted_through="2024-01-02T00:00:00+00:00",
+            progress=RunProgress(
+                run_id="run-1",
+                mode=SyncRunMode.INCREMENTAL,
+                window_end="2024-01-03T00:00:00+00:00",
+                started_at="2024-01-03T00:00:00+00:00",
+                current_object="Contact",
+                record_cursor=RecordCursor(
+                    last_id="003000000000001",
+                    last_system_modstamp="2024-01-01T00:00:00+00:00",
+                ),
+                records_completed=("Account",),
+            ),
+            people=PeopleState(
+                user_fingerprints={"005000000000001": "fp"},
+                active_emails=frozenset({"owner@example.com"}),
+                group_emails=frozenset({"g@salesforce.groups"}),
+                memberships={"g@salesforce.groups": ("owner@example.com",)},
+            ),
+            share_snapshot=ShareSnapshot(
+                grants={"AccountShare": {"001000000000001": "fp"}},
+                captured_at="2024-01-03T00:00:00+00:00",
+            ),
         )
         restored = SalesforceCheckpoint.from_mapping(checkpoint.to_json())
-        assert restored.records_synced == {"Account": True}
-        assert restored.watermarks == checkpoint.watermarks
-        assert restored.deleted_through == "2024-01-02T00:00:00+00:00"
-        assert restored.record_cursors["Contact"].last_id == "003000000000001"
+        assert restored.objects["Account"].watermark == "2024-01-01T00:00:00+00:00"
+        assert restored.objects["Account"].deletion_through == "2024-01-02T00:00:00+00:00"
+        assert restored.progress is not None
+        assert restored.progress.run_id == "run-1"
+        assert restored.progress.records_completed == ("Account",)
+        assert restored.progress.record_cursor is not None
+        assert restored.progress.record_cursor.last_id == "003000000000001"
+        assert restored.people is not None
+        assert restored.people.active_emails == frozenset({"owner@example.com"})
+        assert restored.share_snapshot is not None
+        assert restored.share_snapshot.grants["AccountShare"]["001000000000001"] == "fp"
 
-    def test_version_mismatch_returns_fresh(self) -> None:
+    def test_legacy_version_is_discarded(self) -> None:
         restored = SalesforceCheckpoint.from_mapping(
-            {"version": 999, "watermarks": {"Account": "x"}}
+            {"version": 1, "watermarks": {"Account": "x"}}
         )
-        assert restored.watermarks == {}
+        assert restored.objects == {}
+        assert restored.progress is None
+
+    def test_without_progress_strips_run_state(self) -> None:
+        checkpoint = SalesforceCheckpoint(
+            objects={"Account": ObjectState(watermark="2024-01-01T00:00:00+00:00")},
+            progress=RunProgress(
+                run_id="run-1",
+                mode=SyncRunMode.FULL,
+                window_end="2024-01-03T00:00:00+00:00",
+                started_at="2024-01-03T00:00:00+00:00",
+            ),
+        )
+        stripped = checkpoint.without_progress()
+        assert stripped.progress is None
+        assert stripped.objects["Account"].watermark == "2024-01-01T00:00:00+00:00"
 
     def test_from_none(self) -> None:
-        assert SalesforceCheckpoint.from_mapping(None).version == 1
+        assert SalesforceCheckpoint.from_mapping(None).version == 2
+
+    def test_delta_cursor_requires_both_components(self) -> None:
+        assert RecordCursor(last_id="a").is_delta_ready is False
+        assert RecordCursor(last_system_modstamp="t").is_delta_ready is False
+        assert RecordCursor(last_id="a", last_system_modstamp="t").is_delta_ready is True
 
 
 class TestSoqlBuilders:
@@ -333,9 +504,16 @@ class TestSoqlBuilders:
         )
         assert "WHERE Id > '001000000000005'" in soql
 
-    def test_delta_scan(self) -> None:
-        soql = delta_scan_soql("Account", ("Id", "Name"), None, "2024-01-01T00:00:00+00:00")
-        assert "SystemModstamp >= 2024-01-01T00:00:00+00:00" in soql
+    def test_delta_scan_is_bounded(self) -> None:
+        soql = delta_scan_soql(
+            "Account",
+            ("Id", "Name"),
+            None,
+            _dt("2024-01-01T00:00:00+00:00"),
+            _dt("2024-01-02T00:00:00+00:00"),
+        )
+        assert "SystemModstamp >= 2024-01-01T00:00:00Z" in soql
+        assert "SystemModstamp <= 2024-01-02T00:00:00Z" in soql
         assert "ORDER BY SystemModstamp ASC, Id ASC" in soql
 
     def test_delta_scan_resume(self) -> None:
@@ -344,12 +522,24 @@ class TestSoqlBuilders:
             ("Id", "Name"),
             RecordCursor(
                 last_id="001000000000005",
-                last_system_modstamp="2024-01-01T00:00:00+00:00",
+                last_system_modstamp="2024-01-01T00:00:00Z",
             ),
-            "2024-01-01T00:00:00+00:00",
+            _dt("2024-01-01T00:00:00+00:00"),
+            _dt("2024-01-02T00:00:00+00:00"),
         )
-        assert "(SystemModstamp > 2024-01-01T00:00:00+00:00" in soql
+        assert "(SystemModstamp > 2024-01-01T00:00:00Z" in soql
         assert "Id > '001000000000005'" in soql
+
+    def test_partial_delta_cursor_restarts_window(self) -> None:
+        soql = delta_scan_soql(
+            "Account",
+            ("Id", "Name"),
+            RecordCursor(last_system_modstamp="2024-01-01T00:00:00Z"),
+            _dt("2024-01-01T00:00:00+00:00"),
+            _dt("2024-01-02T00:00:00+00:00"),
+        )
+        assert "(SystemModstamp >" not in soql
+        assert "SystemModstamp >= 2024-01-01T00:00:00Z" in soql
 
 
 class TestSchemaFingerprint:

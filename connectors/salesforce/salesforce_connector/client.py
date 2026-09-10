@@ -155,6 +155,10 @@ def _as_int(value: object, field: str) -> int:
         raise SalesforceClientError(
             f"malformed API response: {field} expected number, got {type(value).__name__}"
         )
+    if isinstance(value, float) and not value.is_integer():
+        raise SalesforceClientError(
+            f"malformed API response: {field} expected an integer, got {value!r}"
+        )
     return int(value)
 
 
@@ -265,9 +269,19 @@ class ObjectDescribe:
     Describe honors the principal's licenses and field-level security, so an
     org with a disabled feature (e.g. role hierarchy) omits its fields here.
     Selecting such a field anyway fails the whole query with INVALID_FIELD.
+    ``relationships`` holds relationship names (e.g. ``Account`` for a
+    traversable ``Account.Name``) so relationship traversal is validated
+    independently of the base field.
     """
 
     fields: frozenset[str]
+    relationships: frozenset[str]
+
+    def can_select(self, field: str) -> bool:
+        if "." in field:
+            relationship, _, child = field.partition(".")
+            return relationship in self.relationships and bool(child)
+        return field in self.fields
 
     @classmethod
     def from_response(cls, raw: Mapping[str, object]) -> ObjectDescribe:
@@ -278,6 +292,7 @@ class ObjectDescribe:
                 f"got {type(fields_value).__name__}"
             )
         fields: set[str] = set()
+        relationships: set[str] = set()
         for item in fields_value:
             if not isinstance(item, Mapping):
                 raise SalesforceClientError(
@@ -290,7 +305,10 @@ class ObjectDescribe:
                     "malformed object describe response: fields entry missing name"
                 )
             fields.add(name)
-        return cls(fields=frozenset(fields))
+            relationship_name = item.get("relationshipName")
+            if isinstance(relationship_name, str) and relationship_name:
+                relationships.add(relationship_name)
+        return cls(fields=frozenset(fields), relationships=frozenset(relationships))
 
 
 @dataclass(frozen=True)
@@ -367,7 +385,7 @@ class SalesforceClient:
         self._token: str | None = None
         self._token_instance_url: str | None = None
         self._token_expires_at: float = 0.0
-        self._field_cache: dict[str, frozenset[str]] = {}
+        self._describe_cache: dict[str, ObjectDescribe] = {}
 
     @property
     def instance_url(self) -> str:
@@ -383,6 +401,7 @@ class SalesforceClient:
             # Token approaching expiry: drop it and mint a fresh one.
             self._sf = None
             self._token = None
+            self._describe_cache.clear()
 
         token, instance_url = await self._session_credentials()
 
@@ -423,6 +442,9 @@ class SalesforceClient:
         self._sf = None
         self._token = None
         self._token_expires_at = 0.0
+        # The refreshed principal can have a different field-level security
+        # profile, so describe results must be re-fetched.
+        self._describe_cache.clear()
         await asyncio.to_thread(self._fetch_jwt_token)
         return True
 
@@ -516,16 +538,16 @@ class SalesforceClient:
         ).object_types
 
     @with_retry(max_retries=3)
-    async def available_fields(self, object_type: str) -> frozenset[str]:
-        """Return fields on one object the principal can actually query."""
-        cached = self._field_cache.get(object_type)
+    async def describe_object(self, object_type: str) -> ObjectDescribe:
+        """Return fields and relationships the principal can actually query."""
+        cached = self._describe_cache.get(object_type)
         if cached is not None:
             return cached
         sf = await self._ensure_session()
         raw = await asyncio.to_thread(sf.restful, f"sobjects/{object_type}/describe")
-        fields = ObjectDescribe.from_response(_require_mapping(raw, "object describe")).fields
-        self._field_cache[object_type] = fields
-        return fields
+        describe = ObjectDescribe.from_response(_require_mapping(raw, "object describe"))
+        self._describe_cache[object_type] = describe
+        return describe
 
     @with_retry(max_retries=3)
     async def query_more(self, next_records_url: str) -> QueryResult:
@@ -635,7 +657,7 @@ async def fetch_organization_id(
     client = SalesforceClient(auth)
     token, _instance_url = await client.session_credentials()
 
-    def _fetch() -> object:
+    def _fetch() -> Mapping[str, object]:
         response = requests.get(
             f"{auth.login_url.rstrip('/')}/services/oauth2/userinfo",
             headers={"Authorization": f"Bearer {token}"},

@@ -12,8 +12,11 @@ logging.basicConfig(
 )
 
 if __name__ == "__main__":
-    port = os.environ.get("PORT")
-    if not port:
+    port_value = os.environ.get("PORT")
+    if not port_value:
         raise SystemExit("PORT environment variable is required")
-    port = int(port)
+    try:
+        port = int(port_value)
+    except ValueError as exc:
+        raise SystemExit("PORT environment variable must be an integer") from exc
     SalesforceConnector().serve(port=port)

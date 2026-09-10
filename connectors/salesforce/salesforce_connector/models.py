@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 
-from .config import REALTIME_POLL_SECONDS
+from .config import REALTIME_POLL_SECONDS, SyncRunMode, validate_object_names
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 # Group emails are synthesized from Salesforce group/role ids because Salesforce
 # groups have no email address of their own. The suffix is opaque; Omni matches
 # these exact strings.
 GROUP_EMAIL_SUFFIX = "@salesforce.groups"
 ROLE_EMAIL_SUFFIX = "@salesforce.roles"
+# Salesforce grants hierarchy access to ancestor roles. Those grants must not
+# include other users in the same role (peers) or subordinates, so they use a
+# distinct synthetic group that only ever holds a role's direct members.
+DIRECT_ROLE_EMAIL_SUFFIX = "@salesforce.role_direct"
 
 
 def _as_str(value: object) -> str | None:
@@ -76,6 +82,10 @@ def group_email(group_id: str) -> str:
 
 def role_email(role_id: str) -> str:
     return f"{role_id}{ROLE_EMAIL_SUFFIX}"
+
+
+def direct_role_email(role_id: str) -> str:
+    return f"{role_id}{DIRECT_ROLE_EMAIL_SUFFIX}"
 
 
 @dataclass(frozen=True)
@@ -335,18 +345,50 @@ class UserRecord:
         )
 
 
+class GroupType(StrEnum):
+    """Salesforce Group.Type values used for share resolution."""
+
+    PUBLIC = "Public"
+    QUEUE = "Queue"
+    REGULAR = "Regular"
+    ROLE = "Role"
+    ROLE_AND_SUBORDINATES = "RoleAndSubordinates"
+    ROLE_AND_SUBORDINATES_INTERNAL = "RoleAndSubordinatesInternal"
+
+    @classmethod
+    def parse(cls, value: object) -> GroupType | None:
+        parsed = _as_str(value)
+        if parsed is None:
+            return None
+        try:
+            return cls(parsed)
+        except ValueError:
+            return None
+
+    @property
+    def is_role_group(self) -> bool:
+        return self in {
+            GroupType.ROLE,
+            GroupType.ROLE_AND_SUBORDINATES,
+            GroupType.ROLE_AND_SUBORDINATES_INTERNAL,
+        }
+
+
 @dataclass(frozen=True)
 class GroupRecord:
     id: str
     name: str | None
-    type: str | None
+    type: GroupType | None
+    # Salesforce-generated 00G role groups point at their role via RelatedId.
+    related_id: str | None
 
     @classmethod
     def from_record(cls, raw: Mapping[str, object]) -> GroupRecord:
         return cls(
             id=_as_required_str(raw.get("Id"), "Id"),
             name=_as_str(raw.get("Name")),
-            type=_as_str(raw.get("Type")),
+            type=GroupType.parse(raw.get("Type")),
+            related_id=_as_str(raw.get("RelatedId")),
         )
 
 
@@ -381,21 +423,56 @@ class RoleRecord:
 
 
 @dataclass(frozen=True)
+class AccessLevel:
+    """A validated Salesforce share access level.
+
+    Only the explicit no-access value is treated as a non-grant; every other
+    value (including future read-capable levels) grants access so a provider
+    addition cannot silently hide a document from an authorized user.
+    """
+
+    value: str
+
+    @classmethod
+    def parse(cls, value: object) -> AccessLevel | None:
+        parsed = _as_str(value)
+        return cls(parsed) if parsed is not None else None
+
+    @property
+    def grants_access(self) -> bool:
+        return self.value.strip().lower() != "none"
+
+
+@dataclass(frozen=True)
+class RowCause:
+    """A validated Salesforce share RowCause value."""
+
+    value: str
+
+    @classmethod
+    def parse(cls, value: object) -> RowCause | None:
+        parsed = _as_str(value)
+        return cls(parsed) if parsed is not None else None
+
+
+@dataclass(frozen=True)
 class ShareRecord:
     id: str
     parent_id: str
     user_or_group_id: str
-    access_level: str | None
-    row_cause: str | None
+    access_level: AccessLevel | None
+    row_cause: RowCause | None
 
     @classmethod
-    def from_record(cls, raw: Mapping[str, object], parent_field: str) -> ShareRecord:
+    def from_record(
+        cls, raw: Mapping[str, object], parent_field: str, access_level_field: str
+    ) -> ShareRecord:
         return cls(
             id=_as_required_str(raw.get("Id"), "Id"),
             parent_id=_as_required_str(raw.get(parent_field), parent_field),
             user_or_group_id=_as_required_str(raw.get("UserOrGroupId"), "UserOrGroupId"),
-            access_level=_as_str(raw.get("AccessLevel")),
-            row_cause=_as_str(raw.get("RowCause")),
+            access_level=AccessLevel.parse(raw.get(access_level_field)),
+            row_cause=RowCause.parse(raw.get("RowCause")),
         )
 
 
@@ -486,6 +563,8 @@ class SalesforceSourceConfig:
         instance_url = _as_str(raw.get("instance_url"))
         enabled = _string_set(raw.get("enabled_objects"))
         public_read = _string_set(raw.get("public_read_objects"))
+        validate_object_names(enabled, "enabled_objects")
+        validate_object_names(public_read, "public_read_objects")
         return cls(
             instance_url=instance_url,
             enabled_objects=frozenset(enabled),
@@ -496,6 +575,19 @@ class SalesforceSourceConfig:
             sync_shares=_bool_or(raw, "sync_shares", True),
             realtime_poll_seconds=_int_or(raw, "realtime_poll_seconds", REALTIME_POLL_SECONDS),
         )
+
+    def validate(self) -> None:
+        """Reject settings that cannot be resolved without user data."""
+        if not self.sync_users and (self.sync_groups or self.sync_shares):
+            raise ValueError(
+                "sync_groups/sync_shares require sync_users: without user data "
+                "group and share memberships cannot be resolved"
+            )
+        if not self.sync_users and self.grant_access_using_hierarchies:
+            raise ValueError(
+                "grant_access_using_hierarchies requires sync_users: owner roles "
+                "cannot be resolved without user data"
+            )
 
 
 def _string_set(value: object) -> frozenset[str]:
@@ -546,14 +638,23 @@ def _as_int(value: object) -> int | None:
 
 @dataclass(frozen=True)
 class RecordCursor:
-    """Keyset cursor for a partially-synced object scan."""
+    """Keyset cursor for a partially-synced object scan.
+
+    A delta scan cursor must carry both keyset components. A cursor with only
+    one of them cannot prove where the scan stopped, so it is rejected and the
+    scan restarts from the committed boundary rather than skipping records.
+    """
 
     last_id: str | None = None
     last_system_modstamp: str | None = None
 
+    @property
+    def is_delta_ready(self) -> bool:
+        return self.last_id is not None and self.last_system_modstamp is not None
+
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, object] | None) -> RecordCursor | None:
-        if raw is None:
+    def from_mapping(cls, raw: object) -> RecordCursor | None:
+        if not isinstance(raw, Mapping):
             return None
         return cls(
             last_id=_as_str(raw.get("last_id")),
@@ -570,21 +671,178 @@ class RecordCursor:
 
 
 @dataclass(frozen=True)
-class SalesforceCheckpoint:
-    """Resume cursor persisted between sync runs.
+class ObjectState:
+    """Committed per-object coverage that survives across runs.
 
-    ``record_cursors`` hold keyset positions for partially-scanned objects;
-    ``watermarks`` are the incremental cursors (max SystemModstamp per object);
-    ``deleted_through`` is the end of the last getDeleted window. People and
-    shares are re-queried on every run (they are small), so they carry no
-    resume state.
+    ``watermark`` is the last fully covered record boundary (used as the delta
+    scan start); ``deletion_through`` is the last fully covered deletion
+    boundary for this object.
+    """
+
+    watermark: str | None = None
+    deletion_through: str | None = None
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> ObjectState:
+        if not isinstance(raw, Mapping):
+            return cls()
+        return cls(
+            watermark=_as_str(raw.get("watermark")),
+            deletion_through=_as_str(raw.get("deletion_through")),
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {"watermark": self.watermark, "deletion_through": self.deletion_through}
+
+
+@dataclass(frozen=True)
+class PeopleState:
+    """Committed people/group reconciliation state.
+
+    Without this state a restart cannot tell which groups disappeared, so
+    stale memberships would keep granting access indefinitely.
+    """
+
+    user_fingerprints: dict[str, str] = field(default_factory=dict)
+    active_emails: frozenset[str] = field(default_factory=frozenset)
+    group_emails: frozenset[str] = field(default_factory=frozenset)
+    memberships: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> PeopleState | None:
+        if not isinstance(raw, Mapping):
+            return None
+        return cls(
+            user_fingerprints=_string_map(raw.get("user_fingerprints")),
+            active_emails=frozenset(_string_list(raw.get("active_emails"))),
+            group_emails=frozenset(_string_list(raw.get("group_emails"))),
+            memberships=_string_tuple_map(raw.get("memberships")),
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "user_fingerprints": self.user_fingerprints,
+            "active_emails": sorted(self.active_emails),
+            "group_emails": sorted(self.group_emails),
+            "memberships": {key: list(value) for key, value in self.memberships.items()},
+        }
+
+
+@dataclass(frozen=True)
+class ShareSnapshot:
+    """Committed share-grant fingerprints keyed by share object and parent id.
+
+    Used to detect share additions, changes, and revocations across runs
+    without relying on parent ``SystemModstamp``. When the snapshot exceeds the
+    configured bound it is dropped and the connector falls back to periodic
+    full permission reconciliation instead of persisting unbounded state.
+    """
+
+    grants: dict[str, dict[str, str]] = field(default_factory=dict)
+    captured_at: str | None = None
+    oversized: bool = False
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> ShareSnapshot | None:
+        if not isinstance(raw, Mapping):
+            return None
+        grants_value = raw.get("grants")
+        grants: dict[str, dict[str, str]] = {}
+        if isinstance(grants_value, Mapping):
+            for object_name, parents in grants_value.items():
+                if isinstance(object_name, str) and isinstance(parents, Mapping):
+                    grants[object_name] = {
+                        key: value
+                        for key, value in _string_map(parents).items()
+                    }
+        return cls(
+            grants=grants,
+            captured_at=_as_str(raw.get("captured_at")),
+            oversized=_bool_or(raw, "oversized", False),
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "grants": self.grants,
+            "captured_at": self.captured_at,
+            "oversized": self.oversized,
+        }
+
+
+@dataclass(frozen=True)
+class RunProgress:
+    """Run-scoped in-progress pass state.
+
+    Identified by ``run_id`` so a checkpoint written by another run can never
+    be mistaken for this run's progress. Never published to the source: only
+    ``complete()`` promotes a checkpoint, and completion clears progress.
+    """
+
+    run_id: str
+    mode: SyncRunMode
+    window_end: str
+    started_at: str
+    current_object: str | None = None
+    record_cursor: RecordCursor | None = None
+    records_completed: tuple[str, ...] = ()
+    deletions_completed: tuple[str, ...] = ()
+    full_reconciliation: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, raw: object) -> RunProgress | None:
+        if not isinstance(raw, Mapping):
+            return None
+        run_id = _as_str(raw.get("run_id"))
+        window_end = _as_str(raw.get("window_end"))
+        started_at = _as_str(raw.get("started_at"))
+        mode_value = _as_str(raw.get("mode"))
+        if run_id is None or window_end is None or started_at is None or mode_value is None:
+            return None
+        try:
+            mode = SyncRunMode(mode_value)
+        except ValueError:
+            return None
+        return cls(
+            run_id=run_id,
+            mode=mode,
+            window_end=window_end,
+            started_at=started_at,
+            current_object=_as_str(raw.get("current_object")),
+            record_cursor=RecordCursor.from_mapping(raw.get("record_cursor")),
+            records_completed=_string_tuple(raw.get("records_completed")),
+            deletions_completed=_string_tuple(raw.get("deletions_completed")),
+            full_reconciliation=_string_tuple(raw.get("full_reconciliation")),
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "mode": self.mode.value,
+            "window_end": self.window_end,
+            "started_at": self.started_at,
+            "current_object": self.current_object,
+            "record_cursor": self.record_cursor.to_json() if self.record_cursor else None,
+            "records_completed": list(self.records_completed),
+            "deletions_completed": list(self.deletions_completed),
+            "full_reconciliation": list(self.full_reconciliation),
+        }
+
+
+@dataclass(frozen=True)
+class SalesforceCheckpoint:
+    """Checkpoint passed between runs.
+
+    ``objects`` is committed coverage; ``progress`` is run-scoped in-progress
+    state; ``people`` and ``share_snapshot`` are committed reconciliation
+    state. A source checkpoint is only ever promoted from a completed run, so
+    it always has ``progress=None``.
     """
 
     version: int = CHECKPOINT_VERSION
-    records_synced: dict[str, bool] = field(default_factory=dict)
-    record_cursors: dict[str, RecordCursor] = field(default_factory=dict)
-    watermarks: dict[str, str] = field(default_factory=dict)
-    deleted_through: str | None = None
+    objects: dict[str, ObjectState] = field(default_factory=dict)
+    progress: RunProgress | None = None
+    people: PeopleState | None = None
+    share_snapshot: ShareSnapshot | None = None
     synced_at: str | None = None
 
     @classmethod
@@ -594,46 +852,38 @@ class SalesforceCheckpoint:
         version = _as_int(raw.get("version"))
         if version != CHECKPOINT_VERSION:
             return cls()
-        record_cursors: dict[str, RecordCursor] = {}
-        raw_cursors = raw.get("record_cursors")
-        if isinstance(raw_cursors, Mapping):
-            for key, value in raw_cursors.items():
+        objects: dict[str, ObjectState] = {}
+        raw_objects = raw.get("objects")
+        if isinstance(raw_objects, Mapping):
+            for key, value in raw_objects.items():
                 if isinstance(key, str) and isinstance(value, Mapping):
-                    cursor = RecordCursor.from_mapping(value)
-                    if cursor is not None:
-                        record_cursors[key] = cursor
+                    objects[key] = ObjectState.from_mapping(value)
         return cls(
             version=version,
-            records_synced=_string_bool_map(raw.get("records_synced")),
-            record_cursors=record_cursors,
-            watermarks=_string_map(raw.get("watermarks")),
-            deleted_through=_as_str(raw.get("deleted_through")),
+            objects=objects,
+            progress=RunProgress.from_mapping(raw.get("progress")),
+            people=PeopleState.from_mapping(raw.get("people")),
+            share_snapshot=ShareSnapshot.from_mapping(raw.get("share_snapshot")),
             synced_at=_as_str(raw.get("synced_at")),
         )
+
+    def without_progress(self) -> SalesforceCheckpoint:
+        return replace(self, progress=None)
+
+    def state_for(self, object_name: str) -> ObjectState:
+        return self.objects.get(object_name, ObjectState())
 
     def to_json(self) -> dict[str, object]:
         return {
             "version": self.version,
-            "records_synced": self.records_synced,
-            "record_cursors": {
-                key: cursor.to_json() for key, cursor in self.record_cursors.items()
-            },
-            "watermarks": self.watermarks,
-            "deleted_through": self.deleted_through,
+            "objects": {key: value.to_json() for key, value in self.objects.items()},
+            "progress": self.progress.to_json() if self.progress is not None else None,
+            "people": self.people.to_json() if self.people is not None else None,
+            "share_snapshot": (
+                self.share_snapshot.to_json() if self.share_snapshot is not None else None
+            ),
             "synced_at": self.synced_at,
         }
-
-
-def _string_bool_map(value: object) -> dict[str, bool]:
-    if not isinstance(value, Mapping):
-        return {}
-    result: dict[str, bool] = {}
-    for key, item in value.items():
-        if isinstance(key, str):
-            parsed = _as_bool(item)
-            if parsed is not None:
-                result[key] = parsed
-    return result
 
 
 def _string_map(value: object) -> dict[str, str]:
@@ -648,11 +898,48 @@ def _string_map(value: object) -> dict[str, str]:
     return result
 
 
-class SyncPhase(StrEnum):
-    """Overall progress phase of a sync run."""
+def _string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        parsed = _as_str(item)
+        if parsed is not None:
+            result.append(parsed)
+    return result
 
-    PEOPLE = "people"
-    SHARES = "shares"
-    RECORDS = "records"
-    DELETES = "deletes"
-    COMPLETE = "complete"
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    return tuple(_string_list(value))
+
+
+def _string_tuple_map(value: object) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, tuple[str, ...]] = {}
+    for key, item in value.items():
+        if isinstance(key, str):
+            result[key] = _string_tuple(item)
+    return result
+
+
+def person_fingerprint(user: UserRecord) -> str:
+    """Stable fingerprint of the fields that drive person/group decisions.
+
+    ``SystemModstamp`` alone cannot detect profile edits when the field is
+    hidden or unreliable, so compare the canonical field set instead.
+    """
+
+    payload = {
+        "name": user.name,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "email": user.email,
+        "title": user.title,
+        "department": user.department,
+        "manager_id": user.manager_id,
+        "user_role_id": user.user_role_id,
+        "is_active": user.is_active,
+        "employee_number": user.employee_number,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()

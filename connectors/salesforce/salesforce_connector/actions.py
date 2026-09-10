@@ -299,7 +299,12 @@ def _client_from_credentials(
 
 def _summary(object_type: str, raw: Mapping[str, object]) -> dict[str, str]:
     """Small stable summary of a record for action results."""
-    summary: dict[str, str] = {"id": str(raw.get("Id", ""))}
+    record_id = raw.get("Id")
+    if not isinstance(record_id, str) or not record_id:
+        raise SalesforceClientError(
+            f"malformed query response for {object_type}: record missing Id"
+        )
+    summary: dict[str, str] = {"id": record_id}
     for key, field_name in (
         ("name", "Name"),
         ("subject", "Subject"),

@@ -92,7 +92,7 @@ def test_mcp_login_url_accepts_salesforce_domains() -> None:
     )
 
 
-def test_mcp_env_isolates_source_and_user_without_logging_or_argument_tokens() -> None:
+def test_mcp_env_isolates_source_and_user() -> None:
     env = SalesforceConnector().prepare_mcp_env(
         {
             "source_id": "source-1",
@@ -111,14 +111,78 @@ def test_mcp_env_isolates_source_and_user_without_logging_or_argument_tokens() -
     assert env["SF_LOGIN_URL"] == "https://test.salesforce.com"
 
 
-def test_mcp_tool_directory_uses_connector_workspace_for_unmounted_paths() -> None:
+@pytest.fixture
+def mcp_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("OMNI_SALESFORCE_MCP_WORKSPACE", str(workspace))
+    return str(workspace)
+
+
+def test_mcp_tool_directory_confines_unmounted_paths_to_workspace(
+    mcp_workspace: str,
+) -> None:
     connector = SalesforceConnector()
     arguments = connector.prepare_mcp_tool_arguments(
         "run_soql_query", {"directory": "/scratch/not-mounted", "query": "SELECT Id"}
     )
 
-    assert arguments["directory"] == os.getcwd()
+    assert arguments["directory"] == os.path.realpath(mcp_workspace)
     assert arguments["query"] == "SELECT Id"
+
+
+def test_mcp_tool_directory_preserves_workspace_subdirectories(
+    mcp_workspace: str,
+) -> None:
+    connector = SalesforceConnector()
+    arguments = connector.prepare_mcp_tool_arguments(
+        "run_soql_query", {"directory": "exports/today"}
+    )
+    workspace = os.path.realpath(mcp_workspace)
+    assert arguments["directory"] == os.path.join(workspace, "exports", "today")
+
+
+def test_mcp_tool_directory_rejects_traversal(mcp_workspace: str) -> None:
+    connector = SalesforceConnector()
+    arguments = connector.prepare_mcp_tool_arguments(
+        "run_soql_query", {"directory": "../../etc/passwd"}
+    )
+    assert arguments["directory"] == os.path.realpath(mcp_workspace)
+
+
+def test_mcp_tool_directory_rejects_symlink_escape(mcp_workspace: str, tmp_path) -> None:
+    workspace = os.path.realpath(mcp_workspace)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = os.path.join(workspace, "escape")
+    os.symlink(str(outside), link)
+    arguments = SalesforceConnector().prepare_mcp_tool_arguments(
+        "run_soql_query", {"directory": "escape"}
+    )
+    assert arguments["directory"] == workspace
+    assert arguments["directory"] != str(outside)
+
+
+def test_mcp_action_classification_defaults_to_write() -> None:
+    from omni_connector import ActionDefinition
+
+    connector = SalesforceConnector()
+    read = connector._classify_mcp_action(
+        ActionDefinition(name="get_account", description="", mode="read", origin="mcp")
+    )
+    write = connector._classify_mcp_action(
+        ActionDefinition(name="create_account", description="", mode="read", origin="mcp")
+    )
+    unknown = connector._classify_mcp_action(
+        ActionDefinition(name="do_thing", description="", mode="read", origin="mcp")
+    )
+    native = connector._classify_mcp_action(
+        ActionDefinition(name="create_case", description="", mode="read", origin="native")
+    )
+    assert read.mode == "read"
+    assert write.mode == "write"
+    assert unknown.mode == "write"
+    assert native.mode == "read"
 
 
 def test_mcp_tool_directory_rejects_malformed_values() -> None:

@@ -6,6 +6,7 @@ Function-scoped: seed helper, source_id, httpx client.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import socket
@@ -20,6 +21,7 @@ import httpx
 import pytest
 import pytest_asyncio
 import uvicorn
+from omni_connector import SyncContext, SyncMode
 from omni_connector.testing import OmniTestHarness, SeedHelper
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -29,12 +31,138 @@ from starlette.routing import Route
 logger = logging.getLogger(__name__)
 
 
+def _event_type(event: Any) -> str:
+    value = event.type
+    return value.value if hasattr(value, "value") else str(value)
+
+
 def _now_modstamp() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000+0000")
 
 
 def _parse_ts(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+async def set_source_config(harness: Any, source_id: str, config: Mapping[str, object]) -> None:
+    """Replace a source's config (used to exercise visibility settings)."""
+    await harness.db_pool.execute(
+        "UPDATE sources SET config = $2::jsonb WHERE id = $1::char(26)",
+        source_id,
+        json.dumps(config),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Connector-level sync harness (no manager required)
+# ---------------------------------------------------------------------------
+
+
+class FakeSdkClient:
+    """In-memory stand-in for the SDK client used by SyncContext."""
+
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+        self.checkpoints: list[dict[str, Any]] = []
+        self.connector_states: list[dict[str, Any]] = []
+        self.heartbeats = 0
+        self.completed = 0
+        self.failures: list[str] = []
+        self.scanned_increments = 0
+        self._content = 0
+
+    async def emit_event_batch(
+        self, sync_run_id: str, source_id: str, events: list[Any]
+    ) -> None:
+        self.events.extend(events)
+
+    async def store_content(
+        self, sync_run_id: str, content: str, content_type: str = "text/plain"
+    ) -> str:
+        self._content += 1
+        return f"content-{self._content}"
+
+    async def update_checkpoint(
+        self, sync_run_id: str, checkpoint: dict[str, Any]
+    ) -> None:
+        self.checkpoints.append(checkpoint)
+
+    async def update_connector_state(
+        self, source_id: str, connector_state: dict[str, Any]
+    ) -> None:
+        self.connector_states.append(connector_state)
+
+    async def heartbeat(self, sync_run_id: str) -> None:
+        self.heartbeats += 1
+
+    async def increment_scanned(self, sync_run_id: str) -> None:
+        self.scanned_increments += 1
+
+    async def complete(
+        self,
+        sync_run_id: str,
+        documents_scanned: int,
+        documents_emitted: int,
+        error: str | None,
+    ) -> None:
+        self.completed += 1
+
+    async def fail(self, sync_run_id: str, error: str) -> None:
+        self.failures.append(error)
+
+    @property
+    def documents(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for event in self.events:
+            if _event_type(event) == "document_created":
+                result[event.document_id] = event
+        return result
+
+    @property
+    def deleted_ids(self) -> list[str]:
+        return [
+            event.document_id
+            for event in self.events
+            if _event_type(event) == "document_deleted"
+        ]
+
+    @property
+    def updated_ids(self) -> list[str]:
+        return [
+            event.document_id
+            for event in self.events
+            if _event_type(event) == "document_updated"
+        ]
+
+
+def salesforce_config(
+    mock_server: str, **overrides: object
+) -> dict[str, object]:
+    config: dict[str, object] = {"instance_url": mock_server}
+    config.update(overrides)
+    return config
+
+
+def make_sync_context(
+    fake: FakeSdkClient,
+    checkpoint: dict[str, Any] | None,
+    *,
+    sync_mode: SyncMode = SyncMode.FULL,
+    is_resume: bool = False,
+    sync_run_id: str = "run-1",
+    connector_state: dict[str, Any] | None = None,
+    source_id: str = "src-1",
+) -> SyncContext:
+    return SyncContext(
+        sdk_client=fake,  # type: ignore[arg-type]
+        sync_run_id=sync_run_id,
+        source_id=source_id,
+        source_type="salesforce",
+        checkpoint=checkpoint,
+        connector_state=connector_state,
+        sync_mode=sync_mode,
+        is_resume=is_resume,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,11 +382,12 @@ def _group_payload(
     group_id: str = "00G000000000001",
     name: str = "Support Queue",
     group_type: str = "Queue",
+    related_id: str | None = None,
 ) -> dict[str, object]:
     return _record_payload(
         "Group",
         group_id,
-        {"Name": name, "Type": group_type},
+        {"Name": name, "Type": group_type, "RelatedId": related_id},
     )
 
 
@@ -286,6 +415,23 @@ def _role_payload(
     )
 
 
+SHARE_ACCESS_LEVEL_FIELDS: dict[str, str] = {
+    "AccountShare": "AccountAccessLevel",
+    "ContactShare": "ContactAccessLevel",
+    "OpportunityShare": "OpportunityAccessLevel",
+    "LeadShare": "LeadAccessLevel",
+    "CaseShare": "CaseAccessLevel",
+}
+
+SHARE_PARENT_FIELDS: dict[str, str] = {
+    "AccountShare": "AccountId",
+    "ContactShare": "ContactId",
+    "OpportunityShare": "OpportunityId",
+    "LeadShare": "LeadId",
+    "CaseShare": "CaseId",
+}
+
+
 def _share_payload(
     object_type: str,
     share_id: str,
@@ -301,7 +447,7 @@ def _share_payload(
         {
             parent_field: parent_id,
             "UserOrGroupId": user_or_group_id,
-            "AccessLevel": access_level,
+            SHARE_ACCESS_LEVEL_FIELDS[object_type]: access_level,
             "RowCause": row_cause,
         },
     )
@@ -327,10 +473,121 @@ DEFAULT_OBJECT_FIELDS: dict[str, set[str]] = {
         "EmployeeNumber",
         "SystemModstamp",
     },
-    "Group": {"Id", "Name", "Type"},
+    "Group": {"Id", "Name", "Type", "RelatedId"},
     "GroupMember": {"Id", "GroupId", "UserOrGroupId"},
     "UserRole": {"Id", "Name", "ParentRoleId"},
+    # Standard record objects expose their configured fields even before any
+    # record is seeded, matching a real org describe response.
+    "Account": {
+        "Id",
+        "Name",
+        "Industry",
+        "Phone",
+        "Website",
+        "BillingCity",
+        "BillingState",
+        "BillingCountry",
+        "NumberOfEmployees",
+        "AnnualRevenue",
+        "Description",
+        "Type",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Contact": {
+        "Id",
+        "Name",
+        "FirstName",
+        "LastName",
+        "Email",
+        "Phone",
+        "Title",
+        "Department",
+        "AccountId",
+        "Account",
+        "MailingCity",
+        "MailingState",
+        "MailingCountry",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Opportunity": {
+        "Id",
+        "Name",
+        "Amount",
+        "StageName",
+        "CloseDate",
+        "Probability",
+        "Type",
+        "LeadSource",
+        "Description",
+        "AccountId",
+        "Account",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Lead": {
+        "Id",
+        "Name",
+        "FirstName",
+        "LastName",
+        "Email",
+        "Phone",
+        "Company",
+        "Title",
+        "Industry",
+        "Status",
+        "LeadSource",
+        "Description",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Case": {
+        "Id",
+        "CaseNumber",
+        "Subject",
+        "Description",
+        "Status",
+        "Priority",
+        "Type",
+        "Origin",
+        "ContactId",
+        "AccountId",
+        "Account",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
+    "Task": {
+        "Id",
+        "Subject",
+        "Description",
+        "Status",
+        "Priority",
+        "ActivityDate",
+        "WhoId",
+        "WhatId",
+        "OwnerId",
+        "CreatedDate",
+        "SystemModstamp",
+    },
 }
+for _share_object, _access_field in SHARE_ACCESS_LEVEL_FIELDS.items():
+    DEFAULT_OBJECT_FIELDS[_share_object] = {
+        "Id",
+        SHARE_PARENT_FIELDS[_share_object],
+        "UserOrGroupId",
+        _access_field,
+        "RowCause",
+    }
+
+# Relationship names exposed by describe for traversable fields (e.g.
+# Account.Name). Salesforce reports these on the lookup field descriptor.
+RELATIONSHIP_NAMES: frozenset[str] = frozenset({"Account", "Owner", "Contact", "Who", "What"})
 
 
 @dataclass(frozen=True)
@@ -364,6 +621,28 @@ def _parse_soql(soql: str) -> ParsedSoql:
 
 def _soql_value(record: Mapping[str, object], field: str) -> object:
     return record.get(field)
+
+
+def _project_record(record: Mapping[str, object], soql: str) -> dict[str, object]:
+    """Return only the columns named in the SELECT list, like Salesforce does."""
+    match = re.search(r"SELECT\s+(.+?)\s+FROM", soql, re.IGNORECASE)
+    if not match:
+        return dict(record)
+    selected = [field.strip() for field in match.group(1).split(",")]
+    projected: dict[str, object] = {}
+    for field in selected:
+        if "." in field:
+            root, _, child = field.partition(".")
+            nested = record.get(root)
+            if isinstance(nested, Mapping) and child in nested:
+                projected.setdefault(root, {})
+                nested_out = projected[root]
+                if isinstance(nested_out, dict):
+                    nested_out[child] = nested[child]
+            continue
+        if field in record:
+            projected[field] = record[field]
+    return projected
 
 
 def _matches_where(record: Mapping[str, object], where: str) -> bool:
@@ -466,6 +745,16 @@ class MockSalesforceAPI:
         self.hidden_fields: dict[str, set[str]] = {}
         # Union of record keys ever added per object, driving per-object describe.
         self.field_sets: dict[str, set[str]] = {}
+        # Every SOQL string the connector issued, in order.
+        self.queries: list[str] = []
+        # Objects whose SOQL queries fail with a non-retryable 400.
+        self.fail_query_objects: set[str] = set()
+        # Objects whose /deleted queries fail with a non-retryable 400.
+        self.fail_deleted_objects: set[str] = set()
+        # Override the retention-window start reported by /deleted.
+        self.deletion_earliest_override: str | None = None
+        # Override the latest covered deletion timestamp reported by /deleted.
+        self.deletion_latest_override: str | None = None
 
     def reset(self) -> None:
         self.objects.clear()
@@ -480,6 +769,11 @@ class MockSalesforceAPI:
         self.hidden_objects.clear()
         self.hidden_fields.clear()
         self.field_sets.clear()
+        self.queries.clear()
+        self.fail_query_objects.clear()
+        self.fail_deleted_objects.clear()
+        self.deletion_earliest_override = None
+        self.deletion_latest_override = None
 
     def add_record(self, object_type: str, payload: dict[str, object]) -> None:
         self.objects.setdefault(object_type, []).append(payload)
@@ -506,8 +800,13 @@ class MockSalesforceAPI:
     def add_user(self, user_id: str = "005000000000001", **kwargs: Any) -> None:
         self.add_record("User", _user_payload(user_id, **kwargs))
 
-    def add_group(self, group_id: str = "00G000000000001", **kwargs: Any) -> None:
-        self.add_record("Group", _group_payload(group_id, **kwargs))
+    def add_group(
+        self,
+        group_id: str = "00G000000000001",
+        related_id: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.add_record("Group", _group_payload(group_id, related_id=related_id, **kwargs))
 
     def add_group_member(self, member_id: str, group_id: str, user_or_group_id: str) -> None:
         self.add_record("GroupMember", _group_member_payload(member_id, group_id, user_or_group_id))
@@ -516,13 +815,7 @@ class MockSalesforceAPI:
         self.add_record("UserRole", _role_payload(role_id, **kwargs))
 
     def add_share(self, object_type: str, **kwargs: Any) -> None:
-        parent_field = {
-            "AccountShare": "AccountId",
-            "ContactShare": "ContactId",
-            "OpportunityShare": "OpportunityId",
-            "LeadShare": "LeadId",
-            "CaseShare": "CaseId",
-        }[object_type]
+        parent_field = SHARE_PARENT_FIELDS[object_type]
         self.add_record(
             object_type,
             _share_payload(
@@ -540,7 +833,10 @@ class MockSalesforceAPI:
         expectations in the integration tests.
         """
         self.add_user(
-            "005000000000001", email="owner@example.com", name="Owner User", role_id="00E000000000002"
+            "005000000000001",
+            email="owner@example.com",
+            name="Owner User",
+            role_id="00E000000000002",
         )
         self.add_user(
             "005000000000002",
@@ -561,6 +857,14 @@ class MockSalesforceAPI:
         self.add_group_member("00M000000000001", "00G000000000001", "005000000000002")
         self.add_group("00G000000000002", name="Execs", group_type="Public")
         self.add_group_member("00M000000000002", "00G000000000002", "005000000000003")
+        # Salesforce-generated role group: share rows target this 00G id and it
+        # resolves through RelatedId to the role and its subordinates.
+        self.add_group(
+            "00G000000000003",
+            name="Support Manager and Subordinates",
+            group_type="RoleAndSubordinates",
+            related_id="00E000000000003",
+        )
 
     def mark_deleted(self, object_type: str, record_id: str) -> None:
         self.deleted.setdefault(object_type, []).append(
@@ -664,13 +968,22 @@ class MockSalesforceAPI:
             if denied:
                 return denied
             soql = request.query_params.get("q", "")
+            mock.queries.append(soql)
             try:
-                records = mock._query_records(soql)
+                parsed = _parse_soql(soql)
             except ValueError as e:
                 return JSONResponse(
                     [{"message": str(e), "errorCode": "MALFORMED_QUERY"}],
                     status_code=400,
                 )
+            if parsed.object_type in mock.fail_query_objects:
+                return JSONResponse(
+                    [{"message": "query failed", "errorCode": "QUERY_FAILED"}],
+                    status_code=400,
+                )
+            records = [
+                _project_record(record, soql) for record in mock._query_records(soql)
+            ]
             return JSONResponse({"totalSize": len(records), "done": True, "records": records})
 
         async def handle_updated(request: Request) -> JSONResponse:
@@ -697,18 +1010,30 @@ class MockSalesforceAPI:
             if denied:
                 return denied
             object_type = request.path_params["object_type"]
+            if object_type in mock.fail_deleted_objects:
+                return JSONResponse(
+                    [{"message": "deleted failed", "errorCode": "QUERY_FAILED"}],
+                    status_code=400,
+                )
             start = _parse_ts(request.query_params["start"])
             end = _parse_ts(request.query_params["end"])
+            latest = mock.deletion_latest_override or end.strftime("%Y-%m-%dT%H:%M:%SZ")
+            latest_dt = _parse_ts(latest)
+            # Only deletions Salesforce reports as covered are returned.
+            effective_end = min(end, latest_dt)
             deleted_records = [
                 entry
                 for entry in mock.deleted.get(object_type, [])
-                if start <= _parse_ts(entry["deletedDate"]) <= end
+                if start <= _parse_ts(entry["deletedDate"]) <= effective_end
             ]
+            earliest = mock.deletion_earliest_override or start.strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
             return JSONResponse(
                 {
                     "deletedRecords": deleted_records,
-                    "earliestDateAvailable": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "latestDateCovered": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "earliestDateAvailable": earliest,
+                    "latestDateCovered": latest,
                 }
             )
 
@@ -770,11 +1095,18 @@ class MockSalesforceAPI:
             if denied:
                 return denied
             object_type = request.path_params["object_type"]
-            fields = set(mock.field_sets.get(object_type, set()))
+            fields = set(DEFAULT_OBJECT_FIELDS.get(object_type, set()))
+            fields.update(mock.field_sets.get(object_type, set()))
             fields.difference_update(mock.hidden_fields.get(object_type, set()))
             if not fields:
-                fields = set(DEFAULT_OBJECT_FIELDS.get(object_type, {"Id"}))
-            return JSONResponse({"fields": [{"name": name} for name in sorted(fields)]})
+                fields = {"Id"}
+            entries = []
+            for name in sorted(fields):
+                entry: dict[str, object] = {"name": name}
+                if name in RELATIONSHIP_NAMES:
+                    entry["relationshipName"] = name
+                entries.append(entry)
+            return JSONResponse({"fields": entries})
 
         routes = [
             Route("/services/oauth2/token", handle_token, methods=["POST"]),
