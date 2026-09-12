@@ -123,16 +123,30 @@
         
         # Security headers
         X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
         X-XSS-Protection "1; mode=block"
         Referrer-Policy "strict-origin-when-cross-origin"
         Permissions-Policy "geolocation=(), microphone=(), camera=()"
         
         # HSTS (only for HTTPS)
         ?Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        
-        # CSP - adjust based on your needs
+    }
+
+    # The chat artifact pane frames artifact documents from the same origin, so
+    # those responses have to allow same-origin framing. Every other response
+    # keeps the strict clickjacking policy: same-origin framing is only reachable
+    # through the artifact proxy, and artifacts served from the app origin must
+    # not be able to frame the app.
+    @artifacts path_regexp ^/api/chat/[^/]+/artifacts/
+    @app not path_regexp ^/api/chat/[^/]+/artifacts/
+
+    header @app {
+        X-Frame-Options "DENY"
         Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none';"
+    }
+
+    header @artifacts {
+        X-Frame-Options "SAMEORIGIN"
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'self';"
     }
 
     # Request size limits
