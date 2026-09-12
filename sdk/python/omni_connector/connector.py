@@ -307,6 +307,23 @@ class Connector(ABC):
         self._cancelled_syncs.add(sync_run_id)
         return True
 
+    def validate_mcp_action(
+        self,
+        action: str,
+        params: dict[str, Any],
+        source: Source | None,
+    ) -> None:
+        """Validate an MCP tool call before it is dispatched to the server.
+
+        Override this to enforce connector-specific policy on tool inputs
+        (e.g. restricting operations to the repositories configured on the
+        source). Called by the SDK server before every MCP tool dispatch with
+        the trusted ``source`` row; raise ``ValueError`` to reject the call,
+        which the server converts into a 400 action failure. The default
+        implementation accepts everything.
+        """
+        return None
+
     def prepare_mcp_env(self, credentials: dict[str, Any]) -> dict[str, str]:
         """Return env vars for a stdio MCP subprocess given Omni credentials.
 
@@ -354,8 +371,34 @@ class Connector(ABC):
         source: Source | None = None,
         actor_email: str | None = None,
     ) -> JSONResponse:
-        """Execute a non-MCP action. Override in connector subclasses that
-        define manifest actions outside of MCP tools."""
+        """Execute an action.
+
+        MCP-backed connectors dispatch first: if ``action`` matches a tool
+        exposed by the MCP server, it is validated (``validate_mcp_action``)
+        and delegated to the adapter with credentials resolved by
+        ``_prepare_mcp_auth``. Anything else falls through to connector-defined
+        actions — override this method for those, calling ``super()`` to keep
+        MCP dispatch intact.
+        """
+        adapter = self.mcp_adapter
+        if adapter is not None:
+            auth = self._prepare_mcp_auth(credentials)
+            try:
+                actions = await adapter.get_action_definitions(**auth)
+            except Exception:
+                logger.warning("MCP action lookup failed", exc_info=True)
+                actions = []
+            if any(a.name == action for a in actions):
+                try:
+                    self.validate_mcp_action(action, params, source)
+                except ValueError as e:
+                    logger.info("MCP action rejected by connector validation: %s", e)
+                    return ActionResponse.failure(str(e)).to_response(status_code=400)
+                response = await adapter.execute_tool(action, dict(params), **auth)
+                status_code = 200 if response.status == "success" else 400
+                return JSONResponse(
+                    content=response.model_dump(), status_code=status_code
+                )
         return ActionResponse.not_supported(action).to_response(status_code=404)
 
     def serve(self, port: int = 8000, host: str = "0.0.0.0") -> None:

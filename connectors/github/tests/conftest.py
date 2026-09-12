@@ -17,12 +17,11 @@ import httpx
 import pytest
 import pytest_asyncio
 import uvicorn
+from omni_connector.testing import OmniTestHarness, SeedHelper
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
-
-from omni_connector.testing import OmniTestHarness, SeedHelper
 
 logger = logging.getLogger(__name__)
 
@@ -665,10 +664,13 @@ def connector_server(connector_port: int) -> str:
     """Start the GitHub connector as a uvicorn server in a daemon thread. Returns base URL."""
     import os
 
+    os.environ.setdefault("CONNECTOR_HOST_NAME", "localhost")
     os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:0")
+    os.environ.setdefault("PORT", str(connector_port))
+
+    from omni_connector.server import create_app
 
     from github_connector import GitHubConnector
-    from omni_connector.server import create_app
 
     app = create_app(GitHubConnector())
     config = uvicorn.Config(
