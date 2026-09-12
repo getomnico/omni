@@ -4,6 +4,7 @@ import { error } from '@sveltejs/kit'
 import { sql } from 'drizzle-orm'
 import { db } from '$lib/server/db/index.js'
 import { ChatRepository } from '$lib/server/db/chats.js'
+import { listAllActiveModels } from '$lib/server/db/model-providers.js'
 import { ProjectAttachmentRepository, ProjectRepository } from '$lib/server/db/projects.js'
 
 export const load: PageServerLoad = async ({ locals, params }) => {
@@ -14,10 +15,17 @@ export const load: PageServerLoad = async ({ locals, params }) => {
         error(404, 'Project not found')
     }
 
-    const [attachments, chats] = await Promise.all([
+    const [attachments, chats, allModels] = await Promise.all([
         new ProjectAttachmentRepository().listForProject(project.id),
         new ChatRepository().getByUserId(user.id, { projectId: project.id, limit: 50 }),
+        listAllActiveModels(),
     ])
+    const models = allModels.map((model) => ({
+        id: model.id,
+        displayName: model.displayName,
+        providerType: model.providerType,
+        isDefault: model.isDefault,
+    }))
 
     // Resolve document titles for display. Content/permission enforcement stays
     // with search/read_document; here we only need a human-readable label.
@@ -60,6 +68,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
         user,
         project,
         chats,
+        models,
         attachments: attachments.map((attachment) => ({
             id: attachment.id,
             attachmentType: attachment.attachmentType,

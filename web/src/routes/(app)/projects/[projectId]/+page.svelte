@@ -18,6 +18,7 @@
     } from '@lucide/svelte'
     import { goto, invalidateAll } from '$app/navigation'
     import { toast } from 'svelte-sonner'
+    import { resolvePreferredModelId } from '$lib/preferences'
     import { formatDateTime } from '$lib/utils/datetime'
     import type { PageData } from './$types.js'
     import type { TypeaheadResult } from '$lib/types/search.js'
@@ -121,14 +122,17 @@
     async function newChat() {
         addingChat = true
         try {
+            const modelId = resolvePreferredModelId(data.models)
             const res = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ projectId: data.project.id }),
+                body: JSON.stringify({ projectId: data.project.id, modelId }),
             })
             if (res.ok) {
                 const { chatId } = await res.json()
-                await goto(`/chat/${chatId}`, { state: { stream: true } })
+                // No message has been sent yet, so there is no run to stream.
+                // Requesting a stream on an empty regular chat fails with 404.
+                await goto(`/chat/${chatId}`)
             } else {
                 const body = await res.json()
                 toast.error(body.error || 'Failed to create chat')
