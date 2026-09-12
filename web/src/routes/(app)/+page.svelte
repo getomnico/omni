@@ -7,7 +7,7 @@
     import UploadChip from '$lib/components/upload-chip.svelte'
     import { themeStore } from '$lib/themes/store.svelte'
     import type { MentionedDocument } from '$lib/types/message'
-    import { userPreferences } from '$lib/preferences'
+    import { resolvePreferredModelId, setPreferredModelId, userPreferences } from '$lib/preferences'
     import { toast } from 'svelte-sonner'
 
     let { data }: PageProps = $props()
@@ -91,14 +91,7 @@
 
     const models = $derived(data.models)
 
-    const savedModelId = userPreferences.get('preferredModelId')
-    const initialModelId = $derived.by(() => {
-        if (savedModelId && models.find((m) => m.id === savedModelId)) {
-            return savedModelId
-        }
-        const defaultModel = models.find((m) => m.isDefault)
-        return defaultModel?.id ?? models[0]?.id ?? null
-    })
+    const initialModelId = $derived(resolvePreferredModelId(models))
     let selectedModelId = $state<string | null>(null)
     $effect(() => {
         selectedModelId = initialModelId
@@ -268,7 +261,7 @@
                 {selectedModelId}
                 onModelChange={(id) => {
                     selectedModelId = id
-                    userPreferences.set('preferredModelId', id)
+                    setPreferredModelId(id)
                 }} />
         </div>
 

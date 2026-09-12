@@ -16,7 +16,7 @@
     import * as Popover from '$lib/components/ui/popover/index.js'
     import * as Select from '$lib/components/ui/select/index.js'
     import * as ToggleGroup from '$lib/components/ui/toggle-group/index.js'
-    import { userPreferences } from '$lib/preferences'
+    import { getPreferredModelId, setPreferredModelId, userPreferences } from '$lib/preferences'
     import type { InputMode } from '$lib/components/user-input.svelte'
     import type { ThemePreference } from '$lib/preferences/user-preferences'
     import { themeStore } from '$lib/themes/store.svelte'
@@ -45,7 +45,7 @@
     let timezoneOpen = $state(false)
     let timezoneTriggerRef = $state<HTMLButtonElement>(null!)
     let inputMode = $state<InputMode>(userPreferences.get('inputMode'))
-    let preferredModelId = $state<string>(userPreferences.get('preferredModelId') ?? '')
+    let preferredModelId = $state<string>(getPreferredModelId() ?? '')
     let isSubmitting = $state(false)
     const timezones = $derived(timezoneOptions())
     const defaultModel = $derived(data.models.find((model) => model.isDefault))
@@ -95,7 +95,7 @@
 
     function savePreferredModel(value: string) {
         preferredModelId = value
-        userPreferences.set('preferredModelId', value || null)
+        setPreferredModelId(value || null)
     }
 </script>
 

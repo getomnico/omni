@@ -1,4 +1,5 @@
 import { browser } from '$app/environment'
+import type { ModelOption } from '$lib/components/user-input.svelte'
 import {
     DEFAULT_PREFERENCES,
     STORAGE_KEY,
@@ -82,3 +83,24 @@ class PreferencesStorage {
 }
 
 export const preferencesStorage = new PreferencesStorage()
+
+export function getPreferredModelId(): string | null {
+    return preferencesStorage.get('preferredModelId')
+}
+
+export function setPreferredModelId(modelId: string | null): void {
+    preferencesStorage.set('preferredModelId', modelId)
+}
+
+/**
+ * Resolve the model a new chat should start with: the user's saved preference
+ * when it is still available, otherwise the configured default, otherwise the
+ * first available model. Returns null when no models are configured.
+ */
+export function resolvePreferredModelId(models: ModelOption[]): string | null {
+    const preferredModelId = getPreferredModelId()
+    if (preferredModelId && models.some((model) => model.id === preferredModelId)) {
+        return preferredModelId
+    }
+    return models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? null
+}
