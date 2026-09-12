@@ -76,10 +76,9 @@ export type WindshiftPaginatedResponse<T> = {
   data: T[];
   pagination: {
     page: number;
-    limit: number;
-    total: number;
+    page_size: number;
+    total_items: number;
     total_pages: number;
-    has_more: boolean;
   };
 };
 

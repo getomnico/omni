@@ -11,6 +11,7 @@ import type { McpServer } from "@getomnico/connector";
 import { WindshiftApiClient } from "./client.js";
 import { generateItemContent, mapItemToDocument } from "./mappers.js";
 import type {
+  WindshiftComment,
   WindshiftCredentials,
   WindshiftItem,
   WindshiftSourceConfig,
@@ -18,6 +19,10 @@ import type {
 } from "./types.js";
 
 const logger = getLogger("windshift");
+
+// How many items to buffer before prefetching their comments in one batch
+// request during full sync.
+const ITEMS_PER_COMMENT_BATCH = 100;
 
 const READ_SCOPES = [
   "mcp:access",
@@ -387,24 +392,42 @@ export class WindshiftConnector extends Connector<
     sourceOwnerEmail: string,
     ctx: SyncContext,
   ): Promise<void> {
+    // Buffer one items page at a time so comments are prefetched with a
+    // single batch request per page instead of one request per item.
+    let chunk: WindshiftItem[] = [];
+    const emitChunk = async (items: WindshiftItem[]) => {
+      if (items.length === 0) return;
+      const commentsByItem = await client.fetchCommentsByItemIds(
+        items.map((item) => item.id),
+      );
+      for (const item of items) {
+        if (ctx.isCancelled()) throw new Error("Cancelled by user");
+        try {
+          await this.emitItem(
+            item,
+            commentsByItem.get(item.id) ?? [],
+            emitAsUpdate,
+            publicBaseUrl,
+            sourceOwnerEmail,
+            ctx,
+          );
+        } catch (e) {
+          const externalId = `windshift:item:${item.id}`;
+          logger.warn(`Error processing ${externalId}: ${e}`);
+          ctx.emitError(externalId, String(e));
+          throw e;
+        }
+      }
+    };
     for await (const item of client.fetchItems(workspaceId)) {
       if (ctx.isCancelled()) throw new Error("Cancelled by user");
-      try {
-        await this.emitItem(
-          client,
-          item,
-          emitAsUpdate,
-          publicBaseUrl,
-          sourceOwnerEmail,
-          ctx,
-        );
-      } catch (e) {
-        const externalId = `windshift:item:${item.id}`;
-        logger.warn(`Error processing ${externalId}: ${e}`);
-        ctx.emitError(externalId, String(e));
-        throw e;
+      chunk.push(item);
+      if (chunk.length >= ITEMS_PER_COMMENT_BATCH) {
+        await emitChunk(chunk);
+        chunk = [];
       }
     }
+    await emitChunk(chunk);
   }
 
   private async syncWorkspaceChanges(
@@ -437,6 +460,9 @@ export class WindshiftConnector extends Connector<
         .map(([itemId]) => itemId);
       const items = await client.fetchItemsByIds(upsertIds);
       const itemsById = new Map(items.map((item) => [item.id, item]));
+      const commentsByItem = await client.fetchCommentsByItemIds(
+        items.map((item) => item.id),
+      );
 
       for (const [itemId, changeType] of latestChanges) {
         if (ctx.isCancelled()) throw new Error("Cancelled by user");
@@ -452,8 +478,8 @@ export class WindshiftConnector extends Connector<
         }
         try {
           await this.emitItem(
-            client,
             item,
+            commentsByItem.get(item.id) ?? [],
             true,
             publicBaseUrl,
             sourceOwnerEmail,
@@ -474,15 +500,14 @@ export class WindshiftConnector extends Connector<
   }
 
   private async emitItem(
-    client: WindshiftApiClient,
     item: WindshiftItem,
+    comments: WindshiftComment[],
     update: boolean,
     publicBaseUrl: string,
     sourceOwnerEmail: string,
     ctx: SyncContext,
   ): Promise<void> {
     await ctx.incrementScanned();
-    const comments = await client.fetchItemComments(item.id);
     const content = generateItemContent(item, comments);
     const contentId = await ctx.contentStorage.save(content, "text/markdown");
     const doc = mapItemToDocument(
