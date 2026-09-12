@@ -11,7 +11,7 @@ Omni works across the tools your company already uses. It gathers relevant conte
 
 </div>
 
-![Omni Demo](.github/assets/omni_2.avif)
+![Omni Demo](.github/assets/omni_3.avif)
 
 ---
 
