@@ -1147,6 +1147,57 @@ function buildAuthUrl(
     return `${authEndpoint}?${params.toString()}`
 }
 
+interface SlackOAuthTokenResponse {
+    ok?: boolean
+    error?: string
+    access_token?: string
+    token_type?: string
+    scope?: string
+    refresh_token?: string
+    expires_in?: number
+    authed_user?: {
+        id?: string
+    }
+}
+
+export function normalizeOAuthTokens(provider: string, tokenData: unknown): OAuthTokens {
+    if (isOAuthError(tokenData)) {
+        throw new Error(`OAuth token exchange failed: ${tokenData.error}`)
+    }
+    if (provider === 'slack') {
+        // Slack's hosted-MCP flow (oauth.v2.user.access) returns the delegated
+        // user token at the top level, wrapped in Slack's ok/error envelope.
+        const slackData =
+            typeof tokenData === 'object' && tokenData !== null && !Array.isArray(tokenData)
+                ? (tokenData as SlackOAuthTokenResponse)
+                : null
+        if (slackData?.ok === false) {
+            throw new Error(`Slack OAuth token exchange failed: ${slackData.error ?? 'unknown'}`)
+        }
+        const token = slackData?.access_token
+        if (typeof token !== 'string' || !token.startsWith('xoxp-')) {
+            throw new Error(
+                'Slack OAuth response did not contain a delegated user access token (xoxp-*)',
+            )
+        }
+        return {
+            access_token: token,
+            token_type: slackData.token_type ?? 'Bearer',
+            scope: slackData.scope,
+            refresh_token: slackData.refresh_token,
+            expires_in: slackData.expires_in,
+        }
+    }
+    if (!isOAuthTokens(tokenData)) {
+        throw new Error('OAuth token response did not contain an access token')
+    }
+    return {
+        access_token: tokenData.access_token,
+        token_type: tokenData.token_type ?? 'Bearer',
+        scope: tokenData.scope,
+    }
+}
+
 export interface ExchangeResult {
     tokens: OAuthTokens
     state: ManifestOAuthState
@@ -1265,10 +1316,7 @@ export async function exchangeCodeAndIdentify(
                 : 'OAuth token exchange failed with an invalid error response',
         )
     }
-    if (!isOAuthTokens(tokenData)) {
-        throw new Error('OAuth token exchange returned an invalid token response')
-    }
-    const tokens = tokenData
+    const tokens = normalizeOAuthTokens(config.provider, tokenData)
     logger.info('Connector OAuth token exchange succeeded', {
         provider: config.provider,
         flow: state.metadata.flow.type,

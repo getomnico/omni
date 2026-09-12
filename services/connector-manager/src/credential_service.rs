@@ -487,10 +487,14 @@ struct NativeOAuthParams {
 
 #[derive(Debug, Deserialize)]
 struct RefreshResponse {
-    access_token: String,
+    access_token: Option<String>,
     refresh_token: Option<String>,
     token_type: Option<String>,
     expires_in: Option<i64>,
+    /// Slack wraps every token-endpoint response in an ok/error envelope and
+    /// still returns HTTP 200 for failures. Other providers omit these fields.
+    ok: Option<bool>,
+    error: Option<String>,
 }
 
 /// Perform a full OAuth token refresh for a native credential.
@@ -678,9 +682,16 @@ async fn apply_refresh_response(
     let refreshed: RefreshResponse = serde_json::from_str(&body)
         .map_err(|e| CredentialServiceError::RefreshFailed(e.to_string()))?;
 
+    if let Some(error) = refresh_envelope_error(&refreshed) {
+        return Err(error);
+    }
+    let access_token = refreshed.access_token.ok_or_else(|| {
+        CredentialServiceError::RefreshFailed("token endpoint response is missing access_token".into())
+    })?;
+
     let now = OffsetDateTime::now_utc();
 
-    credential.credentials["access_token"] = JsonValue::String(refreshed.access_token);
+    credential.credentials["access_token"] = JsonValue::String(access_token);
     if let Some(refresh_token) = refreshed.refresh_token {
         credential.credentials["refresh_token"] = JsonValue::String(refresh_token);
     }
@@ -717,10 +728,31 @@ fn is_reconnect_required_refresh_failure(status: u16, body: &str) -> bool {
         .get("error")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
+    is_reconnect_required_error(error)
+}
+
+fn is_reconnect_required_error(error: &str) -> bool {
     matches!(
         error,
         "invalid_grant" | "invalid_client" | "unauthorized_client" | "access_denied"
     )
+}
+
+/// Map a parsed token response with `ok:false` (Slack always uses HTTP 200
+/// for API-level failures) to the appropriate error. Returns `None` when the
+/// response reports success.
+fn refresh_envelope_error(refreshed: &RefreshResponse) -> Option<CredentialServiceError> {
+    if refreshed.ok != Some(false) {
+        return None;
+    }
+    let error = refreshed.error.as_deref().unwrap_or_default();
+    Some(if is_reconnect_required_error(error) {
+        CredentialServiceError::ReconnectRequired
+    } else {
+        CredentialServiceError::RefreshFailed(format!(
+            "token endpoint reported ok:false (error={error})"
+        ))
+    })
 }
 
 fn string_from(value: &JsonValue, key: &str) -> Option<String> {
@@ -800,6 +832,35 @@ mod tests {
             401,
             "<html>unauthorized</html>"
         ));
+    }
+
+    // ── Slack ok/error envelope tests ────────────────────────────
+
+    #[test]
+    fn slack_envelope_failures_map_to_reconnect_or_refresh_failed() {
+        let reconnect = serde_json::from_str::<RefreshResponse>(
+            r#"{"ok":false,"error":"invalid_grant"}"#,
+        )
+        .expect("envelope body must parse");
+        assert!(matches!(
+            refresh_envelope_error(&reconnect),
+            Some(CredentialServiceError::ReconnectRequired)
+        ));
+
+        let other = serde_json::from_str::<RefreshResponse>(
+            r#"{"ok":false,"error":"account_inactive"}"#,
+        )
+        .expect("envelope body must parse");
+        assert!(matches!(
+            refresh_envelope_error(&other),
+            Some(CredentialServiceError::RefreshFailed(_))
+        ));
+
+        let success = serde_json::from_str::<RefreshResponse>(
+            r#"{"ok":true,"access_token":"xoxp-1","refresh_token":"xoxe-1","expires_in":43200}"#,
+        )
+        .expect("success body must parse");
+        assert!(refresh_envelope_error(&success).is_none());
     }
 
     // ── Auth method resolution tests ─────────────────────────────
