@@ -529,7 +529,7 @@
                 </header>
 
                 <!-- Main content -->
-                <main class="min-h-0 flex-1">
+                <main class="min-h-0 flex-1 overflow-y-auto">
                     {@render children()}
                 </main>
             </ResizablePane>

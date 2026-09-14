@@ -16,7 +16,12 @@
     let schedulePreset = $state('hourly')
     let customCron = $state('')
     let selectedSources = $state<Record<string, { read: boolean; write: boolean }>>({})
-    let selectedModelId = $state<string | undefined>(undefined)
+    // Falls back to the workspace default model so runs don't fail with
+    // "Agent has no model configured" when the field is left untouched.
+    let selectedModelOverride = $state<string | undefined>(undefined)
+    let selectedModelId = $derived(
+        selectedModelOverride ?? data.models.find((m) => m.isDefault)?.id,
+    )
     let submitting = $state(false)
     let error = $state('')
 
@@ -131,6 +136,7 @@
             <Textarea
                 id="instructions"
                 bind:value={instructions}
+                class="max-h-96 overflow-y-auto"
                 placeholder="Describe what this agent should do. For example: Search Slack for messages from the #engineering channel from the past 24 hours and summarize the key discussion points."
                 rows={6} />
             <p class="text-muted-foreground text-xs">
@@ -191,7 +197,7 @@
                     </Select.Content>
                 </Select.Root>
                 <p class="text-muted-foreground text-xs">
-                    Optional. Uses the default model if not set.
+                    Preselected to your workspace's default model.
                 </p>
             </div>
         {/if}
