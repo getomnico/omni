@@ -207,6 +207,7 @@ export const chats = pgTable('chats', {
     }),
     agentId: text('agent_id').references(() => agents.id, { onDelete: 'set null' }),
     projectId: text('project_id').references(() => projects.id, { onDelete: 'set null' }),
+    excludedSourceIds: text('excluded_source_ids').array().notNull().default([]),
     isDeleted: boolean('is_deleted').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),

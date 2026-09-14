@@ -78,11 +78,16 @@ class MetaToolHandler:
         loaded: set[str],
         on_load: OnLoad,
         searcher_client: SearcherClient | None = None,
+        excluded_source_ids: set[str] | None = None,
     ) -> None:
         self._ch = connector_handler
         self._loaded = loaded
         self._on_load = on_load
         self._searcher_client = searcher_client
+        self._excluded_source_ids = excluded_source_ids or set()
+
+    def _source_excluded(self, action: ConnectorAction) -> bool:
+        return action.source_id in self._excluded_source_ids
 
     def get_tools(self) -> list[ToolParam]:
         return [
@@ -225,7 +230,11 @@ class MetaToolHandler:
             )
             lines.append(f"- {tool_name} — {desc}")
 
-        exact_tool_names = exact_tool_names_for_query(query, self._ch.actions)
+        exact_tool_names = {
+            tool_name
+            for tool_name in exact_tool_names_for_query(query, self._ch.actions)
+            if not self._source_excluded(self._ch.actions[tool_name])
+        }
         if exact_tool_names:
             newly_loaded = await self._mark_loaded(exact_tool_names)
             tool_label = (
@@ -267,6 +276,8 @@ class MetaToolHandler:
             tool_name = result.data["tool_name"]
             action = self._ch.actions.get(tool_name)
             if action is None or tool_name in seen:
+                continue
+            if self._source_excluded(action):
                 continue
             seen.add(tool_name)
             matches.append((tool_name, action))
@@ -357,6 +368,19 @@ class MetaToolHandler:
                 content=[{"type": "text", "text": f"Unknown tool: {tool_name}"}],
                 is_error=True,
             )
+        if self._source_excluded(action):
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Tool {tool_name} belongs to a source the user has "
+                            "excluded from this conversation and cannot be loaded."
+                        ),
+                    }
+                ],
+                is_error=True,
+            )
 
         newly_loaded = await self._mark_loaded({tool_name})
         desc = (action.description or "").strip().splitlines()[0]
@@ -385,12 +409,31 @@ class MetaToolHandler:
 
         target_ids: set[str] = set()
         matched_tools: dict[str, ConnectorAction] = {}
+        excluded_requested: set[str] = set()
         for tool_name, action in self._ch.actions.items():
             if (source_id and action.source_id == source_id) or (
                 source_type and action.source_type == source_type
             ):
+                if self._source_excluded(action):
+                    excluded_requested.add(action.source_id)
+                    continue
                 target_ids.add(action.source_id)
                 matched_tools[tool_name] = action
+
+        if excluded_requested and not target_ids:
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": (
+                            f"The source {source_id or source_type!r} has been "
+                            "excluded from this conversation and its tools cannot "
+                            "be loaded."
+                        ),
+                    }
+                ],
+                is_error=True,
+            )
 
         if not target_ids:
             key = source_id or source_type

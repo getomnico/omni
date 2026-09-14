@@ -97,6 +97,27 @@
         selectedModelId = initialModelId
     })
 
+    type SourceOption = { id: string; name: string; sourceType: string; isActive: boolean }
+    let sources = $state<SourceOption[]>([])
+    let excludedSourceIds = $state<string[]>([])
+
+    onMount(async () => {
+        try {
+            const resp = await fetch('/api/sources')
+            if (!resp.ok) return
+            const allSources = (await resp.json()) as SourceOption[]
+            sources = allSources.filter((s) => s.isActive)
+        } catch {
+            // Sources picker stays hidden on failure
+        }
+    })
+
+    function toggleSource(sourceId: string) {
+        excludedSourceIds = excludedSourceIds.includes(sourceId)
+            ? excludedSourceIds.filter((id) => id !== sourceId)
+            : [...excludedSourceIds, sourceId]
+    }
+
     $effect(() => {
         userPreferences.set('inputMode', inputMode)
     })
@@ -130,7 +151,13 @@
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ modelId: selectedModelId }),
+                body: JSON.stringify({
+                    modelId: selectedModelId,
+                    excludedSourceIds:
+                        inputMode === 'chat' && excludedSourceIds.length > 0
+                            ? excludedSourceIds
+                            : undefined,
+                }),
             })
 
             if (!response.ok) {
@@ -262,7 +289,10 @@
                 onModelChange={(id) => {
                     selectedModelId = id
                     setPreferredModelId(id)
-                }} />
+                }}
+                {sources}
+                {excludedSourceIds}
+                onToggleSource={toggleSource} />
         </div>
 
         <!-- Suggested Questions -->

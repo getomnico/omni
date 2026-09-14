@@ -465,3 +465,131 @@ def test_duplicate_source_type_actions_are_not_dropped():
 
     assert work_names == {"gmail__send_email"}
     assert personal_names == {"gmail__send_email__source_src_gmail_personal"}
+
+
+def _read_actions() -> list[ConnectorAction]:
+    return [
+        _make_action(
+            "src-gmail-1",
+            "gmail",
+            "list_threads",
+            "List recent email threads.",
+            "Work Gmail",
+            mode="read",
+        ),
+        _make_action(
+            "src-outlook-1",
+            "outlook",
+            "list_messages",
+            "List Outlook messages.",
+            mode="read",
+        ),
+        _make_action(
+            "src-slack-1",
+            "slack",
+            "read_channels",
+            "Read Slack channels.",
+            mode="read",
+        ),
+    ]
+
+
+def _tool_names_for_source(
+    handler: ConnectorToolHandler, source_id: str
+) -> set[str]:
+    return {
+        tool_name
+        for tool_name, action in handler.actions.items()
+        if action.source_id == source_id
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_search_hides_excluded_source_tools():
+    handler = _make_handler(_read_actions())
+    loaded: set[str] = set()
+
+    searcher = _FakeSearcherClient(["gmail__list_threads", "outlook__list_messages"])
+    meta = MetaToolHandler(
+        handler,
+        loaded,
+        lambda _: None,
+        searcher_client=searcher,
+        excluded_source_ids={"src-gmail-1"},
+    )
+    result = await meta.execute("tool_search", {"query": "list"}, _ctx())
+
+    assert not result.is_error
+    text = result.content[0]["text"]
+    assert "gmail__list_threads" not in text
+    assert "outlook__list_messages" in text
+    assert loaded == set()
+
+
+@pytest.mark.asyncio
+async def test_tool_search_exact_match_skips_excluded_source():
+    handler = _make_handler(_read_actions())
+    loaded: set[str] = set()
+
+    searcher = _FakeSearcherClient(["gmail__list_threads"])
+    meta = MetaToolHandler(
+        handler,
+        loaded,
+        lambda _: None,
+        searcher_client=searcher,
+        excluded_source_ids={"src-gmail-1"},
+    )
+    result = await meta.execute("tool_search", {"query": "list_threads"}, _ctx())
+
+    assert not result.is_error
+    assert "load_tool" in result.content[0]["text"]
+    assert loaded == set()
+
+
+@pytest.mark.asyncio
+async def test_load_tool_refuses_excluded_source():
+    handler = _make_handler(_read_actions())
+    tool_name = next(iter(_tool_names_for_source(handler, "src-slack-1")))
+    meta = MetaToolHandler(
+        handler, set(), lambda _: None, excluded_source_ids={"src-slack-1"}
+    )
+    result = await meta.execute("load_tool", {"tool_name": tool_name}, _ctx())
+
+    assert result.is_error
+    assert meta._loaded == set()
+
+
+@pytest.mark.asyncio
+async def test_load_tool_set_refuses_fully_excluded_source_type():
+    handler = _make_handler(_read_actions())
+    meta = MetaToolHandler(
+        handler, set(), lambda _: None, excluded_source_ids={"src-slack-1"}
+    )
+    result = await meta.execute("load_tool_set", {"source_type": "slack"}, _ctx())
+
+    assert result.is_error
+    assert "excluded" in result.content[0]["text"]
+    assert meta._loaded == set()
+
+
+@pytest.mark.asyncio
+async def test_load_tool_set_skips_excluded_sources_of_matching_type():
+    handler = _make_handler(_read_actions())
+    meta = MetaToolHandler(
+        handler, set(), lambda _: None, excluded_source_ids={"src-gmail-1"}
+    )
+    result = await meta.execute("load_tool_set", {"source_type": "gmail"}, _ctx())
+
+    assert result.is_error
+    assert meta._loaded == set()
+
+    # Non-excluded sources still load.
+    result = await meta.execute("load_tool_set", {"source_type": "outlook"}, _ctx())
+    assert not result.is_error
+    outlook_tools = {
+        tool_name
+        for tool_name, action in handler.actions.items()
+        if action.source_type == "outlook"
+    }
+    assert outlook_tools <= meta._loaded
+    assert not (_tool_names_for_source(handler, "src-gmail-1") & meta._loaded)

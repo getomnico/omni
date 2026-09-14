@@ -93,6 +93,7 @@ export class ChatRepository {
         modelId?: string,
         agentId?: string,
         projectId?: string,
+        excludedSourceIds?: string[],
     ): Promise<Chat> {
         const chatId = ulid()
         const [newChat] = await this.db
@@ -104,6 +105,7 @@ export class ChatRepository {
                 modelId: modelId || null,
                 agentId: agentId || null,
                 projectId: projectId || null,
+                excludedSourceIds: excludedSourceIds ?? [],
             })
             .returning()
 
@@ -148,6 +150,19 @@ export class ChatRepository {
         }
 
         return await query
+    }
+
+    async setExcludedSources(chatId: string, excludedSourceIds: string[]): Promise<Chat | null> {
+        const [updatedChat] = await this.db
+            .update(chats)
+            .set({
+                excludedSourceIds,
+                updatedAt: new Date(),
+            })
+            .where(and(eq(chats.id, chatId), eq(chats.isDeleted, false)))
+            .returning()
+
+        return updatedChat || null
     }
 
     async updateTitle(chatId: string, title: string): Promise<Chat | null> {

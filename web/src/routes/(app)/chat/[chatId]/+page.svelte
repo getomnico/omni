@@ -121,6 +121,48 @@
         }
     }
 
+    type SourceOption = { id: string; name: string; sourceType: string; isActive: boolean }
+    let sourcesById = $state<Record<string, SourceOption>>({})
+
+    onMount(async () => {
+        try {
+            const resp = await fetch('/api/sources')
+            if (!resp.ok) return
+            const allSources = (await resp.json()) as SourceOption[]
+            sourcesById = Object.fromEntries(allSources.map((s) => [s.id, s]))
+        } catch {
+            // Excluded-source chips fall back to raw ids
+        }
+    })
+
+    const excludedSources = $derived(
+        (data.chat.excludedSourceIds ?? []).map(
+            (id) =>
+                sourcesById[id] ?? {
+                    id,
+                    name: id,
+                    sourceType: '',
+                    isActive: false,
+                },
+        ),
+    )
+
+    async function includeSourceAgain(sourceId: string) {
+        const res = await fetch(`/api/chat/${data.chat.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                excludedSourceIds: data.chat.excludedSourceIds.filter((id) => id !== sourceId),
+            }),
+        })
+        if (res.ok) {
+            await invalidateAll()
+        } else {
+            const body = await res.json()
+            toast.error(body.error || 'Failed to update sources')
+        }
+    }
+
     onDestroy(() => {
         eventSource?.close()
         eventSource = null
@@ -2795,6 +2837,27 @@
                         <span class="text-muted-foreground rounded-full border px-3 py-0.5 text-xs">
                             {data.modelDisplayName}
                         </span>
+                    </div>
+                {/if}
+                {#if excludedSources.length > 0}
+                    <div class="mt-2 flex flex-wrap justify-center gap-1.5">
+                        {#each excludedSources as source (source.id)}
+                            <span
+                                class="text-muted-foreground inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs"
+                                title="Tools from this source are excluded from this conversation">
+                                {source.name}
+                                <button
+                                    type="button"
+                                    class="hover:text-foreground cursor-pointer"
+                                    aria-label={`Include ${source.name} again`}
+                                    onclick={(e) => {
+                                        e.stopPropagation()
+                                        includeSourceAgain(source.id)
+                                    }}>
+                                    <X class="size-3" />
+                                </button>
+                            </span>
+                        {/each}
                     </div>
                 {/if}
                 <!-- Existing Messages -->

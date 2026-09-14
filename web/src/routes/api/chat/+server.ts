@@ -3,6 +3,8 @@ import type { RequestHandler } from './$types.js'
 import { chatRepository } from '$lib/server/db/chats'
 import { ProjectRepository } from '$lib/server/db/projects.js'
 
+const ULID_REGEX = /^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/i
+
 export const POST: RequestHandler = async ({ request, locals }) => {
     const logger = locals.logger.child('chat')
 
@@ -15,10 +17,23 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     let modelId: string | undefined
     let projectId: string | undefined
+    let excludedSourceIds: string[] | undefined
     try {
         const body = await request.json()
         modelId = body.modelId || undefined
         projectId = body.projectId || undefined
+        if (body.excludedSourceIds !== undefined) {
+            if (
+                !Array.isArray(body.excludedSourceIds) ||
+                body.excludedSourceIds.length > 100 ||
+                body.excludedSourceIds.some(
+                    (id: unknown) => typeof id !== 'string' || !ULID_REGEX.test(id),
+                )
+            ) {
+                return json({ error: 'Invalid excludedSourceIds' }, { status: 400 })
+            }
+            excludedSourceIds = [...new Set(body.excludedSourceIds as string[])]
+        }
     } catch {
         // No body or invalid JSON is fine — modelId/projectId stay undefined
     }
@@ -33,7 +48,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     logger.debug('Creating new chat', { userId, modelId, projectId })
 
     try {
-        const chat = await chatRepository.create(userId, undefined, modelId, undefined, projectId)
+        const chat = await chatRepository.create(
+            userId,
+            undefined,
+            modelId,
+            undefined,
+            projectId,
+            excludedSourceIds,
+        )
 
         logger.info('Chat created successfully', {
             userId,

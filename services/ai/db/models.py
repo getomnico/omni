@@ -1,7 +1,7 @@
 import json
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, NotRequired, TypedDict, cast
@@ -415,6 +415,7 @@ class Chat:
     updated_at: datetime
     agent_id: str | None = None
     project_id: str | None = None
+    excluded_source_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: dict) -> "Chat":
@@ -431,6 +432,7 @@ class Chat:
             updated_at=row["updated_at"],
             agent_id=row.get("agent_id"),
             project_id=row.get("project_id"),
+            excluded_source_ids=list(row.get("excluded_source_ids") or []),
         )
 
     def to_dict(self) -> dict:
@@ -442,6 +444,7 @@ class Chat:
             "model_id": self.model_id,
             "agent_id": self.agent_id,
             "project_id": self.project_id,
+            "excluded_source_ids": self.excluded_source_ids,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

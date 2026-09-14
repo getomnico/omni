@@ -29,6 +29,7 @@ export const GET: RequestHandler = async ({ params, locals }) => {
             id: chat.id,
             user_id: chat.userId,
             title: chat.title,
+            excluded_source_ids: chat.excludedSourceIds,
             created_at: chat.createdAt,
             updated_at: chat.updatedAt,
         }
@@ -90,6 +91,24 @@ export const PATCH: RequestHandler = async ({ params, locals, request }) => {
                 }
             }
             const result = await chatRepository.moveChatToProject(chatId, body.projectId)
+            if (result) updatedChat = result
+        }
+
+        if (body.excludedSourceIds !== undefined) {
+            if (
+                !Array.isArray(body.excludedSourceIds) ||
+                body.excludedSourceIds.length > 100 ||
+                body.excludedSourceIds.some(
+                    (id: unknown) =>
+                        typeof id !== 'string' ||
+                        !/^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/i.test(id),
+                )
+            ) {
+                return json({ error: 'Invalid excludedSourceIds' }, { status: 400 })
+            }
+            const result = await chatRepository.setExcludedSources(chatId, [
+                ...new Set(body.excludedSourceIds as string[]),
+            ])
             if (result) updatedChat = result
         }
 
