@@ -202,6 +202,22 @@ def _loaded_tools_from_history(
     return loaded
 
 
+def _drop_excluded_tools(
+    loaded_tool_names: set[str],
+    connector_handler: ConnectorToolHandler | None,
+    excluded_source_ids: set[str],
+) -> set[str]:
+    """Remove loaded tools that belong to chat-excluded sources."""
+    if not excluded_source_ids or connector_handler is None:
+        return loaded_tool_names
+    return {
+        tool_name
+        for tool_name in loaded_tool_names
+        if (action := connector_handler.actions.get(tool_name)) is not None
+        and action.source_id not in excluded_source_ids
+    }
+
+
 def _loaded_tools_from_meta_call(
     tool_name: str,
     tool_input: dict[str, object],
@@ -286,7 +302,12 @@ async def _build_registry(
     registry.register(connector_handler)
 
     if connector_handler.actions:
-        toolsets = connector_handler.list_toolsets()
+        excluded_source_ids = set(chat.excluded_source_ids)
+        toolsets = [
+            ts
+            for ts in connector_handler.list_toolsets()
+            if ts["source_id"] not in excluded_source_ids
+        ]
 
     if connector_handler.search_operators:
         search_operators = connector_handler.search_operators
@@ -297,6 +318,7 @@ async def _build_registry(
             loaded=loaded_toolsets,
             on_load=on_load or _noop_on_load,
             searcher_client=request.app.state.searcher_tool.client,
+            excluded_source_ids=set(chat.excluded_source_ids),
         )
         await meta_handler.publish_tool_capabilities()
         registry.register(meta_handler)
@@ -1058,7 +1080,11 @@ class StreamChatHandler:
         initial_tools = build_turn_tools(
             build_result.always_on_handlers,
             build_result.connector_handler,
-            loaded_toolsets,
+            _drop_excluded_tools(
+                loaded_toolsets,
+                build_result.connector_handler,
+                set(chat.excluded_source_ids),
+            ),
         )
 
         parent_id = chat_messages[-1].id if chat_messages else None

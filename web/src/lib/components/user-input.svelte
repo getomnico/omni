@@ -11,6 +11,8 @@
         SendHorizontal,
         FileText,
         Paperclip,
+        Blocks,
+        Check,
     } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import type { Component, Snippet } from 'svelte'
@@ -36,6 +38,12 @@
         isDefault: boolean
     }
 
+    export interface SourceOption {
+        id: string
+        name: string
+        sourceType: string
+    }
+
     interface UserInputProps {
         value: string
         inputMode: InputMode
@@ -56,6 +64,9 @@
         models?: ModelOption[]
         selectedModelId?: string | null
         onModelChange?: (modelId: string) => void
+        sources?: SourceOption[]
+        excludedSourceIds?: string[]
+        onToggleSource?: (sourceId: string) => void
         onAttachClick?: () => void
         onFilesDropped?: (files: FileList) => void
         attachments?: Snippet
@@ -89,6 +100,9 @@
         models = [],
         selectedModelId = null,
         onModelChange,
+        sources = [],
+        excludedSourceIds = [],
+        onToggleSource,
         onAttachClick,
         onFilesDropped,
         attachments,
@@ -134,6 +148,14 @@
     }
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
+
+    let showSourceSelector = $derived(
+        sources.length > 0 && inputMode === 'chat' && onToggleSource !== undefined,
+    )
+
+    function isSourceExcluded(sourceId: string): boolean {
+        return excludedSourceIds.includes(sourceId)
+    }
 
     let groupedModels = $derived(
         Object.entries(
@@ -636,6 +658,65 @@
                 {/if}
             </div>
             <div class="flex w-full justify-end gap-2">
+                {#if showSourceSelector}
+                    <Popover.Root>
+                        <Popover.Trigger>
+                            {#snippet child({ props })}
+                                <Button
+                                    {...props}
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    class="omni-composer-sources hover:bg-muted text-muted-foreground h-8 cursor-pointer border-none text-sm shadow-none"
+                                    onclick={(e) => e.stopPropagation()}>
+                                    <Blocks class="size-4" />
+                                    {excludedSourceIds.length > 0
+                                        ? `${sources.length - excludedSourceIds.length}/${sources.length}`
+                                        : 'Sources'}
+                                </Button>
+                            {/snippet}
+                        </Popover.Trigger>
+                        <Popover.Content align="end" class="w-72 p-2">
+                            <div class="px-2 py-1">
+                                <div class="text-foreground text-sm font-medium">
+                                    Connected sources
+                                </div>
+                                <div class="text-muted-foreground text-xs">
+                                    Deselect sources the agent shouldn't check in this conversation.
+                                </div>
+                            </div>
+                            <div class="flex flex-col">
+                                {#each sources as source (source.id)}
+                                    <button
+                                        type="button"
+                                        class="hover:bg-muted flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm"
+                                        onclick={(e) => {
+                                            e.stopPropagation()
+                                            onToggleSource?.(source.id)
+                                        }}>
+                                        <Check
+                                            class={cn(
+                                                'text-primary size-4 shrink-0 transition-opacity',
+                                                isSourceExcluded(source.id)
+                                                    ? 'opacity-0'
+                                                    : 'opacity-100',
+                                            )} />
+                                        <span
+                                            class={cn(
+                                                'flex-1 truncate',
+                                                isSourceExcluded(source.id) &&
+                                                    'text-muted-foreground line-through',
+                                            )}>
+                                            {source.name}
+                                        </span>
+                                        <span class="text-muted-foreground text-xs"
+                                            >{source.sourceType}</span>
+                                    </button>
+                                {/each}
+                            </div>
+                        </Popover.Content>
+                    </Popover.Root>
+                {/if}
                 {#if showModelSelector}
                     <Select.Root
                         type="single"

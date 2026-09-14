@@ -6,7 +6,9 @@ from .models import Chat, ChatSearchHit
 from .connection import get_db_pool
 
 
-_CHAT_COLUMNS = "id, user_id, title, model_id, agent_id, project_id, created_at, updated_at"
+_CHAT_COLUMNS = (
+    "id, user_id, title, model_id, agent_id, project_id, excluded_source_ids, created_at, updated_at"
+)
 
 
 class ChatsRepository:
