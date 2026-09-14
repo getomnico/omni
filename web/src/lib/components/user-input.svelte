@@ -668,7 +668,11 @@
                                     variant="ghost"
                                     size="sm"
                                     class="omni-composer-sources hover:bg-muted text-muted-foreground h-8 cursor-pointer border-none text-sm shadow-none"
-                                    onclick={(e) => e.stopPropagation()}>
+                                    onclick={(e) => {
+                                        // Keep the bits-ui toggle handler; {...props} would otherwise be overridden
+                                        ;(props.onclick as ((e: Event) => void) | undefined)?.(e)
+                                        e.stopPropagation()
+                                    }}>
                                     <Blocks class="size-4" />
                                     {excludedSourceIds.length > 0
                                         ? `${sources.length - excludedSourceIds.length}/${sources.length}`
