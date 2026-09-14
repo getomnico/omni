@@ -648,6 +648,9 @@ async function dynamicallyRegisterClientUnlocked(
     // confidential-client credentials. Never attempt an unauthenticated or
     // secretless registration when the manifest requires one.
     if (config.registration_requires_initial_access_token && !initialAccessToken) {
+        logger.warn(
+            `OAuth DCR for ${clientConfigProvider} requires an initial access token, but none is configured`,
+        )
         return null
     }
 
@@ -700,7 +703,11 @@ async function dynamicallyRegisterClientUnlocked(
             windshiftInternalOrigin(config),
             config.validate_endpoint_urls === true,
         )
-    } catch {
+    } catch (err) {
+        logger.warn(
+            `OAuth dynamic client registration for ${clientConfigProvider} failed:`,
+            err instanceof Error ? err.message : err,
+        )
         return null
     }
     const data = (await readCredentialJson(provider, response).catch(() => ({}))) as {
@@ -711,7 +718,13 @@ async function dynamicallyRegisterClientUnlocked(
         registration_access_token?: string
         token_endpoint_auth_method?: OAuthTokenEndpointAuthMethod
     }
-    if (!response.ok || !data.client_id) return null
+    if (!response.ok || !data.client_id) {
+        logger.warn(
+            `OAuth dynamic client registration for ${clientConfigProvider} was rejected: ` +
+                `status ${response.status}, client_id ${data.client_id ? 'present' : 'missing'}`,
+        )
+        return null
+    }
     const registeredAuthMethod = isOAuthTokenEndpointAuthMethod(data.token_endpoint_auth_method)
         ? data.token_endpoint_auth_method
         : tokenEndpointAuthMethod
