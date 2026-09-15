@@ -24,8 +24,11 @@
     let customCron = $state('')
     let allowedActions = $state('')
     let isEnabled = $state(true)
+    let selectedModelId = $state<string | undefined>(undefined)
     let submitting = $state(false)
     let error = $state('')
+
+    const defaultModelId = $derived(data.models.find((m) => m.isDefault)?.id)
 
     let showDeleteConfirm = $state(false)
     let deleteTargetId = $state<string | null>(null)
@@ -48,6 +51,7 @@
         customCron = ''
         allowedActions = ''
         isEnabled = true
+        selectedModelId = defaultModelId
         error = ''
         showDialog = true
     }
@@ -76,6 +80,7 @@
 
         const actions = agent.allowedActions as string[]
         allowedActions = Array.isArray(actions) ? actions.join(', ') : ''
+        selectedModelId = agent.modelId ?? defaultModelId
 
         showDialog = true
     }
@@ -114,6 +119,7 @@
                         scheduleType,
                         scheduleValue,
                         allowedActions: parsedActions,
+                        modelId: selectedModelId || null,
                         isEnabled,
                     }),
                 })
@@ -133,6 +139,7 @@
                         scheduleType,
                         scheduleValue,
                         allowedActions: parsedActions,
+                        modelId: selectedModelId || undefined,
                     }),
                 })
                 if (!res.ok) {
@@ -232,6 +239,7 @@
                 <Textarea
                     id="org-instructions"
                     bind:value={instructions}
+                    class="max-h-96 overflow-y-auto"
                     rows={4}
                     placeholder="Describe the task..." />
             </div>
@@ -257,6 +265,31 @@
                     <Input bind:value={customCron} placeholder="*/30 * * * *" class="mt-2" />
                 {/if}
             </div>
+            <div class="space-y-2">
+                <Label>Model</Label>
+                <Select.Root
+                    type="single"
+                    value={selectedModelId}
+                    onValueChange={(v) => {
+                        selectedModelId = v
+                    }}>
+                    <Select.Trigger class="cursor-pointer">
+                        {data.models.find((m) => m.id === selectedModelId)?.displayName ||
+                            'Select model'}
+                    </Select.Trigger>
+                    <Select.Content>
+                        {#each data.models as model (model.id)}
+                            <Select.Item value={model.id} class="cursor-pointer">
+                                {model.displayName}
+                            </Select.Item>
+                        {/each}
+                    </Select.Content>
+                </Select.Root>
+                <p class="text-muted-foreground text-xs">
+                    Preselected to your workspace's default model.
+                </p>
+            </div>
+
             <div class="space-y-2">
                 <Label for="org-actions">Allowed Write Actions</Label>
                 <Input
