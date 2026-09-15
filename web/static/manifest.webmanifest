@@ -1,0 +1,54 @@
+{
+    "id": "/",
+    "name": "Omni",
+    "short_name": "omni",
+    "description": "Your company's AI agent. Search connected sources, chat, and get briefings.",
+    "lang": "en",
+    "dir": "ltr",
+    "categories": ["business", "productivity"],
+    "start_url": "/",
+    "scope": "/",
+    "display": "standalone",
+    "background_color": "#060a12",
+    "shortcuts": [
+        {
+            "name": "New chat",
+            "short_name": "Chat",
+            "url": "/"
+        },
+        {
+            "name": "Agents",
+            "short_name": "Agents",
+            "url": "/agents"
+        },
+        {
+            "name": "Projects",
+            "short_name": "Projects",
+            "url": "/projects"
+        }
+    ],
+    "icons": [
+        {
+            "src": "/icon-192.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "/icon-512.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        },
+        {
+            "src": "/icon-maskable-192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "maskable"
+        },
+        {
+            "src": "/icon-maskable-512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "maskable"
+        }
+    ]
+}
