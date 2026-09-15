@@ -1,7 +1,8 @@
 import { error } from '@sveltejs/kit'
 import { lookup } from 'node:dns/promises'
+import http from 'node:http'
+import https from 'node:https'
 import net from 'node:net'
-import { Agent, fetch as undiciFetch } from 'undici'
 import { AuthType } from '$lib/types'
 
 export interface RemoteMcpConfig {
@@ -141,42 +142,88 @@ export async function fetchWithPinnedRemoteMcpDns(
     init: RequestInit = {},
     policy: RemoteMcpIpPolicy = {},
 ): Promise<Response> {
+    // Resolve and validate the destination up front, then pin every request
+    // to the validated addresses via a custom lookup so DNS cannot be
+    // re-bound between validation and connection.
     const addresses = await resolveAllowedRemoteMcpAddresses(url, policy)
     let next = 0
-    const dispatcher = new Agent({
-        connect: {
-            lookup(
-                _hostname: string,
-                options: { all?: boolean },
-                callback: (err: Error | null, result?: unknown) => void,
-            ) {
-                const record = addresses[next++ % addresses.length]
-                if (options.all) {
-                    callback(null, [{ address: record.address, family: record.family }])
-                } else {
-                    callback(null, record.address, record.family)
-                }
-            },
-        },
-    } as any)
+    const pinnedLookup = (
+        _hostname: string,
+        options: { all?: boolean },
+        callback: (err: Error | null, result?: unknown, family?: number) => void,
+    ) => {
+        const record = addresses[next++ % addresses.length]
+        if (options.all) {
+            callback(null, [record])
+        } else {
+            callback(null, record.address, record.family)
+        }
+    }
+
+    // NOTE: We intentionally use node:http/node:https instead of undici's
+    // Agent here. The container image bundles undici through a CJS shim in
+    // which `require('node:http2')` fails and is silently replaced by a stub,
+    // so any HTTPS request routed through a custom undici dispatcher throws
+    // "http2.connect is not a function" at connect time. That broke every
+    // OAuth flow against admin-configured endpoints (e.g. Windshift, remote
+    // MCP) in the compiled web image. Node's built-in http/https modules
+    // honor the pinned `lookup` directly and remain external in the bundle.
+    const transport = url.protocol === 'http:' ? http : https
     const timeoutSignal = AbortSignal.timeout(REMOTE_MCP_HTTP_TIMEOUT_MS)
     const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal
-    try {
-        const response = await undiciFetch(url.toString(), {
-            ...init,
-            signal,
-            redirect: 'manual',
-            dispatcher,
-        } as RequestInit & { dispatcher: unknown })
-        const body = await readRemoteMcpLimitedBytes(response)
-        return new Response(body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-        })
-    } finally {
-        await dispatcher.close().catch(() => undefined)
+    if (signal.aborted) {
+        throw new DOMException('The operation was aborted', 'AbortError')
     }
+
+    const headers = new Headers(init.headers)
+    const requestBody = typeof init.body === 'string' ? init.body : undefined
+
+    const incoming = await new Promise<http.IncomingMessage>((resolve, reject) => {
+        const request = transport.request(
+            url,
+            {
+                method: init.method ?? 'GET',
+                headers: Object.fromEntries(headers.entries()),
+                lookup: pinnedLookup as unknown as net.LookupFunction,
+            },
+            (response) => resolve(response),
+        )
+        request.on('error', reject)
+        signal.addEventListener('abort', () => {
+            request.destroy(new DOMException('The operation was aborted', 'AbortError'))
+        })
+        if (requestBody) request.write(requestBody)
+        request.end()
+    })
+
+    const chunks: Buffer[] = []
+    let total = 0
+    const body = await new Promise<Buffer>((resolve, reject) => {
+        incoming.on('data', (chunk: Buffer) => {
+            total += chunk.length
+            if (total > MAX_RESPONSE_BYTES) {
+                incoming.destroy()
+                reject(new Error('MCP response too large'))
+                return
+            }
+            chunks.push(chunk)
+        })
+        incoming.on('end', () => resolve(Buffer.concat(chunks)))
+        incoming.on('error', reject)
+    })
+
+    const responseHeaders = new Headers()
+    for (const [name, value] of Object.entries(incoming.headers)) {
+        if (value === undefined) continue
+        for (const entry of Array.isArray(value) ? value : [value]) {
+            responseHeaders.append(name, String(entry))
+        }
+    }
+    return new Response(body, {
+        status: incoming.statusCode,
+        statusText: incoming.statusMessage,
+        headers: responseHeaders,
+    })
 }
 
 function parseSlugCandidate(name: string | null): string | null {
