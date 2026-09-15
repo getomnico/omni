@@ -1,11 +1,12 @@
+// @ts-nocheck — plain service worker script (worker scope, not DOM)
 /* Omni mobile PWA service worker.
  * Conservative: network-only application assets and API calls, a self-contained
- * recovery document for failed navigation, plus Web Push. We deliberately do
- * not cache index.html without its versioned asset graph: that produces an
- * unbootable white page when the device is offline. */
+ * recovery document for offline/failed navigations, plus Web Push. We
+ * deliberately do not cache index.html without its versioned asset graph: that
+ * produces an unbootable white page when the device is offline. */
 const CACHE_PREFIX = 'omni-pwa-';
 const CACHE_VERSION = 'v1';
-const NAVIGATION_TIMEOUT_MS = 10_000;
+const NAVIGATION_TIMEOUT_MS = 30_000;
 const scopePath = new URL(self.registration.scope).pathname;
 const scopeKey = encodeURIComponent(scopePath.replace(/^\/+|\/+$/g, '') || 'root');
 const CACHE_FAMILY = `${CACHE_PREFIX}${scopeKey}-`;
@@ -77,16 +78,19 @@ async function fetchNavigation(req, preloadResponse) {
     });
   });
   try {
-    const preload = await Promise.race([Promise.resolve(preloadResponse), deadline]);
+    let preload = null;
+    try {
+      // A preload rejection (e.g. the browser aborted it) must not skip the
+      // direct fetch fallback below.
+      preload = await Promise.race([Promise.resolve(preloadResponse), deadline]);
+    } catch {
+      preload = null;
+    }
     if (preload) return preload;
     return await Promise.race([fetch(req, { signal: controller.signal }), deadline]);
   } finally {
     clearTimeout(timeout);
   }
-}
-
-function isRetryableServerFailure(response) {
-  return response.status === 408 || response.status === 429 || response.status >= 500;
 }
 
 function scopedURL(value = '/') {
@@ -127,9 +131,10 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     (async () => {
       try {
-        const res = await fetchNavigation(req, event.preloadResponse);
-        if (isRetryableServerFailure(res)) return cachedRecoveryResponse();
-        return res;
+        // Network failures (offline, timeout) get the recovery document;
+        // real server responses (including 4xx/5xx errors) pass through
+        // untouched so error pages stay visible.
+        return await fetchNavigation(req, event.preloadResponse);
       } catch {
         return cachedRecoveryResponse();
       }
@@ -156,7 +161,6 @@ self.addEventListener('push', (event) => {
     tag: payload.tag || payload.id || undefined,
     data: { url: scopedURL(payload.url || '/') },
     icon: scopedURL('apple-touch-icon.png'),
-    badge: scopedURL('icon-256.png'),
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
@@ -169,7 +173,11 @@ self.addEventListener('notificationclick', (event) => {
       const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of clientList) {
         if ('focus' in client) {
-          await client.focus();
+          try {
+            await client.focus();
+          } catch {
+            continue;
+          }
           if ('navigate' in client) {
             try {
               await client.navigate(url);
