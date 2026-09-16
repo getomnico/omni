@@ -98,8 +98,13 @@ Some core development principles that should be kept in mind when developing Omn
 
 ### Testing:
 - Prefer integration tests. Most services have an integ harness; use it.
+- Integration tests spawn testcontainers, so avoid running too many tests in parallel. Limit test parallelism to 2.
 - Use testcontainers with real Postgres/Redis (the existing infra already does this).
 - Python connector suites use the harness in sdk/python/omni_connector/testing.
+
+### Commits and Pull Requests:
+- When making a commit, follow the commit message style used by previous commits.
+- When opening a pull request, refer to previous pull requests and follow the same title and description style.
 
 ## Community and commercial editions
 
