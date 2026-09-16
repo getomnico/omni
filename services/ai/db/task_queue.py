@@ -277,6 +277,27 @@ class TaskQueueRepository:
         )
         return bool(renewed)
 
+    async def heartbeat_bulk(
+        self, task_ids: list[str], claim_token: str, lease_seconds: int
+    ) -> list[str]:
+        """Renew all tasks in a claim and return the IDs still owned."""
+        if not task_ids:
+            return []
+        if len(claim_token) != 26:
+            raise ValueError(f"claim_token must be a 26-char ULID, got {claim_token!r}")
+        if lease_seconds < 1:
+            raise ValueError("heartbeat lease_seconds must be >= 1")
+        if any(len(task_id) != 26 for task_id in task_ids):
+            raise ValueError("every task id must be a 26-char ULID")
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            "SELECT task_id FROM task_heartbeat_bulk($1, $2, $3)",
+            task_ids,
+            claim_token,
+            lease_seconds,
+        )
+        return [row["task_id"] for row in rows]
+
     async def complete(self, task_ids: list[str], claim_token: str) -> int:
         """Mark claimed tasks completed. Returns the number completed."""
         if len(claim_token) != 26:
@@ -319,6 +340,49 @@ class TaskQueueRepository:
             retry_delay_seconds,
         )
         return {row["task_id"]: TaskStatus(row["result_status"]) for row in rows}
+
+    async def fail_with_errors(
+        self,
+        task_errors: list[tuple[str, str]],
+        claim_token: str,
+        retryable: bool,
+        retry_delay_seconds: int = 0,
+    ) -> dict[str, TaskStatus]:
+        """Fail tasks with one diagnostic per task and one common retry policy."""
+        if not task_errors:
+            return {}
+        if len(claim_token) != 26:
+            raise ValueError(f"claim_token must be a 26-char ULID, got {claim_token!r}")
+        if retry_delay_seconds < 0:
+            raise ValueError("retry_delay_seconds must be >= 0")
+        task_ids = [task_id for task_id, _ in task_errors]
+        errors = [error for _, error in task_errors]
+        if any(len(task_id) != 26 for task_id in task_ids):
+            raise ValueError("every task id must be a 26-char ULID")
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            "SELECT * FROM task_fail_bulk_with_errors($1, $2, $3, $4, $5)",
+            task_ids,
+            errors,
+            claim_token,
+            retryable,
+            retry_delay_seconds,
+        )
+        return {row["task_id"]: TaskStatus(row["result_status"]) for row in rows}
+
+    async def dead_letter_pending(self, task_ids: list[str], reason: str) -> list[str]:
+        """Dead-letter only retry-pending tasks selected by an administrator."""
+        if not task_ids:
+            return []
+        if not reason.strip():
+            raise ValueError("reason must not be empty")
+        if any(len(task_id) != 26 for task_id in task_ids):
+            raise ValueError("every task id must be a 26-char ULID")
+        pool = await self._get_pool()
+        rows = await pool.fetch(
+            "SELECT task_id FROM task_dead_letter_pending($1, $2)", task_ids, reason
+        )
+        return [row["task_id"] for row in rows]
 
     async def recover_expired(self) -> list[Task]:
         """Recover tasks whose lease expired while running: retryable tasks

@@ -6,9 +6,9 @@ use common::TEST_SOURCE_ID;
 use common::fixtures::{create_document_request, update_document_request};
 use omni_indexer::{BulkDocumentOperation, BulkDocumentRequest, QueueProcessor};
 use serde_json::{Value, json};
+use shared::connector_event_queue::EventQueue;
 use shared::db::repositories::{DocumentRepository, GroupRepository, PersonRepository};
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
-use shared::queue::EventQueue;
 use sqlx::types::time::OffsetDateTime;
 use std::collections::HashMap;
 use tokio::time::Duration;
@@ -793,9 +793,10 @@ async fn test_recovery_and_dead_letter() {
     };
 
     let event_id = event_queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+    event_queue.dequeue_batch(1).await.unwrap();
 
     sqlx::query(
-        "UPDATE connector_events_queue SET status = 'processing', processing_started_at = NOW() - INTERVAL '10 minutes' WHERE id = $1"
+        "UPDATE tasks SET lease_expires_at = NOW() - INTERVAL '10 minutes' WHERE id = $1 AND task_type = 'connector_event'"
     )
     .bind(&event_id)
     .execute(pool)
@@ -872,19 +873,22 @@ async fn test_recovery_and_dead_letter() {
         .await
         .unwrap();
 
-    // mark_failed increments retry_count each call; at retry_count >= max_retries (3), status becomes dead_letter
-    event_queue
-        .mark_failed(&dl_event_id, "error attempt 1")
-        .await
-        .unwrap();
-    event_queue
-        .mark_failed(&dl_event_id, "error attempt 2")
-        .await
-        .unwrap();
-    event_queue
-        .mark_failed(&dl_event_id, "error attempt 3")
-        .await
-        .unwrap();
+    // Each failure applies to an active lease; make delayed retries immediately
+    // eligible here so the test can exercise all three attempts quickly.
+    for attempt in 1..=3 {
+        event_queue.dequeue_batch(1).await.unwrap();
+        event_queue
+            .mark_failed(&dl_event_id, &format!("error attempt {attempt}"))
+            .await
+            .unwrap();
+        if attempt < 3 {
+            sqlx::query("UPDATE tasks SET available_at = NOW() WHERE id = $1")
+                .bind(&dl_event_id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+    }
 
     let dl_stats = event_queue.get_queue_stats().await.unwrap();
     assert!(
@@ -1592,7 +1596,7 @@ async fn person_sync_queue_creates_no_documents_embeddings_or_document_progress(
     // No sync run exists for this synthetic queue event; if PersonSync were
     // counted as document progress, processing would attempt and fail that update.
     let status: String = sqlx::query_scalar(
-        "SELECT status FROM connector_events_queue WHERE sync_run_id='people-progress-run'",
+        "SELECT status FROM tasks WHERE task_type = 'connector_event' AND payload->>'sync_run_id'='people-progress-run'",
     )
     .fetch_one(pool)
     .await

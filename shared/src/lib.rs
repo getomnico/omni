@@ -1,5 +1,6 @@
 pub mod clients;
 pub mod config;
+pub mod connector_event_queue;
 pub mod constants;
 pub mod content_chunker;
 pub mod content_extractor;
@@ -23,6 +24,10 @@ pub mod test_environment;
 
 pub use clients::ai::AIClient;
 pub use config::*;
+pub use connector_event_queue::{
+    ConnectorEventClaim, ConnectorEventQueue, ConnectorEventQueueItem, EventQueue, QueueStats,
+    QueueSummary,
+};
 pub use content_chunker::ContentChunker;
 pub use content_storage::{ContentStorage, ContentStorageError};
 pub use db::repositories::{
@@ -37,7 +42,6 @@ pub use embedding_queue::{
 };
 pub use encryption::{EncryptedData, EncryptionService};
 pub use models::*;
-pub use queue::{EventQueue, QueueStats, QueueSummary};
 pub use rate_limiter::{RateLimiter, RetryableError};
 pub use service_auth::{ServiceAuth, create_service_auth};
 pub use storage::{

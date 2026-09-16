@@ -1,9 +1,10 @@
 #[cfg(test)]
 mod tests {
+    use shared::connector_event_queue::EventQueue;
     use shared::models::{
         ConnectorEvent, DocumentMetadata, DocumentPermissions, EventStatus, SyncType,
     };
-    use shared::queue::EventQueue;
+    use shared::task_queue::{EnqueueTaskRequest, TaskQueue};
     use shared::test_environment::TestEnvironment;
 
     const TEST_SOURCE_ID: &str = "01JGF7V3E0Y2R1X8P5Q7W9T4N7";
@@ -74,6 +75,117 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_connector_tasks_are_dead_lettered_at_claim_boundary() {
+        let env = TestEnvironment::new().await.unwrap();
+        let pool = env.db_pool.pool().clone();
+        let task_queue = TaskQueue::new(pool.clone());
+        let task = EnqueueTaskRequest::new(
+            "connector_event",
+            serde_json::json!({"not": "a connector event"}),
+        );
+        let task_id = task.id.clone();
+        task_queue.enqueue(task).await.unwrap();
+
+        let claim = EventQueue::new(pool.clone()).claim_batch(1, i64::MAX).await.unwrap();
+        assert!(claim.events.is_empty());
+        let status: String = sqlx::query_scalar(
+            "SELECT status FROM tasks WHERE id = $1",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "dead_letter");
+    }
+
+    #[tokio::test]
+    async fn terminal_task_omitted_by_heartbeat_is_not_reported_as_lost() {
+        let env = TestEnvironment::new().await.unwrap();
+        let queue = EventQueue::new(env.db_pool.pool().clone());
+        let first = queue
+            .enqueue(TEST_SOURCE_ID, &make_event("run-1", "doc-1"))
+            .await
+            .unwrap();
+        let second = queue
+            .enqueue(TEST_SOURCE_ID, &make_event("run-1", "doc-2"))
+            .await
+            .unwrap();
+
+        let claim = queue.claim_batch(2, i64::MAX).await.unwrap();
+        let ids = vec![first.clone(), second.clone()];
+        assert_eq!(claim.events.len(), ids.len());
+        queue.complete_bulk(&[first.clone()], &claim.claim_token).await.unwrap();
+
+        let renewed = queue.heartbeat_bulk(&ids, &claim.claim_token).await.unwrap();
+        assert_eq!(renewed, vec![second.clone()]);
+        let missing = vec![first.clone()];
+        let (terminal, lost) = queue.classify_unrenewed(&missing).await.unwrap();
+        assert_eq!(terminal, vec![first]);
+        assert!(lost.is_empty());
+
+        queue.complete_bulk(&[second], &claim.claim_token).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retry_to_pending_is_removed_before_heartbeat_snapshot() {
+        let env = TestEnvironment::new().await.unwrap();
+        let queue = EventQueue::new(env.db_pool.pool().clone());
+        let first = queue
+            .enqueue(TEST_SOURCE_ID, &make_event("run-1", "doc-1"))
+            .await
+            .unwrap();
+        let second = queue
+            .enqueue(TEST_SOURCE_ID, &make_event("run-1", "doc-2"))
+            .await
+            .unwrap();
+        let claim = queue.claim_batch(2, i64::MAX).await.unwrap();
+        assert_eq!(claim.events.len(), 2);
+
+        let active_ids =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::from([
+                first.clone(),
+                second.clone(),
+            ])));
+        let ownership_lock = tokio::sync::Mutex::new(());
+        {
+            let _guard = ownership_lock.lock().await;
+            let failed = queue
+                .fail_bulk(
+                    &[(first.clone(), "retryable failure".to_string())],
+                    &claim.claim_token,
+                )
+                .await
+                .unwrap();
+            assert_eq!(failed.len(), 1);
+            active_ids.lock().await.retain(|id| id != &first);
+        }
+
+        // The heartbeat snapshots only the still-owned task, so a successful
+        // retry transition cannot be mistaken for lease loss.
+        let _guard = ownership_lock.lock().await;
+        let heartbeat_ids: Vec<String> = active_ids.lock().await.iter().cloned().collect();
+        assert_eq!(heartbeat_ids, vec![second.clone()]);
+        assert_eq!(
+            queue
+                .heartbeat_bulk(&heartbeat_ids, &claim.claim_token)
+                .await
+                .unwrap(),
+            vec![second.clone()]
+        );
+        let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id = $1")
+            .bind(&first)
+            .fetch_one(env.db_pool.pool())
+            .await
+            .unwrap();
+        assert_eq!(status, "pending");
+
+        queue
+            .complete_bulk(&[second], &claim.claim_token)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -164,7 +276,8 @@ mod tests {
         queue.mark_failed(&event_id, "timeout error").await.unwrap();
 
         let stats = queue.get_queue_stats().await.unwrap();
-        assert_eq!(stats.failed, 1);
+        assert_eq!(stats.pending, 1);
+        assert_eq!(stats.failed, 0);
     }
 
     #[tokio::test]
@@ -178,19 +291,29 @@ mod tests {
         // Dequeue and fail 3 times (default max_retries = 3)
         queue.dequeue_batch(10).await.unwrap();
         queue.mark_failed(&event_id, "error 1").await.unwrap();
+        sqlx::query("UPDATE tasks SET available_at = NOW() WHERE id = $1")
+            .bind(&event_id)
+            .execute(env.db_pool.pool())
+            .await
+            .unwrap();
 
         queue.retry_failed_events().await.unwrap();
         queue.dequeue_batch(10).await.unwrap();
         queue.mark_failed(&event_id, "error 2").await.unwrap();
+        sqlx::query("UPDATE tasks SET available_at = NOW() WHERE id = $1")
+            .bind(&event_id)
+            .execute(env.db_pool.pool())
+            .await
+            .unwrap();
 
         queue.retry_failed_events().await.unwrap();
         queue.dequeue_batch(10).await.unwrap();
         queue.mark_failed(&event_id, "error 3").await.unwrap();
 
-        // After 3 failures (retry_count=3 >= max_retries=3), should be dead_letter
+        // After 3 claims, the generic queue dead-letters the task.
         let stats = queue.get_queue_stats().await.unwrap();
         assert_eq!(stats.dead_letter, 1);
-        assert_eq!(stats.failed, 0);
+        assert_eq!(stats.pending, 0);
     }
 
     #[tokio::test]
@@ -208,7 +331,12 @@ mod tests {
             .unwrap();
 
         let retried = queue.retry_failed_events().await.unwrap();
-        assert_eq!(retried, 1);
+        assert_eq!(retried, 0);
+        sqlx::query("UPDATE tasks SET available_at = NOW() WHERE id = $1")
+            .bind(&event_id)
+            .execute(env.db_pool.pool())
+            .await
+            .unwrap();
 
         // Should now be dequeue-able again
         let batch = queue.dequeue_batch(10).await.unwrap();
@@ -225,8 +353,12 @@ mod tests {
 
         queue.dequeue_batch(10).await.unwrap();
 
-        // timeout=0 means all processing items are considered stale
-        let recovered = queue.recover_stale_processing_items(0).await.unwrap();
+        sqlx::query("UPDATE tasks SET updated_at = NOW() - INTERVAL '10 minutes' WHERE task_type = 'connector_event'")
+            .execute(env.db_pool.pool())
+            .await
+            .unwrap();
+
+        let recovered = queue.recover_stale_processing_items(1).await.unwrap();
         assert_eq!(recovered, 1);
 
         let batch = queue.dequeue_batch(10).await.unwrap();
@@ -277,7 +409,8 @@ mod tests {
         assert_eq!(failed, 2);
 
         let stats = queue.get_queue_stats().await.unwrap();
-        assert_eq!(stats.failed, 2);
+        assert_eq!(stats.pending, 2);
+        assert_eq!(stats.failed, 0);
     }
 
     #[tokio::test]
@@ -299,13 +432,13 @@ mod tests {
 
         queue.dequeue_batch(10).await.unwrap();
 
-        sqlx::query("UPDATE connector_events_queue SET retry_count = $1 WHERE id = $2")
+        sqlx::query("UPDATE tasks SET attempt_count = $1 WHERE id = $2")
             .bind(2)
             .bind(&near_limit_id)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("UPDATE connector_events_queue SET retry_count = $1 WHERE id = $2")
+        sqlx::query("UPDATE tasks SET attempt_count = $1 WHERE id = $2")
             .bind(1)
             .bind(&below_limit_id)
             .execute(&pool)
@@ -322,20 +455,20 @@ mod tests {
         assert_eq!(updated, 2);
 
         let near_limit_row: (String, i32) =
-            sqlx::query_as("SELECT status, retry_count FROM connector_events_queue WHERE id = $1")
+            sqlx::query_as("SELECT status, attempt_count FROM tasks WHERE id = $1")
                 .bind(&near_limit_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(near_limit_row, ("dead_letter".to_string(), 3));
+        assert_eq!(near_limit_row, ("dead_letter".to_string(), 2));
 
         let below_limit_row: (String, i32) =
-            sqlx::query_as("SELECT status, retry_count FROM connector_events_queue WHERE id = $1")
+            sqlx::query_as("SELECT status, attempt_count FROM tasks WHERE id = $1")
                 .bind(&below_limit_id)
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(below_limit_row, ("failed".to_string(), 2));
+        assert_eq!(below_limit_row, ("dead_letter".to_string(), 1));
     }
 
     #[tokio::test]
@@ -426,7 +559,7 @@ mod tests {
         // The byte budget includes event payload text, so calibrate it from a
         // measured payload to stay generous enough that the count limit binds.
         let payload: i64 = sqlx::query_scalar(
-            "SELECT octet_length(payload::text)::bigint FROM connector_events_queue WHERE id = $1",
+            "SELECT octet_length(payload::text)::bigint FROM tasks WHERE id = $1",
         )
         .bind(&ids[0])
         .fetch_one(&pool)
@@ -456,7 +589,7 @@ mod tests {
 
         // Budget admits exactly the first event once payload text is counted.
         let payload: i64 = sqlx::query_scalar(
-            "SELECT octet_length(payload::text)::bigint FROM connector_events_queue WHERE id = $1",
+            "SELECT octet_length(payload::text)::bigint FROM tasks WHERE id = $1",
         )
         .bind(&ids[0])
         .fetch_one(&pool)
@@ -559,7 +692,7 @@ mod tests {
 
         let content_id = insert_sized_content(&pool, 42).await;
         let event = make_event_with_content("missing-run", "sized-doc", content_id);
-        queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
+        let event_id = queue.enqueue(TEST_SOURCE_ID, &event).await.unwrap();
 
         let summary = queue.get_queue_summary().await.unwrap();
         let pending_orphan = summary
@@ -568,14 +701,16 @@ mod tests {
             .find(|entry| entry.sync_type.is_none() && entry.status == EventStatus::Pending)
             .unwrap();
         assert_eq!(pending_orphan.count, 1);
-        let payload_bytes: i64 = sqlx::query_scalar(
-            "SELECT pg_column_size(payload)::BIGINT FROM connector_events_queue WHERE source_id = $1 AND status = 'pending' LIMIT 1",
+        let payload_bytes = serde_json::to_vec(&event).unwrap().len() as i64;
+        let task_weight: i64 = sqlx::query_scalar(
+            "SELECT weight FROM tasks WHERE id = $1",
         )
-        .bind(TEST_SOURCE_ID)
+        .bind(&event_id)
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(pending_orphan.size_bytes, 42 + payload_bytes);
+        assert_eq!(pending_orphan.size_bytes, task_weight);
+        assert_eq!(task_weight, payload_bytes + 42);
     }
 
     #[tokio::test]
@@ -641,6 +776,67 @@ mod tests {
             .unwrap();
         assert_eq!(person_batch.len(), 1);
         assert_eq!(person_batch[0].event_type, "person_sync");
+    }
+
+    #[tokio::test]
+    async fn person_candidate_filter_does_not_limit_before_predecessor_eligibility() {
+        let env = TestEnvironment::new().await.unwrap();
+        let queue = EventQueue::new(env.db_pool.pool().clone());
+
+        let first = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonDeleted {
+                    sync_run_id: "blocked-run".into(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    email: "blocked@example.com".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let first_claim = queue.claim_person_mutations(1, i64::MAX).await.unwrap();
+        assert_eq!(first_claim.events.len(), 1);
+        assert_eq!(first_claim.events[0].id, first);
+
+        // More blocked events than the claim limit used to fill the candidate
+        // prefix, hiding the unrelated identity that followed them.
+        for _ in 0..4 {
+            queue
+                .enqueue(
+                    TEST_SOURCE_ID,
+                    &ConnectorEvent::PersonDeleted {
+                        sync_run_id: "blocked-run".into(),
+                        source_id: TEST_SOURCE_ID.into(),
+                        email: "blocked@example.com".into(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let unrelated = queue
+            .enqueue(
+                TEST_SOURCE_ID,
+                &ConnectorEvent::PersonDeleted {
+                    sync_run_id: "unrelated-run".into(),
+                    source_id: TEST_SOURCE_ID.into(),
+                    email: "unrelated@example.com".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let claim = queue.claim_person_mutations(2, i64::MAX).await.unwrap();
+        assert_eq!(claim.events.len(), 1);
+        assert_eq!(claim.events[0].id, unrelated);
+
+        queue
+            .complete_bulk(&[first], &first_claim.claim_token)
+            .await
+            .unwrap();
+        queue
+            .complete_bulk(&[unrelated], &claim.claim_token)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -764,6 +960,11 @@ mod tests {
         );
 
         queue.retry_failed_events().await.unwrap();
+        sqlx::query("UPDATE tasks SET available_at = NOW() WHERE id = $1")
+            .bind(&first)
+            .execute(env.db_pool.pool())
+            .await
+            .unwrap();
         let retried = queue
             .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
             .await
@@ -850,33 +1051,40 @@ mod tests {
             .await
             .unwrap();
 
-        // Age the stale event beyond the retry window and fail it.
-        sqlx::query(
-            "UPDATE connector_events_queue SET created_at = NOW() - INTERVAL '48 hours' WHERE id = $1",
-        )
-        .bind(&stale)
-        .execute(&pool)
-        .await
-        .unwrap();
+        // Claim the predecessor before failing it so failure is fenced by its
+        // real generic lease.
+        let stale_claim = queue
+            .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
+            .await
+            .unwrap();
+        assert_eq!(stale_claim.len(), 1);
+
+        // Age the stale event and fail it.
+        sqlx::query("UPDATE tasks SET created_at = NOW() - INTERVAL '48 hours' WHERE id = $1")
+            .bind(&stale)
+            .execute(&pool)
+            .await
+            .unwrap();
         queue.mark_failed(&stale, "transient outage").await.unwrap();
 
-        // A failed predecessor with retries remaining but outside the retry
-        // window must not block the newer mutation for the same identity.
+        // A retrying predecessor blocks the same identity until it is
+        // terminally settled by administrative recovery.
+        sqlx::query("UPDATE tasks SET status = 'dead_letter', completed_at = NOW(), claim_token = NULL, claimed_by = NULL, lease_expires_at = NULL WHERE id = $1")
+            .bind(&stale)
+            .execute(&pool)
+            .await
+            .unwrap();
         let batch = queue
             .dequeue_person_mutations_with_max_bytes(10, i64::MAX)
             .await
             .unwrap();
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].id, newer);
-
-        // The retry sweep dead-letters the expired failure so it never lingers.
-        queue.retry_failed_events().await.unwrap();
-        let (status,): (String,) =
-            sqlx::query_as("SELECT status FROM connector_events_queue WHERE id = $1")
-                .bind(&stale)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let (status,): (String,) = sqlx::query_as("SELECT status FROM tasks WHERE id = $1")
+            .bind(&stale)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(status, "dead_letter");
     }
 

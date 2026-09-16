@@ -1,9 +1,9 @@
 use anyhow::Result;
 use omni_indexer::{AppState, create_app};
 use shared::ObjectStorage;
+use shared::connector_event_queue::EventQueue;
 use shared::db::repositories::DocumentRepository;
 use shared::models::{ConnectorEvent, Document, DocumentMetadata, DocumentPermissions};
-use shared::queue::EventQueue;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use sqlx::PgPool;
@@ -236,7 +236,7 @@ pub async fn enqueue_dummy_events(
 #[allow(dead_code)]
 pub async fn count_completed_events(pool: &PgPool) -> i64 {
     let row: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM connector_events_queue WHERE status = 'completed'")
+        sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE task_type = 'connector_event' AND status = 'completed'")
             .fetch_one(pool)
             .await
             .unwrap();

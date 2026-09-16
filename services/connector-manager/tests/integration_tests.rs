@@ -6,14 +6,13 @@ use common::TEST_SOURCE_ID;
 use omni_connector_manager::source_cleanup::SourceCleanup;
 use redis::AsyncCommands;
 use serde_json::json;
+use shared::connector_event_queue::EventQueue;
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
-    ConnectorManifest, DocumentMetadata,
-    DocumentPermissions, IntegrationType, PersonSyncRecord, ServiceCredential, ServiceProvider,
-    SourceType, SyncStatus, SyncType,
+    ConnectorManifest, DocumentMetadata, DocumentPermissions, IntegrationType, PersonSyncRecord,
+    ServiceCredential, ServiceProvider, SourceType, SyncStatus, SyncType,
 };
-use shared::queue::EventQueue;
 use time::OffsetDateTime;
 
 struct DummyConnectorEmitter<'a> {
@@ -875,7 +874,7 @@ async fn test_source_cleanup_queues_people_deactivation_before_source_deletion()
 
     SourceCleanup::cleanup_deleted_sources(pool).await;
     let ordinary_pending: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_sync' AND status='pending'",
+        "SELECT count(*) FROM tasks WHERE task_type='connector_event' AND payload->>'source_id'=$1 AND payload->>'type'='person_sync' AND status='pending'",
     )
     .bind(&source_id)
     .fetch_one(pool)
@@ -883,7 +882,7 @@ async fn test_source_cleanup_queues_people_deactivation_before_source_deletion()
     .unwrap();
     assert_eq!(ordinary_pending, 1);
     let cleanup_events: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_deleted'",
+        "SELECT count(*) FROM tasks WHERE task_type='connector_event' AND payload->>'source_id'=$1 AND payload->>'type'='person_deleted'",
     )
     .bind(&source_id)
     .fetch_one(pool)
@@ -894,7 +893,7 @@ async fn test_source_cleanup_queues_people_deactivation_before_source_deletion()
         "ordinary person mutation must quiesce first"
     );
 
-    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE sync_run_id=$1")
+    sqlx::query("UPDATE tasks SET status='completed', completed_at=NOW() WHERE task_type='connector_event' AND payload->>'sync_run_id'=$1")
         .bind(&ordinary_run)
         .execute(pool)
         .await
@@ -916,7 +915,7 @@ async fn test_source_cleanup_queues_people_deactivation_before_source_deletion()
         .unwrap();
     assert_eq!(source_count, 1);
     let queued: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM connector_events_queue q JOIN sync_runs r ON r.id=q.sync_run_id WHERE q.source_id=$1 AND q.event_type='person_deleted' AND q.status='pending' AND r.trigger_type='source_cleanup' AND q.payload->>'email' IN ('cleanup@example.com','late@example.com')",
+        "SELECT count(*) FROM tasks q JOIN sync_runs r ON r.id=q.payload->>'sync_run_id' WHERE q.task_type='connector_event' AND q.payload->>'source_id'=$1 AND q.payload->>'type'='person_deleted' AND q.status='pending' AND r.trigger_type='source_cleanup' AND q.payload->>'email' IN ('cleanup@example.com','late@example.com')",
     )
     .bind(&source_id)
     .fetch_one(pool)
@@ -929,12 +928,12 @@ async fn test_source_cleanup_queues_people_deactivation_before_source_deletion()
 
     SourceCleanup::cleanup_deleted_sources(pool).await;
     let cleanup_events: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM connector_events_queue WHERE source_id=$1 AND event_type='person_deleted'",
+        "SELECT count(*) FROM tasks WHERE task_type='connector_event' AND payload->>'source_id'=$1 AND payload->>'type'='person_deleted'",
     )
     .bind(&source_id).fetch_one(pool).await.unwrap();
     assert_eq!(cleanup_events, 2, "pending cleanup must be idempotent");
 
-    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE source_id=$1 AND event_type='person_deleted'")
+    sqlx::query("UPDATE tasks SET status='completed', completed_at=NOW(), claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL WHERE task_type='connector_event' AND payload->>'source_id'=$1 AND payload->>'type'='person_deleted'")
         .bind(&source_id).execute(pool).await.unwrap();
     sqlx::query(
         "UPDATE people SET source_data=source_data-$1, is_active=false WHERE source_data ? $1",
@@ -1062,7 +1061,7 @@ async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
         .enqueue(&source_id, &doc_event(&run_id, &source_id, "doc-2"))
         .await
         .unwrap();
-    sqlx::query("UPDATE connector_events_queue SET status='failed' WHERE id=$1")
+    sqlx::query("UPDATE tasks SET status='pending', available_at=NOW(), attempt_count=1, last_error='test failure', claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL WHERE task_type='connector_event' AND id=$1")
         .bind(&failed_id)
         .execute(pool)
         .await
@@ -1091,7 +1090,7 @@ async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
         "pending non-person event must prevent physical source deletion"
     );
     let (pending,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM connector_events_queue WHERE id=$1 AND status='pending'",
+        "SELECT count(*) FROM tasks WHERE task_type='connector_event' AND id=$1 AND status='pending'",
     )
     .bind(&pending_id)
     .fetch_one(pool)
@@ -1099,7 +1098,7 @@ async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
     .unwrap();
     assert_eq!(pending, 1, "pending document event must remain pending");
     let (dead,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM connector_events_queue WHERE id=$1 AND status='dead_letter'",
+        "SELECT count(*) FROM tasks WHERE task_type='connector_event' AND id=$1 AND status='dead_letter'",
     )
     .bind(&failed_id)
     .fetch_one(pool)
@@ -1112,7 +1111,7 @@ async fn test_source_cleanup_pending_non_person_event_blocks_source_deletion() {
 
     // Once the pending event settles, the next pass deletes the documents
     // (bounded batch), then a final pass removes the source row.
-    sqlx::query("UPDATE connector_events_queue SET status='completed' WHERE id=$1")
+    sqlx::query("UPDATE tasks SET status='completed', completed_at=NOW(), claim_token=NULL, claimed_by=NULL, lease_expires_at=NULL WHERE task_type='connector_event' AND id=$1")
         .bind(&pending_id)
         .execute(pool)
         .await
@@ -1404,10 +1403,11 @@ async fn sdk_event_rejects_deleted_source_before_enqueue() {
         .execute(pool)
         .await
         .unwrap();
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE task_type='connector_event'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
 
     let response = server
         .post("/sdk/events")
@@ -1419,10 +1419,11 @@ async fn sdk_event_rejects_deleted_source_before_enqueue() {
     response.assert_status(StatusCode::BAD_REQUEST);
     response.assert_text_contains("deleted source");
 
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE task_type='connector_event'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     assert_eq!(before, after);
 }
 
@@ -1432,10 +1433,11 @@ async fn sdk_batch_rejects_mixed_context_atomically() {
     let server = test_server_no_expect(&fixture);
     let pool = fixture.state.db_pool.pool();
     let run = create_running_sync(pool, TEST_SOURCE_ID).await;
-    let before: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE task_type='connector_event'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     let response = server
         .post("/sdk/events/batch")
         .json(&json!({
@@ -1447,10 +1449,11 @@ async fn sdk_batch_rejects_mixed_context_atomically() {
         }))
         .await;
     response.assert_status(StatusCode::BAD_REQUEST);
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM connector_events_queue")
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE task_type='connector_event'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
     assert_eq!(before, after);
 }
 
@@ -1463,7 +1466,7 @@ async fn wait_for_person_queue(
     let start = std::time::Instant::now();
     loop {
         let completed: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status='completed'",
+            "SELECT count(*) FROM tasks WHERE task_type='connector_event' AND payload->>'sync_run_id'=ANY($1) AND status='completed'",
         )
         .bind(sync_run_ids)
         .fetch_one(pool)
@@ -1474,7 +1477,7 @@ async fn wait_for_person_queue(
         }
         if start.elapsed() > timeout {
             let details: Vec<(String, String, Option<String>)> = sqlx::query_as(
-                "SELECT event_type, status, substring(error_message from 1 for 200) FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status<>'completed' ORDER BY id",
+                "SELECT payload->>'type' AS event_type, status, substring(last_error from 1 for 200) FROM tasks WHERE task_type='connector_event' AND payload->>'sync_run_id'=ANY($1) AND status<>'completed' ORDER BY id",
             )
             .bind(sync_run_ids)
             .fetch_all(pool)
@@ -1494,7 +1497,7 @@ async fn wait_for_person_queue(
                 detail_str,
                 {
                     let completed_details: Vec<(String, String)> = sqlx::query_as(
-                        "SELECT event_type, status FROM connector_events_queue WHERE sync_run_id=ANY($1) AND status='completed' ORDER BY id"
+                        "SELECT payload->>'type' AS event_type, status FROM tasks WHERE task_type='connector_event' AND payload->>'sync_run_id'=ANY($1) AND status='completed' ORDER BY id"
                     )
                     .bind(sync_run_ids)
                     .fetch_all(pool)
