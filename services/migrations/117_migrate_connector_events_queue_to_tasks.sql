@@ -1,6 +1,6 @@
--- Move connector event delivery onto the canonical task queue. This migration
--- is intentionally a single cutover: the connector manager and indexer must be
--- deployed after it has committed.
+-- Destructive cutover: existing connector_events_queue rows are intentionally
+-- discarded. Deploy the connector manager and indexer after this migration;
+-- there is no compatibility or dual-write path.
 
 -- ---------------------------------------------------------------------------
 -- Generic lifecycle operations needed by bulk connector workers.
@@ -148,90 +148,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- A generic task may already use a legacy connector ULID. Never silently
--- convert such a collision into a no-op: that would lose an emitted event.
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM connector_events_queue legacy
-        JOIN tasks existing ON existing.id = legacy.id
-        WHERE existing.task_type <> 'connector_event'
-    ) THEN
-        RAISE EXCEPTION 'connector event task id collides with a non-connector task';
-    END IF;
-
-    IF EXISTS (
-        SELECT 1 FROM connector_events_queue
-        WHERE status NOT IN ('pending', 'processing', 'failed', 'completed', 'dead_letter')
-    ) THEN
-        RAISE EXCEPTION 'unexpected connector event queue status during migration';
-    END IF;
-END;
-$$;
-
--- Backfill every event. Failed rows whose retry window has elapsed are
--- terminal; active retryable failures retain their consumed attempt budget.
-INSERT INTO tasks (
-    id, task_type, payload, payload_version, status, priority, available_at,
-    weight, concurrency_key, attempt_count, max_attempts, last_error,
-    created_at, updated_at, last_started_at, completed_at
-)
-SELECT
-    q.id,
-    'connector_event',
-    q.payload,
-    1,
-    CASE
-        WHEN q.status = 'completed' THEN 'completed'
-        WHEN q.status = 'dead_letter' THEN 'dead_letter'
-        WHEN q.status = 'failed'
-             AND (COALESCE(q.retry_count, 0) >= COALESCE(q.max_retries, 3)
-                  OR q.created_at <= NOW() - INTERVAL '24 hours') THEN 'dead_letter'
-        ELSE 'pending'
-    END,
-    0,
-    CASE
-        WHEN q.status IN ('pending', 'processing') THEN NOW()
-        WHEN q.status = 'failed'
-             THEN GREATEST(COALESCE(q.processed_at, q.processing_started_at, q.created_at, NOW()) + INTERVAL '5 minutes', NOW())
-        ELSE COALESCE(q.created_at, NOW())
-    END,
-    octet_length(q.payload::text)::BIGINT + COALESCE(cb.size_bytes, 0),
-    CASE q.payload ->> 'type'
-        WHEN 'person_sync' THEN q.payload ->> 'source_id' || ':' || lower(btrim(q.payload #>> '{person,email}'))
-        WHEN 'person_deleted' THEN q.payload ->> 'source_id' || ':' || lower(btrim(q.payload ->> 'email'))
-        ELSE NULL
-    END,
-    LEAST(
-        GREATEST(
-            COALESCE(q.retry_count, 0),
-            0
-        ),
-        GREATEST(COALESCE(q.max_retries, 3), 1)
-    ),
-    GREATEST(COALESCE(q.max_retries, 3), 1),
-    CASE
-        WHEN q.status IN ('failed', 'dead_letter') THEN COALESCE(q.error_message, 'migrated from connector_events_queue')
-        ELSE NULL
-    END,
-    COALESCE(q.created_at, NOW()),
-    COALESCE(q.processed_at, q.processing_started_at, q.created_at, NOW()),
-    CASE WHEN q.status = 'processing' THEN COALESCE(q.processing_started_at, q.created_at) ELSE NULL END,
-    CASE
-        WHEN q.status = 'completed'
-             OR q.status = 'dead_letter'
-             OR (q.status = 'failed'
-                 AND (COALESCE(q.retry_count, 0) >= COALESCE(q.max_retries, 3)
-                      OR q.created_at <= NOW() - INTERVAL '24 hours'))
-            THEN COALESCE(q.processed_at, q.processing_started_at, q.created_at, NOW())
-        ELSE NULL
-    END
-FROM connector_events_queue q
-LEFT JOIN content_blobs cb
-  ON char_length(q.payload ->> 'content_id') = 26
- AND cb.id = (q.payload ->> 'content_id')::char(26);
-
 -- Workload-specific indexes used by candidate selection and content GC.
 CREATE INDEX idx_tasks_connector_source
     ON tasks ((payload ->> 'source_id'), id)
@@ -256,30 +172,6 @@ CREATE INDEX idx_tasks_connector_person_identity_order
     WHERE task_type = 'connector_event'
       AND payload ->> 'type' IN ('person_sync', 'person_deleted')
       AND status IN ('pending', 'running');
-
--- Keep the cutover invariant executable while the legacy table still exists.
--- In particular, deployment interruption must not turn a processing claim
--- into a consumed attempt or a dead letter.
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM connector_events_queue legacy
-        JOIN tasks migrated ON migrated.id = legacy.id
-        WHERE legacy.status = 'processing'
-          AND (
-              migrated.status <> 'pending'
-              OR migrated.completed_at IS NOT NULL
-              OR migrated.attempt_count <> LEAST(
-                  GREATEST(COALESCE(legacy.retry_count, 0), 0),
-                  GREATEST(COALESCE(legacy.max_retries, 3), 1)
-              )
-          )
-    ) THEN
-        RAISE EXCEPTION 'processing connector event was not requeued without consuming an attempt';
-    END IF;
-END;
-$$;
 
 DROP INDEX IF EXISTS idx_connector_events_person_identity_order;
 DROP INDEX IF EXISTS idx_queue_status_created;
