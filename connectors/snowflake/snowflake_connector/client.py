@@ -57,7 +57,7 @@ class SnowflakeClient:
     def databases(self, config: SnowflakeConfig) -> list[DatabaseRow]:
         rows = self.rows("""
             SELECT DATABASE_ID, DATABASE_NAME, COMMENT, DATABASE_OWNER AS OWNER_ROLE,
-                   CREATED, LAST_ALTERED, DELETED
+                   CREATED AS CREATED_AT, LAST_ALTERED, DELETED
             FROM SNOWFLAKE.ACCOUNT_USAGE.DATABASES
             WHERE DELETED IS NULL
             ORDER BY DATABASE_ID
@@ -71,7 +71,7 @@ class SnowflakeClient:
     def schemas(self, config: SnowflakeConfig) -> list[SchemaRow]:
         rows = self.rows("""
             SELECT SCHEMA_ID, CATALOG_NAME AS DATABASE_NAME, SCHEMA_NAME, COMMENT,
-                   SCHEMA_OWNER AS OWNER_ROLE, CREATED, LAST_ALTERED, DELETED
+                   SCHEMA_OWNER AS OWNER_ROLE, CREATED AS CREATED_AT, LAST_ALTERED, DELETED
             FROM SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA
             WHERE DELETED IS NULL
             ORDER BY SCHEMA_ID
@@ -95,7 +95,7 @@ class SnowflakeClient:
         statement = f"""
             SELECT TABLE_ID, TABLE_CATALOG AS DATABASE_NAME, TABLE_SCHEMA AS SCHEMA_NAME,
                    TABLE_NAME AS OBJECT_NAME, TABLE_TYPE AS OBJECT_TYPE, COMMENT,
-                   TABLE_OWNER AS OWNER_ROLE, CREATED, LAST_DDL, DELETED,
+                   TABLE_OWNER AS OWNER_ROLE, CREATED AS CREATED_AT, LAST_DDL, DELETED,
                    IS_TRANSIENT, IS_ICEBERG, IS_DYNAMIC, IS_MATERIALIZED
             FROM SNOWFLAKE.ACCOUNT_USAGE.TABLES
             WHERE {" AND ".join(clauses)}
@@ -181,7 +181,7 @@ class SnowflakeClient:
         return [
             SnowflakeRoleEdge.model_validate(_lower_keys(row))
             for row in self.rows("""
-            SELECT ROLE AS PARENT_ROLE, GRANTEE_NAME AS CHILD_ROLE
+            SELECT GRANTEE_NAME AS PARENT_ROLE, ROLE AS CHILD_ROLE
             FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
             WHERE GRANTED_ON = 'ROLE' AND DELETED_ON IS NULL
         """)
@@ -243,7 +243,12 @@ def _included_table(row: Mapping[str, object], config: SnowflakeConfig) -> bool:
 
 
 def _lower_keys(row: Mapping[str, object]) -> dict[str, object]:
-    return {key.lower(): value for key, value in row.items()}
+    normalized = {key.lower(): value for key, value in row.items()}
+    for key in ("database_id", "schema_id", "table_id"):
+        value = normalized.get(key)
+        if isinstance(value, int):
+            normalized[key] = str(value)
+    return normalized
 
 
 def _normalize_column(row: Mapping[str, object]) -> dict[str, object]:
@@ -274,6 +279,14 @@ def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
 
 
+def _account_identifier(account_url: str) -> str:
+    hostname = urlparse(account_url).hostname
+    if hostname is None:
+        raise ValueError("Snowflake account URL has no hostname")
+    suffix = ".snowflakecomputing.com"
+    return hostname[: -len(suffix)] if hostname.casefold().endswith(suffix) else hostname
+
+
 def validate_mcp_endpoint(url: str, account_url: str) -> str:
     endpoint = urlparse(url)
     account = urlparse(account_url)
@@ -297,9 +310,7 @@ def validate_mcp_endpoint(url: str, account_url: str) -> str:
 def default_oauth_session_factory(config: SnowflakeConfig, access_token: str) -> SnowflakeSession:
     import snowflake.connector
 
-    account = urlparse(config.account_url).hostname
-    if account is None:
-        raise ValueError("Snowflake account URL has no hostname")
+    account = _account_identifier(config.account_url)
     connection = snowflake.connector.connect(
         account=account,
         authenticator="oauth",
@@ -327,9 +338,7 @@ def default_session_factory(
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     )
-    account = urlparse(config.account_url).hostname
-    if account is None:
-        raise ValueError("Snowflake account URL has no hostname")
+    account = _account_identifier(config.account_url)
     connection = snowflake.connector.connect(
         account=account,
         user=credentials.username,

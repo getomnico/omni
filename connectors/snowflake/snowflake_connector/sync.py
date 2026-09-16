@@ -97,15 +97,21 @@ class SnowflakeSync:
 
         if full:
             for database_row in client.databases(config):
+                users_for_document, groups_for_document = permissions.permissions_for_database(
+                    database_row.database_name
+                )
                 if await self._emit_document(
-                    database_document(database_row),
+                    database_document(database_row, users_for_document, groups_for_document),
                     ctx,
                 ):
                     await ctx.increment_scanned()
                 seen_inventory.add(f"database:{database_row.database_id}")
             for schema_row in client.schemas(config):
+                users_for_document, groups_for_document = permissions.permissions_for_schema(
+                    schema_row.database_name, schema_row.schema_name
+                )
                 if await self._emit_document(
-                    schema_document(schema_row),
+                    schema_document(schema_row, users_for_document, groups_for_document),
                     ctx,
                 ):
                     await ctx.increment_scanned()

@@ -31,14 +31,34 @@ class SnowflakePermissions:
             self._children[edge.parent_role.casefold()].add(edge.child_role.casefold())
 
     def permissions_for(self, table: TableRow) -> tuple[list[str], list[str]]:
-        object_name = f"{table.database_name}.{table.schema_name}.{table.object_name}".casefold()
+        return self._permissions_for_names(
+            [
+                table.database_name,
+                f"{table.database_name}.{table.schema_name}",
+                f"{table.database_name}.{table.schema_name}.{table.object_name}",
+            ]
+        )
+
+    def permissions_for_database(self, database_name: str) -> tuple[list[str], list[str]]:
+        return self._permissions_for_names([database_name])
+
+    def permissions_for_schema(
+        self, database_name: str, schema_name: str
+    ) -> tuple[list[str], list[str]]:
+        return self._permissions_for_names([database_name, f"{database_name}.{schema_name}"])
+
+    def _permissions_for_names(self, object_names: list[str]) -> tuple[list[str], list[str]]:
         role_names: set[str] = set()
         direct_users: set[str] = set()
         for grant in self._grants:
-            if grant.deleted_on is not None or not self._grant_matches(grant, object_name):
+            if grant.deleted_on is not None or not self._grant_matches(grant, object_names):
                 continue
             if grant.grantee_type.casefold() == "role":
-                role_names.update(self._descendants(grant.grantee_name))
+                # Group membership expands an assigned role into its granted
+                # child roles, so a document only needs the role receiving
+                # the object grant. Including ancestors here would overgrant
+                # users whose role does not inherit this grant.
+                role_names.add(grant.grantee_name.casefold())
             elif grant.grantee_type.casefold() == "user":
                 direct_users.add(grant.grantee_name.casefold())
 
@@ -75,12 +95,11 @@ class SnowflakePermissions:
         return result
 
     @staticmethod
-    def _grant_matches(grant: SnowflakeGrant, object_name: str) -> bool:
+    def _grant_matches(grant: SnowflakeGrant, object_names: list[str]) -> bool:
         if grant.object_name is None:
             return False
         candidate = grant.object_name.casefold()
-        return (
-            candidate == object_name
-            or candidate == object_name.rsplit(".", 1)[-1]
-            or candidate == "*"
+        targets = {name.casefold() for name in object_names}
+        return candidate in targets or any(
+            candidate.endswith(".*") and target.startswith(candidate[:-1]) for target in targets
         )

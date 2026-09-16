@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from snowflake_connector.client import validate_mcp_endpoint
+from snowflake_connector.client import _account_identifier, validate_mcp_endpoint
 from snowflake_connector.config import SnowflakeConfig
 
 
@@ -14,6 +14,10 @@ def config(**overrides: object) -> SnowflakeConfig:
     }
     values.update(overrides)
     return SnowflakeConfig.model_validate(values)
+
+
+def test_account_identifier_is_accepted_by_the_official_connector() -> None:
+    assert _account_identifier("https://acme.eu-west-1.snowflakecomputing.com") == "acme.eu-west-1"
 
 
 def test_managed_endpoint_is_account_bound() -> None:

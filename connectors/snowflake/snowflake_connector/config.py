@@ -25,12 +25,13 @@ class SnowflakeConfig(BaseModel):
     )
     sync_enabled: bool = True
     mcp_endpoint_url: str | None = None
+    oauth_issuer_url: str | None = None
     mcp_enabled: bool = False
     write_tools_enabled: bool = False
     include_tags: bool = False
     read_only: bool = True
 
-    @field_validator("account_url", "mcp_endpoint_url")
+    @field_validator("account_url", "mcp_endpoint_url", "oauth_issuer_url")
     @classmethod
     def validate_url(cls, value: str | None, info: object) -> str | None:
         if value is None:

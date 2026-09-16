@@ -85,6 +85,7 @@ class SnowflakeConnector(Connector):
             pkce_required=True,
             token_endpoint_auth_method="client_secret_basic",
             issuer_source_config_key="oauth_issuer_url",
+            client_config_provider_template="snowflake:{source_id}",
             validate_endpoint_urls=True,
             supports_org_oauth=False,
         )

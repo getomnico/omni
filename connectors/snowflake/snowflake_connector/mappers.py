@@ -18,7 +18,9 @@ class SnowflakeDocumentDraft:
     permissions: DocumentPermissions
 
 
-def database_document(row: DatabaseRow) -> SnowflakeDocumentDraft:
+def database_document(
+    row: DatabaseRow, users: list[str] | None = None, groups: list[str] | None = None
+) -> SnowflakeDocumentDraft:
     return SnowflakeDocumentDraft(
         external_id=f"database:{row.database_id}",
         title=row.database_name,
@@ -38,11 +40,13 @@ def database_document(row: DatabaseRow) -> SnowflakeDocumentDraft:
             "object_type": "DATABASE",
             "owner_role": row.owner_role,
         },
-        permissions=DocumentPermissions(public=False),
+        permissions=DocumentPermissions(public=False, users=users or [], groups=groups or []),
     )
 
 
-def schema_document(row: SchemaRow) -> SnowflakeDocumentDraft:
+def schema_document(
+    row: SchemaRow, users: list[str] | None = None, groups: list[str] | None = None
+) -> SnowflakeDocumentDraft:
     title = f"{row.database_name}.{row.schema_name}"
     return SnowflakeDocumentDraft(
         external_id=f"schema:{row.schema_id}",
@@ -64,7 +68,7 @@ def schema_document(row: SchemaRow) -> SnowflakeDocumentDraft:
             "object_type": "SCHEMA",
             "owner_role": row.owner_role,
         },
-        permissions=DocumentPermissions(public=False),
+        permissions=DocumentPermissions(public=False, users=users or [], groups=groups or []),
     )
 
 
