@@ -655,9 +655,9 @@ where
         .active_syncs
         .iter()
         .find(|sync| sync.sync_run_id == request.sync_run_id)
-        .map(|sync| Arc::clone(&sync.cancelled));
+        .map(|sync| (sync.key().clone(), Arc::clone(&sync.cancelled)));
 
-    let Some(cancelled) = matching_sync else {
+    let Some((slot_key, cancelled)) = matching_sync else {
         return (
             StatusCode::NOT_FOUND,
             Json(CancelResponse {
@@ -669,13 +669,12 @@ where
     cancelled.store(true, Ordering::SeqCst);
     let _ = state.connector.cancel(&request.sync_run_id).await;
 
-    // Free the slot now: cancellation is cooperative, so a task wedged in a read
-    // that never returns would hold it until the process restarts and reject
-    // every later sync for this source with 409. Callers only cancel runs they
-    // have already given up on.
+    // Cancellation makes the slot available immediately. The sync task may
+    // ignore cancellation and continue running, so waiting for its guard to
+    // drop would otherwise block a replacement sync indefinitely.
     state
         .active_syncs
-        .retain(|_, sync| sync.sync_run_id != request.sync_run_id);
+        .remove_if(&slot_key, |_, sync| sync.sync_run_id == request.sync_run_id);
 
     (
         StatusCode::OK,
