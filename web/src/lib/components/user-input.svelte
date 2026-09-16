@@ -135,6 +135,8 @@
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
 
+    let selectedModel = $derived(models.find((m) => m.id === selectedModelId))
+
     let groupedModels = $derived(
         Object.entries(
             models.reduce<Record<string, ModelOption[]>>((acc, m) => {
@@ -645,10 +647,12 @@
                         }}>
                         <Select.Trigger
                             size="sm"
-                            class="omni-composer-model hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer border-none text-sm shadow-none"
+                            class="omni-composer-model hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer overflow-hidden border-none text-sm shadow-none"
+                            title={selectedModel?.displayName ?? 'Select model'}
                             onclick={(e) => e.stopPropagation()}>
-                            {models.find((m) => m.id === selectedModelId)?.displayName ??
-                                'Select model'}
+                            <span class="truncate">
+                                {selectedModel?.displayName ?? 'Select model'}
+                            </span>
                         </Select.Trigger>
                         <Select.Content class="max-h-96 w-3xs" align="end">
                             {#each groupedModels as [provider, providerModels]}
@@ -657,8 +661,11 @@
                                         {formatProviderName(provider)}
                                     </Select.GroupHeading>
                                     {#each providerModels as model}
-                                        <Select.Item class="cursor-pointer" value={model.id}>
-                                            {model.displayName}
+                                        <Select.Item
+                                            class="cursor-pointer"
+                                            value={model.id}
+                                            title={model.displayName}>
+                                            <span class="truncate">{model.displayName}</span>
                                         </Select.Item>
                                     {/each}
                                 </Select.Group>
