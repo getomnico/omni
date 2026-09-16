@@ -103,8 +103,8 @@ Some core development principles that should be kept in mind when developing Omn
 - Python connector suites use the harness in sdk/python/omni_connector/testing.
 
 ### Commits and Pull Requests:
-- When making a commit, follow the commit message style used by previous commits.
-- When opening a pull request, refer to previous pull requests and follow the same title and description style.
+- Use Conventional Commit style for commit messages and PR titles: `type(scope): concise imperative summary`; include an issue or PR number when applicable.
+- Keep PR descriptions brief, using `## Summary` and `## Testing` sections with bullets where useful; refer to recent examples only when a change does not fit this format.
 
 ## Community and commercial editions
 
