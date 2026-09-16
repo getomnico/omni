@@ -274,3 +274,68 @@ async def test_create_event_validates_input(
     )
     assert response.status_code == 400
     assert mock_graph_api.me_events == []
+
+
+@pytest.mark.asyncio
+async def test_list_events_accepts_refresh_fallback_credential_payload(
+    mock_graph_api: MockGraphAPI,
+    mock_graph_server: str,
+):
+    """The web OAuth callback stores client/endpoint metadata next to the
+    tokens so connector-manager can refresh them; actions must accept it."""
+    mock_graph_api.reset()
+    mock_graph_api.add_me_event(
+        _graph_event("Sync check", "2026-09-16T11:00:00", "2026-09-16T11:30:00")
+    )
+
+    envelope = {
+        "credentials": {
+            "access_token": "test-token",
+            "refresh_token": "0.AYEA_refresh",
+            "token_type": "Bearer",
+            "client_id": "6021d430-1f5f-446d-ab7a-8d4e66cb6b88",
+            "client_secret": "secret-value",
+            "token_uri": f"https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+            "token_endpoint_auth_method": "client_secret_post",
+            "scope": "Calendars.Read User.Read",
+        },
+        "config": {},
+        "source_id": "src-calendar-1",
+        "provider": "microsoft",
+    }
+
+    response = await MicrosoftConnector().execute_action(
+        "list_events",
+        {"start": "2026-09-16T00:00:00Z", "end": "2026-09-17T00:00:00Z"},
+        envelope,
+        source=_source(f"{mock_graph_server}/v1.0"),
+    )
+
+    assert response.status_code == 200
+    payload = json.loads(response.body)
+    assert payload["result"]["count"] == 1
+    assert payload["result"]["events"][0]["subject"] == "Sync check"
+
+
+@pytest.mark.asyncio
+async def test_list_events_rejects_unrecognized_credential_shape(
+    mock_graph_api: MockGraphAPI,
+    mock_graph_server: str,
+):
+    mock_graph_api.reset()
+    envelope = {
+        "credentials": {"access_token": "tok", "unexpected_field": True},
+        "config": {},
+    }
+
+    response = await MicrosoftConnector().execute_action(
+        "list_events",
+        {},
+        envelope,
+        source=_source(f"{mock_graph_server}/v1.0"),
+    )
+
+    assert response.status_code == 400
+    assert "Unrecognized Microsoft credential shape" in json.loads(response.body)[
+        "error"
+    ]

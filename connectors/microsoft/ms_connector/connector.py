@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from pydantic import ValidationError
 from starlette.responses import Response
 
 from omni_connector import Connector, SearchOperator, SyncContext
@@ -32,6 +33,17 @@ SOURCE_TYPE_TO_SYNCER = {
     "outlook_calendar": "calendar",
     "ms_teams": "teams",
 }
+
+
+def _parse_action_credentials(credentials: dict[str, Any]) -> MSGraphAuth:
+    try:
+        return MSGraphAuth.from_credentials(
+            parse_ms_credentials(credentials.get("credentials", credentials))
+        )
+    except ValidationError as e:
+        raise ValueError(
+            f"Unrecognized Microsoft credential shape: {e.errors(include_url=False)}"
+        ) from e
 
 
 class MicrosoftConnector(Connector):
@@ -247,9 +259,7 @@ class MicrosoftConnector(Connector):
     def _action_graph_client(
         credentials: dict[str, Any], source: Source | None
     ) -> GraphClient:
-        auth = MSGraphAuth.from_credentials(
-            parse_ms_credentials(credentials.get("credentials", credentials))
-        )
+        auth = _parse_action_credentials(credentials)
         graph_base_url = (source.config if source else {}).get("graph_base_url")
         if graph_base_url:
             return GraphClient(auth, base_url=graph_base_url)
@@ -302,8 +312,9 @@ class MicrosoftConnector(Connector):
         except ValueError as e:
             return ActionResponse.failure(str(e)).to_response(status_code=400)
 
-        client = self._action_graph_client(credentials, source)
+        client: GraphClient | None = None
         try:
+            client = self._action_graph_client(credentials, source)
             events = await client.list_calendar_events(
                 start.isoformat(), end.isoformat(), top=top
             )
@@ -317,6 +328,8 @@ class MicrosoftConnector(Connector):
                     },
                 }
             ).to_response()
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
         except AuthenticationError as e:
             logger.warning("list_events action failed authentication: %s", e)
             return ActionResponse.failure(str(e)).to_response(status_code=401)
@@ -324,7 +337,8 @@ class MicrosoftConnector(Connector):
             logger.exception("list_events action failed")
             return ActionResponse.failure(e.diagnostic()).to_response(status_code=502)
         finally:
-            await client.close()
+            if client is not None:
+                await client.close()
 
     async def _action_create_event(
         self,
@@ -388,12 +402,15 @@ class MicrosoftConnector(Connector):
         if params.get("online_meeting"):
             event["isOnlineMeeting"] = True
 
-        client = self._action_graph_client(credentials, source)
+        client: GraphClient | None = None
         try:
+            client = self._action_graph_client(credentials, source)
             created = await client.create_event(event)
             return ActionResponse.success(
                 {"event": serialize_event(created)}
             ).to_response()
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
         except AuthenticationError as e:
             logger.warning("create_event action failed authentication: %s", e)
             return ActionResponse.failure(str(e)).to_response(status_code=401)
@@ -401,7 +418,8 @@ class MicrosoftConnector(Connector):
             logger.exception("create_event action failed")
             return ActionResponse.failure(e.diagnostic()).to_response(status_code=502)
         finally:
-            await client.close()
+            if client is not None:
+                await client.close()
 
     async def _action_search_users(
         self,

@@ -24,13 +24,24 @@ class MSClientSecretCreds(BaseModel):
 
 
 class MSUserOAuthCreds(BaseModel):
-    """Per-user delegated bearer token issued by the web OAuth callback."""
+    """Per-user delegated bearer token issued by the web OAuth callback.
+
+    The web layer persists refresh-fallback metadata (client credentials and
+    token endpoint) alongside the tokens so connector-manager can refresh
+    them; the connector only needs the access token itself but must accept
+    the full stored shape.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     access_token: str
     refresh_token: str | None = None
     token_type: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    token_uri: str | None = None
+    token_endpoint_auth_method: str | None = None
+    scope: str | None = None
 
 
 class MSStaticTokenCreds(BaseModel):
