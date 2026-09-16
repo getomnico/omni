@@ -104,7 +104,7 @@ Some core development principles that should be kept in mind when developing Omn
 
 ### Commits and Pull Requests:
 - Use Conventional Commit style for commit messages and PR titles: `type(scope): concise imperative summary`; include an issue or PR number when applicable.
-- Keep PR descriptions brief, using `## Summary` and `## Testing` sections with bullets where useful; refer to recent examples only when a change does not fit this format.
+- Keep PR descriptions as a brief, high-level bullet list of changed items; avoid detailed code-level information. Refer to recent examples only when a change does not fit this format.
 
 ## Community and commercial editions
 
