@@ -207,6 +207,7 @@ pub enum SourceType {
     Darwinbox,
     Windshift,
     Salesforce,
+    Snowflake,
 }
 
 impl SourceType {
@@ -239,6 +240,7 @@ impl SourceType {
             SourceType::Darwinbox => "darwinbox",
             SourceType::Windshift => "windshift",
             SourceType::Salesforce => "salesforce",
+            SourceType::Snowflake => "snowflake",
         }
     }
 }
@@ -289,7 +291,7 @@ impl TryFrom<&str> for SourceType {
             "darwinbox" => Ok(SourceType::Darwinbox),
             "windshift" => Ok(SourceType::Windshift),
             "salesforce" => Ok(SourceType::Salesforce),
-            other => Err(format!("unknown source type: {other}")),
+            "snowflake" => Ok(SourceType::Snowflake),            other => Err(format!("unknown source type: {other}")),
         }
     }
 }
@@ -336,6 +338,7 @@ pub enum ServiceProvider {
     RemoteMcp,
     Windshift,
     Salesforce,
+    Snowflake,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -1028,6 +1031,26 @@ pub struct ConnectorManifest {
     /// connector-manager need typed access to its fields.
     #[serde(default)]
     pub oauth: Option<JsonValue>,
+}
+
+/// Non-secret source context supplied to a connector when building a manifest.
+/// Credentials, checkpoints, creator details, and connector state are deliberately
+/// excluded so source-aware discovery cannot accidentally receive sync secrets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorManifestSource {
+    pub id: String,
+    pub source_type: String,
+    pub scope: SourceScope,
+    pub config: JsonValue,
+    #[serde(with = "time::serde::iso8601")]
+    pub updated_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorManifestRequest {
+    pub sources: Vec<ConnectorManifestSource>,
+    #[serde(default)]
+    pub current_manifest: Option<ConnectorManifest>,
 }
 
 /// Which web OAuth flow produced a credential. Passed to the connector's

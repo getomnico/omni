@@ -4,6 +4,7 @@ use shared::models::{Source, SourceType, SyncRun, SyncType};
 
 pub use shared::models::{
     ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
+    ConnectorManifestRequest, ConnectorManifestSource,
     McpCredentials, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
     PromptRequest, ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest,

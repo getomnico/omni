@@ -3,6 +3,7 @@ import type { McpAdapter, McpServer } from './mcp-adapter.js';
 import { MCP_AUTH_REQUIRED_MESSAGE } from './mcp-adapter.js';
 import type {
   ConnectorManifest,
+  ConnectorManifestSource,
   ActionDefinition,
   SearchOperator,
   OAuthManifestConfig,
@@ -254,6 +255,14 @@ export abstract class Connector<
       skills,
       oauth: this.oauthConfig,
     };
+  }
+
+  async buildManifestForSources(
+    _sources: ConnectorManifestSource[],
+    _currentManifest: ConnectorManifest | null | undefined,
+    connectorUrl: string,
+  ): Promise<ConnectorManifest> {
+    return this.getManifest(connectorUrl);
   }
 
   abstract sync(

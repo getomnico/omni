@@ -1,5 +1,6 @@
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, OAuthCredentialReadyRequest,
+    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, ConnectorManifestRequest,
+    OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, PromptRequest,
     ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
@@ -60,6 +61,23 @@ impl ConnectorClient {
             .json()
             .await
             .map_err(|e| ClientError::InvalidResponse(e.to_string()))
+    }
+
+    pub async fn build_manifest_for_sources(
+        &self,
+        connector_url: &str,
+        request: &ConnectorManifestRequest,
+    ) -> Result<ConnectorManifest, ClientError> {
+        let url = format!("{}/manifest", connector_url);
+        debug!("Building source-aware manifest from {} active sources", request.sources.len());
+        let response = self.client.post(&url).json(request).send().await
+            .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ClientError::ConnectorError { status: status.as_u16(), message: body });
+        }
+        response.json().await.map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
     pub async fn trigger_sync(

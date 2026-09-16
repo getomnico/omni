@@ -352,6 +352,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "web" | "website" => Some(SourceType::Web),
         "darwinbox" => Some(SourceType::Darwinbox),
         "salesforce" | "sf" => Some(SourceType::Salesforce),
+        "snowflake" | "sfdata" => Some(SourceType::Snowflake),
         _ => None,
     }
 }

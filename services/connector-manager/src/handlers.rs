@@ -1,6 +1,7 @@
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
-    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
+    ActionRequest, ConnectorInfo, ConnectorManifestRequest, ConnectorManifestSource,
+    ExecuteActionRequest, ExecutePromptRequest,
     ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
     SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
@@ -2520,10 +2521,91 @@ fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), Strin
     validate_connector_manifest_action_policy(manifest)
 }
 
+fn redact_manifest_config(value: &Value) -> Value {
+    const SECRET_KEYS: &[&str] = &[
+        "secret", "client_secret", "private_key", "private_key_passphrase",
+        "password", "token", "access_token", "refresh_token", "api_key",
+    ];
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| !SECRET_KEYS.iter().any(|secret| key.eq_ignore_ascii_case(secret)))
+                .map(|(key, value)| (key.clone(), redact_manifest_config(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_manifest_config).collect()),
+        other => other.clone(),
+    }
+}
+
+async fn active_manifest_sources(
+    state: &AppState,
+    manifest: &ConnectorManifest,
+) -> Result<Vec<ConnectorManifestSource>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_active_sources()
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    Ok(sources
+        .into_iter()
+        .filter(|source| {
+            !source.is_deleted
+                && source.integration_type == IntegrationType::Connector
+                && manifest.source_types.iter().any(|source_type| source_type == &source.source_type)
+        })
+        .map(|source| ConnectorManifestSource {
+            id: source.id,
+            source_type: source.source_type,
+            scope: source.scope,
+            config: redact_manifest_config(&source.config),
+            updated_at: source.updated_at,
+        })
+        .collect())
+}
+
+fn preserve_cached_mcp_catalog(
+    base: &ConnectorManifest,
+    cached: &ConnectorManifest,
+) -> ConnectorManifest {
+    let mut manifest = base.clone();
+    let native_names: std::collections::HashSet<String> = manifest
+        .actions
+        .iter()
+        .filter(|action| action.origin == ActionOrigin::Native)
+        .map(|action| action.name.clone())
+        .collect();
+    manifest.actions.extend(
+        cached
+            .actions
+            .iter()
+            .filter(|action| action.origin == ActionOrigin::Mcp && !native_names.contains(&action.name))
+            .cloned(),
+    );
+    manifest.resources = cached.resources.clone();
+    manifest.prompts = cached.prompts.clone();
+    let existing_skill_ids: std::collections::HashSet<String> = manifest
+        .skills
+        .iter()
+        .map(|skill| skill.id.clone())
+        .collect();
+    manifest.skills.extend(
+        cached
+            .skills
+            .iter()
+            .filter(|skill| !existing_skill_ids.contains(&skill.id))
+            .cloned(),
+    );
+    manifest.mcp_catalog_loaded = cached.mcp_catalog_loaded;
+    manifest
+}
+
 pub async fn sdk_register(
     State(state): State<AppState>,
-    Json(manifest): Json<ConnectorManifest>,
+    Json(base_manifest): Json<ConnectorManifest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
+    let mut manifest = base_manifest;
     if manifest.connector_id.is_empty() {
         return Err(ApiError::BadRequest(
             "connector_id is required for registration".to_string(),
@@ -2545,12 +2627,54 @@ pub async fn sdk_register(
         )));
     }
 
-    // A catalog-less registration is fail-closed. Do not retain or union a
-    // previous MCP catalog: removed or policy-disabled tools must disappear
-    // immediately. The authenticated credential-ready registration will
-    // replace this manifest with the freshly discovered catalog.
-    let needs_mcp_catalog_recovery = manifest.mcp_enabled && !manifest.mcp_catalog_loaded;
     let connector_id = manifest.connector_id.clone();
+    let manifest_key = format!("connector:manifest:{}", connector_id);
+    let cached_manifest = if let Ok(mut connection) = state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+    {
+        let value: Option<String> = connection.get(&manifest_key).await.ok();
+        value.and_then(|manifest_json| serde_json::from_str::<ConnectorManifest>(&manifest_json).ok())
+    } else {
+        None
+    };
+
+    // Source-aware construction is deliberately best-effort for legacy SDKs.
+    // A connector restart must not erase a still-valid MCP catalog while its
+    // authenticated source discovery is being rebuilt.
+    let source_request = ConnectorManifestRequest {
+        sources: active_manifest_sources(&state, &manifest).await?,
+        current_manifest: cached_manifest.clone(),
+    };
+    match client
+        .build_manifest_for_sources(&manifest.connector_url, &source_request)
+        .await
+    {
+        Ok(source_manifest) => {
+            validate_connector_manifest(&source_manifest).map_err(ApiError::BadRequest)?;
+            manifest = if !source_manifest.mcp_catalog_loaded {
+                cached_manifest
+                    .as_ref()
+                    .filter(|cached| cached.mcp_catalog_loaded)
+                    .map(|cached| preserve_cached_mcp_catalog(&source_manifest, cached))
+                    .unwrap_or(source_manifest)
+            } else {
+                source_manifest
+            };
+        }
+        Err(error) => {
+            warn!(connector_id = %connector_id, error = %error, "Source-aware manifest request failed");
+            if let Some(cached) = cached_manifest
+                .as_ref()
+                .filter(|cached| cached.mcp_catalog_loaded)
+            {
+                manifest = preserve_cached_mcp_catalog(&manifest, cached);
+            }
+        }
+    }
+
+    let needs_mcp_catalog_recovery = manifest.mcp_enabled && !manifest.mcp_catalog_loaded;
 
     info!(
         "SDK: Registered connector '{}' (source_types: {:?}, url: {})",

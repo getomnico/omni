@@ -418,6 +418,21 @@ class ConnectorManifest(BaseModel):
     oauth: OAuthManifestConfig | None = None
 
 
+class ConnectorManifestSource(BaseModel):
+    """Non-secret source context used for source-aware manifest construction."""
+
+    id: str
+    source_type: str
+    scope: str
+    config: dict[str, Any]
+    updated_at: datetime
+
+
+class ConnectorManifestRequest(BaseModel):
+    sources: list[ConnectorManifestSource] = Field(default_factory=list)
+    current_manifest: ConnectorManifest | None = None
+
+
 class OAuthCredentialReadyRequest(BaseModel):
     """Notification sent to a connector after OAuth credentials are stored.
 

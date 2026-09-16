@@ -18,6 +18,7 @@ from .models import (
     ActionRequest,
     CancelRequest,
     CancelResponse,
+    ConnectorManifestRequest,
     OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest,
     PromptRequest,
@@ -177,6 +178,15 @@ def create_app(
     @app.get("/manifest")
     async def manifest() -> dict[str, Any]:
         m = await connector.get_manifest(connector_url=connector_url)
+        return m.model_dump()
+
+    @app.post("/manifest")
+    async def source_aware_manifest(
+        request: ConnectorManifestRequest,
+    ) -> dict[str, Any]:
+        m = await connector.build_manifest_for_sources(
+            request.sources, request.current_manifest, connector_url
+        )
         return m.model_dump()
 
     @app.post("/oauth/validate")
@@ -390,13 +400,13 @@ def create_app(
         # discovered MCP action may enter the MCP branch; an MCP auth failure
         # must never fall through and execute a native action with different
         # authorization semantics.
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_source(request.source)
         native_action_names = {action.name for action in connector.actions}
         if adapter is not None and request.action not in native_action_names:
             try:
-                mcp_action_names = {
-                    action.name for action in await adapter.get_action_definitions()
-                }
+                mcp_action_names = await connector.mcp_action_names_for_source(
+                    request.source
+                )
             except Exception:
                 logger.warning("Failed to identify MCP action", exc_info=True)
                 return JSONResponse(
@@ -466,7 +476,7 @@ def create_app(
 
     @app.post("/resource")
     async def read_resource(request: ResourceRequest) -> JSONResponse:
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_credentials(request.credentials)
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -492,7 +502,7 @@ def create_app(
 
     @app.post("/prompt")
     async def get_prompt(request: PromptRequest) -> JSONResponse:
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_credentials(request.credentials)
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

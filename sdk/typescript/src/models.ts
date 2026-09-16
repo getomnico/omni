@@ -283,6 +283,25 @@ export const ConnectorManifestSchema = z.object({
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;
 
+export const ConnectorManifestSourceSchema = z.object({
+  id: z.string(),
+  source_type: z.string(),
+  scope: z.string(),
+  config: z.record(z.unknown()),
+  updated_at: z.string().datetime(),
+});
+export type ConnectorManifestSource = z.infer<
+  typeof ConnectorManifestSourceSchema
+>;
+
+export const ConnectorManifestRequestSchema = z.object({
+  sources: z.array(ConnectorManifestSourceSchema).default([]),
+  current_manifest: ConnectorManifestSchema.nullable().optional(),
+});
+export type ConnectorManifestRequest = z.infer<
+  typeof ConnectorManifestRequestSchema
+>;
+
 export const SyncRequestSchema = z.object({
   sync_run_id: z.string(),
   source_id: z.string(),

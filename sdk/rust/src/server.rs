@@ -20,7 +20,9 @@ use axum::{
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use serde::de::DeserializeOwned;
-use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
+use shared::models::{
+    ConnectorManifestRequest, ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType,
+};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -177,7 +179,10 @@ where
 {
     Router::new()
         .route("/health", get(health::<C>))
-        .route("/manifest", get(manifest::<C>))
+        .route(
+            "/manifest",
+            get(manifest::<C>).post(source_aware_manifest::<C>),
+        )
         .route("/sync", post(trigger_sync::<C>))
         .route("/sync/:sync_run_id", get(sync_status::<C>))
         .route("/cancel", post(cancel_sync::<C>))
@@ -293,6 +298,25 @@ where
     C: Connector,
 {
     Json(build_manifest_with_mcp(&state).await)
+}
+
+async fn source_aware_manifest<C>(
+    State(state): State<Arc<ServerState<C>>>,
+    Json(request): Json<ConnectorManifestRequest>,
+) -> impl IntoResponse
+where
+    C: Connector,
+{
+    Json(
+        state
+            .connector
+            .build_manifest_for_sources(
+                request.sources,
+                request.current_manifest,
+                state.connector_url.clone(),
+            )
+            .await,
+    )
 }
 
 async fn build_manifest_with_mcp<C>(state: &ServerState<C>) -> shared::models::ConnectorManifest

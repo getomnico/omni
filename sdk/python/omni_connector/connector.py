@@ -12,6 +12,7 @@ from .models import (
     ActionDefinition,
     ActionResponse,
     ConnectorManifest,
+    ConnectorManifestSource,
     ConnectorSkillDefinition,
     OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
@@ -131,6 +132,32 @@ class Connector(ABC):
             self._mcp_adapter = McpAdapter(server)
 
         return self._mcp_adapter
+
+    def mcp_server_for_source(self, source: Source | None) -> McpServer | None:
+        """Return the MCP endpoint for a selected source."""
+        return self.mcp_server
+
+    def mcp_adapter_for_source(self, source: Source | None) -> McpAdapter | None:
+        server = self.mcp_server_for_source(source)
+        if server is None:
+            return None
+        if server == self.mcp_server:
+            return self.mcp_adapter
+        from .mcp_adapter import McpAdapter
+
+        return McpAdapter(server)
+
+    def mcp_adapter_for_credentials(
+        self, credentials: dict[str, Any], source: Source | None = None
+    ) -> McpAdapter | None:
+        """Resolve an adapter for resource and prompt calls."""
+        return self.mcp_adapter_for_source(source)
+
+    async def mcp_action_names_for_source(self, source: Source | None) -> set[str]:
+        adapter = self.mcp_adapter_for_source(source)
+        if adapter is None:
+            return set()
+        return {action.name for action in await adapter.get_action_definitions()}
 
     def mcp_authentication_error(self, message: str) -> bool:
         """Return whether an MCP failure requires the user's OAuth reconnect.
@@ -278,6 +305,20 @@ class Connector(ABC):
             skills=skills,
             oauth=self.oauth_config(),
         )
+
+    async def build_manifest_for_sources(
+        self,
+        sources: list[ConnectorManifestSource],
+        current_manifest: ConnectorManifest | None,
+        connector_url: str,
+    ) -> ConnectorManifest:
+        """Build one manifest for all active source contexts.
+
+        The default preserves legacy connector behavior. Connectors with
+        source-dependent catalogs may override this hook; the SDK server keeps
+        the response shape identical to ``GET /manifest``.
+        """
+        return await self.get_manifest(connector_url)
 
     @abstractmethod
     async def sync(
