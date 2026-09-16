@@ -30,6 +30,11 @@ Uses app-only (client credentials) authentication with Microsoft Entra ID. Requi
 - `client_id` — Application (client) ID
 - `client_secret` — Client secret value
 
+Also register the per-user OAuth callback under **Authentication → Add a
+platform → Web** (the setup dialog shows the exact URL for the instance;
+it is `<APP_URL>/api/oauth/callback`). Without it, the "Connect account"
+consent screen fails with `AADSTS500113`.
+
 ### Required Application Permissions (admin consent)
 
 Application permissions drive org-wide sync. Each of them must be added
