@@ -34,6 +34,7 @@ export enum SourceType {
     DARWINBOX = 'darwinbox',
     WINDSHIFT = 'windshift',
     SALESFORCE = 'salesforce',
+    SNOWFLAKE = 'snowflake',
 }
 
 export enum ServiceProvider {
@@ -55,6 +56,7 @@ export enum ServiceProvider {
     REMOTE_MCP = 'remote_mcp',
     WINDSHIFT = 'windshift',
     SALESFORCE = 'salesforce',
+    SNOWFLAKE = 'snowflake',
 }
 
 export enum AuthType {
@@ -186,6 +188,22 @@ export interface WindshiftSourceConfig {
     workspace_keys?: string[]
 }
 
+export interface SnowflakeSourceConfig {
+    account_url: string
+    warehouse: string
+    role: string
+    databases: string[]
+    schemas_allowlist?: string[] | null
+    schemas_denylist?: string[] | null
+    included_object_types?: string[]
+    sync_enabled: boolean
+    mcp_endpoint_url?: string | null
+    mcp_enabled: boolean
+    write_tools_enabled: boolean
+    include_tags?: boolean
+    read_only?: boolean
+}
+
 export interface WindshiftCredentials {
     access_token: string
     refresh_token?: string
@@ -218,6 +236,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.DARWINBOX]: 3600,
     [SourceType.WINDSHIFT]: 1800,
     [SourceType.SALESFORCE]: 3600,
+    [SourceType.SNOWFLAKE]: 21600,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

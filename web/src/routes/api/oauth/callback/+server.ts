@@ -227,10 +227,14 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             provider: config.provider,
             credentials,
             flow: flow.type,
-            metadata:
-                typeof userinfo === 'object' && userinfo !== null && !Array.isArray(userinfo)
+            metadata: {
+                ...(typeof userinfo === 'object' && userinfo !== null && !Array.isArray(userinfo)
                     ? (userinfo as Record<string, unknown>)
-                    : {},
+                    : {}),
+                // This value comes from the authenticated Omni session, not
+                // from provider-controlled OAuth claims.
+                omni_user_email: user.email,
+            },
         })
 
     const notifyOAuthCredentialReady = async (

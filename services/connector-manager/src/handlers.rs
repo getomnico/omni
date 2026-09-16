@@ -2653,7 +2653,7 @@ pub async fn sdk_register(
     {
         Ok(source_manifest) => {
             validate_connector_manifest(&source_manifest).map_err(ApiError::BadRequest)?;
-            manifest = if !source_manifest.mcp_catalog_loaded {
+            manifest = if source_manifest.mcp_enabled && !source_manifest.mcp_catalog_loaded {
                 cached_manifest
                     .as_ref()
                     .filter(|cached| cached.mcp_catalog_loaded)
