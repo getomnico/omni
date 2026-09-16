@@ -337,7 +337,10 @@ async fn emit_metadata_only_drive_event(
 }
 
 use crate::admin::AdminClient;
-use crate::auth::{GoogleAuth, GoogleOAuthCredentials, OAuthAuth, google_max_retries};
+use crate::auth::{
+    GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE, GoogleAuth, GoogleOAuthCredentials, OAuthAuth,
+    get_domain_from_credentials, google_max_retries,
+};
 use crate::cache::LruFolderCache;
 use crate::chat::{
     ChatClient, GoogleChatAttachmentSource, GoogleChatMessage, GoogleChatSpace,
@@ -6470,6 +6473,41 @@ impl SyncManager {
                 return HashSet::new();
             }
         };
+        let has_group_scope = service_creds
+            .config
+            .get("scopes")
+            .and_then(|scopes| scopes.as_array())
+            .is_some_and(|scopes| {
+                scopes
+                    .iter()
+                    .any(|scope| scope.as_str() == Some(GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE))
+            });
+        if !has_group_scope {
+            debug!(
+                "Skipping SA-direct group sync for source {}: Admin Directory group scope is not configured",
+                source.id
+            );
+            return HashSet::new();
+        }
+
+        let domain = match get_domain_from_credentials(service_creds) {
+            Ok(domain) if !domain.trim().is_empty() => domain,
+            Ok(_) => {
+                debug!(
+                    "Skipping SA-direct group sync for source {}: credential domain is blank",
+                    source.id
+                );
+                return HashSet::new();
+            }
+            Err(_) => {
+                debug!(
+                    "Skipping SA-direct group sync for source {}: credential domain is not configured",
+                    source.id
+                );
+                return HashSet::new();
+            }
+        };
+
         let service_auth = match self.create_auth(service_creds, native_source_type).await {
             Ok(auth) => auth,
             Err(e) => {
@@ -6484,13 +6522,6 @@ impl SyncManager {
             );
             return HashSet::new();
         }
-        let domain = match crate::auth::get_domain_from_credentials(service_creds) {
-            Ok(d) => d,
-            Err(e) => {
-                warn!("Failed to get domain for SA-direct group sync: {}", e);
-                return HashSet::new();
-            }
-        };
         let access_token = match service_auth.get_self_access_token().await {
             Ok(token) => token,
             Err(e) => {

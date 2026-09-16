@@ -12,8 +12,8 @@
         // 'sa-direct' hides the admin-email field and shows
         // non-impersonation guidance. Defaults to DWD behavior.
         mode?: 'dwd' | 'sa-direct'
-        // SA-direct group membership sync needs the Workspace domain but never
-        // impersonates an admin user.
+        // SA-direct group enrichment optionally uses a Workspace domain but
+        // never impersonates an admin user.
         showDomain?: boolean
         // Hide the SA-direct explanation paragraph when the surrounding page
         // already explains the mode (e.g. a banner on the settings page).
@@ -71,7 +71,7 @@
         {/if}
         {#if showDomain}
             <div class="space-y-2">
-                <Label for="sa-direct-domain">Organization Domain</Label>
+                <Label for="sa-direct-domain">Organization Domain (optional)</Label>
                 <Input
                     id="sa-direct-domain"
                     name="domain"
@@ -80,10 +80,10 @@
                     type="text"
                     {disabled}
                     oninput={onAccountDetailsChange ?? onCredentialsChange}
-                    required />
+                    />
                 <p class="text-muted-foreground text-sm">
-                    Used to validate and sync Google Workspace group memberships. This does not
-                    impersonate a Workspace user.
+                    Optional: enables best-effort Google Workspace group membership enrichment. This
+                    does not impersonate a Workspace user.
                 </p>
             </div>
         {/if}

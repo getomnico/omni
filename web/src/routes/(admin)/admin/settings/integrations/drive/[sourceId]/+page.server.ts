@@ -8,7 +8,7 @@ import { userRepository } from '$lib/server/db/users'
 import { getConfig } from '$lib/server/config'
 import { AuthType, SourceType } from '$lib/types'
 import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
-import { GOOGLE_SA_DIRECT_SCOPES } from '$lib/utils/google-scopes'
+import { GOOGLE_SA_DIRECT_DRIVE_SCOPES } from '$lib/utils/google-scopes'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
     requireAdmin(locals)
@@ -176,8 +176,6 @@ export const actions: Actions = {
                 const domain = ((formData.get('domain') as string) || '').trim()
 
                 if (isSaDirect) {
-                    // SA-direct does not impersonate an admin user, but group
-                    // membership sync still needs the Workspace domain.
                     const folderPathFilters = parseFolderPathFilters(formData)
                     if (folderPathFilters.length === 0) {
                         throw error(400, 'At least one shared drive is required')
@@ -197,17 +195,12 @@ export const actions: Actions = {
                         }
                     }
 
-                    if (!domain) {
-                        throw error(
-                            400,
-                            'Organization domain is required for SA-direct group membership sync',
-                        )
-                    }
-
                     const mergedConfig: Record<string, unknown> = {
                         ...existingConfig,
                         auth_mode: 'service_account_direct',
-                        domain,
+                    }
+                    if (domain) {
+                        mergedConfig.domain = domain
                     }
                     mergedConfig.folder_path_filters = folderPathFilters
 
@@ -218,13 +211,19 @@ export const actions: Actions = {
                             ? (existingCreds.config as Record<string, unknown>)
                             : {}
 
+                    const updatedCredConfig: Record<string, unknown> = {
+                        ...existingCredConfig,
+                    }
+                    if (domain) {
+                        updatedCredConfig.domain = domain
+                    }
+                    if (!Object.prototype.hasOwnProperty.call(updatedCredConfig, 'scopes')) {
+                        updatedCredConfig.scopes = GOOGLE_SA_DIRECT_DRIVE_SCOPES
+                    }
+
                     await serviceCredentialsRepository.updateBySourceId(source.id, {
                         principalEmail: null,
-                        config: {
-                            ...existingCredConfig,
-                            domain,
-                            scopes: GOOGLE_SA_DIRECT_SCOPES,
-                        },
+                        config: updatedCredConfig,
                         credentials: serviceAccountJson
                             ? { service_account_key: serviceAccountJson }
                             : null,

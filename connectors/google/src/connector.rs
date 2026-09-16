@@ -1694,28 +1694,14 @@ impl Connector for GoogleConnector {
                         ))
                     })?;
                 } else {
+                    // SA-direct only needs a valid JWT and Drive credentials.
+                    // Optional Directory group enrichment is checked at sync time.
                     create_service_auth(creds, native_source_type).map_err(|e| {
                         SyncRequestValidationError::BadRequest(format!(
                             "Invalid Google service-account credentials: {}",
                             e
                         ))
                     })?;
-                    get_domain_from_credentials(creds).map_err(|e| {
-                        SyncRequestValidationError::BadRequest(format!(
-                            "Invalid SA-direct service-account config: {}",
-                            e
-                        ))
-                    })?;
-                    if !has_service_account_scope(
-                        creds,
-                        native_source_type,
-                        GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE,
-                    ) {
-                        return Err(SyncRequestValidationError::BadRequest(format!(
-                            "SA-direct credentials must include the {} scope for group membership sync",
-                            GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE
-                        )));
-                    }
                 }
             }
         }
@@ -1787,8 +1773,12 @@ impl Connector for GoogleConnector {
 mod tests {
     use std::sync::Arc;
 
-    use omni_connector_sdk::{AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider};
+    use omni_connector_sdk::{
+        AuthType, Connector, IntegrationType, SdkClient, ServiceCredential, ServiceProvider,
+        Source, SourceType, SyncType,
+    };
     use serde_json::json;
+    use shared::models::{SourceScope, UserFilterMode};
 
     use crate::admin::AdminClient;
     use crate::models::{GoogleAuthMode, GoogleDriveFile};
@@ -1839,6 +1829,77 @@ mod tests {
     fn google_connector_does_not_use_mcp_server() {
         let connector = test_connector();
         assert!(connector.mcp_server().is_none());
+    }
+
+    #[tokio::test]
+    async fn validate_sync_request_accepts_legacy_sa_direct_drive_only_credentials() {
+        let connector = test_connector();
+        let now = time::OffsetDateTime::now_utc();
+        let source = Source {
+            id: "source".to_string(),
+            name: "Shared Drive".to_string(),
+            source_type: SourceType::GoogleDrive.to_string(),
+            integration_type: IntegrationType::Connector,
+            config: json!({
+                "auth_mode": "service_account_direct",
+                "folder_path_filters": [{
+                    "id": "drive-1",
+                    "name": "Shared Drive",
+                    "path": "/Shared Drive (Shared Drive)",
+                    "driveId": "drive-1",
+                    "kind": "shared_drive_root"
+                }]
+            }),
+            is_active: true,
+            is_deleted: false,
+            scope: SourceScope::Org,
+            user_filter_mode: UserFilterMode::All,
+            user_whitelist: None,
+            user_blacklist: None,
+            connector_state: None,
+            checkpoint: None,
+            sync_interval_seconds: None,
+            created_at: now,
+            updated_at: now,
+            created_by: "admin".to_string(),
+        };
+        let credentials = ServiceCredential {
+            id: "credential".to_string(),
+            source_id: source.id.clone(),
+            user_id: None,
+            provider: ServiceProvider::Google,
+            auth_type: AuthType::Jwt,
+            principal_email: None,
+            credentials: json!({
+                "service_account_key": json!({
+                    "type": "service_account",
+                    "project_id": "project",
+                    "private_key_id": "key",
+                    "private_key": "not-used-by-validation",
+                    "client_email": "sa@project.iam.gserviceaccount.com",
+                    "client_id": "123",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/sa"
+                }).to_string()
+            }),
+            config: json!({
+                "scopes": [GOOGLE_DRIVE_READ_SCOPE]
+            }),
+            expires_at: None,
+            last_validated_at: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let result = connector
+            .validate_sync_request(&source, Some(&credentials), SyncType::Full)
+            .await;
+        assert!(
+            result.is_ok(),
+            "legacy SA-direct validation failed: {result:?}"
+        );
     }
 
     #[tokio::test]
