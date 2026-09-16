@@ -154,10 +154,29 @@
 
         <div
             class="bg-muted/50 text-muted-foreground rounded-md border p-3 text-xs leading-relaxed">
-            Grant <span class="font-medium">both</span> Application permissions (used for org-wide sync)
-            and Delegated permissions (used when individual users connect their account for tools) on
-            Microsoft Graph for this app registration. Omni reuses the same client credentials for both
-            flows.
+            <p>
+                Grant <span class="font-medium">both</span> Application permissions (used for
+                org-wide sync) and Delegated permissions (used when individual users connect
+                their account for tools) on Microsoft Graph for this app registration. Omni
+                reuses the same client credentials for both flows.
+            </p>
+            <div class="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                <div>
+                    <p class="text-foreground font-medium">Application permissions</p>
+                    <p>Files.Read.All, Sites.Read.All, Mail.Read, Calendars.Read,
+                    User.Read.All, Chat.Read.All, ChatMessage.Read.All</p>
+                </div>
+                <div>
+                    <p class="text-foreground font-medium">Delegated permissions</p>
+                    <p>User.Read, Calendars.Read, Calendars.ReadWrite</p>
+                </div>
+            </div>
+            <p class="mt-2">
+                Then click <span class="font-medium">Grant admin consent</span> for the
+                tenant in Azure (App registrations → API permissions). Without granted
+                consent, sources authenticate but every sync fails with
+                <span class="font-mono">Insufficient privileges</span>.
+            </p>
         </div>
 
         <div class="space-y-4">
