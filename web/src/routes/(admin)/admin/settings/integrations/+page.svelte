@@ -367,17 +367,18 @@
                                                                 <AlertTriangle class="h-4 w-4" />
                                                                 <Alert.Title
                                                                     >Source unhealthy</Alert.Title>
-                                                                <Alert.Description>
+                                                                <Alert.Description class="min-w-0">
                                                                     Scheduled syncs have been paused
                                                                     after repeated failures.
                                                                     {#if sync?.errorMessage}
-                                                                        <div class="mt-3 space-y-1">
+                                                                        <div
+                                                                            class="mt-3 max-w-full min-w-0 space-y-1">
                                                                             <div
                                                                                 class="text-xs font-medium">
                                                                                 Error message
                                                                             </div>
                                                                             <code
-                                                                                class="block max-h-48 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">
+                                                                                class="block max-h-48 max-w-full overflow-auto font-mono text-xs break-all whitespace-pre-wrap">
                                                                                 {sync.errorMessage}
                                                                             </code>
                                                                         </div>
