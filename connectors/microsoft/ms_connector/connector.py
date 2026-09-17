@@ -1,7 +1,9 @@
 """Main MicrosoftConnector class."""
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from pydantic import ValidationError
 from starlette.responses import Response
 
 from omni_connector import Connector, SearchOperator, SyncContext
@@ -10,10 +12,12 @@ from omni_connector.models import (
     ActionResponse,
     OAuthManifestConfig,
     OAuthScopeSet,
+    Source,
 )
 
 from .auth import MSGraphAuth, parse_ms_credentials
 from .graph_client import AuthenticationError, GraphAPIError, GraphClient
+from .mappers import serialize_event
 from .syncers.calendar import CalendarSyncer
 from .syncers.mail import MailSyncer
 from .syncers.onedrive import OneDriveSyncer
@@ -29,6 +33,17 @@ SOURCE_TYPE_TO_SYNCER = {
     "outlook_calendar": "calendar",
     "ms_teams": "teams",
 }
+
+
+def _parse_action_credentials(credentials: dict[str, Any]) -> MSGraphAuth:
+    try:
+        return MSGraphAuth.from_credentials(
+            parse_ms_credentials(credentials.get("credentials", credentials))
+        )
+    except ValidationError as e:
+        raise ValueError(
+            f"Unrecognized Microsoft credential shape: {e.errors(include_url=False)}"
+        ) from e
 
 
 class MicrosoftConnector(Connector):
@@ -151,6 +166,75 @@ class MicrosoftConnector(Connector):
                     "required": ["file_id"],
                 },
             ),
+            ActionDefinition(
+                name="list_events",
+                description=(
+                    "List the caller's Outlook calendar events in a time range. "
+                    "Defaults to the next 7 days starting today (UTC)."
+                ),
+                mode="read",
+                source_types=["outlook_calendar"],
+                required_scopes=["Calendars.Read"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "start": {
+                            "type": "string",
+                            "description": "Range start as ISO 8601 datetime or date "
+                            "(e.g. 2026-09-16T09:00:00 or 2026-09-16). "
+                            "Naive values are interpreted as UTC.",
+                        },
+                        "end": {
+                            "type": "string",
+                            "description": "Range end as ISO 8601 datetime or date. "
+                            "Naive values are interpreted as UTC.",
+                        },
+                        "top": {
+                            "type": "integer",
+                            "description": "Maximum number of events to return (1-50, default 25)",
+                        },
+                    },
+                },
+            ),
+            ActionDefinition(
+                name="create_event",
+                description=(
+                    "Create an event on the caller's Outlook calendar. "
+                    "Times are ISO 8601; naive values are interpreted as UTC."
+                ),
+                mode="write",
+                source_types=["outlook_calendar"],
+                required_scopes=["Calendars.ReadWrite"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "subject": {"type": "string"},
+                        "start": {
+                            "type": "string",
+                            "description": "Start as ISO 8601 datetime",
+                        },
+                        "end": {
+                            "type": "string",
+                            "description": "End as ISO 8601 datetime",
+                        },
+                        "attendees": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Attendee email addresses",
+                        },
+                        "location": {"type": "string"},
+                        "body": {
+                            "type": "string",
+                            "description": "Plain-text event description",
+                        },
+                        "online_meeting": {
+                            "type": "boolean",
+                            "description": "Create as a Teams online meeting",
+                        },
+                    },
+                    "required": ["subject", "start", "end"],
+                },
+            ),
         ]
 
     async def execute_action(
@@ -158,12 +242,184 @@ class MicrosoftConnector(Connector):
         action: str,
         params: dict[str, Any],
         credentials: dict[str, Any],
+        source: Source | None = None,
+        actor_email: str | None = None,
     ) -> Response:
         if action == "search_users":
             return await self._action_search_users(params, credentials)
         elif action == "fetch_file":
             return await self._action_fetch_file(params, credentials)
+        elif action == "list_events":
+            return await self._action_list_events(params, credentials, source)
+        elif action == "create_event":
+            return await self._action_create_event(params, credentials, source)
         return ActionResponse.not_supported(action).to_response(status_code=404)
+
+    @staticmethod
+    def _action_graph_client(
+        credentials: dict[str, Any], source: Source | None
+    ) -> GraphClient:
+        auth = _parse_action_credentials(credentials)
+        graph_base_url = (source.config if source else {}).get("graph_base_url")
+        if graph_base_url:
+            return GraphClient(auth, base_url=graph_base_url)
+        return GraphClient(auth)
+
+    @staticmethod
+    def _parse_action_datetime(
+        value: str, field: str
+    ) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except (ValueError, AttributeError) as e:
+            raise ValueError(
+                f"Invalid {field}: {value!r}. Expected an ISO 8601 datetime."
+            ) from e
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    async def _action_list_events(
+        self,
+        params: dict[str, Any],
+        credentials: dict[str, Any],
+        source: Source | None,
+    ) -> Response:
+        try:
+            start_raw = params.get("start")
+            end_raw = params.get("end")
+            if start_raw is not None:
+                start = self._parse_action_datetime(start_raw, "start")
+            else:
+                start = datetime.now(timezone.utc).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+            if end_raw is not None:
+                end = self._parse_action_datetime(end_raw, "end")
+            else:
+                end = start + timedelta(days=7)
+            if end <= start:
+                return ActionResponse.failure(
+                    "end must be after start"
+                ).to_response(status_code=400)
+            top_raw = params.get("top", 25)
+            try:
+                top = max(1, min(int(top_raw), 50))
+            except (TypeError, ValueError):
+                return ActionResponse.failure(
+                    f"Invalid top: {top_raw!r}. Expected an integer."
+                ).to_response(status_code=400)
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
+
+        client: GraphClient | None = None
+        try:
+            client = self._action_graph_client(credentials, source)
+            events = await client.list_calendar_events(
+                start.isoformat(), end.isoformat(), top=top
+            )
+            return ActionResponse.success(
+                {
+                    "events": [serialize_event(e) for e in events],
+                    "count": len(events),
+                    "range": {
+                        "start": start.isoformat(),
+                        "end": end.isoformat(),
+                    },
+                }
+            ).to_response()
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
+        except AuthenticationError as e:
+            logger.warning("list_events action failed authentication: %s", e)
+            return ActionResponse.failure(str(e)).to_response(status_code=401)
+        except GraphAPIError as e:
+            logger.exception("list_events action failed")
+            return ActionResponse.failure(e.diagnostic()).to_response(status_code=502)
+        finally:
+            if client is not None:
+                await client.close()
+
+    async def _action_create_event(
+        self,
+        params: dict[str, Any],
+        credentials: dict[str, Any],
+        source: Source | None,
+    ) -> Response:
+        subject = (params.get("subject") or "").strip()
+        start_raw = params.get("start")
+        end_raw = params.get("end")
+        if not subject or not start_raw or not end_raw:
+            return ActionResponse.failure(
+                "Missing required parameters: subject, start, end"
+            ).to_response(status_code=400)
+
+        try:
+            start = self._parse_action_datetime(start_raw, "start")
+            end = self._parse_action_datetime(end_raw, "end")
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
+        if end <= start:
+            return ActionResponse.failure("end must be after start").to_response(
+                status_code=400
+            )
+
+        attendees_raw = params.get("attendees") or []
+        if not isinstance(attendees_raw, list):
+            return ActionResponse.failure(
+                "attendees must be a list of email addresses"
+            ).to_response(status_code=400)
+        attendees: list[dict[str, Any]] = []
+        for attendee in attendees_raw:
+            address = str(attendee).strip()
+            if "@" not in address:
+                return ActionResponse.failure(
+                    f"Invalid attendee email: {attendee!r}"
+                ).to_response(status_code=400)
+            attendees.append(
+                {"emailAddress": {"address": address}, "type": "required"}
+            )
+
+        event: dict[str, Any] = {
+            "subject": subject,
+            "start": {
+                "dateTime": start.strftime("%Y-%m-%dT%H:%M:%S"),
+                "timeZone": "UTC",
+            },
+            "end": {
+                "dateTime": end.strftime("%Y-%m-%dT%H:%M:%S"),
+                "timeZone": "UTC",
+            },
+        }
+        if attendees:
+            event["attendees"] = attendees
+        location = (params.get("location") or "").strip()
+        if location:
+            event["location"] = {"displayName": location}
+        body = (params.get("body") or "").strip()
+        if body:
+            event["body"] = {"contentType": "text", "content": body}
+        if params.get("online_meeting"):
+            event["isOnlineMeeting"] = True
+
+        client: GraphClient | None = None
+        try:
+            client = self._action_graph_client(credentials, source)
+            created = await client.create_event(event)
+            return ActionResponse.success(
+                {"event": serialize_event(created)}
+            ).to_response()
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
+        except AuthenticationError as e:
+            logger.warning("create_event action failed authentication: %s", e)
+            return ActionResponse.failure(str(e)).to_response(status_code=401)
+        except GraphAPIError as e:
+            logger.exception("create_event action failed")
+            return ActionResponse.failure(e.diagnostic()).to_response(status_code=502)
+        finally:
+            if client is not None:
+                await client.close()
 
     async def _action_search_users(
         self,

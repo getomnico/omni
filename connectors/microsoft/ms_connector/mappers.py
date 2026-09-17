@@ -469,6 +469,29 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+def serialize_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a Graph calendar event to the compact shape used by actions."""
+    organizer = event.get("organizer", {}).get("emailAddress", {})
+    attendees = [
+        att.get("emailAddress", {}).get("address")
+        for att in event.get("attendees", [])
+        if att.get("emailAddress", {}).get("address")
+    ]
+    return {
+        "id": event.get("id"),
+        "subject": event.get("subject"),
+        "start": event.get("start"),
+        "end": event.get("end"),
+        "location": event.get("location", {}).get("displayName"),
+        "organizer": organizer.get("address"),
+        "attendees": attendees,
+        "web_link": event.get("webLink"),
+        "is_all_day": event.get("isAllDay", False),
+        "is_cancelled": event.get("isCancelled", False),
+        "body_preview": event.get("bodyPreview"),
+    }
+
+
 def map_teams_messages_to_document(
     group: TeamsMessageGroup,
     content_id: str,

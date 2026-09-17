@@ -4,20 +4,30 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { AuthType } from '$lib/types'
+    import { copyTextToClipboard } from '$lib/utils'
     import { toast } from 'svelte-sonner'
+    import { Check, Copy } from '@lucide/svelte'
 
     interface Props {
         open: boolean
+        oauthRedirectUri?: string
         onSuccess?: () => void
         onCancel?: () => void
     }
 
-    let { open = false, onSuccess, onCancel }: Props = $props()
+    let {
+        open = false,
+        oauthRedirectUri = '',
+        onSuccess,
+        onCancel,
+    }: Props = $props()
 
     let tenantId = $state('')
     let clientId = $state('')
     let clientSecret = $state('')
     let isSubmitting = $state(false)
+    let redirectUriCopied = $state(false)
+    let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
     const microsoftSources = [
         { name: 'OneDrive', sourceType: 'one_drive' },
@@ -140,6 +150,22 @@
             onCancel()
         }
     }
+
+    async function copyRedirectUri() {
+        if (!oauthRedirectUri) return
+        try {
+            await copyTextToClipboard(oauthRedirectUri)
+            redirectUriCopied = true
+            toast.success('Redirect URI copied')
+            if (copyResetTimer) clearTimeout(copyResetTimer)
+            copyResetTimer = setTimeout(() => {
+                redirectUriCopied = false
+                copyResetTimer = null
+            }, 2000)
+        } catch {
+            toast.error('Failed to copy redirect URI')
+        }
+    }
 </script>
 
 <Dialog.Root {open} onOpenChange={(o) => !o && handleCancel()}>
@@ -154,10 +180,59 @@
 
         <div
             class="bg-muted/50 text-muted-foreground rounded-md border p-3 text-xs leading-relaxed">
-            Grant <span class="font-medium">both</span> Application permissions (used for org-wide sync)
-            and Delegated permissions (used when individual users connect their account for tools) on
-            Microsoft Graph for this app registration. Omni reuses the same client credentials for both
-            flows.
+            <p>
+                Grant <span class="font-medium">both</span> Application permissions (used for
+                org-wide sync) and Delegated permissions (used when individual users connect
+                their account for tools) on Microsoft Graph for this app registration. Omni
+                reuses the same client credentials for both flows.
+            </p>
+            <div class="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2">
+                <div>
+                    <p class="text-foreground font-medium">Application permissions</p>
+                    <p>Files.Read.All, Sites.Read.All, Mail.Read, Calendars.Read,
+                    User.Read.All, Chat.Read.All, ChatMessage.Read.All</p>
+                </div>
+                <div>
+                    <p class="text-foreground font-medium">Delegated permissions</p>
+                    <p>User.Read, Calendars.Read, Calendars.ReadWrite</p>
+                </div>
+            </div>
+            {#if oauthRedirectUri}
+                <div class="mt-2">
+                    <p class="text-foreground font-medium">Redirect URI</p>
+                    <p>
+                        Add under <span class="font-medium">Authentication</span> as a
+                        <span class="font-medium">Web</span> platform redirect URI — without it,
+                        users hitting “Connect account” get
+                        <span class="font-mono">AADSTS500113</span>.
+                    </p>
+                    <div class="mt-1 flex gap-2">
+                        <code
+                            class="bg-background text-muted-foreground flex-1 rounded border px-2 py-1 break-all">
+                            {oauthRedirectUri}
+                        </code>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            class="cursor-pointer"
+                            onclick={copyRedirectUri}>
+                            {#if redirectUriCopied}
+                                <Check class="h-3.5 w-3.5 text-green-600" />
+                                Copied
+                            {:else}
+                                <Copy class="h-3.5 w-3.5" />
+                                Copy
+                            {/if}
+                        </Button>
+                    </div>
+                </div>
+            {/if}
+            <p class="mt-2">
+                Then click <span class="font-medium">Grant admin consent</span> for the
+                tenant in Azure (App registrations → API permissions). Without granted
+                consent, sources authenticate but every sync fails with
+                <span class="font-mono">Insufficient privileges</span>.
+            </p>
         </div>
 
         <div class="space-y-4">

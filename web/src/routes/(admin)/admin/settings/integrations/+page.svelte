@@ -801,6 +801,7 @@
 
 <MicrosoftConnectorSetup
     open={activeSetup === 'microsoft'}
+    oauthRedirectUri={data.oauthRedirectUri}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

@@ -62,6 +62,7 @@ class MockGraphAPI:
         self.channel_members: dict[str, list[dict[str, Any]]] = {}
         self.share_drive_items: dict[str, dict[str, Any]] = {}
         self.message_attachments: dict[str, list[dict[str, Any]]] = {}
+        self.me_events: list[dict[str, Any]] = []
 
     def reset(self) -> None:
         self.users.clear()
@@ -88,6 +89,7 @@ class MockGraphAPI:
         self.channel_members.clear()
         self.share_drive_items.clear()
         self.message_attachments.clear()
+        self.me_events.clear()
 
     def add_user(self, user: dict[str, Any]) -> None:
         self.users.append(user)
@@ -100,6 +102,15 @@ class MockGraphAPI:
 
     def add_calendar_event(self, user_id: str, event: dict[str, Any]) -> None:
         self.calendar_events.setdefault(user_id, []).append(event)
+
+    def add_me_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        event = dict(event)
+        event["id"] = f"me-event-{len(self.me_events) + 1}"
+        body = event.get("body", {})
+        if body.get("content"):
+            event["bodyPreview"] = body["content"][:255]
+        self.me_events.append(event)
+        return event
 
     def add_site(self, site: dict[str, Any]) -> None:
         self.sites.append(site)
@@ -275,6 +286,26 @@ class MockGraphAPI:
             delta_link = f"{base_url}/users/{uid}/calendarView/delta?deltatoken=latest"
             return JSONResponse({"value": events, "@odata.deltaLink": delta_link})
 
+        async def me_calendar_view(request: Request) -> JSONResponse:
+            window_start = request.query_params.get("startDateTime", "")
+            window_end = request.query_params.get("endDateTime", "")
+            overlapping = [
+                e
+                for e in mock.me_events
+                if e.get("end", {}).get("dateTime", "") > window_start
+                and e.get("start", {}).get("dateTime", "") < window_end
+            ]
+            overlapping.sort(key=lambda e: e.get("start", {}).get("dateTime", ""))
+            top = request.query_params.get("$top")
+            if top:
+                overlapping = overlapping[: int(top)]
+            return JSONResponse({"value": overlapping})
+
+        async def me_create_event(request: Request) -> JSONResponse:
+            event = await request.json()
+            created = mock.add_me_event(event)
+            return JSONResponse(created)
+
         async def item_permissions(request: Request) -> JSONResponse:
             did = request.path_params["did"]
             iid = request.path_params["iid"]
@@ -401,6 +432,8 @@ class MockGraphAPI:
                 mail_attachment_detail,
             ),
             Route("/v1.0/users/{uid}/calendarView/delta", calendar_delta),
+            Route("/v1.0/me/calendarView", me_calendar_view),
+            Route("/v1.0/me/events", me_create_event, methods=["POST"]),
             Route("/v1.0/groups", list_groups),
             Route("/v1.0/groups/{gid}/members", group_members),
             Route("/v1.0/sites", list_sites),

@@ -197,6 +197,13 @@ class GraphClient:
         response.raise_for_status()
         return response.content
 
+    @with_retry(max_retries=3)
+    async def _post(self, url: str, json: dict[str, Any]) -> dict[str, Any]:
+        """Execute a POST request with a JSON body against the Graph API."""
+        response = await self._client.post(url, json=json)
+        response.raise_for_status()
+        return response.json()
+
     async def get_paginated(
         self,
         url: str,
@@ -437,6 +444,33 @@ class GraphClient:
             full = await self.get(f"{base}/{att['id']}")
             attachments.append(full)
         return attachments
+
+    async def list_calendar_events(
+        self,
+        start: str,
+        end: str,
+        top: int = 25,
+    ) -> list[dict[str, Any]]:
+        """List the caller's calendar events overlapping [start, end].
+
+        `start`/`end` are ISO 8601 datetimes (Graph calendarView bounds).
+        Requires a delegated token — app-only tokens cannot address /me.
+        """
+        data = await self.get(
+            "/me/calendarView",
+            params={
+                "startDateTime": start,
+                "endDateTime": end,
+                "$select": "id,subject,start,end,location,organizer,attendees,"
+                "webLink,isAllDay,isCancelled,bodyPreview",
+                "$top": str(top),
+            },
+        )
+        return data.get("value", [])
+
+    async def create_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        """Create an event on the caller's default calendar."""
+        return await self._post("/me/events", json=event)
 
     async def get_channel_messages_delta(
         self,
