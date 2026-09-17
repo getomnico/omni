@@ -9,7 +9,7 @@ support without provider-specific glue.
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from typing import Any, ClassVar, cast
 
 from openai import APIStatusError, AsyncOpenAI
@@ -23,9 +23,17 @@ from openai.types.chat import (
     ChatCompletionToolParam,
     ChatCompletionUserMessageParam,
 )
+from openai.types.chat.chat_completion_content_part_image_param import (
+    ChatCompletionContentPartImageParam,
+    ImageURL,
+)
+from openai.types.chat.chat_completion_content_part_text_param import (
+    ChatCompletionContentPartTextParam,
+)
 from openai.types.chat.chat_completion_message_tool_call_param import Function
 from anthropic.types import (
     DocumentBlockParam,
+    ImageBlockParam,
     Message,
     MessageDeltaUsage,
     MessageParam,
@@ -73,6 +81,18 @@ def _openai_compat_error_code(e: BaseException) -> str | None:
 
 def _openai_compat_context_overflow(e: BaseException) -> bool:
     return _openai_compat_error_code(e) == "context_length_exceeded"
+
+
+def _image_data_source(block: Mapping[str, Any]) -> tuple[str, str] | None:
+    """Return (media_type, base64_data) for a base64-sourced Anthropic image block."""
+    source = block.get("source")
+    if not isinstance(source, dict) or source.get("type") != "base64":
+        return None
+    media_type = source.get("media_type")
+    data = source.get("data")
+    if not isinstance(media_type, str) or not isinstance(data, str):
+        return None
+    return media_type, data
 
 
 logger = logging.getLogger(__name__)
@@ -153,6 +173,9 @@ def _convert_messages_to_openai(
 
         # Handle block-based content (Anthropic format)
         text_parts: list[str] = []
+        user_content_parts: list[
+            ChatCompletionContentPartTextParam | ChatCompletionContentPartImageParam
+        ] = []
         tool_calls: list[ChatCompletionMessageToolCallParam] = []
         tool_results: list[ChatCompletionToolMessageParam] = []
 
@@ -164,6 +187,7 @@ def _convert_messages_to_openai(
 
             block = cast(
                 DocumentBlockParam
+                | ImageBlockParam
                 | TextBlockParam
                 | ToolUseBlockParam
                 | ToolResultBlockParam,
@@ -177,10 +201,33 @@ def _convert_messages_to_openai(
                 block = cast(TextBlockParam, block)
                 if block["text"]:
                     text_parts.append(block["text"])
+                    if role == "user":
+                        user_content_parts.append(
+                            ChatCompletionContentPartTextParam(
+                                type="text", text=block["text"]
+                            )
+                        )
             elif block["type"] == "document" and role == "user":
                 document_text = extract_text_document(block)
                 if document_text is not None:
                     text_parts.append(document_text)
+                    user_content_parts.append(
+                        ChatCompletionContentPartTextParam(
+                            type="text", text=document_text
+                        )
+                    )
+            elif block["type"] == "image" and role == "user":
+                image_data = _image_data_source(block)
+                if image_data is not None:
+                    media_type, data = image_data
+                    user_content_parts.append(
+                        ChatCompletionContentPartImageParam(
+                            type="image_url",
+                            image_url=ImageURL(
+                                url=f"data:{media_type};base64,{data}"
+                            ),
+                        )
+                    )
             elif block["type"] == "tool_use":
                 block = cast(ToolUseBlockParam, block)
                 raw_input = block["input"]
@@ -243,7 +290,17 @@ def _convert_messages_to_openai(
         elif role == "user" and tool_results:
             result.extend(tool_results)
         else:
-            if text_parts:
+            has_images = any(
+                part["type"] == "image_url" for part in user_content_parts
+            )
+            if has_images:
+                result.append(
+                    ChatCompletionUserMessageParam(
+                        role="user",
+                        content=cast(Any, user_content_parts),
+                    )
+                )
+            elif text_parts:
                 result.append(
                     ChatCompletionUserMessageParam(
                         role="user", content="\n".join(text_parts)

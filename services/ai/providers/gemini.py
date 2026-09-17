@@ -175,6 +175,18 @@ def _convert_messages_to_gemini(
                 if document_text is not None:
                     parts.append(types.Part(text=document_text))
 
+            elif block_type == "image" and role == "user":
+                source = block.get("source")
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    media_type = source.get("media_type")
+                    data = source.get("data")
+                    if isinstance(media_type, str) and isinstance(data, str):
+                        parts.append(
+                            types.Part.from_bytes(
+                                data=base64.b64decode(data), mime_type=media_type
+                            )
+                        )
+
             elif block_type == "tool_use":
                 sig = _extract_thought_signature(block)
                 parts.append(

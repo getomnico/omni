@@ -57,7 +57,7 @@
         selectedModelId?: string | null
         onModelChange?: (modelId: string) => void
         onAttachClick?: () => void
-        onFilesDropped?: (files: FileList) => void
+        onFilesDropped?: (files: FileList | File[]) => void
         attachments?: Snippet
         mentionedDocs?: MentionedDocument[]
         canSubmit?: boolean
@@ -131,6 +131,26 @@
         if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
             onFilesDropped(e.dataTransfer.files)
         }
+    }
+
+    function filesFromClipboard(data: DataTransfer | null): File[] {
+        if (!data) return []
+        const files: File[] = []
+        for (const item of Array.from(data.items)) {
+            if (item.kind !== 'file') continue
+            const file = item.getAsFile()
+            if (file) files.push(file)
+        }
+        if (files.length === 0) return Array.from(data.files)
+        return files
+    }
+
+    function handlePaste(e: ClipboardEvent) {
+        if (!onFilesDropped) return
+        const files = filesFromClipboard(e.clipboardData)
+        if (files.length === 0) return
+        e.preventDefault()
+        onFilesDropped(files)
     }
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
@@ -596,6 +616,7 @@
             oninput={handleInputChange}
             onfocus={handleFocus}
             onblur={handleBlur}
+            onpaste={handlePaste}
             class={cn(
                 'before:text-muted-foreground relative min-h-12 cursor-text overflow-y-auto before:pointer-events-none before:absolute before:inset-0 focus:outline-none',
                 value.trim() || mentionedDocs.length > 0

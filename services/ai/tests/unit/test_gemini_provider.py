@@ -188,3 +188,46 @@ def test_convert_messages_handles_only_user_text_documents():
     assert [part.text for part in converted[0].parts] == [
         'Document title: "Report.pdf"\nDocument content:\nQ3 revenue grew 14%.'
     ]
+
+
+def test_convert_messages_inlines_base64_image_for_user():
+    converted = _convert_messages_to_gemini(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "aGVsbG8=",
+                        },
+                    },
+                    {"type": "text", "text": "what is this?"},
+                ],
+            }
+        ]
+    )
+
+    assert len(converted) == 1
+    parts = converted[0].parts
+    assert len(parts) == 2
+    assert parts[0].inline_data.data == b"hello"
+    assert parts[0].inline_data.mime_type == "image/png"
+    assert parts[1].text == "what is this?"
+
+
+def test_convert_messages_ignores_non_base64_image_source():
+    converted = _convert_messages_to_gemini(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "url", "url": "https://x.invalid/a.png"}}
+                ],
+            }
+        ]
+    )
+
+    assert converted == []

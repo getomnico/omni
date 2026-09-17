@@ -168,7 +168,13 @@
 
     type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
 
-    type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
+    type PendingUpload = {
+        id: string
+        filename: string
+        contentType: string
+        sizeBytes: number
+        uploading: boolean
+    }
     type UploadResponse = {
         id: string
         filename: string
@@ -179,12 +185,13 @@
     let pendingUploads = $state<PendingUpload[]>([])
     let uploadInputEl: HTMLInputElement | undefined = $state()
 
-    async function handleFilesSelected(files: FileList | null) {
+    async function handleFilesSelected(files: FileList | File[] | null) {
         if (!files) return
         for (const file of Array.from(files)) {
             const placeholder: PendingUpload = {
                 id: crypto.randomUUID(),
                 filename: file.name,
+                contentType: file.type,
                 sizeBytes: file.size,
                 uploading: true,
             }
@@ -200,6 +207,7 @@
                     pendingUploads[idx] = {
                         id: data.id,
                         filename: data.filename,
+                        contentType: data.content_type || file.type,
                         sizeBytes: data.size_bytes,
                         uploading: false,
                     }
@@ -2272,10 +2280,14 @@
             for (const up of pendingUploads) {
                 uploadFilenames[up.id] = up.filename
             }
-            const uploadBlocks: UserMessageBlock[] = attachmentIds.map((id) => ({
-                type: 'document',
-                source: { type: 'omni_upload', upload_id: id },
-            }))
+            const uploadBlocks: UserMessageBlock[] = attachmentIds.map((id) => {
+                const up = pendingUploads.find((u) => u.id === id)
+                const isImage = !!up?.contentType.startsWith('image/')
+                return {
+                    type: isImage ? 'image' : 'document',
+                    source: { type: 'omni_upload', upload_id: id },
+                }
+            })
             const blocks: UserMessageBlock[] = [...mentionBlocks, ...uploadBlocks]
             if (userMsg) blocks.push({ type: 'text', text: userMsg })
             messageContent = blocks
