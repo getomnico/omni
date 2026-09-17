@@ -21,6 +21,7 @@
     import { getDocumentIconPath } from '$lib/utils/icons'
     import { formatProviderName } from '$lib/utils/providers.js'
     import { hasMinimumQueryLength } from '$lib/utils/query'
+    import { filesFromClipboardData, filesFromClipboardHtml } from '$lib/attachments/clipboard'
 
     interface PopoverItem {
         label: string
@@ -97,6 +98,7 @@
     }: UserInputProps = $props()
 
     let isDragging = $state(false)
+
     let dragDepth = 0
 
     function isFileDrag(e: DragEvent): boolean {
@@ -133,24 +135,25 @@
         }
     }
 
-    function filesFromClipboard(data: DataTransfer | null): File[] {
-        if (!data) return []
-        const files: File[] = []
-        for (const item of Array.from(data.items)) {
-            if (item.kind !== 'file') continue
-            const file = item.getAsFile()
-            if (file) files.push(file)
-        }
-        if (files.length === 0) return Array.from(data.files)
-        return files
-    }
-
     function handlePaste(e: ClipboardEvent) {
         if (!onFilesDropped) return
-        const files = filesFromClipboard(e.clipboardData)
-        if (files.length === 0) return
-        e.preventDefault()
-        onFilesDropped(files)
+        const files = filesFromClipboardData(e.clipboardData)
+        if (files.length > 0) {
+            e.preventDefault()
+            onFilesDropped(files)
+            return
+        }
+        const html = e.clipboardData?.getData('text/html')
+        if (html && /<img\b/i.test(html)) {
+            // Web-image paste (Safari's default when copying an image on a
+            // page): the browser never exposes it as a file, so materialize
+            // it via the from-url proxy. Cancel the default insertion of a
+            // raw <img> into the editable regardless of the fetch outcome.
+            e.preventDefault()
+            void filesFromClipboardHtml(html).then((resolved) => {
+                if (resolved.length > 0) onFilesDropped?.(resolved)
+            })
+        }
     }
 
     let showModelSelector = $derived(models.length >= 2 && inputMode === 'chat')
