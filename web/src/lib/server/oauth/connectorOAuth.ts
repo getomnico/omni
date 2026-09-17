@@ -425,8 +425,10 @@ export async function getOAuthConfigForSource(
         const sourceConfig = (source.config ?? {}) as Record<string, unknown>
         const issuerKey = manifest.issuer_source_config_key
         if (issuerKey && Object.prototype.hasOwnProperty.call(sourceConfig, issuerKey)) {
-            resolved =
-                (await discoverOAuthManifestFromIssuer(manifest, sourceConfig[issuerKey])) ?? null
+            resolved = await discoverOAuthManifestFromIssuer(manifest, sourceConfig[issuerKey])
+            if (!resolved && source.sourceType === 'snowflake') {
+                resolved = await snowflakeOAuthManifestFallback(manifest, sourceConfig)
+            }
             if (!resolved) return null
         }
         return resolveSourceClientConfigProvider(resolved, source.id)
@@ -440,6 +442,20 @@ export async function getOAuthConfigForSource(
         endpointUrl: String((source.config as Record<string, unknown>)?.endpoint_url ?? ''),
         sourceType: source.sourceType,
     })) as OAuthManifestConfig | null
+}
+
+async function snowflakeOAuthManifestFallback(
+    manifest: OAuthManifestConfig,
+    sourceConfig: Record<string, unknown>,
+): Promise<OAuthManifestConfig | null> {
+    const accountUrl = await validateOAuthEndpoint(sourceConfig.account_url)
+    if (!accountUrl) return null
+    return {
+        ...manifest,
+        auth_endpoint: `${accountUrl}/oauth/authorize`,
+        token_endpoint: `${accountUrl}/oauth/token-request`,
+        issuer_source_config_key: null,
+    }
 }
 
 interface ClientCreds {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable
@@ -13,6 +14,8 @@ from .config import SnowflakeConfig, SnowflakeCredentials
 from .mappers import SnowflakeDocumentDraft, database_document, schema_document, table_document
 from .models import SnowflakeCheckpoint
 from .permissions import SnowflakePermissions
+
+FULL_REPAIR_INTERVAL = timedelta(days=7)
 
 
 class SnowflakeSync:
@@ -37,15 +40,15 @@ class SnowflakeSync:
             await ctx.complete(checkpoint=checkpoint_data or {})
             return
         parsed_credentials = SnowflakeCredentials.model_validate(_credential_payload(credentials))
-        session = self._session_factory(config, parsed_credentials)
+        session = await asyncio.to_thread(self._session_factory, config, parsed_credentials)
         client = SnowflakeClient(session)
         try:
-            client.verify_identity()
+            await asyncio.to_thread(client.verify_identity)
             await self._sync_metadata(client, config, checkpoint_data, ctx)
         except Exception as error:
             await ctx.fail(self._safe_error(error))
         finally:
-            session.close()
+            await asyncio.to_thread(session.close)
 
     async def _sync_metadata(
         self,
@@ -65,27 +68,41 @@ class SnowflakeSync:
         if ctx.sync_mode not in (SyncMode.FULL, SyncMode.INCREMENTAL):
             raise ValueError(f"Snowflake does not support sync mode {ctx.sync_mode.value}")
         cutoff = now - timedelta(hours=3)
+        # Keep operations on the Snowflake connection serialized. The driver
+        # exposes synchronous cursors and does not guarantee concurrent use of
+        # one connection, even though each call must stay off the event loop.
+        users = await asyncio.to_thread(client.users)
+        grants = await asyncio.to_thread(client.grants)
+        edges = await asyncio.to_thread(client.role_edges)
+        user_roles = await asyncio.to_thread(client.user_roles)
+        permissions = SnowflakePermissions(users, grants, edges, user_roles)
+        group_members = permissions.group_members()
+        acl_fingerprint = _fingerprint(
+            {
+                "users": [user.model_dump(mode="json") for user in users],
+                "grants": [grant.model_dump(mode="json") for grant in grants],
+                "edges": [edge.model_dump(mode="json") for edge in edges],
+                "user_roles": [role.model_dump(mode="json") for role in user_roles],
+            }
+        )
+        permission_repair = (
+            old_checkpoint is not None and old_checkpoint.acl_fingerprint != acl_fingerprint
+        )
+        periodic_repair = (
+            old_checkpoint is not None
+            and old_checkpoint.last_full_reconciliation_at is not None
+            and now - old_checkpoint.last_full_reconciliation_at >= FULL_REPAIR_INTERVAL
+        )
+        full_reconciliation = full or permission_repair or periodic_repair
         changed_since = (
             None
-            if full
+            if full_reconciliation
             else _overlap_start(
                 old_checkpoint
                 or SnowflakeCheckpoint(mode="incremental", source_fingerprint=source_fingerprint),
                 cutoff,
             )
         )
-        users = client.users()
-        grants = client.grants()
-        edges = client.role_edges()
-        user_roles = client.user_roles()
-        permissions = SnowflakePermissions(users, grants, edges, user_roles)
-        group_members = permissions.group_members()
-        acl_fingerprint = _fingerprint(group_members)
-        permission_repair = (
-            old_checkpoint is not None and old_checkpoint.acl_fingerprint != acl_fingerprint
-        )
-        if permission_repair:
-            changed_since = None
         prior_inventory = _inventory(ctx.connector_state)
         seen_inventory: set[str] = set()
 
@@ -95,8 +112,10 @@ class SnowflakeSync:
                 return
             await ctx.emit_group_membership(group, members, group.removeprefix("snowflake:role:"))
 
-        if full:
-            for database_row in client.databases(config):
+        if full_reconciliation:
+            for database_row in await asyncio.to_thread(
+                client.databases, config, changed_since=None
+            ):
                 users_for_document, groups_for_document = permissions.permissions_for_database(
                     database_row.database_name
                 )
@@ -106,7 +125,7 @@ class SnowflakeSync:
                 ):
                     await ctx.increment_scanned()
                 seen_inventory.add(f"database:{database_row.database_id}")
-            for schema_row in client.schemas(config):
+            for schema_row in await asyncio.to_thread(client.schemas, config, changed_since=None):
                 users_for_document, groups_for_document = permissions.permissions_for_schema(
                     schema_row.database_name, schema_row.schema_name
                 )
@@ -117,7 +136,37 @@ class SnowflakeSync:
                     await ctx.increment_scanned()
                 seen_inventory.add(f"schema:{schema_row.schema_id}")
 
-        for table in client.tables(config, changed_since=changed_since):
+        databases = (
+            await asyncio.to_thread(client.databases, config, changed_since=changed_since)
+            if not full_reconciliation
+            else []
+        )
+        schemas = (
+            await asyncio.to_thread(client.schemas, config, changed_since=changed_since)
+            if not full_reconciliation
+            else []
+        )
+        for database_row in databases:
+            users_for_document, groups_for_document = permissions.permissions_for_database(
+                database_row.database_name
+            )
+            if await self._emit_document(
+                database_document(database_row, users_for_document, groups_for_document), ctx
+            ):
+                await ctx.increment_scanned()
+            seen_inventory.add(f"database:{database_row.database_id}")
+        for schema_row in schemas:
+            users_for_document, groups_for_document = permissions.permissions_for_schema(
+                schema_row.database_name, schema_row.schema_name
+            )
+            if await self._emit_document(
+                schema_document(schema_row, users_for_document, groups_for_document), ctx
+            ):
+                await ctx.increment_scanned()
+            seen_inventory.add(f"schema:{schema_row.schema_id}")
+
+        tables = await asyncio.to_thread(client.tables, config, changed_since=changed_since)
+        for table in tables:
             if (
                 ctx.is_resume
                 and old_checkpoint is not None
@@ -125,13 +174,14 @@ class SnowflakeSync:
                 and old_checkpoint.last_completed_key is not None
                 and old_checkpoint.source_fingerprint == source_fingerprint
                 and old_checkpoint.mode == ctx.sync_mode.value
-                and table.table_id <= old_checkpoint.last_completed_key.removeprefix("table:")
+                and table_id_from_key(f"table:{table.table_id}")
+                <= table_id_from_key(old_checkpoint.last_completed_key)
             ):
                 continue
             if ctx.is_cancelled():
                 await ctx.fail("Cancelled by user")
                 return
-            columns = client.columns(table)
+            columns = await asyncio.to_thread(client.columns, table)
             users_for_document, groups_for_document = permissions.permissions_for(table)
             draft = table_document(table, columns, users_for_document, groups_for_document)
             if await self._emit_document(draft, ctx):
@@ -142,7 +192,7 @@ class SnowflakeSync:
                 mode=ctx.sync_mode.value,
                 visibility_cutoff=cutoff,
                 last_full_reconciliation_at=now
-                if full
+                if full_reconciliation
                 else old_checkpoint.last_full_reconciliation_at
                 if old_checkpoint
                 else None,
@@ -157,12 +207,18 @@ class SnowflakeSync:
 
         deleted_ids = (
             prior_inventory - seen_inventory
-            if full
-            else set(client.deleted_external_ids(config, changed_since))
+            if full_reconciliation
+            else prior_inventory.intersection(
+                await asyncio.to_thread(client.deleted_external_ids, config, changed_since)
+            )
         )
         for external_id in sorted(deleted_ids):
             await ctx.emit_deleted(external_id)
-        inventory = seen_inventory if full else (prior_inventory | seen_inventory) - deleted_ids
+        inventory = (
+            seen_inventory
+            if full_reconciliation
+            else (prior_inventory | seen_inventory) - deleted_ids
+        )
         await ctx.save_connector_state({"inventory": sorted(inventory)})
 
         # The durable checkpoint is promoted by connector-manager only after
@@ -171,7 +227,7 @@ class SnowflakeSync:
             mode=ctx.sync_mode.value,
             visibility_cutoff=cutoff,
             last_full_reconciliation_at=now
-            if full
+            if full_reconciliation
             else old_checkpoint.last_full_reconciliation_at
             if old_checkpoint
             else None,
@@ -214,6 +270,14 @@ def _inventory(value: dict[str, Any]) -> set[str]:
     if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
         return set()
     return set(raw)
+
+
+def table_id_from_key(value: str) -> int:
+    key = value.removeprefix("table:")
+    try:
+        return int(key)
+    except ValueError as error:
+        raise ValueError(f"invalid Snowflake table checkpoint key: {value}") from error
 
 
 def _parse_checkpoint(value: dict[str, Any] | None) -> SnowflakeCheckpoint | None:

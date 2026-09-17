@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from omni_connector import ActionDefinition, ConnectorManifestSource
 
@@ -17,6 +19,19 @@ async def test_multiple_sources_are_one_union_manifest() -> None:
         [],
         [],
     )
+    updated_at = datetime(2026, 6, 23, 10, tzinfo=UTC)
+    connector._source_catalog_versions["one"] = (
+        updated_at,
+        "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
+        True,
+        True,
+    )
+    connector._source_catalog_versions["two"] = (
+        updated_at,
+        "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
+        True,
+        False,
+    )
     sources = [
         ConnectorManifestSource(
             id="one",
@@ -31,7 +46,7 @@ async def test_multiple_sources_are_one_union_manifest() -> None:
                 "write_tools_enabled": True,
                 "mcp_endpoint_url": "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
             },
-            updated_at="2026-06-23T10:00:00Z",
+            updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
         ),
         ConnectorManifestSource(
             id="two",
@@ -44,9 +59,10 @@ async def test_multiple_sources_are_one_union_manifest() -> None:
                 "databases": ["D"],
                 "mcp_enabled": True,
                 "write_tools_enabled": True,
+                "read_only": False,
                 "mcp_endpoint_url": "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
             },
-            updated_at="2026-06-23T10:00:00Z",
+            updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
         ),
     ]
     manifest = await connector.build_manifest_for_sources(sources, None, "http://snowflake:8000")
@@ -68,6 +84,19 @@ async def test_conflicting_tool_names_are_omitted() -> None:
         [],
         [],
     )
+    updated_at = datetime(2026, 6, 23, 10, tzinfo=UTC)
+    connector._source_catalog_versions["one"] = (
+        updated_at,
+        "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
+        False,
+        True,
+    )
+    connector._source_catalog_versions["two"] = (
+        updated_at,
+        "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
+        False,
+        True,
+    )
     source = ConnectorManifestSource(
         id="one",
         source_type="snowflake",
@@ -80,7 +109,7 @@ async def test_conflicting_tool_names_are_omitted() -> None:
             "mcp_enabled": True,
             "mcp_endpoint_url": "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
         },
-        updated_at="2026-06-23T10:00:00Z",
+        updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
     )
     second = source.model_copy(
         update={
@@ -96,3 +125,41 @@ async def test_conflicting_tool_names_are_omitted() -> None:
         [source, second], None, "http://snowflake:8000"
     )
     assert manifest.actions == []
+
+
+@pytest.mark.asyncio
+async def test_catalog_is_invalidated_when_source_policy_or_timestamp_changes() -> None:
+    connector = SnowflakeConnector()
+    endpoint = "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M"
+    original_time = datetime(2026, 6, 23, 10, tzinfo=UTC)
+    connector._source_catalogs["one"] = (
+        [ActionDefinition(name="inspect", description="Inspect", mode="read", origin="mcp")],
+        [],
+        [],
+    )
+    connector._source_catalog_versions["one"] = (original_time, endpoint, False, True)
+    source = ConnectorManifestSource(
+        id="one",
+        source_type="snowflake",
+        scope="org",
+        config={
+            "account_url": "https://one.snowflakecomputing.com",
+            "mcp_enabled": True,
+            "mcp_endpoint_url": endpoint,
+        },
+        updated_at=original_time,
+    )
+    initial = await connector.build_manifest_for_sources([source], None, "http://snowflake:8000")
+    assert initial.mcp_catalog_loaded
+
+    changed = source.model_copy(
+        update={
+            "updated_at": datetime(2026, 6, 23, 11, tzinfo=UTC),
+            "config": {**source.config, "read_only": False},
+        }
+    )
+    refreshed = await connector.build_manifest_for_sources(
+        [changed], initial, "http://snowflake:8000"
+    )
+    assert refreshed.actions == []
+    assert not refreshed.mcp_catalog_loaded

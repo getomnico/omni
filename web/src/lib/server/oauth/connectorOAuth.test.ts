@@ -4,6 +4,7 @@ import {
     dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    getOAuthConfigForSource,
     oauthCredentialExpiry,
     oauthServiceBaseUrl,
     parseOAuthSourceBinding,
@@ -82,6 +83,57 @@ describe('windshiftInternalOrigin', () => {
 })
 
 describe('OAuth connector helpers', () => {
+    it('derives Snowflake account OAuth endpoints when discovery is unavailable', async () => {
+        validateRemoteMock.mockImplementation(async (url: string) => url)
+        fetchRemoteMock.mockResolvedValue({ ok: false })
+        vi.stubGlobal(
+            'fetch',
+            vi.fn().mockResolvedValue({
+                ok: true,
+                json: async () => [
+                    {
+                        source_type: 'snowflake',
+                        manifest: {
+                            oauth: {
+                                provider: 'snowflake',
+                                auth_endpoint: 'https://login.snowflake.com/oauth/authorize',
+                                token_endpoint: 'https://login.snowflake.com/oauth/token-request',
+                                identity_scopes: ['session:role:all', 'refresh_token'],
+                                scopes: {
+                                    snowflake: {
+                                        read: ['session:role:all', 'refresh_token'],
+                                        write: ['session:role:all', 'refresh_token'],
+                                    },
+                                },
+                                issuer_source_config_key: 'oauth_issuer_url',
+                                client_config_provider_template: 'snowflake:{source_id}',
+                                pkce_required: true,
+                                validate_endpoint_urls: true,
+                            },
+                        },
+                    },
+                ],
+            }),
+        )
+
+        const config = await getOAuthConfigForSource({
+            id: 'source-1',
+            sourceType: 'snowflake',
+            integrationType: 'connector',
+            config: {
+                account_url: 'https://acme.snowflakecomputing.com',
+                oauth_issuer_url: 'https://acme.snowflakecomputing.com',
+            },
+        })
+
+        expect(config?.auth_endpoint).toBe('https://acme.snowflakecomputing.com/oauth/authorize')
+        expect(config?.token_endpoint).toBe(
+            'https://acme.snowflakecomputing.com/oauth/token-request',
+        )
+        expect(config?.client_config_provider).toBe('snowflake:source-1')
+        vi.unstubAllGlobals()
+    })
+
     it('derives credential expiry from expires_in', () => {
         const expiry = oauthCredentialExpiry({ expires_in: 7200 }, 'refresh-token')
         expect(expiry).not.toBeNull()
@@ -127,9 +179,9 @@ describe('OAuth connector helpers', () => {
                     source_binding: { organization_id: '00D123', instance_url: 'https://x' },
                 }),
             ).toEqual({ organization_id: '00D123', instance_url: 'https://x' })
-            expect(
-                parseOAuthSourceBinding({ source_binding: { workspace_id: 'ws-1' } }),
-            ).toEqual({ workspace_id: 'ws-1' })
+            expect(parseOAuthSourceBinding({ source_binding: { workspace_id: 'ws-1' } })).toEqual({
+                workspace_id: 'ws-1',
+            })
         })
 
         it('rejects non-string binding values', () => {
@@ -153,9 +205,7 @@ describe('OAuth connector helpers', () => {
         })
 
         it('rejects a malformed response body', () => {
-            expect(() => parseOAuthSourceBinding('nope')).toThrow(
-                'invalid response',
-            )
+            expect(() => parseOAuthSourceBinding('nope')).toThrow('invalid response')
         })
     })
 

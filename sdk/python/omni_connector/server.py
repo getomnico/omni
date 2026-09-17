@@ -403,6 +403,11 @@ def create_app(
         adapter = connector.mcp_adapter_for_source(request.source)
         native_action_names = {action.name for action in connector.actions}
         if adapter is not None and request.action not in native_action_names:
+            if not connector.mcp_action_allowed(request.action, request.source):
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"error": "MCP action is disabled by source policy"},
+                )
             try:
                 mcp_action_names = await connector.mcp_action_names_for_source(
                     request.source

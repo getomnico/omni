@@ -35,7 +35,10 @@ credential; the metadata service credential is never a fallback.
 4. Snowflake managed MCP does not support Dynamic Client Registration. Create a
    confidential OAuth security integration, enter its source-scoped client ID/secret,
    and use Omni's exact callback URL. Omni stores that client under the Snowflake
-   source ID rather than sharing it across accounts. The administrator must then click **Connect
+   source ID rather than sharing it across accounts. Request `refresh_token` together
+   with `session:role:all` (the default Snowflake OAuth policy); restrict effective
+   access with `ALLOWED_ROLES_LIST` and `OAUTH_USE_SECONDARY_ROLES = NONE`. The
+   administrator must then click **Connect
    Snowflake and discover tools**. Discovery uses that consenting administrator only
    for `tools/list`; execution always resolves the invoking user's credential.
 

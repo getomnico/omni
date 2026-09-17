@@ -775,6 +775,12 @@ pub async fn execute_action(
             .config
             .get("read_only")
             .and_then(|v| v.as_bool())
+            // MCP tools fail closed when an older source predates the
+            // explicit policy fields. Native actions retain their legacy
+            // behavior and must declare their own policy.
+            .or_else(|| {
+                (action_def.origin == ActionOrigin::Mcp).then_some(true)
+            })
             .unwrap_or(false);
         if (manifest.read_only || source_read_only) && action_mode == ActionMode::Write {
             return Err(ApiError::BadRequest(format!(
@@ -1446,9 +1452,8 @@ pub async fn list_actions(
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
         row.and_then(|(config,)| config.get("read_only").and_then(|v| v.as_bool()))
-            .unwrap_or(false)
     } else {
-        false
+        None
     };
 
     let manifests = get_registered_manifests(&state.redis_client).await;
@@ -1457,7 +1462,12 @@ pub async fn list_actions(
     for manifest in manifests {
         for source_type in &manifest.source_types {
             for action in &manifest.actions {
-                if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
+                let action_source_read_only = source_read_only.unwrap_or(
+                    action.origin == ActionOrigin::Mcp,
+                );
+                if (manifest.read_only || action_source_read_only)
+                    && action.mode == ActionMode::Write
+                {
                     continue;
                 }
                 if !action.source_types.is_empty()

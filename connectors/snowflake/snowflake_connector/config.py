@@ -5,18 +5,26 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+class SnowflakeSourceBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account: str
+    user: str
+    email: str | None = None
+
+
 class SnowflakeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     account_url: str
-    warehouse: str
-    role: str
-    databases: list[str] = Field(min_length=1)
+    warehouse: str | None = None
+    role: str | None = None
+    databases: list[str] = Field(default_factory=list)
     schemas_allowlist: list[str] | None = None
     schemas_denylist: list[str] | None = None
     included_object_types: list[str] = Field(
         default_factory=lambda: [
-            "TABLE",
+            "BASE TABLE",
             "VIEW",
             "EXTERNAL TABLE",
             "EVENT TABLE",
@@ -30,6 +38,7 @@ class SnowflakeConfig(BaseModel):
     write_tools_enabled: bool = False
     include_tags: bool = False
     read_only: bool = True
+    source_binding: SnowflakeSourceBinding | None = None
 
     @field_validator("account_url", "mcp_endpoint_url", "oauth_issuer_url")
     @classmethod
@@ -59,6 +68,12 @@ class SnowflakeConfig(BaseModel):
         return value
 
     def validate_for_use(self) -> None:
+        if self.sync_enabled:
+            if not self.warehouse or not self.role or not self.databases:
+                raise ValueError(
+                    "warehouse, role, and at least one database are required "
+                    "when metadata sync is enabled"
+                )
         if self.mcp_enabled and self.mcp_endpoint_url is None:
             raise ValueError("mcp_endpoint_url is required when MCP is enabled")
         if self.schemas_allowlist is not None and self.schemas_denylist is not None:

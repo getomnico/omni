@@ -54,12 +54,17 @@ class SnowflakeClient:
             result.append({str(key).upper(): value for key, value in row.items()})
         return result
 
-    def databases(self, config: SnowflakeConfig) -> list[DatabaseRow]:
-        rows = self.rows("""
+    def databases(
+        self, config: SnowflakeConfig, *, changed_since: str | None = None
+    ) -> list[DatabaseRow]:
+        clauses = ["DELETED IS NULL"]
+        if changed_since is not None:
+            clauses.append(_changed_since_clause(changed_since, "LAST_ALTERED", "CREATED"))
+        rows = self.rows(f"""
             SELECT DATABASE_ID, DATABASE_NAME, COMMENT, DATABASE_OWNER AS OWNER_ROLE,
                    CREATED AS CREATED_AT, LAST_ALTERED, DELETED
             FROM SNOWFLAKE.ACCOUNT_USAGE.DATABASES
-            WHERE DELETED IS NULL
+            WHERE {" AND ".join(clauses)}
             ORDER BY DATABASE_ID
         """)
         return [
@@ -68,12 +73,17 @@ class SnowflakeClient:
             if _included_database(row, config)
         ]
 
-    def schemas(self, config: SnowflakeConfig) -> list[SchemaRow]:
-        rows = self.rows("""
+    def schemas(
+        self, config: SnowflakeConfig, *, changed_since: str | None = None
+    ) -> list[SchemaRow]:
+        clauses = ["DELETED IS NULL"]
+        if changed_since is not None:
+            clauses.append(_changed_since_clause(changed_since, "LAST_ALTERED", "CREATED"))
+        rows = self.rows(f"""
             SELECT SCHEMA_ID, CATALOG_NAME AS DATABASE_NAME, SCHEMA_NAME, COMMENT,
                    SCHEMA_OWNER AS OWNER_ROLE, CREATED AS CREATED_AT, LAST_ALTERED, DELETED
             FROM SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA
-            WHERE DELETED IS NULL
+            WHERE {" AND ".join(clauses)}
             ORDER BY SCHEMA_ID
         """)
         return [
@@ -96,7 +106,7 @@ class SnowflakeClient:
             SELECT TABLE_ID, TABLE_CATALOG AS DATABASE_NAME, TABLE_SCHEMA AS SCHEMA_NAME,
                    TABLE_NAME AS OBJECT_NAME, TABLE_TYPE AS OBJECT_TYPE, COMMENT,
                    TABLE_OWNER AS OWNER_ROLE, CREATED AS CREATED_AT, LAST_DDL, DELETED,
-                   IS_TRANSIENT, IS_ICEBERG, IS_DYNAMIC, IS_MATERIALIZED
+                   IS_TRANSIENT, IS_ICEBERG, IS_DYNAMIC, IS_HYBRID, IS_EVENT
             FROM SNOWFLAKE.ACCOUNT_USAGE.TABLES
             WHERE {" AND ".join(clauses)}
             ORDER BY TABLE_ID
@@ -142,21 +152,18 @@ class SnowflakeClient:
         return [ColumnRow.model_validate(_lower_keys(_normalize_column(row))) for row in rows]
 
     def grants(self) -> list[SnowflakeGrant]:
-        role_grants = self.rows("""
-            SELECT GRANTEE_NAME, GRANTEE_TYPE, PRIVILEGE, OBJECT_TYPE,
-                   NAME AS OBJECT_NAME, DELETED_ON
+        # GRANTS_TO_ROLES contains both role grants and direct user object
+        # grants. GRANTS_TO_USERS is only the role-assignment view, so using it
+        # here would miss direct grants and query columns that do not exist.
+        rows = self.rows("""
+            SELECT GRANTEE_NAME, GRANTED_TO AS GRANTEE_TYPE,
+                   PRIVILEGE, GRANTED_ON AS OBJECT_TYPE, NAME AS OBJECT_NAME,
+                   TABLE_CATALOG AS OBJECT_DATABASE, TABLE_SCHEMA AS OBJECT_SCHEMA,
+                   DELETED_ON
             FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
             WHERE DELETED_ON IS NULL
         """)
-        user_grants = self.rows("""
-            SELECT GRANTEE_NAME, 'USER' AS GRANTEE_TYPE, PRIVILEGE, OBJECT_TYPE,
-                   NAME AS OBJECT_NAME, DELETED_ON
-            FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS
-            WHERE DELETED_ON IS NULL
-        """)
-        return [
-            SnowflakeGrant.model_validate(_lower_keys(row)) for row in [*role_grants, *user_grants]
-        ]
+        return [SnowflakeGrant.model_validate(_lower_keys(row)) for row in rows]
 
     def users(self) -> list[SnowflakeUser]:
         return [
@@ -181,9 +188,9 @@ class SnowflakeClient:
         return [
             SnowflakeRoleEdge.model_validate(_lower_keys(row))
             for row in self.rows("""
-            SELECT GRANTEE_NAME AS PARENT_ROLE, ROLE AS CHILD_ROLE
+            SELECT GRANTEE_NAME AS PARENT_ROLE, NAME AS CHILD_ROLE
             FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES
-            WHERE GRANTED_ON = 'ROLE' AND DELETED_ON IS NULL
+            WHERE GRANTED_ON IN ('ROLE', 'DATABASE_ROLE') AND DELETED_ON IS NULL
         """)
         ]
 
@@ -236,9 +243,13 @@ def _included_schema(row: Mapping[str, object], config: SnowflakeConfig) -> bool
 
 
 def _included_table(row: Mapping[str, object], config: SnowflakeConfig) -> bool:
-    return (
-        _included_schema(row, config)
-        and _optional_text(row, "OBJECT_TYPE") in config.included_object_types
+    object_type = _optional_text(row, "OBJECT_TYPE")
+    if object_type is None or not _included_schema(row, config):
+        return False
+    configured_types = {item.casefold() for item in config.included_object_types}
+    # Older saved configs used TABLE for Snowflake's BASE TABLE value.
+    return object_type.casefold() in configured_types or (
+        object_type.casefold() == "base table" and "table" in configured_types
     )
 
 
@@ -273,6 +284,11 @@ def _required_text(row: Mapping[str, object], key: str) -> str:
 
 def _quote_literal(value: str) -> str:
     return value.replace("'", "''")
+
+
+def _changed_since_clause(cutoff: str, *columns: str) -> str:
+    quoted = _quote_literal(cutoff)
+    return "(" + " OR ".join(f"{column} >= TO_TIMESTAMP_TZ('{quoted}')" for column in columns) + ")"
 
 
 def _quote_identifier(value: str) -> str:
@@ -311,13 +327,16 @@ def default_oauth_session_factory(config: SnowflakeConfig, access_token: str) ->
     import snowflake.connector
 
     account = _account_identifier(config.account_url)
-    connection = snowflake.connector.connect(
-        account=account,
-        authenticator="oauth",
-        token=access_token,
-        warehouse=config.warehouse,
-        role=config.role,
-    )
+    connection_kwargs: dict[str, object] = {
+        "account": account,
+        "authenticator": "oauth",
+        "token": access_token,
+    }
+    if config.warehouse is not None:
+        connection_kwargs["warehouse"] = config.warehouse
+    if config.role is not None:
+        connection_kwargs["role"] = config.role
+    connection = snowflake.connector.connect(**connection_kwargs)
     return _OfficialSnowflakeSession(connection)
 
 
@@ -339,6 +358,8 @@ def default_session_factory(
         serialization.NoEncryption(),
     )
     account = _account_identifier(config.account_url)
+    if config.warehouse is None or config.role is None:
+        raise ValueError("metadata credentials require warehouse and role")
     connection = snowflake.connector.connect(
         account=account,
         user=credentials.username,

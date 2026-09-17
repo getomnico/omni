@@ -197,9 +197,6 @@ jobs:
               - 'services/connector-manager/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
-              - 'sdk/python/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/build-connector.yml'
             microsoft-connector:
               - 'connectors/microsoft/**'
               - 'sdk/python/**'

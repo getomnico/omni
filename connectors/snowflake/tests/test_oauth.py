@@ -12,7 +12,7 @@ class IdentitySession:
         self.user = user
         self.email = email
 
-    def execute(self, statement: str):
+    def execute(self, statement: str) -> list[dict[str, str]]:
         if statement.startswith("SELECT CURRENT_ACCOUNT"):
             return [{"ACCOUNT": self.account, "USER": self.user, "REGION": "AWS_US_EAST_1"}]
         return [{"PROPERTY": "EMAIL", "PROPERTY_VALUE": self.email}]
@@ -34,6 +34,7 @@ def source() -> Source:
                 "databases": ["D"],
                 "mcp_enabled": True,
                 "mcp_endpoint_url": "https://acme.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
+                "source_binding": {"account": "ACME", "user": "BOUND"},
             },
             "is_active": True,
             "is_deleted": False,

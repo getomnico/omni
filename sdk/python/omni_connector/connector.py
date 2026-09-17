@@ -159,6 +159,10 @@ class Connector(ABC):
             return set()
         return {action.name for action in await adapter.get_action_definitions()}
 
+    def mcp_action_allowed(self, action: str, source: Source | None) -> bool:
+        """Apply connector/source policy before dispatching an MCP action."""
+        return True
+
     def mcp_authentication_error(self, message: str) -> bool:
         """Return whether an MCP failure requires the user's OAuth reconnect.
 

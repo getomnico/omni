@@ -58,7 +58,8 @@ class TableRow(BaseModel):
     is_transient: bool = False
     is_iceberg: bool = False
     is_dynamic: bool = False
-    is_materialized: bool = False
+    is_hybrid: bool = False
+    is_event: bool = False
 
 
 class ColumnRow(BaseModel):
@@ -80,6 +81,8 @@ class SnowflakeGrant(BaseModel):
     privilege: str | None = None
     object_type: str | None = None
     object_name: str | None = None
+    object_database: str | None = None
+    object_schema: str | None = None
     deleted_on: datetime | None = None
 
 

@@ -32,28 +32,36 @@ class SnowflakePermissions:
 
     def permissions_for(self, table: TableRow) -> tuple[list[str], list[str]]:
         return self._permissions_for_names(
-            [
-                table.database_name,
-                f"{table.database_name}.{table.schema_name}",
-                f"{table.database_name}.{table.schema_name}.{table.object_name}",
-            ]
+            [f"{table.database_name}.{table.schema_name}.{table.object_name}"],
+            {"table", "view", "external table", "event table", "materialized view"},
         )
 
     def permissions_for_database(self, database_name: str) -> tuple[list[str], list[str]]:
-        return self._permissions_for_names([database_name])
+        return self._permissions_for_names([database_name], {"database"})
 
     def permissions_for_schema(
         self, database_name: str, schema_name: str
     ) -> tuple[list[str], list[str]]:
-        return self._permissions_for_names([database_name, f"{database_name}.{schema_name}"])
+        return self._permissions_for_names(
+            [database_name, f"{database_name}.{schema_name}"],
+            {"database", "schema"},
+        )
 
-    def _permissions_for_names(self, object_names: list[str]) -> tuple[list[str], list[str]]:
+    def _permissions_for_names(
+        self, object_names: list[str], object_types: set[str]
+    ) -> tuple[list[str], list[str]]:
         role_names: set[str] = set()
         direct_users: set[str] = set()
         for grant in self._grants:
-            if grant.deleted_on is not None or not self._grant_matches(grant, object_names):
+            if (
+                grant.deleted_on is not None
+                or grant.object_type is None
+                or grant.object_type.casefold().replace("_", " ") not in object_types
+                or not self._grant_matches(grant, object_names)
+            ):
                 continue
-            if grant.grantee_type.casefold() == "role":
+            grantee_type = grant.grantee_type.casefold().replace("_", " ")
+            if grantee_type in {"account role", "database role", "role"}:
                 # Group membership expands an assigned role into its granted
                 # child roles, so a document only needs the role receiving
                 # the object grant. Including ancestors here would overgrant
@@ -98,8 +106,21 @@ class SnowflakePermissions:
     def _grant_matches(grant: SnowflakeGrant, object_names: list[str]) -> bool:
         if grant.object_name is None:
             return False
-        candidate = grant.object_name.casefold()
+        candidate = _qualified_name(
+            grant.object_name, grant.object_database, grant.object_schema
+        ).casefold()
         targets = {name.casefold() for name in object_names}
         return candidate in targets or any(
             candidate.endswith(".*") and target.startswith(candidate[:-1]) for target in targets
         )
+
+
+def _qualified_name(name: str, database: str | None, schema: str | None) -> str:
+    if database is not None and schema is not None:
+        prefix = f"{database}.{schema}."
+        if name.casefold().startswith(prefix.casefold()):
+            return name
+        return f"{database}.{schema}.{name}"
+    if database is not None:
+        return f"{database}.{name}"
+    return name

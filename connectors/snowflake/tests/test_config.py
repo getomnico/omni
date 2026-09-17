@@ -39,6 +39,29 @@ def test_managed_endpoint_rejects_unsafe_or_wrong_paths(endpoint: str) -> None:
         validate_mcp_endpoint(endpoint, "https://acme.snowflakecomputing.com")
 
 
+def test_source_binding_is_accepted_after_oauth_validation() -> None:
+    parsed = config(
+        sync_enabled=False,
+        source_binding={"account": "ACME", "user": "ALICE", "email": "alice@example.com"},
+    )
+    assert parsed.source_binding is not None
+    assert parsed.source_binding.account == "ACME"
+
+
+def test_mcp_only_configuration_does_not_require_metadata_credentials() -> None:
+    parsed = config(
+        sync_enabled=False,
+        mcp_enabled=True,
+        mcp_endpoint_url="https://acme.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
+    )
+    parsed.validate_for_use()
+
+
+def test_metadata_sync_requires_metadata_configuration() -> None:
+    with pytest.raises(ValueError, match="metadata sync"):
+        config(warehouse=None, role=None, databases=[]).validate_for_use()
+
+
 def test_mcp_requires_endpoint_when_used() -> None:
     with pytest.raises(ValueError):
         config(mcp_enabled=True).validate_for_use()
