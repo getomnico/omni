@@ -998,6 +998,7 @@ class StreamChatHandler:
                 uploads_repo=UploadsRepository(),
                 sandbox_url=SANDBOX_URL,
                 user_id=chat.user_id,
+                supports_vision=llm_provider.supports_vision,
             )
 
         user_groups = None

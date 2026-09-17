@@ -170,3 +170,69 @@ async def test_upload_of_other_user_is_not_visible():
 
     blocks = out[0]["content"]
     assert blocks[0] == {"type": "text", "text": "[upload upload-1 not found]"}
+
+
+@pytest.mark.asyncio
+async def test_image_upload_without_vision_falls_back_to_pointer_text():
+    upload, blobs = _png_upload()
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "omni_upload", "upload_id": "upload-1"}}
+            ],
+        }
+    ]
+
+    out = await expand_uploads(
+        messages,
+        "chat-1",
+        FakeStorage(blobs),
+        FakeUploadsRepository([upload]),
+        None,
+        supports_vision=False,
+    )
+
+    blocks = out[0]["content"]
+    assert blocks[0]["type"] == "text"
+    assert "cannot be shown to this model" in blocks[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_image_upload_without_vision_stages_in_sandbox_when_available():
+    upload, blobs = _png_upload()
+    upload.filename = "shot.png"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "omni_upload", "upload_id": "upload-1"}}
+            ],
+        }
+    ]
+
+    staged: list[tuple[str, str, bytes]] = []
+
+    async def fake_stage(sandbox_url, chat_id, path, content):
+        staged.append((sandbox_url, path, content))
+
+    import attachments
+
+    original = attachments._stage_in_sandbox
+    attachments._stage_in_sandbox = fake_stage
+    try:
+        out = await expand_uploads(
+            messages,
+            "chat-1",
+            FakeStorage(blobs),
+            FakeUploadsRepository([upload]),
+            "http://sandbox.internal",
+            supports_vision=False,
+        )
+    finally:
+        attachments._stage_in_sandbox = original
+
+    blocks = out[0]["content"]
+    assert blocks[0]["type"] == "text"
+    assert "Available in workspace at 'upload-1_shot.png'" in blocks[0]["text"]
+    assert staged[0][1] == "upload-1_shot.png"

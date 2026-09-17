@@ -134,6 +134,7 @@ async def _expand_omni_upload(
     sandbox_url: str | None,
     cache: dict[UploadId, list[ContentBlockParam]],
     user_id: str | None = None,
+    supports_vision: bool = True,
 ) -> list[ContentBlockParam]:
     if upload_id in cache:
         return cache[upload_id]
@@ -152,7 +153,8 @@ async def _expand_omni_upload(
     content = await storage.get_bytes(upload.content_id)
 
     if (
-        upload.content_type in _IMAGE_MEDIA_TYPES
+        supports_vision
+        and upload.content_type in _IMAGE_MEDIA_TYPES
         and len(content) <= MAX_INLINE_IMAGE_BYTES
     ):
         expanded: list[ContentBlockParam] = [
@@ -183,11 +185,14 @@ async def _expand_omni_upload(
             return expanded
 
     if not sandbox_url:
+        reason = (
+            "is too large to inline" if supports_vision else "cannot be shown to this model"
+        )
         expanded = [
             _text_block(
                 f"[uploaded file '{upload.filename}' "
                 f"({upload.content_type}, {upload.size_bytes} bytes) "
-                f"is too large to inline and no sandbox is available]"
+                f"{reason} and no sandbox is available]"
             )
         ]
         cache[upload_id] = expanded
@@ -411,6 +416,7 @@ async def expand_uploads(
     uploads_repo: UploadsRepository,
     sandbox_url: str | None,
     user_id: str | None = None,
+    supports_vision: bool = True,
 ) -> list[MessageParam]:
     """Return a new message list with all omni_upload blocks expanded.
 
@@ -442,6 +448,7 @@ async def expand_uploads(
                     sandbox_url,
                     cache,
                     user_id=user_id,
+                    supports_vision=supports_vision,
                 )
             )
             changed = True
