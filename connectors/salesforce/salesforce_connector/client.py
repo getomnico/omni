@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
@@ -36,6 +36,7 @@ TOKEN_REFRESH_EARLY_SECONDS = 300
 # manager's stale-sync timeout.
 RATE_LIMIT_MAX_RETRIES = 5
 RATE_LIMIT_BASE_DELAY_SECONDS = 10.0
+MAX_BINARY_BYTES = 25 * 1024 * 1024
 
 
 class SalesforceClientError(Exception):
@@ -225,6 +226,84 @@ class QueryResult:
 
 
 @dataclass(frozen=True)
+class StandardActionError:
+    """Typed error returned by a Salesforce invocable standard action."""
+
+    status_code: str
+    message: str
+    fields: tuple[str, ...]
+
+    def describe(self) -> str:
+        suffix = f" ({', '.join(self.fields)})" if self.fields else ""
+        return f"{self.status_code}: {self.message}{suffix}"
+
+
+@dataclass(frozen=True)
+class StandardActionResult:
+    """One result from a Salesforce invocable standard action."""
+
+    is_success: bool
+    action_name: str
+    errors: tuple[StandardActionError, ...]
+    output_values: Mapping[str, object] | None
+
+    @classmethod
+    def from_response(cls, raw: object) -> tuple[StandardActionResult, ...]:
+        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+            raise SalesforceClientError(
+                "malformed standard action response: expected an array of results"
+            )
+        results: list[StandardActionResult] = []
+        for item in raw:
+            if not isinstance(item, Mapping) or not isinstance(item.get("isSuccess"), bool):
+                raise SalesforceClientError("malformed standard action result")
+            action_name = item.get("actionName")
+            if not isinstance(action_name, str) or not action_name:
+                raise SalesforceClientError("malformed standard action actionName")
+            if "errors" not in item or "outputValues" not in item:
+                raise SalesforceClientError("malformed standard action result fields")
+            errors_value = item["errors"]
+            if errors_value is None:
+                errors: tuple[StandardActionError, ...] = ()
+            elif isinstance(errors_value, list):
+                parsed_errors: list[StandardActionError] = []
+                for error in errors_value:
+                    if not isinstance(error, Mapping):
+                        raise SalesforceClientError("malformed standard action error")
+                    status_code = error.get("statusCode")
+                    message = error.get("message")
+                    fields_value = error.get("fields")
+                    if not isinstance(status_code, str) or not isinstance(message, str):
+                        raise SalesforceClientError("malformed standard action error fields")
+                    if fields_value is None:
+                        fields: tuple[str, ...] = ()
+                    elif isinstance(fields_value, list) and all(
+                        isinstance(field, str) for field in fields_value
+                    ):
+                        fields = tuple(fields_value)
+                    else:
+                        raise SalesforceClientError("malformed standard action error fields")
+                    parsed_errors.append(StandardActionError(status_code, message, fields))
+                errors = tuple(parsed_errors)
+            else:
+                raise SalesforceClientError("malformed standard action errors")
+            output_value = item["outputValues"]
+            if output_value is not None and not isinstance(output_value, Mapping):
+                raise SalesforceClientError("malformed standard action outputValues")
+            results.append(
+                cls(
+                    is_success=item["isSuccess"],
+                    action_name=action_name,
+                    errors=errors,
+                    output_values=output_value,
+                )
+            )
+        if not results:
+            raise SalesforceClientError("standard action response contained no results")
+        return tuple(results)
+
+
+@dataclass(frozen=True)
 class DeletedRecord:
     id: str
     deleted_date: datetime | None
@@ -261,19 +340,28 @@ class GlobalDescribe:
 
 
 @dataclass(frozen=True)
-class ObjectDescribe:
-    """Fields exposed on one Salesforce object for the authenticated principal.
+class FieldDescribe:
+    """FLS/CRUD metadata for one field exposed by Salesforce Describe."""
 
-    Describe honors the principal's licenses and field-level security, so an
-    org with a disabled feature (e.g. role hierarchy) omits its fields here.
-    Selecting such a field anyway fails the whole query with INVALID_FIELD.
-    ``relationships`` holds relationship names (e.g. ``Account`` for a
-    traversable ``Account.Name``) so relationship traversal is validated
-    independently of the base field.
-    """
+    name: str
+    createable: bool
+    updateable: bool
+    nillable: bool
+    field_type: str | None
+    relationship_name: str | None = None
+    reference_to: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ObjectDescribe:
+    """Provider-confirmed fields, queryability, and permissions for one object."""
 
     fields: frozenset[str]
     relationships: frozenset[str]
+    field_metadata: Mapping[str, FieldDescribe]
+    queryable: bool
+    createable: bool
+    updateable: bool
 
     def can_select(self, field: str) -> bool:
         if "." in field:
@@ -281,8 +369,22 @@ class ObjectDescribe:
             return relationship in self.relationships and bool(child)
         return field in self.fields
 
+    def can_write(self, field: str, *, create: bool) -> bool:
+        metadata = self.field_metadata.get(field)
+        if metadata is None:
+            return False
+        return metadata.createable if create else metadata.updateable
+
     @classmethod
     def from_response(cls, raw: Mapping[str, object]) -> ObjectDescribe:
+        capabilities: dict[str, bool] = {}
+        for key in ("queryable", "createable", "updateable"):
+            value = raw.get(key)
+            if not isinstance(value, bool):
+                raise SalesforceClientError(
+                    f"malformed object describe response: {key} expected boolean"
+                )
+            capabilities[key] = value
         fields_value = raw.get("fields")
         if not isinstance(fields_value, list):
             raise SalesforceClientError(
@@ -291,6 +393,7 @@ class ObjectDescribe:
             )
         fields: set[str] = set()
         relationships: set[str] = set()
+        metadata: dict[str, FieldDescribe] = {}
         for item in fields_value:
             if not isinstance(item, Mapping):
                 raise SalesforceClientError(
@@ -303,10 +406,30 @@ class ObjectDescribe:
                     "malformed object describe response: fields entry missing name"
                 )
             fields.add(name)
-            relationship_name = item.get("relationshipName")
-            if isinstance(relationship_name, str) and relationship_name:
+            relationship_value = item.get("relationshipName")
+            relationship_name = relationship_value if isinstance(relationship_value, str) else None
+            if relationship_name:
                 relationships.add(relationship_name)
-        return cls(fields=frozenset(fields), relationships=frozenset(relationships))
+            reference_value = item.get("referenceTo")
+            reference_to = (
+                tuple(value for value in reference_value if isinstance(value, str))
+                if isinstance(reference_value, list) else ()
+            )
+            metadata[name] = FieldDescribe(
+                name=name,
+                createable=item.get("createable") is True,
+                updateable=item.get("updateable") is True,
+                nillable=item.get("nillable") is True,
+                field_type=item.get("type") if isinstance(item.get("type"), str) else None,
+                relationship_name=relationship_name,
+                reference_to=reference_to,
+            )
+        return cls(
+            fields=frozenset(fields),
+            relationships=frozenset(relationships),
+            field_metadata=metadata,
+            **capabilities,
+        )
 
 
 @dataclass(frozen=True)
@@ -607,9 +730,9 @@ class SalesforceClient:
         raw = await asyncio.to_thread(sf.restful, path, params=params or None)
         return DeletedResult.from_response(_require_mapping(raw, "deleted page"))
 
-    @with_retry(max_retries=3)
+    @with_retry(max_retries=0)
     async def create(self, object_type: str, data: Mapping[str, object]) -> str:
-        """Create a record and return its id."""
+        """Create a record without replaying ambiguous 5xx failures."""
         sf = await self._ensure_session()
         raw = await asyncio.to_thread(
             sf.restful,
@@ -624,13 +747,13 @@ class SalesforceClient:
 
     @with_retry(max_retries=3)
     async def update(self, object_type: str, record_id: str, data: Mapping[str, object]) -> None:
-        """Update a record in place."""
+        """Update a record; PATCH is safe to retry."""
         sf = await self._ensure_session()
         await asyncio.to_thread(
             sf.restful,
             f"sobjects/{object_type}/{record_id}",
             method="PATCH",
-            data=json.dumps({k: v for k, v in data.items() if v is not None}),
+            data=json.dumps(dict(data)),
         )
 
     @with_retry(max_retries=3)
@@ -648,12 +771,151 @@ class SalesforceClient:
             raise SalesforceClientError(f"malformed record response for {object_type} {record_id}")
         return raw
 
+    @with_retry(max_retries=0)
+    async def invoke_standard_action(
+        self, action_name: str, payload: Mapping[str, object]
+    ) -> tuple[StandardActionResult, ...]:
+        """Invoke a named Salesforce standard action without retrying it.
+
+        Standard actions can have side effects (email send in particular), so an
+        ambiguous transport failure must be surfaced rather than replayed.
+        """
+        if not action_name.startswith("/") or ".." in action_name:
+            raise SalesforceClientError("invalid Salesforce standard action path")
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(
+            sf.restful,
+            f"actions/standard/{action_name.lstrip('/').removeprefix('actions/standard/')}",
+            method="POST",
+            data=json.dumps(dict(payload)),
+        )
+        return StandardActionResult.from_response(raw)
+
+    async def get_record_type_picklist_values(
+        self, object_type: str, record_type_id: str, field_name: str
+    ) -> tuple[str, ...]:
+        """Read UI API picklist values for one record type and field."""
+        path = (
+            f"/ui-api/object-info/{object_type}/picklist-values/"
+            f"{record_type_id}/{field_name}"
+        )
+        raw = _require_mapping(
+            await self._raw_get_json(path, timeout=30), "UI API picklist"
+        )
+        values = raw.get("values")
+        if not isinstance(values, list):
+            raise SalesforceClientError("malformed UI API picklist response: values expected list")
+        result: list[str] = []
+        for item in values:
+            if not isinstance(item, Mapping) or not isinstance(item.get("value"), str):
+                raise SalesforceClientError("malformed UI API picklist value")
+            if item.get("active") is not False:
+                result.append(item["value"])
+        return tuple(result)
+
+    async def fetch_binary(
+        self, path: str, *, max_bytes: int = MAX_BINARY_BYTES
+    ) -> tuple[bytes, str | None, int | None]:
+        """Fetch a binary Salesforce resource with typed HTTP errors."""
+        if not path.startswith("/") or ".." in path:
+            raise SalesforceClientError("invalid Salesforce binary resource path")
+        token, instance_url = await self._session_credentials()
+
+        def _fetch(current_token: str) -> requests.Response:
+            try:
+                return requests.get(
+                    f"{instance_url.rstrip('/')}/services/data/{API_VERSION}{path}",
+                    headers={"Authorization": f"Bearer {current_token}"},
+                    timeout=60,
+                    stream=True,
+                )
+            except requests.RequestException as exc:
+                raise SalesforceClientError("Salesforce binary request failed") from exc
+
+        response = await asyncio.to_thread(_fetch, token)
+        if response.status_code == 401 and await self._refresh_expired_token():
+            refreshed_token, _ = await self._session_credentials()
+            response = await asyncio.to_thread(_fetch, refreshed_token)
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired access token")
+        if response.status_code == 404:
+            raise NotFoundError(path)
+        if response.status_code == 403:
+            raise ForbiddenError(path)
+        if response.status_code >= 400:
+            raise SalesforceClientError(
+                f"Salesforce binary request failed ({response.status_code})"
+            )
+        content_length = _content_length(response)
+        if content_length is not None and content_length > max_bytes:
+            response.close()
+            raise SalesforceClientError(
+                "Salesforce binary response exceeds the configured size limit"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise SalesforceClientError(
+                        "Salesforce binary response exceeds the configured size limit"
+                    )
+                chunks.append(chunk)
+        finally:
+            response.close()
+        return b"".join(chunks), response.headers.get("Content-Type"), content_length or total
+
+    async def _raw_get_json(self, path: str, *, timeout: float) -> object:
+        if not path.startswith("/") or ".." in path:
+            raise SalesforceClientError("invalid Salesforce resource path")
+        token, instance_url = await self._session_credentials()
+
+        def _fetch(current_token: str) -> requests.Response:
+            try:
+                return requests.get(
+                    f"{instance_url.rstrip('/')}/services/data/{API_VERSION}{path}",
+                    headers={"Authorization": f"Bearer {current_token}"},
+                    timeout=timeout,
+                )
+            except requests.RequestException as exc:
+                raise SalesforceClientError("Salesforce HTTP request failed") from exc
+
+        response = await asyncio.to_thread(_fetch, token)
+        if response.status_code == 401 and await self._refresh_expired_token():
+            refreshed_token, _ = await self._session_credentials()
+            response = await asyncio.to_thread(_fetch, refreshed_token)
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired access token")
+        if response.status_code == 403:
+            raise ForbiddenError("Insufficient permissions")
+        if response.status_code == 404:
+            raise NotFoundError(path)
+        if response.status_code >= 400:
+            raise SalesforceClientError(
+                f"Salesforce HTTP request failed ({response.status_code}): {response.text[:200]}"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise SalesforceClientError("Salesforce HTTP response was not valid JSON") from exc
+
     @with_retry(max_retries=3)
     async def test_connection(self) -> None:
         """Verify the token with an API endpoint independent of CRM objects."""
         sf = await self._ensure_session()
         raw = await asyncio.to_thread(sf.limits)
         _require_mapping(raw, "limits")
+
+
+def _content_length(response: requests.Response) -> int | None:
+    value = response.headers.get("Content-Length")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _format_api_datetime(value: datetime) -> str:

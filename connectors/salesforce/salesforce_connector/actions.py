@@ -6,9 +6,10 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from omni_connector import ActionDefinition, ActionResponse
 
+from .case_actions import CASE_ACTION_DEFINITIONS, execute_case_action
 from .client import (
     AuthenticationError,
     ForbiddenError,
@@ -17,7 +18,7 @@ from .client import (
     SalesforceClientError,
 )
 from .config import SalesforceObjectConfig, config_for
-from .models import SalesforceAuth, _as_int, _as_str
+from .models import SalesforceAuth, SalesforceSourceConfig, _as_int, _as_str
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,11 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
                 "origin": {"type": "string", "description": "Case origin, e.g. 'Web', 'Email'"},
                 "account_id": {"type": "string", "description": "Related Account Id"},
                 "contact_id": {"type": "string", "description": "Related Contact Id"},
+                "owner_id": {"type": "string", "description": "Case-capable queue Id"},
+                "record_type_id": {
+                    "type": "string",
+                    "description": "Optional active Case RecordType Id",
+                },
             },
             ["subject"],
         ),
@@ -170,7 +176,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         credential_scope="org",
         source_types=["salesforce"],
     ),
-)
+) + CASE_ACTION_DEFINITIONS
 
 
 @dataclass(frozen=True)
@@ -382,15 +388,22 @@ async def _find_records(
             status_code=400
         )
 
-    soql = f"SELECT {', '.join(config.all_fields())} FROM {config.name}"
-    if params.query:
-        escaped = params.query.replace("\\", "\\\\").replace("'", "\\'")
-        where = " OR ".join(f"{f} LIKE '%{escaped}%'" for f in search_fields)
-        soql += f" WHERE {where}"
-    soql += f" ORDER BY Id LIMIT {params.limit}"
-
     client = _client_from_credentials(credentials)
     try:
+        describe = await client.describe_object(config.name.value)
+        selectable_fields = tuple(
+            field for field in config.all_fields() if describe.can_select(field)
+        )
+        if "Id" not in selectable_fields:
+            raise SalesforceClientError(
+                f"Salesforce {config.name} Id field is not readable"
+            )
+        soql = f"SELECT {', '.join(selectable_fields)} FROM {config.name}"
+        if params.query:
+            escaped = params.query.replace("\\", "\\\\").replace("'", "\\'")
+            where = " OR ".join(f"{f} LIKE '%{escaped}%'" for f in search_fields)
+            soql += f" WHERE {where}"
+        soql += f" ORDER BY Id LIMIT {params.limit}"
         result = await client.query(soql)
         return ActionResponse.success(
             {
@@ -542,17 +555,21 @@ async def execute_action(
     action: str,
     params: Mapping[str, object],
     credentials: Mapping[str, object],
-) -> JSONResponse:
-    """Dispatch an action by name with typed params."""
+    source_config: SalesforceSourceConfig | None = None,
+) -> JSONResponse | Response:
+    """Dispatch generic native actions for the source organization."""
+    config = source_config or SalesforceSourceConfig()
+    if action in {definition.name for definition in CASE_ACTION_DEFINITIONS}:
+        return await execute_case_action(action, params, credentials, config)
     try:
         if action == "find_records":
             return await _find_records(credentials, params)
         if action == "get_case":
             return await _get_case(credentials, params)
         if action == "create_case":
-            return await _create_case(credentials, params)
+            return await execute_case_action("create_case", params, credentials, config)
         if action == "update_case_status":
-            return await _update_case(credentials, params)
+            return await execute_case_action("update_case", params, credentials, config)
         if action == "create_task":
             return await _create_task(credentials, params)
         if action == "update_task_status":

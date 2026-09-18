@@ -255,11 +255,19 @@ class CaseRecord:
     type: str | None
     origin: str | None
     contact_id: str | None
+    contact_name: str | None
     account_id: str | None
     account_name: str | None
     owner_id: str | None
+    owner_name: str | None
+    record_type_id: str | None
+    record_type_name: str | None
     created_date: datetime | None
     system_modstamp: datetime | None
+    last_modified_date: datetime | None
+    last_activity_date: datetime | None
+    closed_date: datetime | None
+    is_closed: bool | None
 
     @classmethod
     def from_record(cls, raw: Mapping[str, object]) -> CaseRecord:
@@ -273,11 +281,19 @@ class CaseRecord:
             type=_as_str(raw.get("Type")),
             origin=_as_str(raw.get("Origin")),
             contact_id=_as_str(raw.get("ContactId")),
+            contact_name=_nested_name(raw.get("Contact")),
             account_id=_as_str(raw.get("AccountId")),
             account_name=_nested_name(raw.get("Account")),
             owner_id=_as_str(raw.get("OwnerId")),
+            owner_name=_nested_name(raw.get("Owner")),
+            record_type_id=_as_str(raw.get("RecordTypeId")),
+            record_type_name=_nested_name(raw.get("RecordType")),
             created_date=_as_datetime(raw.get("CreatedDate")),
             system_modstamp=_as_datetime(raw.get("SystemModstamp")),
+            last_modified_date=_as_datetime(raw.get("LastModifiedDate")),
+            last_activity_date=_as_datetime(raw.get("LastActivityDate")),
+            closed_date=_as_datetime(raw.get("ClosedDate")),
+            is_closed=_as_bool(raw.get("IsClosed")),
         )
 
 
@@ -552,7 +568,7 @@ class SalesforceAuth:
 
 @dataclass(frozen=True)
 class SalesforceSourceConfig:
-    """Typed source configuration, decoded from the source config mapping."""
+    """Typed connection and synchronization settings for one Salesforce source."""
 
     instance_url: str | None = None
     enabled_objects: frozenset[str] = frozenset()

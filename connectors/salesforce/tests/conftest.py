@@ -25,7 +25,7 @@ from omni_connector import SyncContext, SyncMode
 from omni_connector.testing import OmniTestHarness, SeedHelper
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from salesforce_connector.config import API_VERSION
@@ -323,11 +323,15 @@ def _case_payload(
             "Priority": "High",
             "Type": "Problem",
             "Origin": "Web",
+            "RecordTypeId": "012000000000001",
             "ContactId": "003000000000001",
             "AccountId": "001000000000001",
             "Account": {"Name": "Acme Corp"},
             "OwnerId": owner_id,
             "CreatedDate": "2024-04-01T14:00:00.000+0000",
+            "LastModifiedDate": system_modstamp,
+            "LastActivityDate": system_modstamp,
+            "IsClosed": False,
             "SystemModstamp": system_modstamp,
         },
     )
@@ -475,6 +479,7 @@ DEFAULT_OBJECT_FIELDS: dict[str, set[str]] = {
         "Department",
         "ManagerId",
         "UserRoleId",
+        "ProfileId",
         "IsActive",
         "EmployeeNumber",
         "SystemModstamp",
@@ -552,6 +557,31 @@ DEFAULT_OBJECT_FIELDS: dict[str, set[str]] = {
         "CreatedDate",
         "SystemModstamp",
     },
+    "QueueSobject": {"Id", "QueueId", "SobjectType"},
+    "EmailMessage": {
+        "Id",
+        "ParentId",
+        "FromAddress",
+        "ToAddress",
+        "CcAddress",
+        "Subject",
+        "TextBody",
+        "HtmlBody",
+        "Incoming",
+        "MessageDate",
+        "CreatedDate",
+    },
+    "ContentDocumentLink": {"Id", "ContentDocumentId", "LinkedEntityId"},
+    "ContentVersion": {
+        "Id",
+        "ContentDocumentId",
+        "Title",
+        "FileExtension",
+        "ContentSize",
+        "VersionData",
+        "CreatedDate",
+        "IsLatest",
+    },
     "Case": {
         "Id",
         "CaseNumber",
@@ -564,8 +594,17 @@ DEFAULT_OBJECT_FIELDS: dict[str, set[str]] = {
         "ContactId",
         "AccountId",
         "Account",
+        "Contact",
+        "Owner",
+        "RecordTypeId",
+        "RecordType",
+        "CreatedById",
         "OwnerId",
         "CreatedDate",
+        "LastModifiedDate",
+        "LastActivityDate",
+        "ClosedDate",
+        "IsClosed",
         "SystemModstamp",
     },
     "Task": {
@@ -593,7 +632,9 @@ for _share_object, _access_field in SHARE_ACCESS_LEVEL_FIELDS.items():
 
 # Relationship names exposed by describe for traversable fields (e.g.
 # Account.Name). Salesforce reports these on the lookup field descriptor.
-RELATIONSHIP_NAMES: frozenset[str] = frozenset({"Account", "Owner", "Contact", "Who", "What"})
+RELATIONSHIP_NAMES: frozenset[str] = frozenset(
+    {"Account", "Owner", "Contact", "Who", "What", "UserRole", "Profile"}
+)
 
 
 @dataclass(frozen=True)
@@ -631,7 +672,7 @@ def _soql_value(record: Mapping[str, object], field: str) -> object:
 
 def _project_record(record: Mapping[str, object], soql: str) -> dict[str, object]:
     """Return only the columns named in the SELECT list, like Salesforce does."""
-    match = re.search(r"SELECT\s+(.+?)\s+FROM", soql, re.IGNORECASE)
+    match = re.search(r"SELECT\s+(.+?)\s+FROM\s+", soql, re.IGNORECASE)
     if not match:
         return dict(record)
     selected = [field.strip() for field in match.group(1).split(",")]
@@ -677,6 +718,8 @@ def _split_top_level_and(where: str) -> list[str]:
 
 def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
     clause = clause.strip()
+    if re.match(r"ParentId\s+IN\s*\(SELECT\s+Id\s+FROM\s+Case\s+WHERE\s+", clause, re.IGNORECASE):
+        return True
     # Keyset delta clause: (SystemModstamp > X OR (SystemModstamp = X AND Id > 'Y'))
     keyset = re.search(
         r"SystemModstamp\s*>\s*([^ )]+)\s*OR\s*\(\s*SystemModstamp\s*=\s*([^ )]+)"
@@ -692,6 +735,47 @@ def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
         if value > threshold:
             return True
         return value == threshold and str(record.get("Id", "")) > keyset.group(3)
+
+    id_keyset = re.search(
+        r"(ContentDocumentId)\s*>\s*'([^']+)'\s+OR\s+\(\s*\1\s*=\s*'([^']+)'\s+"
+        r"AND\s+Id\s*>\s*'([^']+)'\s*\)",
+        clause,
+        re.IGNORECASE,
+    )
+    if id_keyset:
+        value = str(record.get(id_keyset.group(1), ""))
+        return value > id_keyset.group(2) or (
+            value == id_keyset.group(3) and str(record.get("Id", "")) > id_keyset.group(4)
+        )
+
+    queue_keyset = re.search(
+        r"QueueId\s*>\s*'([^']+)'\s+OR\s+\(\s*QueueId\s*=\s*'([^']+)'\s+"
+        r"AND\s+Id\s*>\s*'([^']+)'\s*\)",
+        clause,
+        re.IGNORECASE,
+    )
+    if queue_keyset:
+        queue_id = str(record.get("QueueId", ""))
+        link_id = str(record.get("Id", ""))
+        return queue_id > queue_keyset.group(1) or (
+            queue_id == queue_keyset.group(2) and link_id > queue_keyset.group(3)
+        )
+
+    generic_keyset = re.search(
+        r"(SystemModstamp|CreatedDate|LastModifiedDate|MessageDate)\s*>\s*([^ )]+)\s+"
+        r"OR\s+\(\s*\1\s*=\s*([^ )]+)\s+AND\s+Id\s*>\s*'([^']+)'\s*\)",
+        clause,
+    )
+    if generic_keyset:
+        field = generic_keyset.group(1)
+        threshold = _parse_ts(generic_keyset.group(2))
+        value = record.get(field)
+        if value is None:
+            return False
+        parsed_value = _parse_ts(str(value))
+        return parsed_value > threshold or (
+            parsed_value == threshold and str(record.get("Id", "")) > generic_keyset.group(4)
+        )
 
     mod_ge = re.search(r"SystemModstamp\s*>=\s*([^ )]+)", clause)
     if mod_ge:
@@ -709,6 +793,25 @@ def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
             return False
         return _parse_ts(str(modstamp)) <= threshold
 
+    date_comparison = re.search(
+        r"(CreatedDate|LastModifiedDate|MessageDate)\s*(>=|<=|>|<|=)\s*([^ )]+)",
+        clause,
+    )
+    if date_comparison:
+        value = record.get(date_comparison.group(1))
+        if value is None:
+            return False
+        actual = _parse_ts(str(value))
+        expected = _parse_ts(date_comparison.group(3))
+        operator = date_comparison.group(2)
+        return {
+            ">=": actual >= expected,
+            "<=": actual <= expected,
+            ">": actual > expected,
+            "<": actual < expected,
+            "=": actual == expected,
+        }[operator]
+
     id_gt = re.search(r"Id\s*>\s*'([^']+)'", clause)
     if id_gt:
         return str(record.get("Id", "")) > id_gt.group(1)
@@ -723,6 +826,16 @@ def _matches_clause(record: Mapping[str, object], clause: str) -> bool:
     row_cause = re.search(r"RowCause\s*!=\s*'([^']+)'", clause)
     if row_cause:
         return record.get("RowCause") != row_cause.group(1)
+
+    not_null = re.fullmatch(r"(\w+)\s*!=\s*null", clause, re.IGNORECASE)
+    if not_null:
+        return record.get(not_null.group(1)) is not None
+
+    equality = re.fullmatch(r"(\w+)\s*=\s*'?([^']+)'?", clause)
+    if equality:
+        expected = equality.group(2)
+        actual = record.get(equality.group(1))
+        return str(actual).lower() == expected.lower()
 
     # LIKE branches: "Name LIKE '%x%' OR Email LIKE '%y%'"
     saw_like = False
@@ -767,6 +880,9 @@ class MockSalesforceAPI:
         self.hidden_objects: set[str] = set()
         # Fields to omit from per-object describe (e.g. disabled features).
         self.hidden_fields: dict[str, set[str]] = {}
+        self.non_nillable_fields: dict[str, set[str]] = {}
+        self.field_types: dict[str, dict[str, str]] = {}
+        self.object_capabilities: dict[str, dict[str, bool]] = {}
         # Union of record keys ever added per object, driving per-object describe.
         self.field_sets: dict[str, set[str]] = {}
         # Every SOQL string the connector issued, in order.
@@ -788,6 +904,15 @@ class MockSalesforceAPI:
         # nextRecordsUrl, exercising the connector's pagination path.
         self.deleted_page_size: int | None = None
         self._deleted_windows: dict[str, tuple[datetime, datetime]] = {}
+        self.standard_action_requests: list[dict[str, object]] = []
+        self.picklist_requests: list[tuple[str, str]] = []
+        self.standard_action_failure: bool = False
+        self.standard_action_5xx_remaining = 0
+        self.create_5xx_remaining = 0
+        self.update_5xx_remaining = 0
+        self.create_calls = 0
+        self.update_calls = 0
+        self.binary_files: dict[str, bytes] = {}
 
     def reset(self) -> None:
         self.objects.clear()
@@ -801,6 +926,9 @@ class MockSalesforceAPI:
         self.last_assertion = ""
         self.hidden_objects.clear()
         self.hidden_fields.clear()
+        self.non_nillable_fields.clear()
+        self.field_types.clear()
+        self.object_capabilities.clear()
         self.field_sets.clear()
         self.queries.clear()
         self.fail_query_objects.clear()
@@ -812,6 +940,15 @@ class MockSalesforceAPI:
         self.deletion_latest_override = None
         self.deleted_page_size = None
         self._deleted_windows.clear()
+        self.standard_action_requests.clear()
+        self.picklist_requests.clear()
+        self.standard_action_failure = False
+        self.standard_action_5xx_remaining = 0
+        self.create_5xx_remaining = 0
+        self.update_5xx_remaining = 0
+        self.create_calls = 0
+        self.update_calls = 0
+        self.binary_files.clear()
 
     def add_record(self, object_type: str, payload: dict[str, object]) -> None:
         self.objects.setdefault(object_type, []).append(payload)
@@ -926,6 +1063,18 @@ class MockSalesforceAPI:
             for record in self.objects.get(parsed.object_type, [])
             if parsed.where is None or _matches_where(record, parsed.where)
         ]
+        semi_join = re.search(
+            r"ParentId\s+IN\s*\(SELECT\s+Id\s+FROM\s+Case\s+WHERE\s+(.+?)\)",
+            soql,
+            re.IGNORECASE,
+        )
+        if semi_join:
+            case_ids = {
+                record.get("Id")
+                for record in self.objects.get("Case", [])
+                if _matches_where(record, semi_join.group(1).strip())
+            }
+            records = [record for record in records if record.get("ParentId") in case_ids]
         if parsed.order_by:
 
             def sort_key(record: Mapping[str, object]) -> tuple[object, ...]:
@@ -935,6 +1084,52 @@ class MockSalesforceAPI:
         if parsed.limit is not None:
             records = records[: parsed.limit]
         return records
+
+    def _aggregate_records(self, soql: str) -> list[dict[str, object]]:
+        object_match = re.search(r"FROM\s+(\w+)", soql, re.IGNORECASE)
+        group_match = re.search(r"GROUP BY\s+(.+?)(?:\s+LIMIT|$)", soql, re.IGNORECASE)
+        where_match = re.search(
+            r"\bWHERE\s+(.+?)(?:\s+GROUP BY|\s+ORDER BY|\s+LIMIT|$)",
+            soql,
+            re.IGNORECASE,
+        )
+        if not object_match or not group_match:
+            raise ValueError(f"Invalid aggregate SOQL: {soql}")
+        object_type = object_match.group(1)
+        group_fields = [field.strip() for field in group_match.group(1).split(",")]
+        where = where_match.group(1).strip() if where_match else None
+        source = [
+            record
+            for record in self.objects.get(object_type, [])
+            if where is None or _matches_where(record, where)
+        ]
+        groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
+        for record in source:
+            key = tuple(record.get(field) for field in group_fields)
+            groups.setdefault(key, []).append(record)
+        select_match = re.search(r"SELECT\s+(.+?)\s+FROM\s+", soql, re.IGNORECASE)
+        aliases: dict[str, str] = {}
+        if select_match:
+            for part in select_match.group(1).split(","):
+                stripped = part.strip()
+                match = re.fullmatch(r"(\w+)\s+(\w+)", stripped)
+                if match and match.group(1) in group_fields:
+                    raise ValueError("mock rejects aliases on grouped fields")
+                if "COUNT" in stripped.upper():
+                    alias_match = re.search(r"COUNT\([^)]*\)\s+(\w+)", part, re.IGNORECASE)
+                    if alias_match:
+                        aliases["__count__"] = alias_match.group(1)
+        result: list[dict[str, object]] = []
+        for key, rows in sorted(
+            groups.items(), key=lambda item: tuple(str(value) for value in item[0])
+        ):
+            item = {
+                aliases.get(field, field): value
+                for field, value in zip(group_fields, key)
+            }
+            item[aliases.get("__count__", "expr0")] = len(rows)
+            result.append(item)
+        return result
 
     def create_app(self) -> Starlette:
         mock = self
@@ -1006,10 +1201,83 @@ class MockSalesforceAPI:
                 "OpportunityShare",
                 "LeadShare",
                 "CaseShare",
+                "QueueSobject",
+                "EmailMessage",
+                "ContentDocumentLink",
+                "ContentVersion",
             }
             object_names.update(mock.objects)
             object_names.difference_update(mock.hidden_objects)
             return JSONResponse({"sobjects": [{"name": name} for name in sorted(object_names)]})
+
+        async def handle_picklist(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            field = request.path_params["field_name"]
+            mock.picklist_requests.append(
+                (request.path_params["record_type_id"], field)
+            )
+            values = (
+                ["New", "Working", "Closed"]
+                if field == "Status"
+                else ["Low", "Medium", "High"]
+            )
+            return JSONResponse({"values": [{"value": value, "active": True} for value in values]})
+
+        async def handle_standard_action(request: Request) -> JSONResponse:
+            denied = auth_guard()
+            if denied:
+                return denied
+            body = await request.json()
+            if not isinstance(body, Mapping):
+                return JSONResponse({"message": "invalid body"}, status_code=400)
+            mock.standard_action_requests.append(dict(body))
+            if mock.standard_action_5xx_remaining > 0:
+                mock.standard_action_5xx_remaining -= 1
+                return JSONResponse({"message": "ambiguous action failure"}, status_code=500)
+            if mock.standard_action_failure:
+                return JSONResponse(
+                    [
+                        {
+                            "isSuccess": False,
+                            "actionName": "emailSimple",
+                            "errors": [
+                                {
+                                    "statusCode": "INVALID_EMAIL_ADDRESS",
+                                    "message": "email rejected",
+                                    "fields": ["recipientAddresses"],
+                                }
+                            ],
+                            "outputValues": None,
+                        }
+                    ],
+                    status_code=200,
+                )
+            return JSONResponse(
+                [
+                    {
+                        "isSuccess": True,
+                        "actionName": "emailSimple",
+                        "errors": None,
+                        "outputValues": None,
+                    }
+                ]
+            )
+
+        async def handle_binary(request: Request) -> Response:
+            denied = auth_guard()
+            if denied:
+                return Response(
+                    content=denied.body,
+                    status_code=denied.status_code,
+                    media_type="application/json",
+                )
+            version_id = request.path_params["version_id"]
+            return Response(
+                content=mock.binary_files.get(version_id, b"file"),
+                media_type="application/octet-stream",
+            )
 
         async def handle_query(request: Request) -> JSONResponse:
             denied = auth_guard()
@@ -1041,9 +1309,26 @@ class MockSalesforceAPI:
                     [{"message": "rate limited", "errorCode": "REQUEST_LIMIT_EXCEEDED"}],
                     status_code=429,
                 )
-            records = [
-                _project_record(record, soql) for record in mock._query_records(soql)
-            ]
+            if "GROUP BY" in soql.upper():
+                records = mock._aggregate_records(soql)
+            else:
+                records = [
+                    _project_record(record, soql) for record in mock._query_records(soql)
+                ]
+                semi_join = re.search(
+                    r"ParentId\s+IN\s*\(SELECT\s+Id\s+FROM\s+Case\s+WHERE\s+(.+?)\)",
+                    soql,
+                    re.IGNORECASE,
+                )
+                if semi_join:
+                    case_ids = {
+                        record.get("Id")
+                        for record in mock.objects.get("Case", [])
+                        if _matches_where(record, semi_join.group(1).strip())
+                    }
+                    records = [
+                        record for record in records if record.get("ParentId") in case_ids
+                    ]
             return JSONResponse({"totalSize": len(records), "done": True, "records": records})
 
         async def handle_deleted(request: Request) -> JSONResponse:
@@ -1140,6 +1425,10 @@ class MockSalesforceAPI:
             denied = auth_guard()
             if denied:
                 return denied
+            mock.create_calls += 1
+            if mock.create_5xx_remaining > 0:
+                mock.create_5xx_remaining -= 1
+                return JSONResponse({"message": "ambiguous create failure"}, status_code=500)
             object_type = request.path_params["object_type"]
             body = await request.json()
             if not isinstance(body, Mapping):
@@ -1159,6 +1448,10 @@ class MockSalesforceAPI:
             denied = auth_guard()
             if denied:
                 return denied
+            mock.update_calls += 1
+            if mock.update_5xx_remaining > 0:
+                mock.update_5xx_remaining -= 1
+                return JSONResponse({"message": "ambiguous update failure"}, status_code=500)
             object_type = request.path_params["object_type"]
             record_id = request.path_params["record_id"]
             body = await request.json()
@@ -1169,7 +1462,7 @@ class MockSalesforceAPI:
                     record.update(body)
                     record["SystemModstamp"] = _now_modstamp()
                     mock.updated_records.append((object_type, record_id))
-                    return JSONResponse({}, status_code=204)
+                    return Response(status_code=204)
             return JSONResponse(
                 [{"message": f"{object_type} not found", "errorCode": "NOT_FOUND"}],
                 status_code=404,
@@ -1187,17 +1480,59 @@ class MockSalesforceAPI:
                 fields = {"Id"}
             entries = []
             for name in sorted(fields):
-                entry: dict[str, object] = {"name": name}
-                if name in RELATIONSHIP_NAMES:
-                    entry["relationshipName"] = name
+                entry: dict[str, object] = {
+                    "name": name,
+                    "createable": name
+                    not in {"Id", "CaseNumber", "CreatedDate", "LastModifiedDate"},
+                    "updateable": name
+                    not in {"Id", "CaseNumber", "CreatedDate", "LastModifiedDate"},
+                    "nillable": name not in {"Id", "CaseNumber"}
+                    and name not in mock.non_nillable_fields.get(object_type, set()),
+                    "type": mock.field_types.get(object_type, {}).get(name, "string"),
+                }
+                relationship_targets = {
+                    "Account": ("Account", ["Account"]),
+                    "Contact": ("Contact", ["Contact"]),
+                    "Owner": ("Owner", ["User"]),
+                    "UserRoleId": ("UserRole", ["UserRole"]),
+                    "ProfileId": ("Profile", ["Profile"]),
+                    "UserRole": ("UserRole", ["UserRole"]),
+                    "Profile": ("Profile", ["Profile"]),
+                }
+                if name in RELATIONSHIP_NAMES or name in relationship_targets:
+                    relationship_name, reference_to = relationship_targets.get(
+                        name, (name, [])
+                    )
+                    entry["relationshipName"] = relationship_name
+                    entry["referenceTo"] = reference_to
+                elif name.endswith("__c") and "Address" in name:
+                    entry["relationshipName"] = name.removesuffix("__c") + "__r"
+                    entry["referenceTo"] = ["Address__c"]
                 entries.append(entry)
-            return JSONResponse({"fields": entries})
+            capabilities = mock.object_capabilities.get(
+                object_type, {"queryable": True, "createable": True, "updateable": True}
+            )
+            return JSONResponse({**capabilities, "fields": entries})
 
         routes = [
             Route("/services/oauth2/token", handle_token, methods=["POST"]),
             Route("/services/data/v62.0/limits/", handle_limits),
             Route("/services/data/v62.0/sobjects/", handle_describe),
             Route("/services/data/v62.0/query/", handle_query),
+            Route(
+                "/services/data/v62.0/ui-api/object-info/{object_type}/picklist-values/{record_type_id}/{field_name}",
+                handle_picklist,
+            ),
+            Route(
+                "/services/data/v62.0/actions/standard/emailSimple",
+                handle_standard_action,
+                methods=["POST"],
+            ),
+            Route(
+                "/services/data/v62.0/sobjects/ContentVersion/{version_id}/VersionData",
+                handle_binary,
+                methods=["GET"],
+            ),
             Route(
                 "/services/data/v62.0/sobjects/{object_type}/deleted",
                 handle_deleted,

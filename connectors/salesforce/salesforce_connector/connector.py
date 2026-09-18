@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 from urllib.parse import urlparse
 
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from omni_connector import (
     ActionDefinition,
     Connector,
@@ -626,8 +626,18 @@ class SalesforceConnector(Connector):
         credentials: Mapping[str, object],
         source: Source | None = None,
         actor_email: str | None = None,
-    ) -> JSONResponse:
-        return await execute_action(action, params, self._credential_payload(credentials))
+    ) -> JSONResponse | Response:
+        try:
+            source_config = SalesforceSourceConfig.from_mapping(source.config if source else None)
+            source_config.validate()
+        except ValueError as exc:
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=400)
+        return await execute_action(
+            action,
+            params,
+            self._credential_payload(credentials),
+            source_config=source_config,
+        )
 
     async def sync(
         self,
@@ -782,8 +792,12 @@ class SalesforceConnector(Connector):
                     )
                 continue
 
-            describe = await client.describe_object(item.name.value)
-            fields = tuple(field for field in item.all_fields() if describe.can_select(field))
+            candidates = list(item.all_fields())
+            selectable_fields: list[str] = []
+            for field in dict.fromkeys(candidates):
+                if await self._field_is_selectable(client, item.name.value, field):
+                    selectable_fields.append(field)
+            fields = tuple(selectable_fields)
             required = {"Id"}
             if not required.issubset(fields):
                 logger.warning("Skipping %s: Id field is not accessible", item.name.value)
@@ -879,6 +893,26 @@ class SalesforceConnector(Connector):
             None,
         )
 
+    async def _field_is_selectable(
+        self, client: SalesforceClient, object_type: str, field: str
+    ) -> bool:
+        describe = await client.describe_object(object_type)
+        if "." not in field:
+            return describe.can_select(field)
+        relationship, _, child = field.partition(".")
+        relationship_field = next(
+            (
+                metadata
+                for metadata in describe.field_metadata.values()
+                if metadata.relationship_name == relationship
+            ),
+            None,
+        )
+        if relationship_field is None or not relationship_field.reference_to:
+            return False
+        related = await client.describe_object(relationship_field.reference_to[0])
+        return related.can_select(child)
+
     async def _selectable_fields(
         self,
         client: SalesforceClient,
@@ -886,8 +920,11 @@ class SalesforceConnector(Connector):
         candidates: tuple[str, ...],
     ) -> tuple[str, ...]:
         """Narrow a SELECT list to fields the principal can actually query."""
-        describe = await client.describe_object(object_type)
-        selectable = tuple(field for field in candidates if describe.can_select(field))
+        selectable_list: list[str] = []
+        for field in candidates:
+            if await self._field_is_selectable(client, object_type, field):
+                selectable_list.append(field)
+        selectable = tuple(selectable_list)
         missing = tuple(field for field in candidates if field not in selectable)
         if missing:
             logger.warning(

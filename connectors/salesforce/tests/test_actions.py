@@ -68,6 +68,37 @@ async def test_find_records(
     assert [r["name"] for r in records] == ["Acme Corp"]
 
 
+async def test_find_records_uses_selectable_fields_for_cases(
+    mock_salesforce_api, mock_salesforce_server, action_client: httpx.AsyncClient
+) -> None:
+    mock_salesforce_api.reset()
+    mock_salesforce_api.add_case()
+    mock_salesforce_api.hidden_fields["Case"] = {"RecordTypeId"}
+    try:
+        resp = await action_client.post(
+            "/action",
+            json={
+                "action": "find_records",
+                "params": {"object_type": "Case", "query": "Support"},
+                "credentials": _credentials(mock_salesforce_server),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "success"
+        assert data["result"]["records"] == [
+            {
+                "id": "500000000000001",
+                "subject": "Support request",
+                "status": "New",
+                "priority": "High",
+            }
+        ]
+        assert "RecordTypeId" not in mock_salesforce_api.queries[-1]
+    finally:
+        mock_salesforce_api.hidden_fields.pop("Case", None)
+
+
 async def test_create_case(
     mock_salesforce_api, mock_salesforce_server, action_client: httpx.AsyncClient
 ) -> None:

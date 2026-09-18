@@ -245,7 +245,15 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
             "ContactId",
             "AccountId",
             "OwnerId",
+            "Owner.Name",
+            "RecordTypeId",
+            "RecordType.Name",
+            "Contact.Name",
             "CreatedDate",
+            "LastModifiedDate",
+            "LastActivityDate",
+            "ClosedDate",
+            "IsClosed",
             "SystemModstamp",
         ),
         account_relationship="Account",
@@ -261,6 +269,16 @@ SALESFORCE_OBJECT_CONFIGS: tuple[SalesforceObjectConfig, ...] = (
             SalesforceAttribute("account_name", "Account.Name"),
             SalesforceAttribute("account_id", "AccountId"),
             SalesforceAttribute("contact_id", "ContactId"),
+            SalesforceAttribute("owner_name", "Owner.Name"),
+            SalesforceAttribute("record_type_id", "RecordTypeId"),
+            SalesforceAttribute("is_closed", "IsClosed"),
+            SalesforceAttribute(
+                "last_modified_date", "LastModifiedDate", AttributeValueType.DATETIME
+            ),
+            SalesforceAttribute(
+                "last_activity_date", "LastActivityDate", AttributeValueType.DATETIME
+            ),
+            SalesforceAttribute("closed_date", "ClosedDate", AttributeValueType.DATETIME),
         ),
     ),
     SalesforceObjectConfig(
