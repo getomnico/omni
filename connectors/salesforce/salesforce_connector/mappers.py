@@ -28,7 +28,9 @@ _SUBJECT_RECORDS = (CaseRecord, TaskRecord)
 
 # Fields never rendered into content or attributes; they are either structural
 # (Id) or carried as metadata/attributes under cleaner keys.
-_SKIP_FIELDS = frozenset({"id", "owner_id", "created_date", "system_modstamp", "account_id"})
+_SKIP_FIELDS = frozenset(
+    {"id", "owner_id", "created_date", "system_modstamp", "account_id"}
+)
 
 
 def _attribute_value(value: object) -> object:
@@ -73,6 +75,12 @@ def _field_value(record: RecordModel, field_name: str) -> object:
         if isinstance(record, (ContactRecord, OpportunityRecord, CaseRecord)):
             return record.account_name
         return None
+    if isinstance(record, CaseRecord) and field_name == "Owner.Name":
+        return record.owner_name
+    if isinstance(record, CaseRecord) and field_name == "RecordType.Name":
+        return record.record_type_name
+    if isinstance(record, CaseRecord) and field_name == "Contact.Name":
+        return record.contact_name
     # Salesforce field names (e.g. "NumberOfEmployees") map to snake_case
     # dataclass attributes (e.g. "number_of_employees"). Fail loudly if the
     # configuration and the record models drift apart.
