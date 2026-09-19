@@ -224,14 +224,8 @@ impl SyncManager {
                 SyncError::ConnectorNotConfigured(format!("{:?}", source.source_type))
             })?;
 
-        if let Err(e) = self
-            .connector_client
-            .cancel_sync(&connector_url, sync_run_id)
-            .await
-        {
-            warn!("Failed to send cancel request to connector: {}", e);
-        }
-
+        // Record the terminal state first: a run that is 'running' here but
+        // slot-free on the connector reads as a lost sync and gets resumed.
         let updated = self
             .sync_run_repo
             .mark_cancelled(sync_run_id)
@@ -239,6 +233,14 @@ impl SyncManager {
             .map_err(|e| SyncError::DatabaseError(e.to_string()))?;
         if !updated {
             return Err(SyncError::SyncNotRunning(sync_run_id.to_string()));
+        }
+
+        if let Err(e) = self
+            .connector_client
+            .cancel_sync(&connector_url, sync_run_id)
+            .await
+        {
+            warn!("Failed to send cancel request to connector: {}", e);
         }
 
         self.resume_attempts.remove(sync_run_id);

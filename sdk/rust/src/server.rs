@@ -645,6 +645,14 @@ where
     cancelled.store(true, Ordering::SeqCst);
     let _ = state.connector.cancel(&request.sync_run_id).await;
 
+    // Free the slot now: cancellation is cooperative, so a task wedged in a read
+    // that never returns would hold it until the process restarts and reject
+    // every later sync for this source with 409. Callers only cancel runs they
+    // have already given up on.
+    state
+        .active_syncs
+        .retain(|_, sync| sync.sync_run_id != request.sync_run_id);
+
     (
         StatusCode::OK,
         Json(CancelResponse {
