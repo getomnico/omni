@@ -31,11 +31,30 @@ class ResolvedModel:
     ``model_record_id`` — the ``models.id`` to use in usage tracking.
     ``model_name`` — the wire model string (e.g. ``"claude-haiku-4-5"``)
     to pass into ``stream_response(…, model=…)``.
+    ``supports_vision`` — whether image inputs may be sent to this model
+    (resolved from the provider config ``vision_mode`` override and the
+    curated capability map; see ``vision_capability``).
     """
 
     provider: LLMProvider
     model_record_id: str
     model_name: str
+    supports_vision: bool = False
+
+    @classmethod
+    def of(cls, provider: LLMProvider, record: ModelRecord) -> "ResolvedModel":
+        from vision_capability import effective_vision
+
+        return cls(
+            provider=provider,
+            model_record_id=record.id,
+            model_name=record.model_id,
+            supports_vision=effective_vision(
+                record.config.get("vision_mode"),
+                record.provider_type,
+                record.model_id,
+            ),
+        )
 
 
 @dataclass
@@ -74,11 +93,7 @@ class ProviderCache:
         provider = await self._get_or_build(record)
         if provider is None:
             return None
-        return ResolvedModel(
-            provider=provider,
-            model_record_id=record.id,
-            model_name=record.model_id,
-        )
+        return ResolvedModel.of(provider, record)
 
     async def resolve_default(self) -> ResolvedModel | None:
         """Resolve the default (is_default=True) model."""
@@ -89,11 +104,7 @@ class ProviderCache:
         provider = await self._get_or_build(record)
         if provider is None:
             return None
-        return ResolvedModel(
-            provider=provider,
-            model_record_id=record.id,
-            model_name=record.model_id,
-        )
+        return ResolvedModel.of(provider, record)
 
     async def resolve_secondary_or_default(self) -> ResolvedModel | None:
         """Resolve the secondary model, falling back to default."""
@@ -106,11 +117,7 @@ class ProviderCache:
         provider = await self._get_or_build(record)
         if provider is None:
             return None
-        return ResolvedModel(
-            provider=provider,
-            model_record_id=record.id,
-            model_name=record.model_id,
-        )
+        return ResolvedModel.of(provider, record)
 
     async def _get_or_build(self, record: ModelRecord) -> LLMProvider | None:
         """Return a cached or freshly-built provider for a model record.

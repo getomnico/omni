@@ -21,6 +21,7 @@
     import { getDocumentIconPath } from '$lib/utils/icons'
     import { formatProviderName } from '$lib/utils/providers.js'
     import { hasMinimumQueryLength } from '$lib/utils/query'
+    import { filesFromClipboardData, filesFromClipboardHtml } from '$lib/attachments/clipboard'
 
     interface PopoverItem {
         label: string
@@ -57,7 +58,7 @@
         selectedModelId?: string | null
         onModelChange?: (modelId: string) => void
         onAttachClick?: () => void
-        onFilesDropped?: (files: FileList) => void
+        onFilesDropped?: (files: FileList | File[]) => void
         attachments?: Snippet
         mentionedDocs?: MentionedDocument[]
         canSubmit?: boolean
@@ -97,6 +98,7 @@
     }: UserInputProps = $props()
 
     let isDragging = $state(false)
+
     let dragDepth = 0
 
     function isFileDrag(e: DragEvent): boolean {
@@ -130,6 +132,27 @@
         isDragging = false
         if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
             onFilesDropped(e.dataTransfer.files)
+        }
+    }
+
+    function handlePaste(e: ClipboardEvent) {
+        if (!onFilesDropped) return
+        const files = filesFromClipboardData(e.clipboardData)
+        if (files.length > 0) {
+            e.preventDefault()
+            onFilesDropped(files)
+            return
+        }
+        const html = e.clipboardData?.getData('text/html')
+        if (html && /<img\b/i.test(html)) {
+            // Web-image paste (Safari's default when copying an image on a
+            // page): the browser never exposes it as a file, so materialize
+            // it via the from-url proxy. Cancel the default insertion of a
+            // raw <img> into the editable regardless of the fetch outcome.
+            e.preventDefault()
+            void filesFromClipboardHtml(html).then((resolved) => {
+                if (resolved.length > 0) onFilesDropped?.(resolved)
+            })
         }
     }
 
@@ -596,6 +619,7 @@
             oninput={handleInputChange}
             onfocus={handleFocus}
             onblur={handleBlur}
+            onpaste={handlePaste}
             class={cn(
                 'before:text-muted-foreground relative min-h-12 cursor-text overflow-y-auto before:pointer-events-none before:absolute before:inset-0 focus:outline-none',
                 value.trim() || mentionedDocs.length > 0

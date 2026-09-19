@@ -302,3 +302,65 @@ def test_convert_messages_omits_assistant_and_unsupported_documents():
     )
 
     assert converted == [{"role": "assistant"}, {"role": "user", "content": "safe"}]
+
+
+def test_convert_messages_inlines_base64_image_for_user():
+    converted = _convert_messages_to_openai(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "aGVsbG8=",
+                        },
+                    },
+                    {"type": "text", "text": "what is this?"},
+                ],
+            }
+        ]
+    )
+
+    assert len(converted) == 1
+    content = converted[0]["content"]
+    assert isinstance(content, list)
+    assert content[0] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+    }
+    assert content[1] == {"type": "text", "text": "what is this?"}
+
+
+def test_convert_messages_pure_text_user_stays_single_string():
+    converted = _convert_messages_to_openai(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hello"},
+                    {"type": "text", "text": "world"},
+                ],
+            }
+        ]
+    )
+
+    assert converted == [{"role": "user", "content": "hello\nworld"}]
+
+
+def test_convert_messages_ignores_non_base64_image_source():
+    converted = _convert_messages_to_openai(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "url", "url": "https://x.invalid/a.png"}},
+                    {"type": "text", "text": "hi"},
+                ],
+            }
+        ]
+    )
+
+    assert converted == [{"role": "user", "content": "hi"}]
