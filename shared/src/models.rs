@@ -1206,23 +1206,6 @@ pub enum EventStatus {
     DeadLetter,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct ConnectorEventQueueItem {
-    pub id: String,
-    pub sync_run_id: String,
-    pub source_id: String,
-    pub event_type: String,
-    pub payload: JsonValue,
-    pub status: EventStatus,
-    pub retry_count: i32,
-    pub max_retries: i32,
-    #[serde(with = "time::serde::iso8601")]
-    pub created_at: OffsetDateTime,
-    #[serde(with = "time::serde::iso8601::option")]
-    pub processed_at: Option<OffsetDateTime>,
-    pub error_message: Option<String>,
-}
-
 /// A single source-provenanced person upsert.
 /// Only reviewed, workplace-directory-safe fields are included; personal
 /// HR fields (mobile, DOB, addresses, bank/salary data, raw provider JSON)

@@ -1,8 +1,9 @@
 use anyhow::Result;
+use shared::connector_event_queue::EventQueue;
 use shared::db::error::DatabaseError;
 use shared::db::repositories::{SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE};
 use shared::models::{ConnectorEvent, SyncType};
-use shared::queue::EventQueue;
+use shared::task_queue::TaskQueue;
 use sqlx::PgPool;
 use tracing::{debug, error, info};
 
@@ -70,37 +71,45 @@ async fn cleanup_source(pool: &PgPool, source_id: &str) -> Result<()> {
         .execute(&mut *tx)
         .await?;
 
-    // Failed events of every type must never be retried after source
-    // deletion. Dead-letter them under the lock; when unresolved events force
-    // an early return below, the transaction commits so this dead-lettering is
-    // durable across passes and a rollback cannot resurrect it.
-    sqlx::query(
+    // Retry-pending events must never be retried after source deletion. Fresh
+    // pending emissions remain eligible so accepted events settle before the
+    // source and its documents are removed.
+    let retry_pending_ids: Vec<String> = sqlx::query_scalar(
         r#"
-        UPDATE connector_events_queue
-        SET status = 'dead_letter',
-            error_message = 'Source deleted before event retry'
-        WHERE source_id = $1
-          AND status = 'failed'
+        SELECT id
+        FROM tasks
+        WHERE task_type = 'connector_event'
+          AND payload ->> 'source_id' = $1
+          AND status = 'pending'
+          AND attempt_count > 0
+        ORDER BY id
         "#,
     )
     .bind(source_id)
-    .execute(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
+    if !retry_pending_ids.is_empty() {
+        TaskQueue::new(pool.clone())
+            .dead_letter_pending_with_executor(
+                &mut *tx,
+                &retry_pending_ids,
+                "Source deleted before event retry",
+            )
+            .await?;
+    }
 
     // Quiesce every admitted event type before touching documents or the
-    // source. 'failed' is included defensively: a processing event can
-    // transition to failed after the dead-letter update above but before this
-    // check, and must never be retried behind a deleted source. When
-    // unresolved events remain, the indexer finishes them first (a processing
-    // event's document write lands before any cleanup document deletion), and
-    // cleanup re-evaluates on a later pass.
+    // source. A running event can fail after this pass and become retry-pending;
+    // the next cleanup pass cancels it before deletion.
+
     let event_unresolved: bool = sqlx::query_scalar(
         r#"
         SELECT EXISTS (
             SELECT 1
-            FROM connector_events_queue q
-            WHERE q.source_id = $1
-              AND q.status IN ('pending', 'processing', 'failed')
+            FROM tasks q
+            WHERE q.task_type = 'connector_event'
+              AND q.payload ->> 'source_id' = $1
+              AND q.status IN ('pending', 'running')
         )
         "#,
     )

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 use time::OffsetDateTime;
@@ -358,6 +358,38 @@ impl TaskQueue {
         Ok(renewed)
     }
 
+    /// Renew all running tasks held by a batch claim. The returned IDs are the
+    /// tasks that remained fenced and had their leases extended.
+    pub async fn heartbeat_bulk(
+        &self,
+        task_ids: &[String],
+        claim_token: &str,
+        lease_seconds: i32,
+    ) -> Result<Vec<String>> {
+        if claim_token.len() != 26 {
+            bail!("heartbeat claim_token must be a 26-char ULID");
+        }
+        if lease_seconds < 1 {
+            bail!("heartbeat lease_seconds must be >= 1");
+        }
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        for task_id in task_ids {
+            if task_id.len() != 26 {
+                bail!("heartbeat task id must be a 26-char ULID");
+            }
+        }
+        Ok(
+            sqlx::query_scalar::<_, String>("SELECT task_id FROM task_heartbeat_bulk($1, $2, $3)")
+                .bind(task_ids)
+                .bind(claim_token)
+                .bind(lease_seconds)
+                .fetch_all(&self.pool)
+                .await?,
+        )
+    }
+
     /// Mark claimed tasks completed. Fenced by the batch claim token and an
     /// unexpired lease. Returns the number of tasks completed.
     pub async fn complete_bulk(&self, task_ids: &[String], claim_token: &str) -> Result<i64> {
@@ -412,6 +444,98 @@ impl TaskQueue {
             result.push((task_id, status));
         }
         Ok(result)
+    }
+
+    /// Fail claimed tasks with an individual diagnostic for every task. The
+    /// retry policy and delay are common to the whole batch.
+    pub async fn fail_bulk_with_errors(
+        &self,
+        task_ids_with_errors: &[(String, String)],
+        claim_token: &str,
+        retryable: bool,
+        retry_delay_seconds: i32,
+    ) -> Result<Vec<(String, TaskStatus)>> {
+        if claim_token.len() != 26 {
+            bail!("fail claim_token must be a 26-char ULID");
+        }
+        if retry_delay_seconds < 0 {
+            bail!("fail retry_delay_seconds must be >= 0");
+        }
+        if task_ids_with_errors.is_empty() {
+            return Ok(Vec::new());
+        }
+        let task_ids: Vec<String> = task_ids_with_errors
+            .iter()
+            .map(|(task_id, _)| task_id.clone())
+            .collect();
+        let errors: Vec<String> = task_ids_with_errors
+            .iter()
+            .map(|(_, error)| error.clone())
+            .collect();
+        for task_id in &task_ids {
+            if task_id.len() != 26 {
+                bail!("fail task id must be a 26-char ULID");
+            }
+        }
+        let rows = sqlx::query("SELECT * FROM task_fail_bulk_with_errors($1, $2, $3, $4, $5)")
+            .bind(&task_ids)
+            .bind(&errors)
+            .bind(claim_token)
+            .bind(retryable)
+            .bind(retry_delay_seconds)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok((
+                    row.get("task_id"),
+                    row.get::<String, _>("result_status").parse()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Dead-letter retry-pending tasks selected by an administrator. Only
+    /// pending tasks that have already consumed an attempt can be cancelled;
+    /// fresh emissions are left for the worker to settle.
+    pub async fn dead_letter_pending(
+        &self,
+        task_ids: &[String],
+        reason: &str,
+    ) -> Result<Vec<String>> {
+        self.dead_letter_pending_with_executor(&self.pool, task_ids, reason)
+            .await
+    }
+
+    /// Transaction-aware form used by administrative workflows that hold a
+    /// workload/source coordination lock while cancelling pending work.
+    pub async fn dead_letter_pending_with_executor<'e, E>(
+        &self,
+        executor: E,
+        task_ids: &[String],
+        reason: &str,
+    ) -> Result<Vec<String>>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        if task_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if reason.trim().is_empty() {
+            bail!("dead-letter reason must not be empty");
+        }
+        for task_id in task_ids {
+            if task_id.len() != 26 {
+                bail!("dead-letter task id must be a 26-char ULID");
+            }
+        }
+        Ok(
+            sqlx::query_scalar::<_, String>("SELECT task_id FROM task_dead_letter_pending($1, $2)")
+                .bind(task_ids)
+                .bind(reason)
+                .fetch_all(executor)
+                .await?,
+        )
     }
 
     /// Recover tasks whose lease expired while running: retryable tasks are

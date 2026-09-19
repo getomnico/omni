@@ -113,7 +113,18 @@ class SeedHelper:
 
     async def get_events(self, source_id: str) -> list[asyncpg.Record]:
         return await self._pool.fetch(
-            "SELECT * FROM connector_events_queue WHERE source_id = $1::char(26) ORDER BY created_at",
+            """
+            SELECT id, payload->>'sync_run_id' AS sync_run_id,
+                   payload->>'source_id' AS source_id,
+                   payload->>'type' AS event_type, payload, status,
+                   attempt_count AS retry_count, max_attempts AS max_retries,
+                   created_at, completed_at AS processed_at,
+                   last_error AS error_message
+            FROM tasks
+            WHERE task_type = 'connector_event'
+              AND payload->>'source_id' = $1
+            ORDER BY created_at
+            """,
             source_id,
         )
 
@@ -143,7 +154,7 @@ class SeedHelper:
     async def cleanup_source(self, source_id: str) -> None:
         """Remove all data related to a source (for test isolation)."""
         await self._pool.execute(
-            "DELETE FROM connector_events_queue WHERE source_id = $1::char(26)",
+            "DELETE FROM tasks WHERE task_type = 'connector_event' AND payload->>'source_id' = $1",
             source_id,
         )
         await self._pool.execute(

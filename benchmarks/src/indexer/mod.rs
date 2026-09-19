@@ -6,8 +6,8 @@ use futures::Stream;
 use futures::stream::StreamExt;
 use serde::{Deserialize, Serialize};
 use shared::ContentStorage;
+use shared::connector_event_queue::EventQueue;
 use shared::models::{ConnectorEvent, DocumentMetadata, DocumentPermissions};
-use shared::queue::EventQueue;
 use shared::utils::generate_ulid;
 use sqlx::{Pool, Postgres, Row};
 use std::collections::HashMap;
@@ -75,7 +75,6 @@ impl BenchmarkIndexer {
             "sources",
             "users",
             "sync_runs",
-            "connector_events_queue",
             "tasks",
             "service_credentials",
         ];
@@ -112,18 +111,21 @@ impl BenchmarkIndexer {
         // Delete content store entries for this source
         sqlx::query(
             "DELETE FROM content_store WHERE id IN (
-                SELECT content_id FROM connector_events_queue WHERE source_id = $1
+                SELECT payload->>'content_id' FROM tasks
+                WHERE task_type = 'connector_event' AND payload->>'source_id' = $1
             )",
         )
         .bind(source_id)
         .execute(&self.db_pool)
         .await?;
 
-        // Delete queue entries
-        sqlx::query("DELETE FROM connector_events_queue WHERE source_id = $1")
-            .bind(source_id)
-            .execute(&self.db_pool)
-            .await?;
+        // Delete connector tasks
+        sqlx::query(
+            "DELETE FROM tasks WHERE task_type = 'connector_event' AND payload->>'source_id' = $1",
+        )
+        .bind(source_id)
+        .execute(&self.db_pool)
+        .await?;
 
         // Delete sync runs
         sqlx::query("DELETE FROM sync_runs WHERE source_id = $1")
@@ -468,12 +470,12 @@ impl BenchmarkIndexer {
             let queue_stats: (i64, i64, i64, i64) = sqlx::query_as(
                 r#"
                 SELECT
-                    COUNT(*) FILTER (WHERE status = 'pending') as pending,
-                    COUNT(*) FILTER (WHERE status = 'processing') as processing,
+                    COUNT(*) FILTER (WHERE status = 'pending' AND available_at <= NOW()) as pending,
+                    COUNT(*) FILTER (WHERE status = 'running') as processing,
                     COUNT(*) FILTER (WHERE status = 'completed') as completed,
-                    COUNT(*) FILTER (WHERE status = 'failed' OR status = 'dead_letter') as failed
-                FROM connector_events_queue
-                WHERE source_id = $1
+                    COUNT(*) FILTER (WHERE status = 'dead_letter') as failed
+                FROM tasks
+                WHERE task_type = 'connector_event' AND payload->>'source_id' = $1
                 "#,
             )
             .bind(source_id)

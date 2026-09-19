@@ -54,8 +54,9 @@ impl ContentBlobRepository {
                       SELECT 1 FROM documents d WHERE d.content_id = cb.id
                   )
                   AND NOT EXISTS (
-                      SELECT 1 FROM connector_events_queue q
-                      WHERE q.status IN ('pending', 'processing')
+                      SELECT 1 FROM tasks q
+                      WHERE q.task_type = 'connector_event'
+                        AND q.status IN ('pending', 'running')
                         AND q.payload->>'content_id' = cb.id::text
                   )
                   AND NOT EXISTS (
@@ -89,8 +90,9 @@ impl ContentBlobRepository {
                       SELECT 1 FROM documents d WHERE d.content_id = cb.id
                   )
                   OR EXISTS (
-                      SELECT 1 FROM connector_events_queue q
-                      WHERE q.status IN ('pending', 'processing')
+                      SELECT 1 FROM tasks q
+                      WHERE q.task_type = 'connector_event'
+                        AND q.status IN ('pending', 'running')
                         AND q.payload->>'content_id' = cb.id::text
                   )
                   OR EXISTS (
@@ -146,8 +148,9 @@ impl ContentBlobRepository {
                     )
                     AND id NOT IN (
                         SELECT DISTINCT payload->>'content_id'
-                        FROM connector_events_queue
-                        WHERE status IN ('pending', 'processing')
+                        FROM tasks
+                        WHERE task_type = 'connector_event'
+                        AND status IN ('pending', 'running')
                         AND payload->>'content_id' IS NOT NULL
                     )
                     AND id NOT IN (
