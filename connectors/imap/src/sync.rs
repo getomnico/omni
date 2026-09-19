@@ -29,6 +29,9 @@ fn is_connection_error(e: &anyhow::Error) -> bool {
                     | io::ErrorKind::ConnectionAborted
                     | io::ErrorKind::NotConnected
                     | io::ErrorKind::UnexpectedEof
+                    // A command that hit its deadline leaves the session's
+                    // protocol state indeterminate, so it must be rebuilt.
+                    | io::ErrorKind::TimedOut
             );
         }
         false
@@ -705,7 +708,18 @@ impl SyncManager {
                                 }
                             }
                         }
-                        Err(e) => warn!("Failed to fetch flags in '{}': {}", folder, e),
+                        Err(e) => {
+                            if is_connection_error(&e) {
+                                // Don't keep issuing FETCHes on a dead session:
+                                // every remaining chunk would burn a full
+                                // command timeout before failing the same way.
+                                return Err(e.context(format!(
+                                    "Connection lost during flag fetch in folder '{}'",
+                                    folder
+                                )));
+                            }
+                            warn!("Failed to fetch flags in '{}': {}", folder, e);
+                        }
                     }
                 }
 

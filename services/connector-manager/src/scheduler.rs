@@ -482,9 +482,17 @@ fn sources_due_for_sync(
                 .and_then(|run| run.completed_at);
             let unsuccessful_runs = current_unsuccessful_streak(&sync_runs);
 
-            // Circuit breaker: stop scheduled retries once the visible streak
-            // of terminal failed/cancelled runs reaches the configured threshold.
-            if max_consecutive_failures <= unsuccessful_runs.len() as i32 {
+            // Circuit breaker: hold scheduled retries once the visible streak of
+            // terminal failed/cancelled runs reaches the configured threshold,
+            // then reopen after the maximum backoff. Never reopening made this a
+            // one-way latch, because it suppressed the scheduled runs that are
+            // the only thing able to end the streak.
+            if max_consecutive_failures <= unsuccessful_runs.len() as i32
+                && unsuccessful_runs
+                    .first()
+                    .and_then(|run| run.completed_at)
+                    .is_none_or(|at| at + TimeDuration::seconds(backoff_max_seconds) > now)
+            {
                 info!(
                     "Skipping scheduled sync for source {} ({:?}): circuit breaker open after {} consecutive failed/cancelled runs (threshold {})",
                     source.id,
@@ -1039,6 +1047,33 @@ mod tests {
             3600,
         );
 
+        assert_eq!(due[0].id, "source-1");
+    }
+
+    #[test]
+    fn open_circuit_breaker_reopens_after_max_backoff() {
+        // The breaker blocks the scheduled runs that are the only thing able to
+        // end the streak, so latching it shut means the source never recovers.
+        let now = OffsetDateTime::now_utc();
+        let due = sources_due_for_sync(
+            vec![source("source-1", Some(60))],
+            vec![sync_run(
+                "run-1",
+                "source-1",
+                SyncStatus::Failed,
+                Some(now - TimeDuration::seconds(7200)),
+            )],
+            now,
+            1,
+            30,
+            3600,
+        );
+
+        assert_eq!(
+            due.len(),
+            1,
+            "breaker must reopen after the maximum backoff"
+        );
         assert_eq!(due[0].id, "source-1");
     }
 
