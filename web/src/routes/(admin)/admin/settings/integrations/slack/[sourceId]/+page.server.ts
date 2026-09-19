@@ -2,13 +2,19 @@ import { error, redirect } from '@sveltejs/kit'
 import type { PageServerLoad, Actions } from './$types'
 import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
+import { getConnectorConfig } from '$lib/server/db/connector-configs'
 import { getConfig } from '$lib/server/config'
 import { decryptConfig } from '$lib/server/crypto/encryption'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
+import {
+    callbackUrl,
+    isClientConfigComplete,
+    tokenEndpointAuthMethodForConfig,
+} from '$lib/server/oauth/connectorOAuth'
 import { SourceType } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
-    requireAdmin(locals)
+    const { user } = requireAdmin(locals)
 
     const source = await getSourceById(params.sourceId)
 
@@ -20,8 +26,29 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
+    // AI actions run through Slack's hosted MCP server under a per-user
+    // delegated OAuth identity. The connecting admin's own credential is what
+    // populates the shared tool catalog, so surface its status here.
+    const actionCredentials = await serviceCredentialsRepository.getByUserAndSource(
+        source.id,
+        user.id,
+    )
+
+    // Slack OAuth client (client_id/client_secret) configured under
+    // Settings → Integrations → OAuth Apps. Without it the connect flow 412s.
+    const savedConfig = await getConnectorConfig('slack')
+    const savedOAuthConfig = (savedConfig?.config ?? {}) as Record<string, unknown>
+    const tokenEndpointAuthMethod = tokenEndpointAuthMethodForConfig(savedOAuthConfig)
+    const oauthClientConfigured = isClientConfigComplete(savedOAuthConfig, tokenEndpointAuthMethod)
+
     return {
         source,
+        actionAuth: {
+            authorized: Boolean(actionCredentials),
+            principalEmail: actionCredentials?.principalEmail ?? null,
+        },
+        oauthClientConfigured,
+        oauthRedirectUri: callbackUrl(),
     }
 }
 

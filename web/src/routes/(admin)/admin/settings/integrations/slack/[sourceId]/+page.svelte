@@ -205,3 +205,108 @@
         </Card.Footer>
     </Card.Root>
 </form>
+
+<!-- AI tools: powered by Slack's official hosted MCP server under a per-user
+     delegated OAuth identity. Bot/app tokens above only power indexing/sync. -->
+<Card.Root class="mt-6">
+    <Card.Header>
+        <Card.Title class="flex items-center gap-2">
+            <img src={slackLogo} alt="Slack" class="h-5 w-5" />
+            AI tools
+        </Card.Title>
+        <Card.Description class="mt-1">
+            Agents can search Slack, read channels and threads, and send messages on behalf of
+            users. These run through Slack's official MCP server (<code
+                class="bg-muted rounded px-1">mcp.slack.com</code
+            >) and always act as the authenticated user — never as the sync bot.
+        </Card.Description>
+    </Card.Header>
+
+    <Card.Content class="space-y-4">
+        <div class="bg-muted/50 rounded-md border p-3 text-sm">
+            {#if data.actionAuth.authorized}
+                <p class="text-muted-foreground">
+                    Connected as
+                    <span class="text-foreground font-medium"
+                        >{data.actionAuth.principalEmail}</span>
+                    ({data.source.name}). Reconnect to switch the Slack account that populates the
+                    shared tool catalog.
+                </p>
+            {:else}
+                <p class="text-muted-foreground">
+                    No Slack account is connected yet. Connect one to enable Slack AI tools for all
+                    users; each user then authorizes their own Slack identity the first time they
+                    use an AI tool.
+                </p>
+            {/if}
+        </div>
+
+        {#if !data.oauthClientConfigured}
+            <Alert.Root variant="destructive">
+                <AlertCircle class="h-4 w-4" />
+                <Alert.Title>OAuth client not configured</Alert.Title>
+                <Alert.Description>
+                    The Slack OAuth client must be configured before users can authorize. Add it
+                    under
+                    <a href="/admin/settings/integrations" class="text-foreground underline"
+                        >Admin &rarr; Settings &rarr; Integrations &rarr; OAuth Apps</a
+                    >, then register this redirect URI in your Slack app:
+                    <code class="bg-muted rounded px-1">{data.oauthRedirectUri}</code>
+                </Alert.Description>
+            </Alert.Root>
+        {/if}
+
+        <ol class="text-muted-foreground list-decimal space-y-1 pl-5 text-sm">
+            <li>
+                Your Slack app must have MCP server access enabled. Open
+                <a
+                    href="https://api.slack.com/apps"
+                    target="_blank"
+                    rel="noreferrer"
+                    class="text-blue-600 hover:underline">api.slack.com/apps</a>
+                and enable it under your app's <span class="text-foreground">App Assistant</span>
+                settings.
+            </li>
+            <li>
+                The Slack app's user token scopes must include the scopes Omni requests. Add them
+                under <span class="text-foreground"
+                    >OAuth &amp; Permissions &rarr; User Token Scopes</span
+                >:
+                <details class="mt-1">
+                    <summary class="text-foreground w-fit cursor-pointer underline">
+                        Show requested scopes
+                    </summary>
+                    <code class="bg-muted mt-1 block rounded p-2 text-xs leading-relaxed"
+                        >chat:write channels:history channels:read groups:history groups:read
+                        im:history im:read mpim:history mpim:read channels:write groups:write
+                        im:write mpim:write reactions:write reactions:read canvases:read
+                        canvases:write files:read files:write emoji:read users:read users:read.email
+                        search:read.public search:read.private search:read.im search:read.mpim
+                        search:read.files search:read.users lists:read lists:write</code>
+                </details>
+            </li>
+            <li>
+                Grant access to the Slack app: enter its Client ID and Client Secret under
+                <a href="/admin/settings/integrations" class="text-blue-600 hover:underline"
+                    >OAuth Apps</a>
+                and add the redirect URI above to the app.
+            </li>
+        </ol>
+
+        <div class="flex items-center gap-3 pt-1">
+            <Button
+                href={`/api/oauth/start?source_id=${data.source.id}&flow=user_write&return_to=${encodeURIComponent(
+                    `/admin/settings/integrations/slack/${data.source.id}`,
+                )}`}
+                variant={data.actionAuth.authorized ? 'outline' : 'default'}
+                class="cursor-pointer">
+                {data.actionAuth.authorized ? 'Reconnect Slack account' : 'Connect Slack account'}
+            </Button>
+            {#if !data.oauthClientConfigured}
+                <span class="text-muted-foreground text-xs">
+                    Disabled until the OAuth client above is configured.
+                </span>
+            {/if}
+        </div>
+    </Card.Content>
+</Card.Root>
