@@ -9,6 +9,7 @@ import {
     getOAuthManifestForSourceType,
     oauthServiceBaseUrl,
 } from '$lib/server/oauth/connectorOAuth'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { SourceType, supportsDataSync } from '$lib/types'
 import type { FolderPathFilter } from '$lib/components/google-drive-folder-selector.types'
 import { getConfig } from '$lib/server/config'
@@ -28,6 +29,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     }
 
     const googleConnectorConfig = await getConnectorConfigPublic('google')
+    const githubConnectorConfig = await getConnectorConfigPublic('github')
 
     // The Windshift server URL is an admin setting stored in connector_configs.
     // Fall back to the connector manifest (env-var based deployments) until the
@@ -70,10 +72,38 @@ export const load: PageServerLoad = async ({ locals }) => {
         }
     }
 
+    // Org-wide GitHub sources the user can attach per-user action credentials
+    // to (user_write OAuth flow). Users can only be offered the connect card
+    // when the admin has configured the GitHub OAuth client.
+    const githubConnectable: Array<{ id: string; name: string; connected: boolean }> = []
+    if (githubConnectorConfig?.config.oauth_client_id) {
+        const githubOrgSources = (await sourcesRepository.getOrgWide()).filter(
+            (source) =>
+                source.sourceType === SourceType.GITHUB &&
+                source.isActive &&
+                !source.isDeleted,
+        )
+        for (const source of githubOrgSources) {
+            const userCredential = await serviceCredentialsRepository.getByUserAndSource(
+                source.id,
+                locals.user.id,
+            )
+            githubConnectable.push({
+                id: source.id,
+                name: source.name,
+                connected: userCredential !== null,
+            })
+        }
+    }
+
     return {
         googleOAuthConfigured: !!(
             googleConnectorConfig && googleConnectorConfig.config.oauth_client_id
         ),
+        githubOAuthConfigured: !!(
+            githubConnectorConfig && githubConnectorConfig.config.oauth_client_id
+        ),
+        githubConnectable,
         windshiftBaseUrl,
         userSources,
         latestSyncRuns,

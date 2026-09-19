@@ -63,8 +63,15 @@ def map_issue_to_document(
     is_private: bool,
 ) -> Document:
     """Map a GitHub issue to an Omni Document."""
-    labels = [l.name for l in (issue.labels or []) if hasattr(l, "name")]
-    assignee_login = issue.assignee.login if issue.assignee else ""
+    labels = [
+        label.name
+        for label in (issue.labels or [])
+        if hasattr(label, "name") and label.name
+    ]
+    # githubkit's Issue model exposes `assignees` (the `assignee` field was
+    # removed from the API); attribute access on a missing field raises.
+    assignees = issue.assignees or []
+    assignee_login = assignees[0].login if assignees else ""
     milestone_title = issue.milestone.title if issue.milestone else ""
 
     title = f"[{repo_full_name}] Issue #{issue.number}: {issue.title}"
@@ -101,7 +108,11 @@ def map_pr_to_document(
     is_private: bool,
 ) -> Document:
     """Map a GitHub pull request to an Omni Document."""
-    labels = [l.name for l in (pr.labels or []) if hasattr(l, "name")]
+    labels = [
+        label.name
+        for label in (pr.labels or [])
+        if hasattr(label, "name") and label.name
+    ]
     is_merged = bool(pr.merged_at)
     is_draft = bool(pr.draft) if hasattr(pr, "draft") else False
 
@@ -223,20 +234,20 @@ def generate_pr_content(
     if issue_comments:
         lines.append("")
         lines.append("--- Comments ---")
-        for c in issue_comments:
-            author = c.user.login if c.user else "unknown"
+        for comment in issue_comments:
+            author = comment.user.login if comment.user else "unknown"
             lines.append(f"\n{author}:")
-            if c.body:
-                lines.append(c.body)
+            if comment.body:
+                lines.append(comment.body)
     if review_comments:
         lines.append("")
         lines.append("--- Review Comments ---")
-        for c in review_comments:
-            author = c.user.login if c.user else "unknown"
-            path = c.path if hasattr(c, "path") else ""
+        for review_comment in review_comments:
+            author = review_comment.user.login if review_comment.user else "unknown"
+            path = review_comment.path
             lines.append(f"\n{author} on {path}:")
-            if c.body:
-                lines.append(c.body)
+            if review_comment.body:
+                lines.append(review_comment.body)
     return _truncate("\n".join(lines))
 
 
@@ -277,7 +288,7 @@ def _build_permissions(is_private: bool, repo_full_name: str) -> DocumentPermiss
     return DocumentPermissions(public=True)
 
 
-def _to_datetime(value: datetime | str | None) -> datetime | None:
+def _to_datetime(value: object) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):

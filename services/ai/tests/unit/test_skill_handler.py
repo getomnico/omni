@@ -11,7 +11,7 @@ from httpx import Response
 
 from tools.registry import ToolContext
 from tools.searcher_client import CapabilitySearchResponse, CapabilitySearchResult
-from tools.skill_handler import SkillHandler
+from tools.skill_handler import ConnectorSkill, SkillHandler
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
@@ -598,3 +598,41 @@ async def test_library_skill_search_snippet_prefers_description(tmp_path):
     text = result.content[0]["text"]
     assert "Snippet description content." in text
     assert "Long body content that should not appear" not in text
+
+
+@pytest.mark.asyncio
+async def test_connector_skill_request_carries_actor_user_id():
+    """MCP-backed skills resolve credentials per user; the request must say who."""
+    handler = SkillHandler(
+        SKILLS_DIR,
+        skill_user_id="user-42",
+    )
+    handler._connector_skills_loaded = True
+    handler._connector_skills["mcp:some_prompt"] = ConnectorSkill(
+        skill_id="mcp:some_prompt",
+        title="Some Prompt",
+        description="d",
+        source_type="github",
+        source_id="src_1",
+    )
+
+    request = handler._connector_skill_request("mcp:some_prompt")
+
+    assert request == {"skill_id": "mcp:some_prompt", "source_id": "src_1", "user_id": "user-42"}
+
+
+@pytest.mark.asyncio
+async def test_connector_skill_request_without_actor_omits_user_id():
+    handler = SkillHandler(SKILLS_DIR)
+    handler._connector_skills_loaded = True
+    handler._connector_skills["mcp:some_prompt"] = ConnectorSkill(
+        skill_id="mcp:some_prompt",
+        title="Some Prompt",
+        description="d",
+        source_type="github",
+        source_id="src_1",
+    )
+
+    request = handler._connector_skill_request("mcp:some_prompt")
+
+    assert "user_id" not in request

@@ -1,7 +1,7 @@
 """Integration tests: connector health checks and manifest via connector-manager."""
 
-import pytest
 import httpx
+import pytest
 
 pytestmark = pytest.mark.integration
 
