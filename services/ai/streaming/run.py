@@ -16,8 +16,9 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import Literal, TypedDict, cast
+from typing import cast
 
+from message_types import UserMessageParam
 from streaming.persist import (
     EndOfStreamReason,
     StreamErrorEvent,
@@ -99,38 +100,10 @@ def steering_dedupe_key(chat_id: str) -> str:
     return _chat_key("steering-dedupe", chat_id)
 
 
-class SteeringTextBlock(TypedDict):
-    type: Literal["text"]
-    text: str
-
-
-class SteeringUploadSource(TypedDict):
-    type: Literal["omni_upload"]
-    upload_id: str
-
-
-class SteeringMentionSource(TypedDict):
-    type: Literal["omni_mention"]
-    document_id: str
-    title: str
-    source_type: str
-    content_type: str
-
-
-class SteeringDocumentBlock(TypedDict):
-    type: Literal["document"]
-    source: SteeringUploadSource | SteeringMentionSource
-
-
-class SteeringMessage(TypedDict):
-    role: Literal["user"]
-    content: str | list[SteeringTextBlock | SteeringDocumentBlock]
-
-
 @dataclass(frozen=True)
 class SteeringQueueEntry:
     client_message_id: str
-    message: SteeringMessage
+    message: UserMessageParam
 
     @classmethod
     def from_json(cls, raw: str) -> SteeringQueueEntry:
@@ -146,7 +119,7 @@ class SteeringQueueEntry:
             raise ValueError("Steering queue entry has invalid content")
         return cls(
             client_message_id=client_message_id,
-            message=cast(SteeringMessage, message),
+            message=cast(UserMessageParam, message),
         )
 
     def to_json(self) -> str:
@@ -209,7 +182,7 @@ async def enqueue_steering_message(
     redis_client,
     chat_id: str,
     client_message_id: str,
-    message: SteeringMessage,
+    message: UserMessageParam,
 ) -> str:
     """Atomically route one message against the active run state.
 

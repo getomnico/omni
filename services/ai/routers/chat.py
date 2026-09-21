@@ -88,7 +88,6 @@ from streaming.run import (
     _CANCEL_TTL,
     _RUN_LOCK_TTL,
     SSE_HEADERS,
-    SteeringMessage,
     _run_tasks_by_chat,
     cancel_key,
     clear_producer_task,
@@ -635,7 +634,7 @@ async def enqueue_chat_steering(
     if redis_client is None:
         raise HTTPException(status_code=503, detail="Redis client is not initialized")
 
-    message = cast(SteeringMessage, payload.message.model_dump(exclude_none=True))
+    message = payload.message
     result = await enqueue_steering_message(
         redis_client,
         chat_id,

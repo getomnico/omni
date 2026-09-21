@@ -19,31 +19,21 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from typing import Literal, TypedDict, cast
+from typing import cast
 
 import httpx
 from anthropic.types import ContentBlockParam, MessageParam, TextBlockParam
 
 from db.uploads import UploadsRepository
+from message_types import (
+    DocumentId,
+    OmniMentionBlock,
+    OmniUploadBlock,
+    UploadId,
+)
 from storage import ContentStorage
 from tools.document_handler import DocumentToolHandler
 from tools.registry import ToolContext
-
-
-# Our custom source variant embedded in Anthropic document/image blocks. Not part of
-# Anthropic's source union — resolved to real content blocks by `expand_uploads`.
-class OmniUploadSource(TypedDict):
-    type: Literal["omni_upload"]
-    upload_id: str
-
-
-class OmniUploadBlock(TypedDict):
-    type: Literal["document", "image"]
-    source: OmniUploadSource
-
-
-# ID of a row in the `uploads` table (ULID). Aliased for self-documenting dict keys.
-UploadId = str
 
 logger = logging.getLogger(__name__)
 
@@ -193,21 +183,6 @@ def _as_omni_upload(block: ContentBlockParam) -> OmniUploadBlock | None:
     if not isinstance(source.get("upload_id"), str):
         return None
     return cast(OmniUploadBlock, block)
-
-
-class OmniMentionSource(TypedDict):
-    type: Literal["omni_mention"]
-    document_id: str
-    title: str
-
-
-class OmniMentionBlock(TypedDict):
-    type: Literal["document"]
-    source: OmniMentionSource
-
-
-# ID of a document in the `documents` table (ULID). Aliased for self-documenting dict keys.
-DocumentId = str
 
 
 async def _expand_omni_mention(

@@ -4,9 +4,11 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from message_types import UserMessageParam
 
 
 class Priority(IntEnum):
@@ -61,40 +63,6 @@ class PromptResponse(BaseModel):
     response: str
 
 
-class SteeringTextBlock(BaseModel):
-    type: Literal["text"]
-    text: str
-
-
-class SteeringUploadSource(BaseModel):
-    type: Literal["omni_upload"]
-    upload_id: str = Field(min_length=1, max_length=26)
-
-
-class SteeringMentionSource(BaseModel):
-    type: Literal["omni_mention"]
-    document_id: str = Field(min_length=1, max_length=26)
-    title: str = Field(min_length=1, max_length=500)
-    source_type: str | None = Field(default=None, max_length=100)
-    content_type: str | None = Field(default=None, max_length=255)
-
-
-SteeringDocumentSource = Annotated[
-    SteeringUploadSource | SteeringMentionSource,
-    Field(discriminator="type"),
-]
-
-
-class SteeringDocumentBlock(BaseModel):
-    type: Literal["document"]
-    source: SteeringDocumentSource
-
-
-class SteeringUserMessage(BaseModel):
-    role: Literal["user"]
-    content: str | list[SteeringTextBlock | SteeringDocumentBlock]
-
-
 ULID_PATTERN = r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$"
 
 
@@ -104,4 +72,4 @@ class SteeringMessageRequest(BaseModel):
         min_length=26,
         max_length=26,
     )
-    message: SteeringUserMessage
+    message: UserMessageParam
