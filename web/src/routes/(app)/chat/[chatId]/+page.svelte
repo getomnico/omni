@@ -937,6 +937,13 @@
                     ? [...lastMessage.sourceMessageIds, ...message.sourceMessageIds]
                     : [...message.sourceMessageIds]
 
+            const branchSource =
+                message.siblingIds && message.siblingIds.length > 1
+                    ? message
+                    : lastMessage?.siblingIds && lastMessage.siblingIds.length > 1
+                      ? lastMessage
+                      : message
+
             let messageToUpdate: ProcessedMessage =
                 lastMessage && lastMessage.role === message.role
                     ? {
@@ -944,9 +951,9 @@
                           sourceMessageIds,
                           renderKey: lastMessage.renderKey,
                           origMessageId: message.origMessageId,
-                          parentMessageId: message.parentMessageId,
-                          siblingIds: message.siblingIds,
-                          siblingIndex: message.siblingIndex,
+                          parentMessageId: branchSource.parentMessageId,
+                          siblingIds: branchSource.siblingIds,
+                          siblingIndex: branchSource.siblingIndex,
                           createdAt: message.createdAt,
                           startedAt: lastMessage.startedAt ?? lastMessage.createdAt,
                           completedAt: message.completedAt ?? message.createdAt,
