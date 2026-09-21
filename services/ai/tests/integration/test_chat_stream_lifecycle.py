@@ -843,7 +843,7 @@ class TestChatSteering:
         )
         async with _client(app) as client:
             retry = await client.post(
-                f"/chat/{chat_id}/steering",
+                f"/chat/{chat_id}/messages",
                 json={
                     "message_id": first_id,
                     "message": {"role": "user", "content": "first"},
@@ -878,21 +878,21 @@ class TestChatSteering:
 
             steering_id = str(ULID())
             response = await client.post(
-                f"/chat/{chat_id}/steering",
+                f"/chat/{chat_id}/messages",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "Use this correction."},
                 },
             )
-            assert response.status_code == 200
+            assert response.status_code == 202
             retry_response = await client.post(
-                f"/chat/{chat_id}/steering",
+                f"/chat/{chat_id}/messages",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "Use this correction."},
                 },
             )
-            assert retry_response.status_code == 200
+            assert retry_response.status_code == 202
 
             deadline = time.monotonic() + 5
             while len(llm.calls) < 2 and time.monotonic() < deadline:
@@ -944,13 +944,13 @@ class TestChatSteering:
                 await asyncio.sleep(0.01)
             steering_id = str(ULID())
             response = await client.post(
-                f"/chat/{chat_id}/steering",
+                f"/chat/{chat_id}/messages",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "Prioritize this."},
                 },
             )
-            assert response.status_code == 200
+            assert response.status_code == 202
             deadline = time.monotonic() + 5
             while len(llm.calls) < 2 and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
@@ -2504,13 +2504,13 @@ class TestInterventionResume:
                 await asyncio.sleep(0.01)
             steering_id = str(ULID())
             response = await client.post(
-                f"/chat/{chat_id}/steering",
+                f"/chat/{chat_id}/messages",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "do this instead"},
                 },
             )
-            assert response.status_code == 200
+            assert response.status_code == 202
             llm.release(0)
             events = await stream_task
 

@@ -61,17 +61,17 @@ class PromptResponse(BaseModel):
     response: str
 
 
-class SteeringTextBlock(BaseModel):
+class ChatTextBlock(BaseModel):
     type: Literal["text"]
     text: str
 
 
-class SteeringUploadSource(BaseModel):
+class ChatUploadSource(BaseModel):
     type: Literal["omni_upload"]
     upload_id: str = Field(min_length=1, max_length=26)
 
 
-class SteeringMentionSource(BaseModel):
+class ChatMentionSource(BaseModel):
     type: Literal["omni_mention"]
     document_id: str = Field(min_length=1, max_length=26)
     title: str = Field(min_length=1, max_length=500)
@@ -79,20 +79,20 @@ class SteeringMentionSource(BaseModel):
     content_type: str | None = Field(default=None, max_length=255)
 
 
-SteeringDocumentSource = Annotated[
-    SteeringUploadSource | SteeringMentionSource,
+ChatDocumentSource = Annotated[
+    ChatUploadSource | ChatMentionSource,
     Field(discriminator="type"),
 ]
 
 
-class SteeringDocumentBlock(BaseModel):
+class ChatDocumentBlock(BaseModel):
     type: Literal["document"]
-    source: SteeringDocumentSource
+    source: ChatDocumentSource
 
 
-class SteeringUserMessage(BaseModel):
+class ChatUserMessage(BaseModel):
     role: Literal["user"]
-    content: str | list[SteeringTextBlock | SteeringDocumentBlock]
+    content: str | list[ChatTextBlock | ChatDocumentBlock]
 
 
 ULID_PATTERN = r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$"
@@ -106,13 +106,4 @@ class ChatMessageRequest(BaseModel):
         max_length=26,
     )
     parent_id: str | None = Field(default=None, min_length=1, max_length=26)
-    message: SteeringUserMessage
-
-
-class SteeringMessageRequest(BaseModel):
-    message_id: str = Field(
-        pattern=ULID_PATTERN,
-        min_length=26,
-        max_length=26,
-    )
-    message: SteeringUserMessage
+    message: ChatUserMessage

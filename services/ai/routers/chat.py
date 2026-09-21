@@ -66,7 +66,7 @@ from memory import (
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
 from provider_cache import ResolvedModel
 from providers import LLMProvider
-from schemas.api import ChatMessageRequest, SteeringMessageRequest
+from schemas.api import ChatMessageRequest
 from services.compaction import ConversationCompactor
 from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
@@ -725,50 +725,6 @@ async def add_chat_message(
         MessagesRepository(),
     )
     return {"status": "created", "message_id": persisted_message_id}
-
-
-# ---------------------------------------------------------------------------
-# Route: steering enqueue (legacy internal endpoint)
-# ---------------------------------------------------------------------------
-
-
-@router.post("/chat/{chat_id}/steering")
-async def enqueue_chat_steering(
-    request: Request,
-    payload: SteeringMessageRequest,
-    chat_id: str = Path(..., description="Chat thread ID"),
-):
-    """Accept a user message into the active run's Redis FIFO."""
-    chat = await ChatsRepository().get(chat_id)
-    if chat is None:
-        raise HTTPException(status_code=404, detail="Chat thread not found")
-    redis_client = getattr(request.app.state, "redis_client", None)
-    if redis_client is None:
-        raise HTTPException(status_code=503, detail="Redis client is not initialized")
-
-    message = cast(SteeringMessage, payload.message.model_dump(exclude_none=True))
-    result = await enqueue_steering_message(
-        redis_client,
-        chat_id,
-        payload.message_id,
-        message,
-    )
-    if result.startswith("persisted:"):
-        persisted_message_id = result.removeprefix("persisted:")
-        if not persisted_message_id:
-            raise HTTPException(status_code=500, detail="Invalid persisted steering result")
-        return {
-            "status": "persisted",
-            "message_id": persisted_message_id,
-            "client_message_id": payload.message_id,
-        }
-    if result != "accepted":
-        raise HTTPException(
-            status_code=409,
-            detail="The response is closing; submit this message as the next chat message.",
-            headers={"X-Chat-Run-Closing": "true"},
-        )
-    return {"status": "accepted", "message_id": payload.message_id}
 
 
 # ---------------------------------------------------------------------------
