@@ -3,4 +3,5 @@ export type StreamStatus = {
     resumable: boolean
     pendingApproval: boolean
     pendingOAuth: boolean
+    pendingSteering: boolean
 }

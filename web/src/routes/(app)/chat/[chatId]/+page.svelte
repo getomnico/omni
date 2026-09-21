@@ -165,6 +165,7 @@
     let userMessage = $state('')
     let mentionedDocs = $state<MentionedDocument[]>([])
     let isSending = $state(false)
+    let pendingSteeringIds = $state<Set<string>>(new Set())
 
     type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
 
@@ -264,7 +265,7 @@
         if (isStreaming || eventSource) return
         try {
             const status = await fetchChatStreamStatus(data.chat.id)
-            if (status?.running) {
+            if (status?.running || status?.pendingSteering) {
                 streamResponse(data.chat.id)
             }
         } catch (err) {
@@ -1796,6 +1797,46 @@
                 invalidateAll()
             })
 
+            eventSource.addEventListener('steering_message', (event) => {
+                if (!isCurrentStream()) return
+                try {
+                    const payload = JSON.parse(event.data) as {
+                        id: string
+                        chat_id: string
+                        parent_id: string | null
+                        message_seq_num: number
+                        message: ChatMessage['message']
+                        created_at: string
+                    }
+                    const persistedMessage: ChatMessage = {
+                        id: payload.id,
+                        chatId: payload.chat_id,
+                        parentId: payload.parent_id,
+                        message: payload.message,
+                        contentText: null,
+                        error: null,
+                        messageSeqNum: payload.message_seq_num,
+                        createdAt: new Date(payload.created_at),
+                    }
+                    pendingSteeringIds.delete(payload.id)
+                    pendingSteeringIds = new Set(pendingSteeringIds)
+                    const existingIndex = chatMessages.findIndex((m) => m.id === payload.id)
+                    if (existingIndex >= 0) {
+                        chatMessages = [
+                            ...chatMessages.slice(0, existingIndex),
+                            persistedMessage,
+                            ...chatMessages.slice(existingIndex + 1),
+                        ]
+                    } else {
+                        chatMessages = [...chatMessages, persistedMessage]
+                    }
+                    selectBranch(persistedMessage.parentId, persistedMessage.id)
+                    scrollUserMessageToTop()
+                } catch (err) {
+                    console.error('Failed to reconcile queued steering message:', err)
+                }
+            })
+
             eventSource.addEventListener('title', () => {
                 if (!isCurrentStream()) return
                 void invalidate('app:recent_chats')
@@ -2254,7 +2295,13 @@
         }
 
         // Success — build optimistic message and clear composer
-        const { messageId } = await response.json()
+        const responseBody = (await response.json()) as {
+            messageId: string
+            status: string
+            queued?: boolean
+        }
+        const { messageId } = responseBody
+        const wasQueued = responseBody.queued === true
 
         let messageContent: string | UserMessageBlock[]
         const mentionBlocks: UserMessageBlock[] = submitMentionedDocs.map((doc) => ({
@@ -2306,8 +2353,14 @@
         selectBranch(newUserMessage.parentId, newUserMessage.id)
         isAwayFromBottom = false
 
+        if (wasQueued) {
+            pendingSteeringIds.add(messageId)
+            pendingSteeringIds = new Set(pendingSteeringIds)
+        }
         scrollUserMessageToTop()
-        streamResponse(data.chat.id)
+        if (!wasQueued) {
+            streamResponse(data.chat.id)
+        }
     }
 
     const attachInlineCitations: Attachment = (container: Element) => {
@@ -2485,6 +2538,9 @@
                 </div>
             {/if}
             <div class="mx-0.5 mt-1 flex items-center justify-end gap-1">
+                {#if pendingSteeringIds.has(message.origMessageId)}
+                    <span class="text-muted-foreground text-xs">Queued</span>
+                {/if}
                 {@render messageTimestamp(message)}
                 {#if message.siblingIds && message.siblingIds.length > 1}
                     {@render branchNavigation(message)}
@@ -3203,6 +3259,7 @@
                             search: 'Search for something else...',
                         }}
                         {isStreaming}
+                        allowSubmitWhileStreaming
                         {stopInProgress}
                         isLoading={isSending}
                         canSubmit={!isSending &&

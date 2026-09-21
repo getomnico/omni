@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Priority(IntEnum):
@@ -59,3 +59,36 @@ class PromptResponse(BaseModel):
     """Response from the LLM."""
 
     response: str
+
+
+class SteeringTextBlock(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class SteeringDocumentSource(BaseModel):
+    type: Literal["omni_upload", "omni_mention"]
+    upload_id: str | None = None
+    document_id: str | None = None
+    title: str | None = None
+    source_type: str | None = None
+    content_type: str | None = None
+
+
+class SteeringDocumentBlock(BaseModel):
+    type: Literal["document"]
+    source: SteeringDocumentSource
+
+
+class SteeringUserMessage(BaseModel):
+    role: Literal["user"]
+    content: str | list[SteeringTextBlock | SteeringDocumentBlock]
+
+
+class SteeringMessageRequest(BaseModel):
+    message_id: str = Field(
+        pattern=r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+        min_length=26,
+        max_length=26,
+    )
+    message: SteeringUserMessage

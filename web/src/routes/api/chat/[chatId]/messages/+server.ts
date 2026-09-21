@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
@@ -11,7 +12,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages'
 import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 import { z } from 'zod'
-import { isValid } from 'ulid'
+import { isValid, ulid } from 'ulid'
 
 const ULID_REGEX = /^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/i
 
@@ -151,21 +152,6 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
     const guard = await chatOwnerGuard(chatId, locals.user.id, locals.user.role)
     if (!guard.ok) return guard.response
 
-    try {
-        const streamStatus = await getChatStreamStatus(chatId)
-        if (streamStatus.running) {
-            return json(
-                {
-                    error: 'A response is still in progress for this chat. Reconnect to the stream before sending another message.',
-                    streamActive: true,
-                },
-                { status: 409 },
-            )
-        }
-    } catch {
-        logger.warn('Could not check stream status before adding message', { chatId })
-    }
-
     let userMessage: { role: 'user'; content: string | UserMessageBlock[] }
     const mentionBlocks: UserMessageBlock[] = mentionedDocuments.map((doc) => ({
         type: 'document',
@@ -190,6 +176,42 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
         userMessage = { role: 'user', content: blocks }
     } else {
         userMessage = { role: 'user', content: trimmedText }
+    }
+
+    const clientMessageId = ulid()
+
+    let streamRunning = false
+    try {
+        streamRunning = (await getChatStreamStatus(chatId)).running
+    } catch (error) {
+        logger.warn('Could not check stream status before adding message', { chatId, error })
+    }
+    if (streamRunning) {
+        let steeringResponse: Response
+        try {
+            steeringResponse = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/steering`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message_id: clientMessageId, message: userMessage }),
+            })
+        } catch (error) {
+            logger.error('Failed to reach AI service for steering message', { chatId, error })
+            return json({ error: 'Failed to queue message while responding' }, { status: 502 })
+        }
+        if (steeringResponse.ok) {
+            return json(
+                { messageId: clientMessageId, status: 'queued', queued: true },
+                { status: 202 },
+            )
+        }
+        if (steeringResponse.status !== 409) {
+            logger.error('AI service rejected steering message', {
+                chatId,
+                status: steeringResponse.status,
+            })
+            return json({ error: 'Failed to queue message while responding' }, { status: 502 })
+        }
+        logger.debug('Run closed while steering message was being accepted', { chatId })
     }
 
     let parentId = parsed.data.parentId?.trim() || undefined

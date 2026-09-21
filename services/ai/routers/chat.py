@@ -43,9 +43,9 @@ from db import (
     ProjectsRepository,
     SkillsRepository,
 )
-from db.groups import GroupRepository
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
+from db.groups import GroupRepository
 from db.models import Chat, ProjectAttachmentType, Source, UserConfiguration
 from db.tool_approvals import (
     ToolApproval,
@@ -63,8 +63,9 @@ from memory import (
     user_key,
 )
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
-from providers import LLMProvider
 from provider_cache import ResolvedModel
+from providers import LLMProvider
+from schemas.api import SteeringMessageRequest
 from services.compaction import ConversationCompactor
 from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
@@ -87,13 +88,16 @@ from streaming.run import (
     _CANCEL_TTL,
     _RUN_LOCK_TTL,
     SSE_HEADERS,
+    SteeringMessage,
     _run_tasks_by_chat,
     cancel_key,
     clear_producer_task,
     consume_run,
+    enqueue_steering_message,
     run_lock_key,
     run_producer,
     set_producer_task,
+    steering_queue_has_pending,
     stream_key,
 )
 from tools import (
@@ -608,7 +612,43 @@ async def stream_status(
         "resumable": bool(await redis_client.exists(stream_key(chat_id))),
         "pending_approval": pending_approval,
         "pending_oauth": pending_oauth,
+        "pending_steering": await steering_queue_has_pending(redis_client, chat_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# Route: steering enqueue
+# ---------------------------------------------------------------------------
+
+
+@router.post("/chat/{chat_id}/steering")
+async def enqueue_chat_steering(
+    request: Request,
+    payload: SteeringMessageRequest,
+    chat_id: str = Path(..., description="Chat thread ID"),
+):
+    """Accept a user message into the active run's Redis FIFO."""
+    chat = await ChatsRepository().get(chat_id)
+    if chat is None:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    redis_client = getattr(request.app.state, "redis_client", None)
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="Redis client is not initialized")
+
+    message = cast(SteeringMessage, payload.message.model_dump(exclude_none=True))
+    result = await enqueue_steering_message(
+        redis_client,
+        chat_id,
+        payload.message_id,
+        message,
+    )
+    if result != "accepted":
+        raise HTTPException(
+            status_code=409,
+            detail="The response is closing; submit this message as the next chat message.",
+            headers={"X-Chat-Run-Closing": "true"},
+        )
+    return {"status": "accepted", "message_id": payload.message_id}
 
 
 # ---------------------------------------------------------------------------
@@ -970,9 +1010,14 @@ class StreamChatHandler:
             )
 
         # Check for no-new-user or pending intervention BEFORE expanding uploads
-        # and mentions, so completed-stream reconnects do not refetch.
+        # and mentions, so completed-stream reconnects do not refetch. A queued
+        # steering message is also a valid reason to start a recovery run.
         last_message_role = messages[-1].get("role") if messages else None
-        if not pending_interventions and last_message_role != "user":
+        pending_steering = (
+            redis_client is not None
+            and await steering_queue_has_pending(redis_client, chat_id)
+        )
+        if not pending_interventions and not pending_steering and last_message_role != "user":
             logger.info(
                 f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
             )
@@ -1015,20 +1060,47 @@ class StreamChatHandler:
                     detail="Failed to verify permissions for document mentions. Please try again.",
                 ) from error
 
+        document_handler = DocumentToolHandler(
+            content_storage=request.app.state.content_storage,
+            documents_repo=DocumentsRepository(),
+            sandbox_url=SANDBOX_URL,
+            connector_manager_url=CONNECTOR_MANAGER_URL,
+        )
         messages = await expand_mentions(
             messages,
             chat_id=chat_id,
-            doc_handler=DocumentToolHandler(
-                content_storage=request.app.state.content_storage,
-                documents_repo=DocumentsRepository(),
-                sandbox_url=SANDBOX_URL,
-                connector_manager_url=CONNECTOR_MANAGER_URL,
-            ),
+            doc_handler=document_handler,
             user_id=tool_user_id,
             user_email=user_email,
             skip_permission_check=tool_skip_perm,
             user_groups=user_groups,
         )
+
+        async def transform_steering_message(
+            raw_message: dict[str, object],
+        ) -> MessageParam:
+            transformed = [cast(MessageParam, raw_message)]
+            if storage is not None:
+                transformed = await expand_uploads(
+                    transformed,
+                    chat_id=chat_id,
+                    storage=storage,
+                    uploads_repo=UploadsRepository(),
+                    sandbox_url=SANDBOX_URL,
+                    user_id=chat.user_id,
+                )
+            transformed = await expand_mentions(
+                transformed,
+                chat_id=chat_id,
+                doc_handler=document_handler,
+                user_id=tool_user_id,
+                user_email=user_email,
+                skip_permission_check=tool_skip_perm,
+                user_groups=user_groups,
+            )
+            if len(transformed) != 1:
+                raise ValueError("Steering message expansion returned an invalid message")
+            return transformed[0]
 
         # Compaction
         secondary_provider = await _resolve_secondary_provider(request.app.state)
@@ -1091,6 +1163,7 @@ class StreamChatHandler:
             approvals_repo=approvals_repo,
             pending_interventions=pending_interventions,
             max_output_tokens=DEFAULT_MAX_TOKENS,
+            transform_steering_message=transform_steering_message,
         )
 
         if redis_client is None:
@@ -1102,7 +1175,7 @@ class StreamChatHandler:
 
         # Single producer per chat
         got_lock = await redis_client.set(
-            run_lock_key(chat_id), "1", nx=True, ex=_RUN_LOCK_TTL
+            run_lock_key(chat_id), "open", nx=True, ex=_RUN_LOCK_TTL
         )
         if not got_lock:
             return StreamingResponse(

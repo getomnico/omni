@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
+from typing import Literal, TypedDict, cast
 
 from streaming.persist import (
     EndOfStreamReason,
@@ -73,16 +75,184 @@ def clear_producer_task(chat_id: str, task: asyncio.Task) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _chat_key(kind: str, chat_id: str) -> str:
+    """Build every chat-scoped Redis key in one place."""
+    return f"chat:{kind}:{chat_id}"
+
+
 def stream_key(chat_id: str) -> str:
-    return f"chat:stream:{chat_id}"
+    return _chat_key("stream", chat_id)
 
 
 def run_lock_key(chat_id: str) -> str:
-    return f"chat:runlock:{chat_id}"
+    return _chat_key("runlock", chat_id)
 
 
 def cancel_key(chat_id: str) -> str:
-    return f"chat:cancel:{chat_id}"
+    return _chat_key("cancel", chat_id)
+
+
+def steering_queue_key(chat_id: str) -> str:
+    return _chat_key("steering", chat_id)
+
+
+def steering_dedupe_key(chat_id: str) -> str:
+    return _chat_key("steering-dedupe", chat_id)
+
+
+class SteeringTextBlock(TypedDict):
+    type: Literal["text"]
+    text: str
+
+
+class SteeringDocumentSource(TypedDict, total=False):
+    type: Literal["omni_upload", "omni_mention"]
+    upload_id: str
+    document_id: str
+    title: str
+    source_type: str
+    content_type: str
+
+
+class SteeringDocumentBlock(TypedDict):
+    type: Literal["document"]
+    source: SteeringDocumentSource
+
+
+class SteeringMessage(TypedDict):
+    role: Literal["user"]
+    content: str | list[SteeringTextBlock | SteeringDocumentBlock]
+
+
+@dataclass(frozen=True)
+class SteeringQueueEntry:
+    client_message_id: str
+    message: SteeringMessage
+
+    @classmethod
+    def from_json(cls, raw: str) -> "SteeringQueueEntry":
+        payload = json.loads(raw)
+        client_message_id = payload.get("client_message_id")
+        message = payload.get("message")
+        if not isinstance(client_message_id, str) or not client_message_id:
+            raise ValueError("Steering queue entry has no client_message_id")
+        if not isinstance(message, dict) or message.get("role") != "user":
+            raise ValueError("Steering queue entry has an invalid user message")
+        content = message.get("content")
+        if not isinstance(content, (str, list)):
+            raise ValueError("Steering queue entry has invalid content")
+        return cls(
+            client_message_id=client_message_id,
+            message=cast(SteeringMessage, message),
+        )
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {"client_message_id": self.client_message_id, "message": self.message},
+            separators=(",", ":"),
+        )
+
+
+_ENQUEUE_STEERING_SCRIPT = """
+local existing = redis.call('HGET', KEYS[3], ARGV[1])
+if existing then
+  return {2, existing}
+end
+if redis.call('GET', KEYS[1]) ~= 'open' then
+  return {0, ''}
+end
+redis.call('RPUSH', KEYS[2], ARGV[2])
+redis.call('HSET', KEYS[3], ARGV[1], 'pending')
+redis.call('EXPIRE', KEYS[3], ARGV[3])
+return {1, 'pending'}
+"""
+
+_CLOSE_STEERING_SCRIPT = """
+if redis.call('GET', KEYS[1]) ~= 'open' then
+  return 0
+end
+if redis.call('LLEN', KEYS[2]) > 0 then
+  return 1
+end
+redis.call('SET', KEYS[1], 'closing', 'EX', ARGV[1])
+return 2
+"""
+
+_ACK_STEERING_SCRIPT = """
+local queued = redis.call('LINDEX', KEYS[1], 0)
+if queued == ARGV[3] then
+  redis.call('LPOP', KEYS[1])
+end
+redis.call('HSET', KEYS[2], ARGV[1], 'persisted:' .. ARGV[2])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+return 1
+"""
+
+
+async def enqueue_steering_message(
+    redis_client,
+    chat_id: str,
+    client_message_id: str,
+    message: SteeringMessage,
+) -> str:
+    """Atomically accept one FIFO steering message while a run is open.
+
+    Returns ``accepted`` for a new or idempotent retry and ``closing`` when the
+    run has won the final-check race.
+    """
+    entry = SteeringQueueEntry(client_message_id, message)
+    result = await redis_client.eval(
+        _ENQUEUE_STEERING_SCRIPT,
+        3,
+        run_lock_key(chat_id),
+        steering_queue_key(chat_id),
+        steering_dedupe_key(chat_id),
+        client_message_id,
+        entry.to_json(),
+        str(_STREAM_TTL),
+    )
+    return "accepted" if int(result[0]) in (1, 2) else "closing"
+
+
+async def peek_steering_message(redis_client, chat_id: str) -> SteeringQueueEntry | None:
+    raw = await redis_client.lindex(steering_queue_key(chat_id), 0)
+    if raw is None:
+        return None
+    return SteeringQueueEntry.from_json(raw)
+
+
+async def steering_queue_has_pending(redis_client, chat_id: str) -> bool:
+    return bool(await redis_client.llen(steering_queue_key(chat_id)))
+
+
+async def close_run_if_steering_empty(redis_client, chat_id: str) -> bool:
+    """Close the run only if the FIFO is empty in the same Redis operation."""
+    result = await redis_client.eval(
+        _CLOSE_STEERING_SCRIPT,
+        2,
+        run_lock_key(chat_id),
+        steering_queue_key(chat_id),
+        str(_RUN_LOCK_TTL),
+    )
+    return int(result) == 2
+
+
+async def acknowledge_steering_message(
+    redis_client,
+    chat_id: str,
+    entry: SteeringQueueEntry,
+    persisted_message_id: str,
+) -> None:
+    await redis_client.eval(
+        _ACK_STEERING_SCRIPT,
+        2,
+        steering_queue_key(chat_id),
+        steering_dedupe_key(chat_id),
+        entry.client_message_id,
+        persisted_message_id,
+        entry.to_json(),
+        str(_STREAM_TTL),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +291,7 @@ async def run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
     refresh_task = asyncio.create_task(_refresh_lock_periodically(redis_client, lk))
     try:
         async for event_str in persist_and_transform(
-            gen, chat_id, messages_repo, parent_id
+            gen, chat_id, messages_repo, parent_id, redis_client=redis_client
         ):
             await redis_client.xadd(
                 sk,

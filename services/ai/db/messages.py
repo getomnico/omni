@@ -138,11 +138,12 @@ class MessagesRepository:
         message: Dict[str, Any],
         parent_id: Optional[str] = None,
         error: Optional[ChatMessageError] = None,
+        message_id: Optional[str] = None,
     ) -> ChatMessage:
         """Create a new message in a chat"""
         pool = await self._get_pool()
 
-        message_id = str(ULID())
+        message_id = message_id or str(ULID())
 
         # Get the next sequence number for this chat
         seq_query = """
@@ -161,6 +162,7 @@ class MessagesRepository:
             query = """
                 INSERT INTO chat_messages (id, chat_id, message_seq_num, message, parent_id, content_text, error, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (id) DO NOTHING
                 RETURNING id, chat_id, message_seq_num, message, parent_id, content_text, error, created_at
             """
 
@@ -174,6 +176,19 @@ class MessagesRepository:
                 content_text,
                 json.dumps(serialized_error) if serialized_error is not None else None,
             )
+            if row is None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id, chat_id, message_seq_num, message, parent_id,
+                           content_text, error, created_at
+                    FROM chat_messages
+                    WHERE id = $1 AND chat_id = $2
+                    """,
+                    message_id,
+                    chat_id,
+                )
+                if row is None:
+                    raise ValueError("Message id is already used by another chat")
 
         return ChatMessage.from_row(dict(row))
 
