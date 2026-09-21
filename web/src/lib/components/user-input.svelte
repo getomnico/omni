@@ -197,11 +197,15 @@
     function textWithoutMentionChips(): string {
         if (!inputRef) return ''
         if (inputMode === 'search') return inputRef.innerText
-        // Clone to avoid live DOM manipulation
+        // Clone to avoid live DOM manipulation. Convert browser-created line
+        // breaks before reading textContent, since textContent ignores <br>.
         const clone = inputRef.cloneNode(true) as HTMLElement
         const chips = clone.querySelectorAll('[data-document-id]')
         for (const chip of chips) {
             chip.remove()
+        }
+        for (const lineBreak of clone.querySelectorAll('br')) {
+            lineBreak.replaceWith(document.createTextNode('\n'))
         }
         return clone.textContent ?? ''
     }
