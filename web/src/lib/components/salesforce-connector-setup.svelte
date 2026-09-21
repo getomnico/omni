@@ -180,18 +180,20 @@
         </Dialog.Header>
 
         <Tabs.Root bind:value={authMode}>
-            <Tabs.List class="mt-1 mb-4 grid w-full grid-cols-2">
-                <Tabs.Trigger
-                    value="jwt"
-                    class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
-                    External Client App (JWT)
-                </Tabs.Trigger>
-                <Tabs.Trigger
-                    value="token"
-                    class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
-                    Access Token
-                </Tabs.Trigger>
-            </Tabs.List>
+            <div class="mt-1 mb-4 border-b pb-2">
+                <Tabs.List variant="line" class="gap-6 p-0" aria-label="Salesforce authentication mode">
+                    <Tabs.Trigger
+                        value="jwt"
+                        class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                        External Client App (JWT)
+                    </Tabs.Trigger>
+                    <Tabs.Trigger
+                        value="token"
+                        class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                        Access Token
+                    </Tabs.Trigger>
+                </Tabs.List>
+            </div>
 
             <Tabs.Content value="jwt" class="space-y-4 pt-1">
                 <div class="space-y-2">

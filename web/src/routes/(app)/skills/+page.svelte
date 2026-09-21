@@ -355,18 +355,20 @@
 
     <!-- Tabs -->
     <Tabs.Root value={tab} onValueChange={(v) => (tab = v)} class="w-full">
-        <Tabs.List class="mb-4">
-            <Tabs.Trigger
-                value="mine"
-                class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
-                My Skills ({mySkills.length})
-            </Tabs.Trigger>
-            <Tabs.Trigger
-                value="public"
-                class="data-[state=active]:bg-background data-[state=active]:text-foreground cursor-pointer data-[state=active]:shadow-sm">
-                Public Library ({publicSkills.length})
-            </Tabs.Trigger>
-        </Tabs.List>
+        <div class="mb-4 border-b pb-2">
+            <Tabs.List variant="line" class="gap-6 p-0" aria-label="Skills">
+                <Tabs.Trigger
+                    value="mine"
+                    class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                    My Skills ({mySkills.length})
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                    value="public"
+                    class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                    Public Library ({publicSkills.length})
+                </Tabs.Trigger>
+            </Tabs.List>
+        </div>
 
         <!-- My Skills tab -->
         <Tabs.Content value="mine">
