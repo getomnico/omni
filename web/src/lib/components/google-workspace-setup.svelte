@@ -707,18 +707,20 @@
         </Dialog.Header>
 
         <Tabs.Root bind:value={activeTab} onValueChange={(v) => selectTab(v as GoogleAuthMode)}>
-            <Tabs.List class="grid w-full grid-cols-2">
-                <Tabs.Trigger
-                    value="domain_wide_delegation"
-                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
-                    Domain-wide delegation
-                </Tabs.Trigger>
-                <Tabs.Trigger
-                    value="service_account_direct"
-                    class="data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow-sm">
-                    Shared drive (no DWD)
-                </Tabs.Trigger>
-            </Tabs.List>
+            <div class="border-b pb-2">
+                <Tabs.List variant="line" class="gap-6 p-0" aria-label="Google Workspace setup mode">
+                    <Tabs.Trigger
+                        value="domain_wide_delegation"
+                        class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                        Domain-wide delegation
+                    </Tabs.Trigger>
+                    <Tabs.Trigger
+                        value="service_account_direct"
+                        class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                        Shared drive (no DWD)
+                    </Tabs.Trigger>
+                </Tabs.List>
+            </div>
 
             <Tabs.Content value="domain_wide_delegation" class="space-y-4 pt-4">
                 <div class="space-y-2">
