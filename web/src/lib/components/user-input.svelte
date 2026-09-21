@@ -692,14 +692,14 @@
                     {#if stopInProgress}
                         <Button
                             size="icon"
-                            class="omni-composer-send cursor-pointer rounded-full"
+                            class="omni-composer-send size-8 cursor-pointer rounded-full"
                             disabled>
                             <Loader2 class="h-4 w-4 animate-spin" />
                         </Button>
                     {:else}
                         <Button
                             size="icon"
-                            class="omni-composer-send cursor-pointer rounded-full"
+                            class="omni-composer-send size-8 cursor-pointer rounded-full"
                             onclick={handleStopClick}
                             aria-label="Stop response">
                             <CircleStop class="h-4 w-4" />
