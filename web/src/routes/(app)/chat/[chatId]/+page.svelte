@@ -149,6 +149,7 @@
             errorDetail = null
             stopThinkingText()
             chatMessages = [...data.messages]
+            pendingSteeringMessages = []
             branchSelections = {}
             activeStreamingMessageId = null
             editingMessageId = null
@@ -165,9 +166,13 @@
     let userMessage = $state('')
     let mentionedDocs = $state<MentionedDocument[]>([])
     let isSending = $state(false)
-    let pendingSteeringIds = $state<Set<string>>(new Set())
+    let pendingSteeringMessages = $state<PendingSteeringMessage[]>([])
 
     type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
+    type PendingSteeringMessage = {
+        message: ChatMessage
+        processed: ProcessedMessage
+    }
 
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
     type UploadResponse = {
@@ -270,6 +275,24 @@
             }
         } catch (err) {
             console.warn('Failed to check chat stream status', err)
+        }
+    }
+
+    async function resumePendingSteeringAfterTerminal(chatId: string) {
+        if (pendingSteeringMessages.length === 0) return
+        for (let attempt = 0; attempt < 50; attempt++) {
+            if (isStreaming || eventSource) return
+            try {
+                const status = await fetchChatStreamStatus(chatId)
+                if (status && !status.running && status.pendingSteering) {
+                    streamResponse(chatId)
+                    return
+                }
+            } catch (err) {
+                console.warn('Failed to check pending steering status', err)
+                return
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100))
         }
     }
 
@@ -1795,6 +1818,7 @@
                 activeStreamChatId = null
                 clearReconnectState()
                 invalidateAll()
+                void resumePendingSteeringAfterTerminal(chatId)
             })
 
             eventSource.addEventListener('steering_message', (event) => {
@@ -1818,8 +1842,9 @@
                         messageSeqNum: payload.message_seq_num,
                         createdAt: new Date(payload.created_at),
                     }
-                    pendingSteeringIds.delete(payload.id)
-                    pendingSteeringIds = new Set(pendingSteeringIds)
+                    pendingSteeringMessages = pendingSteeringMessages.filter(
+                        (pending) => pending.message.id !== payload.id,
+                    )
                     const existingIndex = chatMessages.findIndex((m) => m.id === payload.id)
                     if (existingIndex >= 0) {
                         chatMessages = [
@@ -2044,6 +2069,7 @@
                 if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
                     error = 'Failed to generate response. Please try again.'
                 }
+                void resumePendingSteeringAfterTerminal(chatId)
             })
 
             const handleStreamError = (event: Event) => {
@@ -2067,6 +2093,7 @@
                 eventSource = null
                 activeStreamChatId = null
                 clearReconnectState()
+                void resumePendingSteeringAfterTerminal(chatId)
             }
 
             const handleConnectionError = () => {
@@ -2106,6 +2133,7 @@
                 userInputRef?.focus()
                 activeStreamChatId = null
                 clearReconnectState()
+                void resumePendingSteeringAfterTerminal(chatId)
             }
 
             eventSource.addEventListener('stream_error', handleStreamError)
@@ -2286,8 +2314,15 @@
         if (!response.ok) {
             isSending = false
             if (response.status === 409) {
-                void resumeActiveStreamIfNeeded()
-                toast.info('The previous response is still in progress. Reconnecting to it now.')
+                const body = (await response.json().catch(() => null)) as {
+                    retryAfterRun?: boolean
+                } | null
+                if (body?.retryAfterRun) {
+                    setTimeout(() => void handleSubmit(), 150)
+                } else {
+                    void resumeActiveStreamIfNeeded()
+                    toast.info('The previous response is still in progress. Reconnecting to it now.')
+                }
             } else {
                 console.error('Failed to send message to chat session')
             }
@@ -2349,14 +2384,21 @@
         mentionedDocs = []
         pendingUploads = []
         isSending = false
-        chatMessages = [...chatMessages, newUserMessage]
-        selectBranch(newUserMessage.parentId, newUserMessage.id)
+        if (wasQueued) {
+            const placeholder = { ...newUserMessage, parentId: null }
+            const processed = processMessages([placeholder])[0]
+            if (processed) {
+                pendingSteeringMessages = [
+                    ...pendingSteeringMessages,
+                    { message: newUserMessage, processed },
+                ]
+            }
+        } else {
+            chatMessages = [...chatMessages, newUserMessage]
+            selectBranch(newUserMessage.parentId, newUserMessage.id)
+        }
         isAwayFromBottom = false
 
-        if (wasQueued) {
-            pendingSteeringIds.add(messageId)
-            pendingSteeringIds = new Set(pendingSteeringIds)
-        }
         scrollUserMessageToTop()
         if (!wasQueued) {
             streamResponse(data.chat.id)
@@ -2538,9 +2580,6 @@
                 </div>
             {/if}
             <div class="mx-0.5 mt-1 flex items-center justify-end gap-1">
-                {#if pendingSteeringIds.has(message.origMessageId)}
-                    <span class="text-muted-foreground text-xs">Queued</span>
-                {/if}
                 {@render messageTimestamp(message)}
                 {#if message.siblingIds && message.siblingIds.length > 1}
                     {@render branchNavigation(message)}
@@ -3084,6 +3123,15 @@
                             </div>
                         </div>
                     {/if}
+                {/each}
+
+                {#each pendingSteeringMessages as pending (pending.message.id)}
+                    <div
+                        data-testid={`queued-chat-message-${pending.message.id}`}
+                        class="group mt-8 flex w-full min-w-0 flex-col items-end">
+                        {@render userMessageContent(pending.processed)}
+                        <span class="text-muted-foreground mr-1 text-xs">Queued</span>
+                    </div>
                 {/each}
 
                 {#if pendingApproval && !oauthBlockerActive && processedMessages[processedMessages.length - 1]?.role !== 'assistant'}

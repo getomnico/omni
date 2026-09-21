@@ -38,15 +38,14 @@ logger = logging.getLogger(__name__)
 SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive"}
 
 _STREAM_HEARTBEAT_MS = 15000  # idle ping interval (keeps proxies from timing out)
-_RUN_LOCK_TTL = (
-    300  # seconds; refreshed on every produced event and by the heartbeat below
-)
+_RUN_LOCK_TTL = 300  # seconds; refreshed on every produced event and by the heartbeat below
 _LOCK_REFRESH_INTERVAL = 60  # seconds; independent of event production, so a long
 # silent gap in the agent loop (e.g. a slow tool call with no intermediate SSE
 # events) can't let the lock expire while the producer is still running.
 _STREAM_TTL = 300  # seconds a finished stream stays replayable
 _STREAM_MAXLEN = 5000  # cap buffered events per run
 _CANCEL_TTL = 300
+_STEERING_TTL = 300
 _CANCEL_CHECK_INTERVAL_SECONDS = 1.0
 
 
@@ -105,9 +104,13 @@ class SteeringTextBlock(TypedDict):
     text: str
 
 
-class SteeringDocumentSource(TypedDict, total=False):
-    type: Literal["omni_upload", "omni_mention"]
+class SteeringUploadSource(TypedDict):
+    type: Literal["omni_upload"]
     upload_id: str
+
+
+class SteeringMentionSource(TypedDict):
+    type: Literal["omni_mention"]
     document_id: str
     title: str
     source_type: str
@@ -116,7 +119,7 @@ class SteeringDocumentSource(TypedDict, total=False):
 
 class SteeringDocumentBlock(TypedDict):
     type: Literal["document"]
-    source: SteeringDocumentSource
+    source: SteeringUploadSource | SteeringMentionSource
 
 
 class SteeringMessage(TypedDict):
@@ -130,7 +133,7 @@ class SteeringQueueEntry:
     message: SteeringMessage
 
     @classmethod
-    def from_json(cls, raw: str) -> "SteeringQueueEntry":
+    def from_json(cls, raw: str) -> SteeringQueueEntry:
         payload = json.loads(raw)
         client_message_id = payload.get("client_message_id")
         message = payload.get("message")
@@ -156,6 +159,9 @@ class SteeringQueueEntry:
 _ENQUEUE_STEERING_SCRIPT = """
 local existing = redis.call('HGET', KEYS[3], ARGV[1])
 if existing then
+  if string.sub(existing, 1, 10) == 'persisted:' then
+    return {3, existing}
+  end
   return {2, existing}
 end
 if redis.call('GET', KEYS[1]) ~= 'open' then
@@ -163,6 +169,7 @@ if redis.call('GET', KEYS[1]) ~= 'open' then
 end
 redis.call('RPUSH', KEYS[2], ARGV[2])
 redis.call('HSET', KEYS[3], ARGV[1], 'pending')
+redis.call('EXPIRE', KEYS[2], ARGV[3])
 redis.call('EXPIRE', KEYS[3], ARGV[3])
 return {1, 'pending'}
 """
@@ -182,6 +189,9 @@ _ACK_STEERING_SCRIPT = """
 local queued = redis.call('LINDEX', KEYS[1], 0)
 if queued == ARGV[3] then
   redis.call('LPOP', KEYS[1])
+end
+if redis.call('LLEN', KEYS[1]) == 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[4])
 end
 redis.call('HSET', KEYS[2], ARGV[1], 'persisted:' .. ARGV[2])
 redis.call('EXPIRE', KEYS[2], ARGV[4])
@@ -209,9 +219,12 @@ async def enqueue_steering_message(
         steering_dedupe_key(chat_id),
         client_message_id,
         entry.to_json(),
-        str(_STREAM_TTL),
+        str(_STEERING_TTL),
     )
-    return "accepted" if int(result[0]) in (1, 2) else "closing"
+    result_code = int(result[0])
+    if result_code == 3:
+        return "persisted"
+    return "accepted" if result_code in (1, 2) else "closing"
 
 
 async def peek_steering_message(redis_client, chat_id: str) -> SteeringQueueEntry | None:
@@ -251,7 +264,7 @@ async def acknowledge_steering_message(
         entry.client_message_id,
         persisted_message_id,
         entry.to_json(),
-        str(_STREAM_TTL),
+        str(_STEERING_TTL),
     )
 
 
@@ -328,6 +341,8 @@ async def run_producer(redis_client, chat_id, gen, messages_repo, parent_id):
             redis_client.expire(sk, _STREAM_TTL),
             redis_client.delete(lk),
             redis_client.delete(cancel_key(chat_id)),
+            redis_client.expire(steering_queue_key(chat_id), _STEERING_TTL),
+            redis_client.expire(steering_dedupe_key(chat_id), _STEERING_TTL),
         ):
             try:
                 await coro
@@ -354,9 +369,7 @@ async def consume_run(redis_client, chat_id, start_id):
     lk = run_lock_key(chat_id)
     last = start_id or "0"
     while True:
-        resp = await redis_client.xread(
-            {sk: last}, block=_STREAM_HEARTBEAT_MS, count=200
-        )
+        resp = await redis_client.xread({sk: last}, block=_STREAM_HEARTBEAT_MS, count=200)
         if resp:
             for _key, entries in resp:
                 for entry_id, fields in entries:

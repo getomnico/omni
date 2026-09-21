@@ -4,7 +4,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -66,13 +66,23 @@ class SteeringTextBlock(BaseModel):
     text: str
 
 
-class SteeringDocumentSource(BaseModel):
-    type: Literal["omni_upload", "omni_mention"]
-    upload_id: str | None = None
-    document_id: str | None = None
-    title: str | None = None
-    source_type: str | None = None
-    content_type: str | None = None
+class SteeringUploadSource(BaseModel):
+    type: Literal["omni_upload"]
+    upload_id: str = Field(min_length=1, max_length=26)
+
+
+class SteeringMentionSource(BaseModel):
+    type: Literal["omni_mention"]
+    document_id: str = Field(min_length=1, max_length=26)
+    title: str = Field(min_length=1, max_length=500)
+    source_type: str | None = Field(default=None, max_length=100)
+    content_type: str | None = Field(default=None, max_length=255)
+
+
+SteeringDocumentSource = Annotated[
+    SteeringUploadSource | SteeringMentionSource,
+    Field(discriminator="type"),
+]
 
 
 class SteeringDocumentBlock(BaseModel):

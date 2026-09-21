@@ -21,6 +21,8 @@ function isValidUlid(s: string): boolean {
 }
 
 const MAX_CONTENT_LENGTH = 100_000
+const STEERING_HANDOFF_TIMEOUT_MS = 5_000
+const STEERING_HANDOFF_POLL_MS = 100
 
 const mentionedDocumentSchema = z.object({
     document_id: z.string().min(1).max(100).refine(isValidUlid, 'Invalid ULID'),
@@ -39,6 +41,23 @@ const messageRequestSchema = z.object({
 })
 
 type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForChatRunToClose(chatId: string): Promise<boolean> {
+    const deadline = Date.now() + STEERING_HANDOFF_TIMEOUT_MS
+    while (Date.now() < deadline) {
+        try {
+            if (!(await getChatStreamStatus(chatId)).running) return true
+        } catch {
+            return false
+        }
+        await sleep(STEERING_HANDOFF_POLL_MS)
+    }
+    return false
+}
 
 async function chatOwnerGuard(
     chatId: string,
@@ -212,6 +231,16 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
             return json({ error: 'Failed to queue message while responding' }, { status: 502 })
         }
         logger.debug('Run closed while steering message was being accepted', { chatId })
+        if (!(await waitForChatRunToClose(chatId))) {
+            return json(
+                {
+                    error: 'The previous response is still finishing. Please retry this message.',
+                    streamActive: true,
+                    retryAfterRun: true,
+                },
+                { status: 409 },
+            )
+        }
     }
 
     let parentId = parsed.data.parentId?.trim() || undefined

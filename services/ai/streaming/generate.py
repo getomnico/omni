@@ -61,7 +61,7 @@ from streaming.run import (
     SteeringQueueEntry,
     close_run_if_steering_empty,
     is_run_cancelled,
-    peek_steering_message,
+    steering_queue_key,
 )
 from tools import (
     ConnectorToolHandler,
@@ -147,9 +147,7 @@ async def event_stream_with_context_retry(
         )
         processed_stream = tracker.wrap_stream(raw_stream)
         if citable_index:
-            processed_stream = CitationStreamProcessor(citable_index).process(
-                processed_stream
-            )
+            processed_stream = CitationStreamProcessor(citable_index).process(processed_stream)
 
         emitted_event = False
         try:
@@ -163,8 +161,7 @@ async def event_stream_with_context_retry(
                     chat_id,
                 )
                 should_emit_progress = (
-                    compactor.select_legacy_compaction_split(conversation_messages)
-                    is not None
+                    compactor.select_legacy_compaction_split(conversation_messages) is not None
                 )
                 if should_emit_progress:
                     yield CompactionStart()
@@ -221,9 +218,7 @@ def tool_result_ids(message: MessageParam) -> set[str]:
 
 def unanswered_tool_calls(messages: list[MessageParam]) -> list[ToolUseBlockParam]:
     answered_ids = {
-        tool_result_id
-        for message in messages
-        for tool_result_id in tool_result_ids(message)
+        tool_result_id for message in messages for tool_result_id in tool_result_ids(message)
     }
     return [
         tool_use
@@ -306,17 +301,13 @@ def coalesce_adjacent_tool_result_messages(
                 and all(block["type"] == "tool_result" for block in previous_blocks)
             )
             if previous_is_tool_result_message:
-                coalesced[-1] = MessageParam(
-                    role="user", content=[*previous_blocks, *blocks]
-                )
+                coalesced[-1] = MessageParam(role="user", content=[*previous_blocks, *blocks])
                 continue
         coalesced.append(message)
     return coalesced
 
 
-_INTERRUPTED_TOOL_RESULT_MARKER = (
-    "did not complete because the previous response was interrupted"
-)
+_INTERRUPTED_TOOL_RESULT_MARKER = "did not complete because the previous response was interrupted"
 
 
 def _interrupted_tool_result(tool_use: ToolUseBlockParam) -> ToolResultBlockParam:
@@ -372,8 +363,7 @@ def strip_synthetic_interrupted_results(
                 block["type"] == "tool_result"
                 and block.get("tool_use_id") in tool_call_ids
                 and block.get("is_error")
-                and _INTERRUPTED_TOOL_RESULT_MARKER
-                in _joined_result_text(block.get("content", ""))
+                and _INTERRUPTED_TOOL_RESULT_MARKER in _joined_result_text(block.get("content", ""))
             )
         ]
         if len(kept) == len(blocks):
@@ -418,8 +408,7 @@ def repair_interrupted_tool_calls(
         missing = [
             tool_use
             for tool_use in tool_uses
-            if tool_use["id"] not in answered_ids
-            and tool_use["id"] not in preserved_ids
+            if tool_use["id"] not in answered_ids and tool_use["id"] not in preserved_ids
         ]
 
         repaired.append(message)
@@ -505,10 +494,11 @@ def synthetic_superseded_tool_result(tool_call: ToolUseBlockParam) -> ToolResult
     )
 
 
-async def _queued_steering_message(redis_client, chat_id: str) -> SteeringQueueEntry | None:
+async def _queued_steering_messages(redis_client, chat_id: str) -> list[SteeringQueueEntry]:
     if redis_client is None:
-        return None
-    return await peek_steering_message(redis_client, chat_id)
+        return []
+    raw_entries = await redis_client.lrange(steering_queue_key(chat_id), 0, -1)
+    return [SteeringQueueEntry.from_json(raw) for raw in raw_entries]
 
 
 async def _close_without_steering(redis_client, chat_id: str) -> bool:
@@ -517,12 +507,27 @@ async def _close_without_steering(redis_client, chat_id: str) -> bool:
     return await close_run_if_steering_empty(redis_client, chat_id)
 
 
-async def _transform_steering_message(
-    entry: SteeringQueueEntry, transform
-) -> MessageParam:
+async def _transform_steering_message(entry: SteeringQueueEntry, transform) -> MessageParam:
     if transform is None:
         return cast(MessageParam, entry.message)
     return await transform(entry.message)
+
+
+def _user_message_text(message: MessageParam) -> str | None:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip() or None
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            block_text = block.get("text")
+            if isinstance(block_text, str):
+                parts.append(block_text)
+        text = " ".join(parts).strip()
+        return text or None
+    return None
 
 
 def oauth_event_from_approval(approval: ToolApproval) -> OAuthRequiredEvent:
@@ -673,9 +678,7 @@ async def prepare_and_stream_chat(
             connector_handler=connector_handler,
             loaded_toolsets=loaded_toolsets,
             compactor=compactor,
-            latest_compaction_summary=(
-                latest_compaction.summary if latest_compaction else None
-            ),
+            latest_compaction_summary=(latest_compaction.summary if latest_compaction else None),
             summarizer_context_window_tokens=summarizer_context.tokens,
             memory_provider=memory_provider,
             memory_write_key=memory_write_key,
@@ -702,9 +705,7 @@ async def prepare_and_stream_chat(
     finally:
         continue_compaction.set()
         pending_tasks = [
-            task
-            for task in (prepare_task, start_wait_task)
-            if task is not None and not task.done()
+            task for task in (prepare_task, start_wait_task) if task is not None and not task.done()
         ]
         for task in pending_tasks:
             task.cancel()
@@ -776,8 +777,7 @@ async def stream_generator(
         approved_oauth_keys = {
             (approval.source_id, approval.source_type, approval.provider)
             for tool_call_id, approval in oauth_interventions_by_tool_call_id.items()
-            if tool_call_id in unanswered_ids
-            and approval.status == ToolApprovalStatus.APPROVED
+            if tool_call_id in unanswered_ids and approval.status == ToolApprovalStatus.APPROVED
         }
         blocked_oauth = next(
             (
@@ -790,25 +790,24 @@ async def stream_generator(
             ),
             None,
         )
-        blocked_intervention_queued = await _queued_steering_message(
-            redis_client, chat_id
+        blocked_intervention_queue = await _queued_steering_messages(redis_client, chat_id)
+        blocked_intervention_queued = (
+            blocked_intervention_queue[0] if blocked_intervention_queue else None
         )
         if blocked_oauth is not None and blocked_intervention_queued is None:
             if await _close_without_steering(redis_client, chat_id):
                 yield sse_event("oauth_required", oauth_event_from_approval(blocked_oauth))
-                yield end_of_stream(
-                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                )
+                yield end_of_stream(EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required")
                 return
-            blocked_intervention_queued = await _queued_steering_message(
-                redis_client, chat_id
+            blocked_intervention_queue = await _queued_steering_messages(redis_client, chat_id)
+            blocked_intervention_queued = (
+                blocked_intervention_queue[0] if blocked_intervention_queue else None
             )
 
         blocked_approvals = [
             approval
             for tool_call_id, approval in approval_interventions_by_tool_call_id.items()
-            if tool_call_id in unanswered_ids
-            and approval.status == ToolApprovalStatus.PENDING
+            if tool_call_id in unanswered_ids and approval.status == ToolApprovalStatus.PENDING
         ]
         if blocked_approvals and blocked_intervention_queued is None:
             if await _close_without_steering(redis_client, chat_id):
@@ -820,8 +819,9 @@ async def stream_generator(
                     EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
                 )
                 return
-            blocked_intervention_queued = await _queued_steering_message(
-                redis_client, chat_id
+            blocked_intervention_queue = await _queued_steering_messages(redis_client, chat_id)
+            blocked_intervention_queued = (
+                blocked_intervention_queue[0] if blocked_intervention_queue else None
             )
 
         if blocked_intervention_queued is not None and (blocked_oauth or blocked_approvals):
@@ -840,25 +840,24 @@ async def stream_generator(
             conversation_messages = strip_synthetic_interrupted_results(
                 conversation_messages, blocked_ids
             )
-            conversation_messages.append(
-                MessageParam(role="user", content=superseded_results)
-            )
+            conversation_messages.append(MessageParam(role="user", content=superseded_results))
             for result in superseded_results:
                 yield sse_event("message", result)
             yield sse_event(
                 "save_message",
                 MessageParam(role="user", content=superseded_results),
             )
-            for approval in [*blocked_approvals, blocked_oauth] if blocked_oauth else blocked_approvals:
+            for approval in (
+                [*blocked_approvals, blocked_oauth] if blocked_oauth else blocked_approvals
+            ):
                 if approval is not None:
                     await approvals_repo.update_status(
                         approval.id, ToolApprovalStatus.EXPIRED, chat_user_id
                     )
-            yield steering_message_event(blocked_intervention_queued)
+            for queued in blocked_intervention_queue:
+                yield steering_message_event(queued)
             conversation_messages.append(
-                await _transform_steering_message(
-                    blocked_intervention_queued, transform_steering_message
-                )
+                    await _transform_steering_message(queued, transform_steering_message)
             )
             blocked_intervention_queued = None
 
@@ -869,14 +868,10 @@ async def stream_generator(
             conversation_messages, intervention_tool_call_ids
         )
         resumable_tool_calls = [
-            tool_call
-            for tool_call in unanswered_calls
-            if tool_call["id"] in resumable_batch_ids
+            tool_call for tool_call in unanswered_calls if tool_call["id"] in resumable_batch_ids
         ]
 
-        logger.info(
-            f"Starting conversation with {len(conversation_messages)} initial messages"
-        )
+        logger.info(f"Starting conversation with {len(conversation_messages)} initial messages")
 
         # Extract the first user message for caching purposes
         original_user_query_final = original_user_query
@@ -906,29 +901,49 @@ async def stream_generator(
             original_user_query=original_user_query_final,
             skip_permission_check=tool_skip_perm,
         )
+        if blocked_intervention_queue:
+            latest_steering = _user_message_text(
+                await _transform_steering_message(
+                    blocked_intervention_queue[-1], transform_steering_message
+                )
+            )
+            if latest_steering is not None:
+                context.original_user_query = latest_steering
 
         if approvals_repo is None:
             raise ValueError("Tool approvals repository is required")
 
         assistant_message: MessageParam | None = None
+        turn_iterations = 0
+        steering_turns = 0
+        max_steering_turns = 8
+
+        async def inject_steering(entries: list[SteeringQueueEntry]):
+            nonlocal steering_turns, turn_iterations
+            if not entries or steering_turns >= max_steering_turns:
+                return
+            for entry in entries:
+                yield steering_message_event(entry)
+                transformed = await _transform_steering_message(entry, transform_steering_message)
+                conversation_messages.append(transformed)
+                query = _user_message_text(transformed)
+                if query is not None:
+                    context.original_user_query = query
+            steering_turns += 1
+            turn_iterations = 0
 
         # A message accepted immediately before an earlier run stopped is
         # injected before the first new provider request. It was still queued
         # at the same safe boundary as any other follow-up.
-        initial_steering = await _queued_steering_message(redis_client, chat_id)
-        if initial_steering is not None:
-            yield steering_message_event(initial_steering)
-            conversation_messages.append(
-                await _transform_steering_message(
-                    initial_steering, transform_steering_message
-                )
-            )
+        async for steering_event in inject_steering(
+            await _queued_steering_messages(redis_client, chat_id)
+        ):
+            yield steering_event
 
         # ----- Main agent loop -------------------------------------------------
         model_iteration = 0
         empty_response_retries = 0
-        loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
-        for _ in range(loop_passes):
+        while turn_iterations < AGENT_MAX_ITERATIONS:
             if await is_run_cancelled(redis_client, chat_id):
                 logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
                 break
@@ -941,10 +956,9 @@ async def stream_generator(
                 resumable_tool_calls = []
                 logger.info("Processing %s resumed tool calls", len(tool_calls))
             else:
+                turn_iterations += 1
                 model_iteration += 1
-                logger.info(
-                    "Model iteration %s/%s", model_iteration, AGENT_MAX_ITERATIONS
-                )
+                logger.info("Model iteration %s/%s", model_iteration, AGENT_MAX_ITERATIONS)
                 conversation_messages = coalesce_adjacent_tool_result_messages(
                     conversation_messages
                 )
@@ -1008,12 +1022,8 @@ async def stream_generator(
                                 logger.warning(
                                     f"Received text delta for unknown content block index {event.index}, creating new text block"
                                 )
-                                content_blocks.append(
-                                    TextBlockParam(type="text", text="")
-                                )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
+                                content_blocks.append(TextBlockParam(type="text", text=""))
+                            text_block = cast(TextBlockParam, content_blocks[event.index])
                             text_block["text"] += event.delta.text
                         elif event.delta.type == "input_json_delta":
                             if event.index >= len(content_blocks):
@@ -1021,16 +1031,11 @@ async def stream_generator(
                                     f"Received input JSON delta for unknown content block index {event.index}, creating new tool use block"
                                 )
                                 content_blocks.append(
-                                    ToolUseBlockParam(
-                                        type="tool_use", id="", name="", input=""
-                                    )
-                                )
-                            tool_use_block = cast(
-                                ToolUseBlockParam, content_blocks[event.index]
+                                    ToolUseBlockParam(type="tool_use", id="", name="", input="")
                             )
+                            tool_use_block = cast(ToolUseBlockParam, content_blocks[event.index])
                             tool_use_block["input"] = (
-                                cast(str, tool_use_block["input"])
-                                + event.delta.partial_json
+                                cast(str, tool_use_block["input"]) + event.delta.partial_json
                             )
                         elif event.delta.type == "thinking_delta":
                             if event.index >= len(content_blocks):
@@ -1038,16 +1043,11 @@ async def stream_generator(
                                     f"Received thinking delta for unknown content block index {event.index}, creating new thinking block"
                                 )
                                 content_blocks.append(
-                                    ThinkingBlockParam(
-                                        type="thinking", thinking="", signature=""
-                                    )
-                                )
-                            thinking_block = cast(
-                                ThinkingBlockParam, content_blocks[event.index]
+                                    ThinkingBlockParam(type="thinking", thinking="", signature="")
                             )
+                            thinking_block = cast(ThinkingBlockParam, content_blocks[event.index])
                             thinking_block["thinking"] = (
-                                cast(str, thinking_block.get("thinking", ""))
-                                + event.delta.thinking
+                                cast(str, thinking_block.get("thinking", "")) + event.delta.thinking
                             )
                         elif event.delta.type == "signature_delta":
                             # Anthropic streams the thinking signature separately
@@ -1058,13 +1058,9 @@ async def stream_generator(
                                     f"Received signature delta for unknown content block index {event.index}, creating new thinking block"
                                 )
                                 content_blocks.append(
-                                    ThinkingBlockParam(
-                                        type="thinking", thinking="", signature=""
-                                    )
-                                )
-                            signature_block = cast(
-                                ThinkingBlockParam, content_blocks[event.index]
+                                    ThinkingBlockParam(type="thinking", thinking="", signature="")
                             )
+                            signature_block = cast(ThinkingBlockParam, content_blocks[event.index])
                             signature_block["signature"] = event.delta.signature
                         elif event.delta.type == "citations_delta":
                             if event.index >= len(content_blocks):
@@ -1074,20 +1070,11 @@ async def stream_generator(
                                 content_blocks.append(
                                     TextBlockParam(type="text", text="", citations=[])
                                 )
-                            text_block = cast(
-                                TextBlockParam, content_blocks[event.index]
-                            )
-                            if (
-                                "citations" not in text_block
-                                or not text_block["citations"]
-                            ):
+                            text_block = cast(TextBlockParam, content_blocks[event.index])
+                            if "citations" not in text_block or not text_block["citations"]:
                                 text_block["citations"] = []
-                            citations = cast(
-                                list[TextCitationParam], text_block["citations"]
-                            )
-                            citations.append(
-                                CitationProcessor.convert_delta_to_param(event.delta)
-                            )
+                            citations = cast(list[TextCitationParam], text_block["citations"])
+                            citations.append(CitationProcessor.convert_delta_to_param(event.delta))
 
                     elif event.type == "content_block_start":
                         if event.content_block.type == "text":
@@ -1095,9 +1082,7 @@ async def stream_generator(
                             text_block: TextBlockParam = TextBlockParam(
                                 type="text", text=event.content_block.text
                             )
-                            _copy_provider_extras(
-                                event.content_block, text_block, provider_extras
-                            )
+                            _copy_provider_extras(event.content_block, text_block, provider_extras)
                             content_blocks.append(text_block)
                         elif event.content_block.type == "tool_use":
                             logger.info(
@@ -1109,9 +1094,7 @@ async def stream_generator(
                                 name=event.content_block.name,
                                 input="",
                             )
-                            _copy_provider_extras(
-                                event.content_block, tool_block, provider_extras
-                            )
+                            _copy_provider_extras(event.content_block, tool_block, provider_extras)
                             content_blocks.append(tool_block)
                         elif event.content_block.type == "thinking":
                             logger.info("Thinking block start")
@@ -1155,10 +1138,7 @@ async def stream_generator(
                     event_sse = f"event: message\ndata: {event_json}\n\n"
                     has_substantive_content = any(
                         block["type"] == "tool_use"
-                        or (
-                            block["type"] == "text"
-                            and str(block.get("text", "")).strip()
-                        )
+                        or (block["type"] == "text" and str(block.get("text", "")).strip())
                         for block in content_blocks
                     )
                     if not message_stream_started:
@@ -1190,8 +1170,7 @@ async def stream_generator(
 
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
                 has_text = any(
-                    b["type"] == "text" and str(b.get("text", "")).strip()
-                    for b in content_blocks
+                    b["type"] == "text" and str(b.get("text", "")).strip() for b in content_blocks
                 )
                 if not tool_calls and not has_text:
                     if empty_response_retries < 1:
@@ -1202,9 +1181,7 @@ async def stream_generator(
                             model_iteration,
                         )
                         conversation_messages.append(
-                            MessageParam(
-                                role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT
-                            )
+                            MessageParam(role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT)
                         )
                         continue
 
@@ -1213,16 +1190,12 @@ async def stream_generator(
                     for pending_sse in pending_message_sses:
                         yield pending_sse
                     pending_message_sses.clear()
-                parse_errors = parse_tool_call_inputs(
-                    cast(list[ToolUseBlockParam], tool_calls)
-                )
+                parse_errors = parse_tool_call_inputs(cast(list[ToolUseBlockParam], tool_calls))
                 parse_errors_by_tool_call_id = {
                     error["tool_use_id"]: error for error in parse_errors
                 }
 
-                assistant_message = MessageParam(
-                    role="assistant", content=content_blocks
-                )
+                assistant_message = MessageParam(role="assistant", content=content_blocks)
                 conversation_messages.append(assistant_message)
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                 content_blocks_finalized = True
@@ -1231,14 +1204,10 @@ async def stream_generator(
                     logger.info(
                         f"No tool calls in iteration {model_iteration}, checking for steering"
                     )
-                    queued = await _queued_steering_message(redis_client, chat_id)
-                    if queued is not None:
-                        yield steering_message_event(queued)
-                        conversation_messages.append(
-                            await _transform_steering_message(
-                                queued, transform_steering_message
-                            )
-                        )
+                    queued = await _queued_steering_messages(redis_client, chat_id)
+                    if queued:
+                        async for steering_event in inject_steering(queued):
+                            yield steering_event
                         continue
                     if await _close_without_steering(redis_client, chat_id):
                         break
@@ -1264,9 +1233,7 @@ async def stream_generator(
                 )
                 if payload is None:
                     continue
-                oauth_intervention = oauth_interventions_by_tool_call_id.get(
-                    tool_call["id"]
-                )
+                oauth_intervention = oauth_interventions_by_tool_call_id.get(tool_call["id"])
                 if oauth_intervention is None:
                     oauth_intervention = await approvals_repo.create_pending(
                         chat_id=chat_id,
@@ -1280,9 +1247,7 @@ async def stream_generator(
                         provider=payload.provider,
                         oauth_start_url=payload.oauth_start_url,
                     )
-                    oauth_interventions_by_tool_call_id[tool_call["id"]] = (
-                        oauth_intervention
-                    )
+                    oauth_interventions_by_tool_call_id[tool_call["id"]] = oauth_intervention
                 elif oauth_intervention.status == ToolApprovalStatus.APPROVED:
                     await approvals_repo.update_status(
                         oauth_intervention.id,
@@ -1291,15 +1256,29 @@ async def stream_generator(
                     )
                 oauth_required.append(oauth_intervention)
 
+            oauth_required_ids = {approval.tool_call_id for approval in oauth_required}
             if oauth_required:
-                for oauth_intervention in oauth_required:
-                    yield sse_event(
-                        "oauth_required", oauth_event_from_approval(oauth_intervention)
+                queued_entries = await _queued_steering_messages(redis_client, chat_id)
+                if not queued_entries:
+                    if await _close_without_steering(redis_client, chat_id):
+                        for oauth_intervention in oauth_required:
+                            yield sse_event(
+                                "oauth_required", oauth_event_from_approval(oauth_intervention)
+                            )
+                        yield end_of_stream(
+                            EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                        )
+                        return
+                    queued_entries = await _queued_steering_messages(redis_client, chat_id)
+                if not queued_entries:
+                    for oauth_intervention in oauth_required:
+                        yield sse_event(
+                            "oauth_required", oauth_event_from_approval(oauth_intervention)
+                        )
+                    yield end_of_stream(
+                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
                     )
-                yield end_of_stream(
-                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                )
-                return
+                    return
 
             # Preflight approval for credentials-ready tools. Existing
             # approved/denied interventions are reused on resume.
@@ -1308,6 +1287,8 @@ async def stream_generator(
                 if tool_call["id"] in parse_errors_by_tool_call_id:
                     continue
                 if not registry.requires_approval(tool_call["name"]):
+                    continue
+                if tool_call["id"] in oauth_required_ids:
                     continue
                 approval = approval_interventions_by_tool_call_id.get(tool_call["id"])
                 if approval is None:
@@ -1327,16 +1308,13 @@ async def stream_generator(
                     approval_required.append(approval)
 
             tool_results: list[ToolResultBlockParam] = []
-            oauth_required = []
             completed_intervention_ids: set[str] = set()
             for tool_call in tool_calls:
                 parse_error = parse_errors_by_tool_call_id.get(tool_call["id"])
                 if parse_error is not None:
                     tool_results.append(parse_error)
                     continue
-                normal_intervention = approval_interventions_by_tool_call_id.get(
-                    tool_call["id"]
-                )
+                normal_intervention = approval_interventions_by_tool_call_id.get(tool_call["id"])
                 if (
                     normal_intervention is not None
                     and normal_intervention.status == ToolApprovalStatus.PENDING
@@ -1362,14 +1340,10 @@ async def stream_generator(
                     completed_intervention_ids.add(normal_intervention.id)
                     continue
 
-                result = await registry.execute(
-                    tool_call["name"], tool_call["input"], context
-                )
+                result = await registry.execute(tool_call["name"], tool_call["input"], context)
                 if result.oauth_required is not None:
                     payload = result.oauth_required
-                    oauth_intervention = oauth_interventions_by_tool_call_id.get(
-                        tool_call["id"]
-                    )
+                    oauth_intervention = oauth_interventions_by_tool_call_id.get(tool_call["id"])
                     if oauth_intervention is None:
                         oauth_intervention = await approvals_repo.create_pending(
                             chat_id=chat_id,
@@ -1383,9 +1357,7 @@ async def stream_generator(
                             provider=payload.provider,
                             oauth_start_url=payload.oauth_start_url,
                         )
-                        oauth_interventions_by_tool_call_id[tool_call["id"]] = (
-                            oauth_intervention
-                        )
+                        oauth_interventions_by_tool_call_id[tool_call["id"]] = oauth_intervention
                     elif oauth_intervention.status == ToolApprovalStatus.APPROVED:
                         await approvals_repo.update_status(
                             oauth_intervention.id,
@@ -1406,9 +1378,7 @@ async def stream_generator(
                 )
                 if normal_intervention is not None:
                     completed_intervention_ids.add(normal_intervention.id)
-                oauth_intervention = oauth_interventions_by_tool_call_id.get(
-                    tool_call["id"]
-                )
+                oauth_intervention = oauth_interventions_by_tool_call_id.get(tool_call["id"])
                 if oauth_intervention is not None:
                     completed_intervention_ids.add(oauth_intervention.id)
 
@@ -1434,13 +1404,13 @@ async def stream_generator(
                 *approval_required,
                 *oauth_required,
             ]
-            queued = await _queued_steering_message(redis_client, chat_id)
-            if blocked_for_intervention and queued is None:
+            queued_entries = await _queued_steering_messages(redis_client, chat_id)
+            if blocked_for_intervention and not queued_entries:
                 if await _close_without_steering(redis_client, chat_id):
-                    queued = None
+                    queued_entries = []
                 else:
-                    queued = await _queued_steering_message(redis_client, chat_id)
-            if queued is not None and blocked_for_intervention:
+                    queued_entries = await _queued_steering_messages(redis_client, chat_id)
+            if queued_entries and blocked_for_intervention:
                 answered_ids = {
                     result_id
                     for message in conversation_messages
@@ -1454,13 +1424,10 @@ async def stream_generator(
                 superseded_results = [
                     synthetic_superseded_tool_result(tool_call)
                     for tool_call in tool_calls
-                    if tool_call["id"] in blocked_ids
-                    and tool_call["id"] not in answered_ids
+                    if tool_call["id"] in blocked_ids and tool_call["id"] not in answered_ids
                 ]
                 if superseded_results:
-                    superseded_message = MessageParam(
-                        role="user", content=superseded_results
-                    )
+                    superseded_message = MessageParam(role="user", content=superseded_results)
                     conversation_messages.append(superseded_message)
                     for result in superseded_results:
                         yield sse_event("message", result)
@@ -1469,12 +1436,8 @@ async def stream_generator(
                     await approvals_repo.update_status(
                         intervention.id, ToolApprovalStatus.EXPIRED, chat_user_id
                     )
-                yield steering_message_event(queued)
-                conversation_messages.append(
-                    await _transform_steering_message(
-                        queued, transform_steering_message
-                    )
-                )
+                async for steering_event in inject_steering(queued_entries):
+                    yield steering_event
                 continue
 
             if blocked_for_intervention:
@@ -1484,9 +1447,7 @@ async def stream_generator(
                             "oauth_required",
                             oauth_event_from_approval(oauth_intervention),
                         )
-                    yield end_of_stream(
-                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                    )
+                    yield end_of_stream(EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required")
                 else:
                     yield sse_event(
                         "approval_required",
@@ -1498,21 +1459,13 @@ async def stream_generator(
                     )
                 return
 
-            queued = await _queued_steering_message(redis_client, chat_id)
-            if queued is not None:
-                yield steering_message_event(queued)
-                conversation_messages.append(
-                    await _transform_steering_message(
-                        queued, transform_steering_message
-                    )
-                )
+            queued_entries = await _queued_steering_messages(redis_client, chat_id)
+            if queued_entries:
+                async for steering_event in inject_steering(queued_entries):
+                    yield steering_event
 
         # ----- Memory write (fire-and-forget) ----------------------------------
-        if (
-            memory_provider is not None
-            and memory_write_key
-            and effective_mode >= MemoryMode.CHAT
-        ):
+        if memory_provider is not None and memory_write_key and effective_mode >= MemoryMode.CHAT:
             try:
                 last_user_content = None
                 for msg in reversed(conversation_messages):
