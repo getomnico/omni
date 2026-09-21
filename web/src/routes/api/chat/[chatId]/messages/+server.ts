@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit'
+import { env } from '$env/dynamic/private'
 import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
@@ -9,9 +10,8 @@ import type {
     ToolResultBlockParam,
     ToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
-import { getChatStreamStatus } from '$lib/server/ai-stream-status.js'
 import { z } from 'zod'
-import { isValid } from 'ulid'
+import { isValid, ulid } from 'ulid'
 
 const ULID_REGEX = /^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/i
 
@@ -20,6 +20,8 @@ function isValidUlid(s: string): boolean {
 }
 
 const MAX_CONTENT_LENGTH = 100_000
+const STEERING_HANDOFF_TIMEOUT_MS = 5_000
+const STEERING_HANDOFF_POLL_MS = 100
 
 const mentionedDocumentSchema = z.object({
     document_id: z.string().min(1).max(100).refine(isValidUlid, 'Invalid ULID'),
@@ -35,9 +37,55 @@ const messageRequestSchema = z.object({
     parentId: z.string().min(1).optional(),
     attachmentIds: z.array(ulidString).max(50).optional().default([]),
     mentionedDocuments: z.array(mentionedDocumentSchema).max(25).optional().default([]),
+    clientMessageId: ulidString.optional(),
 })
 
 type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
+
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function postSteeringMessage(
+    chatId: string,
+    clientMessageId: string,
+    message: { role: 'user'; content: string | UserMessageBlock[] },
+): Promise<Response> {
+    return fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/steering`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message_id: clientMessageId,
+            message,
+        }),
+    })
+}
+
+const steeringResponseSchema = z.object({
+    status: z.enum(['queued', 'persisted', 'closing', 'inactive']),
+    message_id: ulidString.optional(),
+})
+
+type SteeringDecision = z.infer<typeof steeringResponseSchema>
+
+async function parseSteeringResponse(
+    response: Response,
+    clientMessageId: string,
+): Promise<SteeringDecision> {
+    if (response.status === 409) return { status: 'closing' }
+    if (!response.ok) {
+        throw new Error(`AI steering endpoint returned ${response.status}`)
+    }
+    const body: unknown = await response.json()
+    const parsed = steeringResponseSchema.safeParse(body)
+    if (!parsed.success) {
+        throw new Error('AI steering endpoint returned an invalid response')
+    }
+    if (parsed.data.status === 'persisted' && parsed.data.message_id !== clientMessageId) {
+        throw new Error('AI steering endpoint returned an unexpected persisted message id')
+    }
+    return parsed.data
+}
 
 async function chatOwnerGuard(
     chatId: string,
@@ -151,21 +199,6 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
     const guard = await chatOwnerGuard(chatId, locals.user.id, locals.user.role)
     if (!guard.ok) return guard.response
 
-    try {
-        const streamStatus = await getChatStreamStatus(chatId)
-        if (streamStatus.running) {
-            return json(
-                {
-                    error: 'A response is still in progress for this chat. Reconnect to the stream before sending another message.',
-                    streamActive: true,
-                },
-                { status: 409 },
-            )
-        }
-    } catch {
-        logger.warn('Could not check stream status before adding message', { chatId })
-    }
-
     let userMessage: { role: 'user'; content: string | UserMessageBlock[] }
     const mentionBlocks: UserMessageBlock[] = mentionedDocuments.map((doc) => ({
         type: 'document',
@@ -190,6 +223,54 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
         userMessage = { role: 'user', content: blocks }
     } else {
         userMessage = { role: 'user', content: trimmedText }
+    }
+
+    const clientMessageId = parsed.data.clientMessageId ?? ulid()
+
+    const steeringDeadline = Date.now() + STEERING_HANDOFF_TIMEOUT_MS
+    while (true) {
+        let steeringDecision: SteeringDecision
+        try {
+            const steeringResponse = await postSteeringMessage(
+                chatId,
+                clientMessageId,
+                userMessage,
+            )
+            steeringDecision = await parseSteeringResponse(steeringResponse, clientMessageId)
+        } catch (error) {
+            logger.error('Failed to reach AI service for steering message', { chatId, error })
+            return json({ error: 'Failed to route message while responding' }, { status: 502 })
+        }
+
+        if (steeringDecision.status === 'queued') {
+            return json(
+                { messageId: clientMessageId, clientMessageId, status: 'queued', queued: true },
+                { status: 202 },
+            )
+        }
+        if (steeringDecision.status === 'persisted') {
+            return json(
+                {
+                    messageId: steeringDecision.message_id ?? clientMessageId,
+                    clientMessageId,
+                    status: 'persisted',
+                    persisted: true,
+                },
+                { status: 200 },
+            )
+        }
+        if (steeringDecision.status === 'inactive') break
+        if (Date.now() >= steeringDeadline) {
+            return json(
+                {
+                    error: 'The previous response is still finishing. Please retry this message.',
+                    streamActive: true,
+                    retryAfterRun: true,
+                },
+                { status: 409 },
+            )
+        }
+        await sleep(STEERING_HANDOFF_POLL_MS)
     }
 
     let parentId = parsed.data.parentId?.trim() || undefined
@@ -225,6 +306,7 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
         chatId,
         userMessage as unknown as MessageParam,
         parentId,
+        clientMessageId,
     )
 
     return json(

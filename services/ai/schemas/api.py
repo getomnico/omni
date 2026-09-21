@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from message_types import UserMessageParam
 
 
 class Priority(IntEnum):
@@ -59,3 +61,15 @@ class PromptResponse(BaseModel):
     """Response from the LLM."""
 
     response: str
+
+
+ULID_PATTERN = r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$"
+
+
+class SteeringMessageRequest(BaseModel):
+    message_id: str = Field(
+        pattern=ULID_PATTERN,
+        min_length=26,
+        max_length=26,
+    )
+    message: UserMessageParam

@@ -288,6 +288,47 @@ test('branching chat clears downstream branch selection when changing parent bra
     }
 })
 
+test('branch navigation survives adjacent queued user messages', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await openSeededChat(page, [
+            { key: 'oldRoot', parentKey: null, role: 'user', content: 'old root prompt' },
+            {
+                key: 'oldAssistant',
+                parentKey: 'oldRoot',
+                role: 'assistant',
+                content: 'old branch answer',
+            },
+            { key: 'latestRoot', parentKey: null, role: 'user', content: 'latest root prompt' },
+            {
+                key: 'queuedFollowUp',
+                parentKey: 'latestRoot',
+                role: 'user',
+                content: 'queued follow-up',
+            },
+            {
+                key: 'latestAssistant',
+                parentKey: 'queuedFollowUp',
+                role: 'assistant',
+                content: 'latest branch answer',
+            },
+        ])
+
+        await expect(page.getByText('latest root prompt')).toBeVisible()
+        await expect(page.getByText('queued follow-up')).toBeVisible()
+        await expect(
+            branchNav(page, seeded.messages.queuedFollowUp).getByTestId('branch-position'),
+        ).toHaveText('2/2')
+
+        await branchNav(page, seeded.messages.queuedFollowUp).getByTestId('branch-prev').click()
+        await expect(page.getByText('old root prompt')).toBeVisible()
+        await expect(page.getByText('old branch answer')).toBeVisible()
+        await expect(page.getByText('latest root prompt')).toHaveCount(0)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
 test('retrying a user message creates a new sibling branch without showing duplicate user bubbles', async ({
     page,
 }) => {

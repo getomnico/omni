@@ -304,7 +304,9 @@ def parse_tool_call_inputs(
 # ---------------------------------------------------------------------------
 
 
-async def persist_and_transform(gen, chat_id, messages_repo, parent_id):
+async def persist_and_transform(
+    gen, chat_id, messages_repo, parent_id, *, redis_client=None
+):
     """Persist streamed messages before exposing them to the client.
 
     Assistant rows are created as soon as the provider emits ``message_start``,
@@ -320,6 +322,40 @@ async def persist_and_transform(gen, chat_id, messages_repo, parent_id):
     async for event_str in gen:
         event_type = sse_event_type(event_str)
         event_data = sse_event_data(event_str)
+
+        if event_type == "steering_message":
+            if redis_client is None:
+                raise RuntimeError("Redis is required to persist a steering message")
+            payload = json.loads(event_data)
+            from streaming.run import (
+                SteeringQueueEntry,
+                acknowledge_steering_message,
+            )
+
+            entry = SteeringQueueEntry.from_json(payload["queue_entry"])
+            message = payload["message"]
+            created = await messages_repo.create(
+                chat_id,
+                message,
+                parent_id=parent_id,
+                message_id=entry.client_message_id,
+            )
+            await acknowledge_steering_message(
+                redis_client, chat_id, entry, created.id
+            )
+            parent_id = created.id
+            yield sse_event(
+                "steering_message",
+                {
+                    "id": created.id,
+                    "chat_id": created.chat_id,
+                    "parent_id": created.parent_id,
+                    "message_seq_num": created.message_seq_num,
+                    "message": created.message,
+                    "created_at": created.created_at.isoformat(),
+                },
+            )
+            continue
 
         if event_type == "message":
             try:

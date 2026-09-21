@@ -45,6 +45,7 @@
         placeholders?: Record<InputMode, string>
         isLoading?: boolean
         isStreaming?: boolean
+        allowSubmitWhileStreaming?: boolean
         stopInProgress?: boolean
         onStop?: () => void
         disabled?: boolean
@@ -78,6 +79,7 @@
         placeholders = DEFAULT_PLACEHOLDERS,
         isLoading = false,
         isStreaming = false,
+        allowSubmitWhileStreaming = false,
         stopInProgress = false,
         onStop,
         disabled = false,
@@ -434,14 +436,23 @@
             }
         }
 
-        if (event.key === 'Enter' && !event.shiftKey && !isStreaming) {
+        if (
+            event.key === 'Enter' &&
+            !event.shiftKey &&
+            (!isStreaming || allowSubmitWhileStreaming)
+        ) {
             event.preventDefault()
             handleSubmitClick()
         }
     }
 
     async function handleSubmitClick() {
-        if (effectiveEligibility && !disabled && !isLoading && !isStreaming) {
+        if (
+            effectiveEligibility &&
+            !disabled &&
+            !isLoading &&
+            (!isStreaming || allowSubmitWhileStreaming)
+        ) {
             await onSubmit()
         }
     }
@@ -677,35 +688,35 @@
                         </Select.Content>
                     </Select.Root>
                 {/if}
-                {#if isStreaming}
+                {#if isStreaming && (!allowSubmitWhileStreaming || !effectiveEligibility)}
                     {#if stopInProgress}
                         <Button
                             size="icon"
-                            class="omni-composer-send cursor-pointer rounded-full"
+                            class="omni-composer-send size-8 cursor-pointer rounded-full"
                             disabled>
                             <Loader2 class="h-4 w-4 animate-spin" />
                         </Button>
                     {:else}
                         <Button
                             size="icon"
-                            class="omni-composer-send cursor-pointer rounded-full"
-                            onclick={handleStopClick}>
+                            class="omni-composer-send size-8 cursor-pointer rounded-full"
+                            onclick={handleStopClick}
+                            aria-label="Stop response">
                             <CircleStop class="h-4 w-4" />
                         </Button>
                     {/if}
-                {:else if isLoading}
-                    <Button size="icon" class="omni-composer-send cursor-pointer" disabled>
-                        <Loader2 class="h-4 w-4 animate-spin" />
-                    </Button>
-                {:else}
+                {:else if !isStreaming || allowSubmitWhileStreaming}
                     <Button
                         size="icon"
                         class="omni-composer-send size-8 cursor-pointer"
                         onclick={handleSubmitClick}
                         disabled={!effectiveEligibility ||
                             disabled ||
+                            isLoading ||
                             (canSubmit !== undefined && !canSubmit)}>
-                        {#if inputMode === 'search'}
+                        {#if isLoading}
+                            <Loader2 class="h-3 w-3 animate-spin" />
+                        {:else if inputMode === 'search'}
                             <Search class="h-3 w-3" />
                         {:else}
                             <SendHorizontal class="h-3 w-3" />

@@ -48,6 +48,16 @@ describe('ChatMessageRepository branching', () => {
         expect(path.map((m) => m.id)).toEqual([root.id])
     })
 
+    it('reuses a stable message id on an idempotent retry', async () => {
+        const messageId = ulid()
+        const first = await repo.create(chatId, userMsg('retry me'), undefined, messageId)
+        const retry = await repo.create(chatId, userMsg('retry me'), undefined, messageId)
+        const messages = await repo.getByChatId(chatId)
+
+        expect(retry.id).toBe(first.id)
+        expect(messages.filter((message) => message.id === messageId)).toHaveLength(1)
+    })
+
     it('getActivePath returns linear chain in order', async () => {
         const root = await repo.create(chatId, userMsg('hello'))
         const a = await repo.create(chatId, assistantMsg('hi'), root.id)

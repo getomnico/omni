@@ -25,4 +25,7 @@ export default defineConfig({
         },
     },
     testDir: 'e2e',
+    use: process.env.PLAYWRIGHT_EXECUTABLE_PATH
+        ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } }
+        : undefined,
 })

@@ -71,6 +71,7 @@
         type NormalizedCitation,
     } from '$lib/utils/citations'
     import { afterNavigate, invalidate, invalidateAll } from '$app/navigation'
+    import { ulid } from 'ulid'
     import { page } from '$app/state'
     import UserInput from '$lib/components/user-input.svelte'
     import UploadChip from '$lib/components/upload-chip.svelte'
@@ -149,6 +150,7 @@
             errorDetail = null
             stopThinkingText()
             chatMessages = [...data.messages]
+            pendingSteeringMessages = []
             branchSelections = {}
             activeStreamingMessageId = null
             editingMessageId = null
@@ -165,8 +167,13 @@
     let userMessage = $state('')
     let mentionedDocs = $state<MentionedDocument[]>([])
     let isSending = $state(false)
+    let pendingSteeringMessages = $state<PendingSteeringMessage[]>([])
 
     type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
+    type PendingSteeringMessage = {
+        message: ChatMessage
+        processed: ProcessedMessage
+    }
 
     type PendingUpload = { id: string; filename: string; sizeBytes: number; uploading: boolean }
     type UploadResponse = {
@@ -264,11 +271,29 @@
         if (isStreaming || eventSource) return
         try {
             const status = await fetchChatStreamStatus(data.chat.id)
-            if (status?.running) {
+            if (status?.running || status?.pendingSteering) {
                 streamResponse(data.chat.id)
             }
         } catch (err) {
             console.warn('Failed to check chat stream status', err)
+        }
+    }
+
+    async function resumePendingSteeringAfterTerminal(chatId: string) {
+        if (pendingSteeringMessages.length === 0) return
+        for (let attempt = 0; attempt < 50; attempt++) {
+            if (isStreaming || eventSource) return
+            try {
+                const status = await fetchChatStreamStatus(chatId)
+                if (status && !status.running && status.pendingSteering) {
+                    streamResponse(chatId)
+                    return
+                }
+            } catch (err) {
+                console.warn('Failed to check pending steering status', err)
+                return
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100))
         }
     }
 
@@ -912,6 +937,13 @@
                     ? [...lastMessage.sourceMessageIds, ...message.sourceMessageIds]
                     : [...message.sourceMessageIds]
 
+            const branchSource =
+                message.siblingIds && message.siblingIds.length > 1
+                    ? message
+                    : lastMessage?.siblingIds && lastMessage.siblingIds.length > 1
+                      ? lastMessage
+                      : message
+
             let messageToUpdate: ProcessedMessage =
                 lastMessage && lastMessage.role === message.role
                     ? {
@@ -919,9 +951,9 @@
                           sourceMessageIds,
                           renderKey: lastMessage.renderKey,
                           origMessageId: message.origMessageId,
-                          parentMessageId: message.parentMessageId,
-                          siblingIds: message.siblingIds,
-                          siblingIndex: message.siblingIndex,
+                          parentMessageId: branchSource.parentMessageId,
+                          siblingIds: branchSource.siblingIds,
+                          siblingIndex: branchSource.siblingIndex,
                           createdAt: message.createdAt,
                           startedAt: lastMessage.startedAt ?? lastMessage.createdAt,
                           completedAt: message.completedAt ?? message.createdAt,
@@ -1435,7 +1467,13 @@
         document.addEventListener('visibilitychange', handleVisibility)
 
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && artifactPaneState.open) closeArtifactPane()
+            if (event.key !== 'Escape') return
+            if (isStreaming) {
+                event.preventDefault()
+                void handleStop()
+                return
+            }
+            if (artifactPaneState.open) closeArtifactPane()
         }
         window.addEventListener('keydown', handleKeyDown)
 
@@ -1794,6 +1832,48 @@
                 activeStreamChatId = null
                 clearReconnectState()
                 invalidateAll()
+                void resumePendingSteeringAfterTerminal(chatId)
+            })
+
+            eventSource.addEventListener('steering_message', (event) => {
+                if (!isCurrentStream()) return
+                try {
+                    const payload = JSON.parse(event.data) as {
+                        id: string
+                        chat_id: string
+                        parent_id: string | null
+                        message_seq_num: number
+                        message: ChatMessage['message']
+                        created_at: string
+                    }
+                    const persistedMessage: ChatMessage = {
+                        id: payload.id,
+                        chatId: payload.chat_id,
+                        parentId: payload.parent_id,
+                        message: payload.message,
+                        contentText: null,
+                        error: null,
+                        messageSeqNum: payload.message_seq_num,
+                        createdAt: new Date(payload.created_at),
+                    }
+                    pendingSteeringMessages = pendingSteeringMessages.filter(
+                        (pending) => pending.message.id !== payload.id,
+                    )
+                    const existingIndex = chatMessages.findIndex((m) => m.id === payload.id)
+                    if (existingIndex >= 0) {
+                        chatMessages = [
+                            ...chatMessages.slice(0, existingIndex),
+                            persistedMessage,
+                            ...chatMessages.slice(existingIndex + 1),
+                        ]
+                    } else {
+                        chatMessages = [...chatMessages, persistedMessage]
+                    }
+                    selectBranch(persistedMessage.parentId, persistedMessage.id)
+                    scrollUserMessageToTop()
+                } catch (err) {
+                    console.error('Failed to reconcile queued steering message:', err)
+                }
             })
 
             eventSource.addEventListener('title', () => {
@@ -2003,6 +2083,7 @@
                 if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
                     error = 'Failed to generate response. Please try again.'
                 }
+                void resumePendingSteeringAfterTerminal(chatId)
             })
 
             const handleStreamError = (event: Event) => {
@@ -2026,6 +2107,7 @@
                 eventSource = null
                 activeStreamChatId = null
                 clearReconnectState()
+                void resumePendingSteeringAfterTerminal(chatId)
             }
 
             const handleConnectionError = () => {
@@ -2065,6 +2147,7 @@
                 userInputRef?.focus()
                 activeStreamChatId = null
                 clearReconnectState()
+                void resumePendingSteeringAfterTerminal(chatId)
             }
 
             eventSource.addEventListener('stream_error', handleStreamError)
@@ -2203,7 +2286,7 @@
         }
     }
 
-    async function handleSubmit() {
+    async function handleSubmit(clientMessageId = ulid()) {
         if (isSending) return
 
         const userMsg = userMessage.trim()
@@ -2234,6 +2317,7 @@
                     parentId,
                     attachmentIds,
                     mentionedDocuments: submitMentionedDocs,
+                    clientMessageId,
                 }),
             })
         } catch (err) {
@@ -2245,8 +2329,15 @@
         if (!response.ok) {
             isSending = false
             if (response.status === 409) {
-                void resumeActiveStreamIfNeeded()
-                toast.info('The previous response is still in progress. Reconnecting to it now.')
+                const body = (await response.json().catch(() => null)) as {
+                    retryAfterRun?: boolean
+                } | null
+                if (body?.retryAfterRun) {
+                    setTimeout(() => void handleSubmit(clientMessageId), 150)
+                } else {
+                    void resumeActiveStreamIfNeeded()
+                    toast.info('The previous response is still in progress. Reconnecting to it now.')
+                }
             } else {
                 console.error('Failed to send message to chat session')
             }
@@ -2254,7 +2345,23 @@
         }
 
         // Success — build optimistic message and clear composer
-        const { messageId } = await response.json()
+        const responseBody = (await response.json()) as {
+            messageId: string
+            status: string
+            queued?: boolean
+            persisted?: boolean
+        }
+        if (responseBody.persisted) {
+            userMessage = ''
+            mentionedDocs = []
+            pendingUploads = []
+            isSending = false
+            await invalidate(`app:chat:${data.chat.id}`)
+            void resumeActiveStreamIfNeeded()
+            return
+        }
+        const { messageId } = responseBody
+        const wasQueued = responseBody.queued === true
 
         let messageContent: string | UserMessageBlock[]
         const mentionBlocks: UserMessageBlock[] = submitMentionedDocs.map((doc) => ({
@@ -2302,12 +2409,25 @@
         mentionedDocs = []
         pendingUploads = []
         isSending = false
-        chatMessages = [...chatMessages, newUserMessage]
-        selectBranch(newUserMessage.parentId, newUserMessage.id)
+        if (wasQueued) {
+            const placeholder = { ...newUserMessage, parentId: null }
+            const processed = processMessages([placeholder])[0]
+            if (processed) {
+                pendingSteeringMessages = [
+                    ...pendingSteeringMessages,
+                    { message: newUserMessage, processed },
+                ]
+            }
+        } else {
+            chatMessages = [...chatMessages, newUserMessage]
+            selectBranch(newUserMessage.parentId, newUserMessage.id)
+        }
         isAwayFromBottom = false
 
         scrollUserMessageToTop()
-        streamResponse(data.chat.id)
+        if (!wasQueued) {
+            streamResponse(data.chat.id)
+        }
     }
 
     const attachInlineCitations: Attachment = (container: Element) => {
@@ -2405,16 +2525,19 @@
     </div>
 {/snippet}
 
-{#snippet messageTimestamp(message: ProcessedMessage)}
+{#snippet messageTimestamp(message: ProcessedMessage, alwaysVisible = false)}
     {#if message.createdAt}
         <span
-            class="text-muted-foreground text-xs opacity-0 transition-opacity group-hover:opacity-100">
+            class={cn(
+                'text-muted-foreground text-xs',
+                !alwaysVisible && 'opacity-0 transition-opacity group-hover:opacity-100',
+            )}>
             {formatMessageTimestamp(message.createdAt)}
         </span>
     {/if}
 {/snippet}
 
-{#snippet userMessageContent(message: ProcessedMessage)}
+{#snippet userMessageContent(message: ProcessedMessage, queued = false)}
     {#if editingMessageId === message.origMessageId}
         <div class="w-full max-w-[80%]">
             <textarea
@@ -2480,12 +2603,19 @@
             {/if}
             {#if firstText}
                 <div
-                    class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm md:text-base">
+                    class={cn(
+                        queued ? 'bg-chat-queued-message/40' : 'bg-secondary',
+                        'text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm md:text-base',
+                    )}>
                     {@html marked.parse(firstText.text)}
                 </div>
             {/if}
             <div class="mx-0.5 mt-1 flex items-center justify-end gap-1">
-                {@render messageTimestamp(message)}
+                {@render messageTimestamp(message, queued)}
+                {#if queued}
+                    <span class="text-muted-foreground text-xs" aria-hidden="true">·</span>
+                    <span class="text-muted-foreground text-xs">Queued</span>
+                {/if}
                 {#if message.siblingIds && message.siblingIds.length > 1}
                     {@render branchNavigation(message)}
                 {/if}
@@ -3022,12 +3152,23 @@
                                     i !== processedMessages.length - 1 &&
                                         'opacity-0 transition-opacity group-hover:opacity-100',
                                 )}>
+                                {#if message.siblingIds && message.siblingIds.length > 1}
+                                    {@render branchNavigation(message)}
+                                {/if}
                                 {#if !(isStreaming && i === processedMessages.length - 1) && !(error && i === processedMessages.length - 1)}
                                     {@render messageControls(message)}
                                 {/if}
                             </div>
                         </div>
                     {/if}
+                {/each}
+
+                {#each pendingSteeringMessages as pending (pending.message.id)}
+                    <div
+                        data-testid={`queued-chat-message-${pending.message.id}`}
+                        class="group mt-8 flex w-full min-w-0 flex-col items-end">
+                        {@render userMessageContent(pending.processed, true)}
+                    </div>
                 {/each}
 
                 {#if pendingApproval && !oauthBlockerActive && processedMessages[processedMessages.length - 1]?.role !== 'assistant'}
@@ -3203,6 +3344,7 @@
                             search: 'Search for something else...',
                         }}
                         {isStreaming}
+                        allowSubmitWhileStreaming
                         {stopInProgress}
                         isLoading={isSending}
                         canSubmit={!isSending &&

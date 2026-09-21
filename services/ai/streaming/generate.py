@@ -56,7 +56,13 @@ from streaming.persist import (
     sse_event,
     stream_error_sse,
 )
-from streaming.run import _CANCEL_CHECK_INTERVAL_SECONDS, is_run_cancelled
+from streaming.run import (
+    _CANCEL_CHECK_INTERVAL_SECONDS,
+    SteeringQueueEntry,
+    close_run_if_steering_empty,
+    is_run_cancelled,
+    steering_queue_key,
+)
 from tools import (
     ConnectorToolHandler,
     ToolContext,
@@ -472,6 +478,71 @@ async def active_path_tool_call_ids(messages_repo, chat_id: str) -> set[str]:
     return {tool_use["id"] for tool_use in unanswered_tool_calls(messages)}
 
 
+def steering_message_event(entry: SteeringQueueEntry) -> str:
+    return sse_event(
+        "steering_message",
+        {
+            "queue_entry": entry.to_json(),
+            "message": entry.message,
+        },
+    )
+
+
+def synthetic_superseded_tool_result(tool_call: ToolUseBlockParam) -> ToolResultBlockParam:
+    return ToolResultBlockParam(
+        type="tool_result",
+        tool_use_id=tool_call["id"],
+        content=[
+            {
+                "type": "text",
+                "text": (
+                    "This tool call was superseded by a newer user instruction "
+                    "before it was executed. Do not execute it retroactively."
+                ),
+            }
+        ],
+        is_error=True,
+    )
+
+
+async def _queued_steering_messages(redis_client, chat_id: str) -> list[SteeringQueueEntry]:
+    if redis_client is None:
+        return []
+    raw_entries = await redis_client.lrange(steering_queue_key(chat_id), 0, -1)
+    return [SteeringQueueEntry.from_json(raw) for raw in raw_entries]
+
+
+async def _close_without_steering(redis_client, chat_id: str) -> bool:
+    if redis_client is None:
+        return True
+    return await close_run_if_steering_empty(redis_client, chat_id)
+
+
+async def _transform_steering_message(
+    entry: SteeringQueueEntry, transform
+) -> MessageParam:
+    if transform is None:
+        return cast(MessageParam, entry.message)
+    return await transform(entry.message)
+
+
+def _user_message_text(message: MessageParam) -> str | None:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip() or None
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "text":
+                continue
+            block_text = block.get("text")
+            if isinstance(block_text, str):
+                parts.append(block_text)
+        text = " ".join(parts).strip()
+        return text or None
+    return None
+
+
 def oauth_event_from_approval(approval: ToolApproval) -> OAuthRequiredEvent:
     if (
         approval.tool_call_id is None
@@ -527,6 +598,7 @@ async def prepare_and_stream_chat(
     approvals_repo=None,
     pending_interventions: list[ToolApproval] | None = None,
     max_output_tokens: int = DEFAULT_MAX_TOKENS,
+    transform_steering_message=None,
 ) -> AsyncIterator[str]:
     compaction_started = asyncio.Event()
     continue_compaction = asyncio.Event()
@@ -631,6 +703,7 @@ async def prepare_and_stream_chat(
             original_user_query=original_user_query,
             model_record_id=model_record_id,
             model_name=model_name,
+            transform_steering_message=transform_steering_message,
         ):
             yield event
     except asyncio.CancelledError:
@@ -690,6 +763,7 @@ async def stream_generator(
     original_user_query: str | None = None,
     model_record_id: str | None = None,
     model_name: str | None = None,
+    transform_steering_message=None,
 ) -> AsyncIterator[str]:
     """Core agent loop: yields SSE event strings.
 
@@ -734,12 +808,21 @@ async def stream_generator(
             ),
             None,
         )
-        if blocked_oauth is not None:
-            yield sse_event("oauth_required", oauth_event_from_approval(blocked_oauth))
-            yield end_of_stream(
-                EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+        blocked_intervention_queue = await _queued_steering_messages(redis_client, chat_id)
+        blocked_intervention_queued = (
+            blocked_intervention_queue[0] if blocked_intervention_queue else None
+        )
+        if blocked_oauth is not None and blocked_intervention_queued is None:
+            if await _close_without_steering(redis_client, chat_id):
+                yield sse_event("oauth_required", oauth_event_from_approval(blocked_oauth))
+                yield end_of_stream(
+                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                )
+                return
+            blocked_intervention_queue = await _queued_steering_messages(redis_client, chat_id)
+            blocked_intervention_queued = (
+                blocked_intervention_queue[0] if blocked_intervention_queue else None
             )
-            return
 
         blocked_approvals = [
             approval
@@ -747,15 +830,61 @@ async def stream_generator(
             if tool_call_id in unanswered_ids
             and approval.status == ToolApprovalStatus.PENDING
         ]
-        if blocked_approvals:
+        if blocked_approvals and blocked_intervention_queued is None:
+            if await _close_without_steering(redis_client, chat_id):
+                yield sse_event(
+                    "approval_required",
+                    approval_required_event(blocked_approvals, tool_use_blocks),
+                )
+                yield end_of_stream(
+                    EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
+                )
+                return
+            blocked_intervention_queue = await _queued_steering_messages(redis_client, chat_id)
+            blocked_intervention_queued = (
+                blocked_intervention_queue[0] if blocked_intervention_queue else None
+            )
+
+        if blocked_intervention_queued is not None and (blocked_oauth or blocked_approvals):
+            if approvals_repo is None:
+                raise ValueError("Tool approvals repository is required")
+            blocked_ids = {
+                approval.tool_call_id
+                for approval in [*blocked_approvals, blocked_oauth]
+                if approval is not None and approval.tool_call_id is not None
+            }
+            superseded_results = [
+                synthetic_superseded_tool_result(call)
+                for call in unanswered_calls
+                if call["id"] in blocked_ids
+            ]
+            conversation_messages = strip_synthetic_interrupted_results(
+                conversation_messages, blocked_ids
+            )
+            conversation_messages.append(
+                MessageParam(role="user", content=superseded_results)
+            )
+            for result in superseded_results:
+                yield sse_event("message", result)
             yield sse_event(
-                "approval_required",
-                approval_required_event(blocked_approvals, tool_use_blocks),
+                "save_message",
+                MessageParam(role="user", content=superseded_results),
             )
-            yield end_of_stream(
-                EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
-            )
-            return
+            for approval in [*blocked_approvals, blocked_oauth] if blocked_oauth else blocked_approvals:
+                if approval is not None:
+                    await approvals_repo.update_status(
+                        approval.id, ToolApprovalStatus.EXPIRED, chat_user_id
+                    )
+            for queued in blocked_intervention_queue:
+                yield steering_message_event(queued)
+                conversation_messages.append(
+                    await _transform_steering_message(
+                        queued, transform_steering_message
+                    )
+                )
+            blocked_intervention_queued = None
+            unanswered_calls = unanswered_tool_calls(conversation_messages)
+            unanswered_ids = {tool_call["id"] for tool_call in unanswered_calls}
 
         intervention_tool_call_ids = set(approval_interventions_by_tool_call_id) | set(
             oauth_interventions_by_tool_call_id
@@ -801,17 +930,51 @@ async def stream_generator(
             original_user_query=original_user_query_final,
             skip_permission_check=tool_skip_perm,
         )
+        if blocked_intervention_queue:
+            latest_steering = _user_message_text(
+                await _transform_steering_message(
+                    blocked_intervention_queue[-1], transform_steering_message
+                )
+            )
+            if latest_steering is not None:
+                context.original_user_query = latest_steering
 
         if approvals_repo is None:
             raise ValueError("Tool approvals repository is required")
 
         assistant_message: MessageParam | None = None
+        turn_iterations = 0
+        steering_turns = 0
+        max_steering_turns = 8
+
+        async def inject_steering(entries: list[SteeringQueueEntry]):
+            nonlocal steering_turns, turn_iterations
+            if not entries or steering_turns >= max_steering_turns:
+                return
+            for entry in entries:
+                yield steering_message_event(entry)
+                transformed = await _transform_steering_message(
+                    entry, transform_steering_message
+                )
+                conversation_messages.append(transformed)
+                query = _user_message_text(transformed)
+                if query is not None:
+                    context.original_user_query = query
+            steering_turns += 1
+            turn_iterations = 0
+
+        # A message accepted immediately before an earlier run stopped is
+        # injected before the first new provider request. It was still queued
+        # at the same safe boundary as any other follow-up.
+        async for steering_event in inject_steering(
+            await _queued_steering_messages(redis_client, chat_id)
+        ):
+            yield steering_event
 
         # ----- Main agent loop -------------------------------------------------
         model_iteration = 0
         empty_response_retries = 0
-        loop_passes = AGENT_MAX_ITERATIONS + (1 if resumable_tool_calls else 0)
-        for _ in range(loop_passes):
+        while turn_iterations < AGENT_MAX_ITERATIONS:
             if await is_run_cancelled(redis_client, chat_id):
                 logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
                 break
@@ -824,6 +987,7 @@ async def stream_generator(
                 resumable_tool_calls = []
                 logger.info("Processing %s resumed tool calls", len(tool_calls))
             else:
+                turn_iterations += 1
                 model_iteration += 1
                 logger.info(
                     "Model iteration %s/%s", model_iteration, AGENT_MAX_ITERATIONS
@@ -1112,9 +1276,18 @@ async def stream_generator(
 
                 if not tool_calls:
                     logger.info(
-                        f"No tool calls in iteration {model_iteration}, completing response"
+                        f"No tool calls in iteration {model_iteration}, checking for steering"
                     )
-                    break
+                    queued = await _queued_steering_messages(redis_client, chat_id)
+                    if queued:
+                        async for steering_event in inject_steering(queued):
+                            yield steering_event
+                        continue
+                    if await _close_without_steering(redis_client, chat_id):
+                        break
+                    # An enqueue won the atomic final-check race. Re-enter the
+                    # loop and inject it before another provider request.
+                    continue
 
                 logger.info(f"Processing {len(tool_calls)} tool calls")
 
@@ -1161,15 +1334,29 @@ async def stream_generator(
                     )
                 oauth_required.append(oauth_intervention)
 
+            oauth_required_ids = {approval.tool_call_id for approval in oauth_required}
             if oauth_required:
-                for oauth_intervention in oauth_required:
-                    yield sse_event(
-                        "oauth_required", oauth_event_from_approval(oauth_intervention)
+                queued_entries = await _queued_steering_messages(redis_client, chat_id)
+                if not queued_entries:
+                    if await _close_without_steering(redis_client, chat_id):
+                        for oauth_intervention in oauth_required:
+                            yield sse_event(
+                                "oauth_required", oauth_event_from_approval(oauth_intervention)
+                            )
+                        yield end_of_stream(
+                            EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                        )
+                        return
+                    queued_entries = await _queued_steering_messages(redis_client, chat_id)
+                if not queued_entries:
+                    for oauth_intervention in oauth_required:
+                        yield sse_event(
+                            "oauth_required", oauth_event_from_approval(oauth_intervention)
+                        )
+                    yield end_of_stream(
+                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
                     )
-                yield end_of_stream(
-                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                )
-                return
+                    return
 
             # Preflight approval for credentials-ready tools. Existing
             # approved/denied interventions are reused on resume.
@@ -1178,6 +1365,8 @@ async def stream_generator(
                 if tool_call["id"] in parse_errors_by_tool_call_id:
                     continue
                 if not registry.requires_approval(tool_call["name"]):
+                    continue
+                if tool_call["id"] in oauth_required_ids:
                     continue
                 approval = approval_interventions_by_tool_call_id.get(tool_call["id"])
                 if approval is None:
@@ -1197,7 +1386,6 @@ async def stream_generator(
                     approval_required.append(approval)
 
             tool_results: list[ToolResultBlockParam] = []
-            oauth_required = []
             completed_intervention_ids: set[str] = set()
             for tool_call in tool_calls:
                 parse_error = parse_errors_by_tool_call_id.get(tool_call["id"])
@@ -1211,6 +1399,8 @@ async def stream_generator(
                     normal_intervention is not None
                     and normal_intervention.status == ToolApprovalStatus.PENDING
                 ):
+                    continue
+                if tool_call["id"] in oauth_required_ids:
                     continue
                 if (
                     normal_intervention is not None
@@ -1300,24 +1490,74 @@ async def stream_generator(
                         approval_id, ToolApprovalStatus.COMPLETED, chat_user_id
                     )
 
-            for oauth_intervention in oauth_required:
-                yield sse_event(
-                    "oauth_required", oauth_event_from_approval(oauth_intervention)
-                )
-            if oauth_required:
-                yield end_of_stream(
-                    EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
-                )
+            blocked_for_intervention = [
+                *approval_required,
+                *oauth_required,
+            ]
+            queued_entries = await _queued_steering_messages(redis_client, chat_id)
+            if blocked_for_intervention and not queued_entries:
+                if await _close_without_steering(redis_client, chat_id):
+                    queued_entries = []
+                else:
+                    queued_entries = await _queued_steering_messages(redis_client, chat_id)
+            if queued_entries and blocked_for_intervention:
+                answered_ids = {
+                    result_id
+                    for message in conversation_messages
+                    for result_id in tool_result_ids(message)
+                }
+                blocked_ids = {
+                    intervention.tool_call_id
+                    for intervention in blocked_for_intervention
+                    if intervention.tool_call_id is not None
+                }
+                superseded_results = [
+                    synthetic_superseded_tool_result(tool_call)
+                    for tool_call in tool_calls
+                    if tool_call["id"] in blocked_ids
+                    and tool_call["id"] not in answered_ids
+                ]
+                if superseded_results:
+                    superseded_message = MessageParam(
+                        role="user", content=superseded_results
+                    )
+                    conversation_messages.append(superseded_message)
+                    for result in superseded_results:
+                        yield sse_event("message", result)
+                    yield sse_event("save_message", superseded_message)
+                for intervention in blocked_for_intervention:
+                    await approvals_repo.update_status(
+                        intervention.id, ToolApprovalStatus.EXPIRED, chat_user_id
+                    )
+                async for steering_event in inject_steering(queued_entries):
+                    yield steering_event
+                continue
+
+            if blocked_for_intervention:
+                if oauth_required:
+                    for oauth_intervention in oauth_required:
+                        yield sse_event(
+                            "oauth_required",
+                            oauth_event_from_approval(oauth_intervention),
+                        )
+                    yield end_of_stream(
+                        EndOfStreamReason.OAUTH_REQUIRED, message="OAuth required"
+                    )
+                else:
+                    yield sse_event(
+                        "approval_required",
+                        approval_required_event(approval_required, tool_use_blocks),
+                    )
+                    yield end_of_stream(
+                        EndOfStreamReason.APPROVAL_REQUIRED,
+                        message="Approval required",
+                    )
                 return
-            if approval_required:
-                yield sse_event(
-                    "approval_required",
-                    approval_required_event(approval_required, tool_use_blocks),
-                )
-                yield end_of_stream(
-                    EndOfStreamReason.APPROVAL_REQUIRED, message="Approval required"
-                )
-                return
+
+            queued_entries = await _queued_steering_messages(redis_client, chat_id)
+            if queued_entries:
+                async for steering_event in inject_steering(queued_entries):
+                    yield steering_event
 
         # ----- Memory write (fire-and-forget) ----------------------------------
         if (
