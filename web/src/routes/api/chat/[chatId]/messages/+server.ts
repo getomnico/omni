@@ -4,7 +4,12 @@ import type { RequestHandler } from './$types.js'
 import { chatRepository, chatMessageRepository } from '$lib/server/db/chats'
 import { getAgent } from '$lib/server/db/agents.js'
 import type { OmniUploadBlock, OmniMentionBlock } from '$lib/types/message'
-import type { TextBlockParam } from '@anthropic-ai/sdk/resources/messages'
+import type {
+    MessageParam,
+    TextBlockParam,
+    ToolResultBlockParam,
+    ToolUseBlockParam,
+} from '@anthropic-ai/sdk/resources/messages'
 import { z } from 'zod'
 import { isValid, ulid } from 'ulid'
 
@@ -15,6 +20,9 @@ function isValidUlid(s: string): boolean {
 }
 
 const MAX_CONTENT_LENGTH = 100_000
+const STEERING_HANDOFF_TIMEOUT_MS = 5_000
+const STEERING_HANDOFF_POLL_MS = 100
+
 const mentionedDocumentSchema = z.object({
     document_id: z.string().min(1).max(100).refine(isValidUlid, 'Invalid ULID'),
     title: z.string().min(1).max(500),
@@ -32,16 +40,52 @@ const messageRequestSchema = z.object({
     clientMessageId: ulidString.optional(),
 })
 
-const aiMessageResponseSchema = z.object({
-    status: z.enum(['created', 'queued', 'persisted']),
-    message_id: ulidString,
-    queued: z.boolean().optional(),
-    persisted: z.boolean().optional(),
-    client_message_id: ulidString.optional(),
-})
-
 type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
 
+function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function postSteeringMessage(
+    chatId: string,
+    clientMessageId: string,
+    message: { role: 'user'; content: string | UserMessageBlock[] },
+): Promise<Response> {
+    return fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/steering`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message_id: clientMessageId,
+            message,
+        }),
+    })
+}
+
+const steeringResponseSchema = z.object({
+    status: z.enum(['queued', 'persisted', 'closing', 'inactive']),
+    message_id: ulidString.optional(),
+})
+
+type SteeringDecision = z.infer<typeof steeringResponseSchema>
+
+async function parseSteeringResponse(
+    response: Response,
+    clientMessageId: string,
+): Promise<SteeringDecision> {
+    if (response.status === 409) return { status: 'closing' }
+    if (!response.ok) {
+        throw new Error(`AI steering endpoint returned ${response.status}`)
+    }
+    const body: unknown = await response.json()
+    const parsed = steeringResponseSchema.safeParse(body)
+    if (!parsed.success) {
+        throw new Error('AI steering endpoint returned an invalid response')
+    }
+    if (parsed.data.status === 'persisted' && parsed.data.message_id !== clientMessageId) {
+        throw new Error('AI steering endpoint returned an unexpected persisted message id')
+    }
+    return parsed.data
+}
 
 async function chatOwnerGuard(
     chatId: string,
@@ -68,6 +112,26 @@ async function chatOwnerGuard(
         }
     }
     return { ok: true, chat }
+}
+
+function interruptedToolResultMessage(message: MessageParam): MessageParam | null {
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) return null
+    const toolUses = message.content.filter(
+        (block): block is ToolUseBlockParam => block.type === 'tool_use',
+    )
+    if (toolUses.length === 0) return null
+    const content: ToolResultBlockParam[] = toolUses.map((toolUse) => ({
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: [
+            {
+                type: 'text',
+                text: `Tool call ${toolUse.name} did not complete because the previous response was interrupted. Treat this tool call as failed and retry it if the result is still needed.`,
+            },
+        ],
+        is_error: true,
+    }))
+    return { role: 'user', content }
 }
 
 export const GET: RequestHandler = async ({ params, locals }) => {
@@ -162,38 +226,41 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
     }
 
     const clientMessageId = parsed.data.clientMessageId ?? ulid()
-    let aiResponse: Response
-    try {
-        aiResponse = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/messages`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                message_id: clientMessageId,
-                parent_id: parsed.data.parentId?.trim() || undefined,
-                message: userMessage,
-            }),
-        })
-    } catch (error) {
-        logger.error('Failed to reach AI service while adding message', { chatId, error })
-        return json({ error: 'Failed to add message to chat' }, { status: 502 })
-    }
 
-    let rawResponse: unknown
-    try {
-        rawResponse = await aiResponse.json()
-    } catch {
-        logger.error('AI service returned an invalid message response', {
-            chatId,
-            status: aiResponse.status,
-        })
-        return json({ error: 'Invalid response from AI service' }, { status: 502 })
-    }
-    if (!aiResponse.ok) {
-        logger.error('AI service rejected chat message', {
-            chatId,
-            status: aiResponse.status,
-        })
-        if (aiResponse.status === 409) {
+    const steeringDeadline = Date.now() + STEERING_HANDOFF_TIMEOUT_MS
+    while (true) {
+        let steeringDecision: SteeringDecision
+        try {
+            const steeringResponse = await postSteeringMessage(
+                chatId,
+                clientMessageId,
+                userMessage,
+            )
+            steeringDecision = await parseSteeringResponse(steeringResponse, clientMessageId)
+        } catch (error) {
+            logger.error('Failed to reach AI service for steering message', { chatId, error })
+            return json({ error: 'Failed to route message while responding' }, { status: 502 })
+        }
+
+        if (steeringDecision.status === 'queued') {
+            return json(
+                { messageId: clientMessageId, clientMessageId, status: 'queued', queued: true },
+                { status: 202 },
+            )
+        }
+        if (steeringDecision.status === 'persisted') {
+            return json(
+                {
+                    messageId: steeringDecision.message_id ?? clientMessageId,
+                    clientMessageId,
+                    status: 'persisted',
+                    persisted: true,
+                },
+                { status: 200 },
+            )
+        }
+        if (steeringDecision.status === 'inactive') break
+        if (Date.now() >= steeringDeadline) {
             return json(
                 {
                     error: 'The previous response is still finishing. Please retry this message.',
@@ -203,24 +270,51 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
                 { status: 409 },
             )
         }
-        return json({ error: 'Failed to add message to chat' }, { status: 502 })
+        await sleep(STEERING_HANDOFF_POLL_MS)
     }
 
-    const aiMessageResponse = aiMessageResponseSchema.safeParse(rawResponse)
-    if (!aiMessageResponse.success) {
-        logger.error('AI service returned an invalid message response', { chatId })
-        return json({ error: 'Invalid response from AI service' }, { status: 502 })
+    let parentId = parsed.data.parentId?.trim() || undefined
+    let parentMessage = parentId
+        ? await chatMessageRepository.getByIdInChat(chatId, parentId)
+        : null
+    if (parentId && !parentMessage) {
+        logger.warn('Ignoring unknown client-provided parent message id', { chatId, parentId })
+        parentId = undefined
+        parentMessage = null
     }
-    const result = aiMessageResponse.data
+    if (!parentMessage) {
+        parentMessage = await chatMessageRepository.getLastMessageInActivePath(chatId)
+        parentId = parentMessage?.id
+    }
+    if (parentMessage) {
+        const repairMessage = interruptedToolResultMessage(parentMessage.message)
+        if (repairMessage) {
+            const savedRepairMessage = await chatMessageRepository.create(
+                chatId,
+                repairMessage,
+                parentMessage.id,
+            )
+            parentId = savedRepairMessage.id
+            logger.warn('Inserted failed tool_result for interrupted tool call', {
+                chatId,
+                repairMessageId: savedRepairMessage.id,
+            })
+        }
+    }
+
+    const savedMessage = await chatMessageRepository.create(
+        chatId,
+        userMessage as unknown as MessageParam,
+        parentId,
+        clientMessageId,
+    )
+
     return json(
         {
-            messageId: result.message_id,
-            clientMessageId,
-            status: result.status,
-            ...(result.queued ? { queued: true } : {}),
-            ...(result.persisted ? { persisted: true } : {}),
+            messageId: savedMessage.id,
+            status: 'created',
         },
-        { status: result.status === 'queued' ? 202 : 200 },
+        { status: 200 },
     )
 }
 

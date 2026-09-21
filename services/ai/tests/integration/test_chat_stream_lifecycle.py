@@ -752,59 +752,46 @@ class TestCancel:
 
 class TestChatSteering:
     @pytest.mark.asyncio
-    async def test_messages_endpoint_persists_when_no_run_is_active(
-        self, seeded_chat, redis_client, redis_keys
-    ):
-        chat_id, _user_id, _model_id = seeded_chat
-        parent = (await MessagesRepository().get_active_path(chat_id))[-1]
-        message_id = str(ULID())
-        app = _build_chat_app(GatedRecordingLLM([], _model_id), redis_client, _model_id)
-
-        async with _client(app) as client:
-            response = await client.post(
-                f"/chat/{chat_id}/messages",
-                json={
-                    "message_id": message_id,
-                    "parent_id": parent.id,
-                    "message": {"role": "user", "content": "normal message"},
-                },
-            )
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "created", "message_id": message_id}
-        saved = await MessagesRepository().get_by_id_in_chat(chat_id, message_id)
-        assert saved is not None
-        assert saved.parent_id == parent.id
-        assert saved.message["content"] == "normal message"
-
-    @pytest.mark.asyncio
-    async def test_messages_endpoint_queues_when_run_is_active(
+    async def test_steering_endpoint_reports_inactive_without_persisting(
         self, seeded_chat, redis_client, redis_keys
     ):
         chat_id, _user_id, model_id = seeded_chat
         message_id = str(ULID())
-        await redis_client.set(run_lock_key(chat_id), "open")
         app = _build_chat_app(GatedRecordingLLM([], model_id), redis_client, model_id)
 
         async with _client(app) as client:
             response = await client.post(
-                f"/chat/{chat_id}/messages",
+                f"/chat/{chat_id}/steering",
                 json={
                     "message_id": message_id,
-                    "message": {"role": "user", "content": "steer message"},
+                    "message": {"role": "user", "content": "idle message"},
                 },
             )
 
-        assert response.status_code == 202
-        assert response.json() == {
-            "status": "queued",
-            "queued": True,
-            "message_id": message_id,
-        }
-        queued = await redis_client.lrange(steering_queue_key(chat_id), 0, -1)
-        assert [SteeringQueueEntry.from_json(raw).client_message_id for raw in queued] == [
-            message_id
-        ]
+        assert response.status_code == 200
+        assert response.json() == {"status": "inactive"}
+        assert await MessagesRepository().get_by_id_in_chat(chat_id, message_id) is None
+
+    @pytest.mark.asyncio
+    async def test_steering_endpoint_reports_closing(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        chat_id, _user_id, model_id = seeded_chat
+        message_id = str(ULID())
+        await redis_client.set(run_lock_key(chat_id), "closing")
+        app = _build_chat_app(GatedRecordingLLM([], model_id), redis_client, model_id)
+
+        async with _client(app) as client:
+            response = await client.post(
+                f"/chat/{chat_id}/steering",
+                json={
+                    "message_id": message_id,
+                    "message": {"role": "user", "content": "closing message"},
+                },
+            )
+
+        assert response.status_code == 409
+        assert response.json() == {"status": "closing"}
         assert await MessagesRepository().get_by_id_in_chat(chat_id, message_id) is None
 
     @pytest.mark.asyncio
@@ -843,7 +830,7 @@ class TestChatSteering:
         )
         async with _client(app) as client:
             retry = await client.post(
-                f"/chat/{chat_id}/messages",
+                f"/chat/{chat_id}/steering",
                 json={
                     "message_id": first_id,
                     "message": {"role": "user", "content": "first"},
@@ -852,6 +839,7 @@ class TestChatSteering:
         assert retry.status_code == 200
         assert retry.json() == {
             "status": "persisted",
+            "persisted": True,
             "message_id": first_id,
             "client_message_id": first_id,
         }
@@ -878,7 +866,7 @@ class TestChatSteering:
 
             steering_id = str(ULID())
             response = await client.post(
-                f"/chat/{chat_id}/messages",
+                f"/chat/{chat_id}/steering",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "Use this correction."},
@@ -886,7 +874,7 @@ class TestChatSteering:
             )
             assert response.status_code == 202
             retry_response = await client.post(
-                f"/chat/{chat_id}/messages",
+                f"/chat/{chat_id}/steering",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "Use this correction."},
@@ -944,7 +932,7 @@ class TestChatSteering:
                 await asyncio.sleep(0.01)
             steering_id = str(ULID())
             response = await client.post(
-                f"/chat/{chat_id}/messages",
+                f"/chat/{chat_id}/steering",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "Prioritize this."},
@@ -2504,7 +2492,7 @@ class TestInterventionResume:
                 await asyncio.sleep(0.01)
             steering_id = str(ULID())
             response = await client.post(
-                f"/chat/{chat_id}/messages",
+                f"/chat/{chat_id}/steering",
                 json={
                     "message_id": steering_id,
                     "message": {"role": "user", "content": "do this instead"},

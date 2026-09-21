@@ -325,11 +325,14 @@ export class ChatMessageRepository {
         this.db = dbInstance
     }
 
-    async create(chatId: string, message: MessageParam, parentId?: string): Promise<ChatMessage> {
+    async create(
+        chatId: string,
+        message: MessageParam,
+        parentId?: string,
+        messageId = ulid(),
+    ): Promise<ChatMessage> {
         const nextSeqNum = await this.getNextSequenceNumber(chatId)
         const contentText = extractContentText(message)
-
-        const messageId = ulid()
         const [newMessage] = await this.db
             .insert(chatMessages)
             .values({
@@ -340,9 +343,14 @@ export class ChatMessageRepository {
                 message,
                 contentText,
             })
+            .onConflictDoNothing({ target: chatMessages.id })
             .returning()
 
-        return newMessage
+        if (newMessage) return newMessage
+
+        const existingMessage = await this.getByIdInChat(chatId, messageId)
+        if (existingMessage) return existingMessage
+        throw new Error(`Message id ${messageId} is already used by another chat`)
     }
 
     async update(

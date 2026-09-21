@@ -164,8 +164,12 @@ if existing then
   end
   return {2, existing}
 end
-if redis.call('GET', KEYS[1]) ~= 'open' then
+local run_state = redis.call('GET', KEYS[1])
+if not run_state then
   return {0, ''}
+end
+if run_state ~= 'open' then
+  return {4, run_state}
 end
 redis.call('RPUSH', KEYS[2], ARGV[2])
 redis.call('HSET', KEYS[3], ARGV[1], 'pending')
@@ -207,10 +211,11 @@ async def enqueue_steering_message(
     client_message_id: str,
     message: SteeringMessage,
 ) -> str:
-    """Atomically accept one FIFO steering message while a run is open.
+    """Atomically route one message against the active run state.
 
-    Returns ``accepted`` for a new or idempotent retry and ``closing`` when the
-    run has won the final-check race.
+    Returns ``accepted`` for a new or idempotent retry, ``persisted:<id>`` for
+    an already acknowledged message, ``closing`` when the run is finishing,
+    and ``inactive`` when no run lock exists.
     """
     entry = SteeringQueueEntry(client_message_id, message)
     result = await redis_client.eval(
@@ -231,7 +236,13 @@ async def enqueue_steering_message(
         if not isinstance(persisted, str) or not persisted.startswith("persisted:"):
             raise ValueError("Redis returned an invalid persisted steering result")
         return persisted
-    return "accepted" if result_code in (1, 2) else "closing"
+    if result_code == 4:
+        return "closing"
+    if result_code == 0:
+        return "inactive"
+    if result_code in (1, 2):
+        return "accepted"
+    raise ValueError(f"Redis returned an invalid steering result code: {result_code}")
 
 
 async def peek_steering_message(redis_client, chat_id: str) -> SteeringQueueEntry | None:
