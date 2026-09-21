@@ -1467,7 +1467,13 @@
         document.addEventListener('visibilitychange', handleVisibility)
 
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && artifactPaneState.open) closeArtifactPane()
+            if (event.key !== 'Escape') return
+            if (isStreaming) {
+                event.preventDefault()
+                void handleStop()
+                return
+            }
+            if (artifactPaneState.open) closeArtifactPane()
         }
         window.addEventListener('keydown', handleKeyDown)
 

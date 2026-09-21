@@ -688,7 +688,7 @@
                         </Select.Content>
                     </Select.Root>
                 {/if}
-                {#if isStreaming}
+                {#if isStreaming && (!allowSubmitWhileStreaming || !effectiveEligibility)}
                     {#if stopInProgress}
                         <Button
                             size="icon"
@@ -705,8 +705,7 @@
                             <CircleStop class="h-4 w-4" />
                         </Button>
                     {/if}
-                {/if}
-                {#if !isStreaming || allowSubmitWhileStreaming}
+                {:else if !isStreaming || allowSubmitWhileStreaming}
                     <Button
                         size="icon"
                         class="omni-composer-send size-8 cursor-pointer"
