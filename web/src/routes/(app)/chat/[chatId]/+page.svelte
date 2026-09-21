@@ -3152,6 +3152,9 @@
                                     i !== processedMessages.length - 1 &&
                                         'opacity-0 transition-opacity group-hover:opacity-100',
                                 )}>
+                                {#if message.siblingIds && message.siblingIds.length > 1}
+                                    {@render branchNavigation(message)}
+                                {/if}
                                 {#if !(isStreaming && i === processedMessages.length - 1) && !(error && i === processedMessages.length - 1)}
                                     {@render messageControls(message)}
                                 {/if}

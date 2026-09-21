@@ -221,6 +221,23 @@ class MessagesRepository:
 
         return [ChatMessage.from_row(dict(row)) for row in rows]
 
+    async def get_by_id_in_chat(
+        self, chat_id: str, message_id: str
+    ) -> ChatMessage | None:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, chat_id, message_seq_num, message, parent_id,
+                       error, created_at
+                FROM chat_messages
+                WHERE chat_id = $1 AND id = $2
+                """,
+                chat_id,
+                message_id,
+            )
+        return ChatMessage.from_row(dict(row)) if row is not None else None
+
     async def get_active_path(
         self, chat_id: str, message_id: Optional[str] = None
     ) -> List[ChatMessage]:

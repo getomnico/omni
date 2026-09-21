@@ -588,7 +588,14 @@ async function cleanupChat(seeded: SeededChat | null): Promise<void> {
 
     const redis = createClient({ url: redisUrl })
     await redis.connect()
-    await redis.del(seeded.sessionKey)
+    await redis.del(
+        seeded.sessionKey,
+        `chat:runlock:${seeded.chatId}`,
+        `chat:stream:${seeded.chatId}`,
+        `chat:cancel:${seeded.chatId}`,
+        `chat:steering:${seeded.chatId}`,
+        `chat:steering-dedupe:${seeded.chatId}`,
+    )
     await redis.disconnect()
 
     const sql = postgres(dbConfig)
@@ -1772,6 +1779,52 @@ test('chat renders a captured stream from a seeded chat fixture', async ({ page 
         await page.keyboard.press('Enter')
 
         await expect(page.getByText(capturedExpectedText!)).toBeVisible({ timeout: 30_000 })
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
+test('messages submitted during an active run render as queued', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    const redis = createClient({ url: redisUrl })
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await page.goto(`/chat/${seeded.chatId}`)
+
+        await redis.connect()
+        await redis.set(`chat:runlock:${seeded.chatId}`, 'open')
+
+        const textbox = page.getByRole('main').getByRole('textbox')
+        await textbox.fill('Queued while the response is running')
+        await page.keyboard.press('Enter')
+
+        const queuedMessage = page.getByTestId(/^queued-chat-message-/)
+        await expect(queuedMessage).toBeVisible()
+        await expect(queuedMessage).toContainText('Queued')
+        await expect(page.getByText('Queued while the response is running')).toBeVisible()
+    } finally {
+        if (redis.isOpen) await redis.disconnect()
+        await cleanupChat(seeded)
+    }
+})
+
+test('Escape stops a streaming response', async ({ page }) => {
+    let seeded: SeededChat | null = null
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+        await selectReplayFixture(page, 'cancel-partial-stream.sse')
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Start a response to stop')
+        await page.keyboard.press('Enter')
+        await expect(page.getByText('Partial answer before stop.')).toBeVisible()
+
+        const stopButton = page.locator('.omni-composer-send.rounded-full')
+        await expect(stopButton).toBeVisible()
+        await page.keyboard.press('Escape')
+        await expect(stopButton).not.toBeVisible()
     } finally {
         await cleanupChat(seeded)
     }

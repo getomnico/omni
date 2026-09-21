@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import httpx
+from ulid import ULID
 from anthropic.types import (
     ContentBlockParam,
     MessageParam,
@@ -23,7 +24,7 @@ from anthropic.types import (
     ToolUseBlockParam,
 )
 from fastapi import APIRouter, HTTPException, Path, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from agents.executor import _build_source_filter
 from agents.models import Agent
@@ -65,7 +66,7 @@ from memory import (
 from prompts import build_agent_chat_system_prompt, build_chat_system_prompt
 from provider_cache import ResolvedModel
 from providers import LLMProvider
-from schemas.api import SteeringMessageRequest
+from schemas.api import ChatMessageRequest, SteeringMessageRequest
 from services.compaction import ConversationCompactor
 from services.title_generation import generate_title_for_conversation
 from services.usage import UsageContext, UsagePurpose, UsageTracker, track_usage
@@ -616,8 +617,118 @@ async def stream_status(
     }
 
 
+async def _persist_user_chat_message(
+    chat_id: str,
+    payload: ChatMessageRequest,
+    messages_repo: MessagesRepository,
+) -> str:
+    """Persist a user message on the requested or current active branch."""
+    parent_id = payload.parent_id
+    parent = (
+        await messages_repo.get_by_id_in_chat(chat_id, parent_id)
+        if parent_id is not None
+        else None
+    )
+    if parent_id is not None and parent is None:
+        parent_id = None
+
+    if parent is None:
+        active_path = await messages_repo.get_active_path(chat_id)
+        parent = active_path[-1] if active_path else None
+        parent_id = parent.id if parent is not None else None
+
+    if parent is not None:
+        repaired_messages, repaired_count = repair_interrupted_tool_calls(
+            [cast(MessageParam, parent.message)]
+        )
+        if repaired_count:
+            repair_message = repaired_messages[-1]
+            saved_repair = await messages_repo.create(
+                chat_id,
+                cast(dict[str, Any], repair_message),
+                parent_id=parent.id,
+            )
+            parent_id = saved_repair.id
+            logger.warning(
+                "Inserted failed tool_result placeholder for interrupted tool call "
+                "in chat %s",
+                chat_id,
+            )
+
+    message = cast(dict[str, Any], payload.message.model_dump(exclude_none=True))
+    saved = await messages_repo.create(
+        chat_id,
+        message,
+        parent_id=parent_id,
+        message_id=payload.message_id,
+    )
+    return saved.id
+
+
 # ---------------------------------------------------------------------------
-# Route: steering enqueue
+# Route: add chat message
+# ---------------------------------------------------------------------------
+
+
+@router.post("/chat/{chat_id}/messages")
+async def add_chat_message(
+    request: Request,
+    payload: ChatMessageRequest,
+    chat_id: str = Path(..., description="Chat thread ID"),
+):
+    """Persist a user message or enqueue it into the active run's FIFO."""
+    if await ChatsRepository().get(chat_id) is None:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+
+    redis_client = getattr(request.app.state, "redis_client", None)
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="Redis client is not initialized")
+
+    client_message_id = payload.message_id or str(ULID())
+    message = cast(SteeringMessage, payload.message.model_dump(exclude_none=True))
+    result = await enqueue_steering_message(
+        redis_client,
+        chat_id,
+        client_message_id,
+        message,
+    )
+    if result == "accepted":
+        return JSONResponse(
+            {"status": "queued", "queued": True, "message_id": client_message_id},
+            status_code=202,
+        )
+    if result.startswith("persisted:"):
+        persisted_message_id = result.removeprefix("persisted:")
+        if not persisted_message_id:
+            raise HTTPException(status_code=500, detail="Invalid persisted steering result")
+        return {
+            "status": "persisted",
+            "persisted": True,
+            "message_id": persisted_message_id,
+            "client_message_id": client_message_id,
+        }
+
+    for _ in range(50):
+        if not await redis_client.exists(run_lock_key(chat_id)):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        raise HTTPException(
+            status_code=409,
+            detail="The previous response is still finishing; retry this message.",
+            headers={"X-Chat-Run-Closing": "true"},
+        )
+
+    persisted_message_id = await _persist_user_chat_message(
+        chat_id,
+        payload.model_copy(update={"message_id": client_message_id}),
+        MessagesRepository(),
+    )
+    return {"status": "created", "message_id": persisted_message_id}
+
+
+# ---------------------------------------------------------------------------
+# Route: steering enqueue (legacy internal endpoint)
 # ---------------------------------------------------------------------------
 
 

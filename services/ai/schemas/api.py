@@ -95,9 +95,23 @@ class SteeringUserMessage(BaseModel):
     content: str | list[SteeringTextBlock | SteeringDocumentBlock]
 
 
+ULID_PATTERN = r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$"
+
+
+class ChatMessageRequest(BaseModel):
+    message_id: str | None = Field(
+        default=None,
+        pattern=ULID_PATTERN,
+        min_length=26,
+        max_length=26,
+    )
+    parent_id: str | None = Field(default=None, min_length=1, max_length=26)
+    message: SteeringUserMessage
+
+
 class SteeringMessageRequest(BaseModel):
     message_id: str = Field(
-        pattern=r"^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+        pattern=ULID_PATTERN,
         min_length=26,
         max_length=26,
     )
