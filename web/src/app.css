@@ -18,7 +18,7 @@
     --primary-foreground: oklch(0.984 0.003 247.858);
     --secondary: oklch(0.968 0.007 247.896);
     --secondary-foreground: oklch(0.208 0.042 265.755);
-    --chat-queued-message: oklch(0.95 0.025 85);
+    --chat-queued-message: var(--secondary);
     --muted: oklch(0.968 0.007 247.896);
     --muted-foreground: oklch(0.554 0.046 257.417);
     --accent: oklch(0.968 0.007 247.896);
@@ -60,7 +60,7 @@
     --primary-foreground: oklch(0.208 0.042 265.755);
     --secondary: oklch(0.279 0.041 260.031);
     --secondary-foreground: oklch(0.984 0.003 247.858);
-    --chat-queued-message: oklch(0.31 0.04 85);
+    --chat-queued-message: var(--secondary);
     --muted: oklch(0.279 0.041 260.031);
     --muted-foreground: oklch(0.704 0.04 256.788);
     --accent: oklch(0.279 0.041 260.031);
@@ -102,7 +102,7 @@
     --primary-foreground: oklch(0.985 0.004 255);
     --secondary: oklch(0.236 0.018 258);
     --secondary-foreground: oklch(0.936 0.008 255);
-    --chat-queued-message: oklch(0.275 0.035 85);
+    --chat-queued-message: var(--secondary);
     --muted: oklch(0.218 0.015 258);
     --muted-foreground: oklch(0.792 0.018 252);
     --accent: oklch(0.296 0.036 244);

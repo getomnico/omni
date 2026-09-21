@@ -2598,7 +2598,7 @@
             {#if firstText}
                 <div
                     class={cn(
-                        queued ? 'bg-chat-queued-message' : 'bg-secondary',
+                        queued ? 'bg-chat-queued-message/40' : 'bg-secondary',
                         'text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm md:text-base',
                     )}>
                     {@html marked.parse(firstText.text)}
