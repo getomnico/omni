@@ -2512,16 +2512,19 @@
     </div>
 {/snippet}
 
-{#snippet messageTimestamp(message: ProcessedMessage)}
+{#snippet messageTimestamp(message: ProcessedMessage, alwaysVisible = false)}
     {#if message.createdAt}
         <span
-            class="text-muted-foreground text-xs opacity-0 transition-opacity group-hover:opacity-100">
+            class={cn(
+                'text-muted-foreground text-xs',
+                !alwaysVisible && 'opacity-0 transition-opacity group-hover:opacity-100',
+            )}>
             {formatMessageTimestamp(message.createdAt)}
         </span>
     {/if}
 {/snippet}
 
-{#snippet userMessageContent(message: ProcessedMessage)}
+{#snippet userMessageContent(message: ProcessedMessage, queued = false)}
     {#if editingMessageId === message.origMessageId}
         <div class="w-full max-w-[80%]">
             <textarea
@@ -2587,12 +2590,19 @@
             {/if}
             {#if firstText}
                 <div
-                    class="bg-secondary text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm md:text-base">
+                    class={cn(
+                        queued ? 'bg-chat-queued-message' : 'bg-secondary',
+                        'text-secondary-foreground w-fit rounded-2xl px-6 py-4 text-sm md:text-base',
+                    )}>
                     {@html marked.parse(firstText.text)}
                 </div>
             {/if}
             <div class="mx-0.5 mt-1 flex items-center justify-end gap-1">
-                {@render messageTimestamp(message)}
+                {@render messageTimestamp(message, queued)}
+                {#if queued}
+                    <span class="text-muted-foreground text-xs" aria-hidden="true">·</span>
+                    <span class="text-muted-foreground text-xs">Queued</span>
+                {/if}
                 {#if message.siblingIds && message.siblingIds.length > 1}
                     {@render branchNavigation(message)}
                 {/if}
@@ -3141,8 +3151,7 @@
                     <div
                         data-testid={`queued-chat-message-${pending.message.id}`}
                         class="group mt-8 flex w-full min-w-0 flex-col items-end">
-                        {@render userMessageContent(pending.processed)}
-                        <span class="text-muted-foreground mr-1 text-xs">Queued</span>
+                        {@render userMessageContent(pending.processed, true)}
                     </div>
                 {/each}
 
