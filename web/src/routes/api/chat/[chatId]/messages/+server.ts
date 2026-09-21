@@ -38,12 +38,53 @@ const messageRequestSchema = z.object({
     parentId: z.string().min(1).optional(),
     attachmentIds: z.array(ulidString).max(50).optional().default([]),
     mentionedDocuments: z.array(mentionedDocumentSchema).max(25).optional().default([]),
+    clientMessageId: ulidString.optional(),
 })
 
 type UserMessageBlock = OmniUploadBlock | OmniMentionBlock | TextBlockParam
 
 function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function postSteeringMessage(
+    chatId: string,
+    clientMessageId: string,
+    message: { role: 'user'; content: string | UserMessageBlock[] },
+): Promise<Response> {
+    return fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/steering`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            message_id: clientMessageId,
+            message,
+        }),
+    })
+}
+
+async function normalizeSteeringResponse(
+    response: Response,
+    clientMessageId: string,
+): Promise<Response> {
+    if (response.status !== 200 && response.status !== 202) {
+        return response
+    }
+    const body = (await response.json()) as {
+        status?: string
+        message_id?: string
+    }
+    if (body.status === 'persisted' && body.message_id) {
+        return json(
+            {
+                messageId: body.message_id,
+                clientMessageId,
+                status: 'persisted',
+                persisted: true,
+            },
+            { status: 200 },
+        )
+    }
+    return json({ messageId: clientMessageId, status: 'queued', queued: true }, { status: 202 })
 }
 
 async function waitForChatRunToClose(chatId: string): Promise<boolean> {
@@ -197,7 +238,7 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
         userMessage = { role: 'user', content: trimmedText }
     }
 
-    const clientMessageId = ulid()
+    const clientMessageId = parsed.data.clientMessageId ?? ulid()
 
     let streamRunning = false
     try {
@@ -208,20 +249,17 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
     if (streamRunning) {
         let steeringResponse: Response
         try {
-            steeringResponse = await fetch(`${env.AI_SERVICE_URL}/chat/${chatId}/steering`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message_id: clientMessageId, message: userMessage }),
-            })
+            steeringResponse = await postSteeringMessage(
+                chatId,
+                clientMessageId,
+                userMessage,
+            )
         } catch (error) {
             logger.error('Failed to reach AI service for steering message', { chatId, error })
             return json({ error: 'Failed to queue message while responding' }, { status: 502 })
         }
         if (steeringResponse.ok) {
-            return json(
-                { messageId: clientMessageId, status: 'queued', queued: true },
-                { status: 202 },
-            )
+            return normalizeSteeringResponse(steeringResponse, clientMessageId)
         }
         if (steeringResponse.status !== 409) {
             logger.error('AI service rejected steering message', {
@@ -240,6 +278,18 @@ export const POST: RequestHandler = async ({ params, request, locals, fetch }) =
                 },
                 { status: 409 },
             )
+        }
+        try {
+            const retrySteeringResponse = await postSteeringMessage(
+                chatId,
+                clientMessageId,
+                userMessage,
+            )
+            if (retrySteeringResponse.ok) {
+                return normalizeSteeringResponse(retrySteeringResponse, clientMessageId)
+            }
+        } catch (error) {
+            logger.warn('Failed to retry steering handoff', { chatId, error })
         }
     }
 

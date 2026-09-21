@@ -39,7 +39,16 @@ from db.tool_approvals import (
 from routers import chat_router
 from services.compaction import ConversationCompactor
 from state import AppState
-from streaming.run import cancel_key, run_lock_key, steering_queue_key, stream_key
+from streaming.run import (
+    SteeringQueueEntry,
+    acknowledge_steering_message,
+    cancel_key,
+    enqueue_steering_message,
+    run_lock_key,
+    steering_dedupe_key,
+    steering_queue_key,
+    stream_key,
+)
 from tests.helpers import (
     GatedRecordingLLM,
     assert_sse_wire,
@@ -207,7 +216,13 @@ async def seeded_chat(
 async def redis_keys(redis_client) -> None:
     """Teardown-only: clean up chat lifecycle and steering keys after each test."""
     yield
-    for pattern in (stream_key("*"), run_lock_key("*"), cancel_key("*"), steering_queue_key("*")):
+    for pattern in (
+        stream_key("*"),
+        run_lock_key("*"),
+        cancel_key("*"),
+        steering_queue_key("*"),
+        steering_dedupe_key("*"),
+    ):
         cursor = 0
         while True:
             cursor, keys = await redis_client.scan(cursor, match=pattern, count=100)
@@ -736,6 +751,55 @@ class TestCancel:
 
 
 class TestChatSteering:
+    @pytest.mark.asyncio
+    async def test_ack_preserves_fifo_and_persisted_retry_is_idempotent(
+        self, seeded_chat, redis_client, redis_keys
+    ):
+        chat_id, _user_id, model_id = seeded_chat
+        await redis_client.set(run_lock_key(chat_id), "open")
+        first_id = str(ULID())
+        second_id = str(ULID())
+        first_message = {"role": "user", "content": "first"}
+        second_message = {"role": "user", "content": "second"}
+        assert (
+            await enqueue_steering_message(redis_client, chat_id, first_id, first_message)
+            == "accepted"
+        )
+        assert (
+            await enqueue_steering_message(redis_client, chat_id, second_id, second_message)
+            == "accepted"
+        )
+
+        first_entry = SteeringQueueEntry.from_json(
+            await redis_client.lindex(steering_queue_key(chat_id), 0)
+        )
+        await acknowledge_steering_message(
+            redis_client, chat_id, first_entry, first_id
+        )
+        remaining = await redis_client.lrange(steering_queue_key(chat_id), 0, -1)
+        assert [SteeringQueueEntry.from_json(raw).client_message_id for raw in remaining] == [
+            second_id
+        ]
+        assert await redis_client.ttl(steering_queue_key(chat_id)) > 0
+
+        app = _build_chat_app(
+            GatedRecordingLLM([("text", "unused")], model_id), redis_client, model_id
+        )
+        async with _client(app) as client:
+            retry = await client.post(
+                f"/chat/{chat_id}/steering",
+                json={
+                    "message_id": first_id,
+                    "message": {"role": "user", "content": "first"},
+                },
+            )
+        assert retry.status_code == 200
+        assert retry.json() == {
+            "status": "persisted",
+            "message_id": first_id,
+            "client_message_id": first_id,
+        }
+
     @pytest.mark.asyncio
     async def test_steering_is_persisted_and_injected_after_final_text(
         self, seeded_chat, redis_client, redis_keys
@@ -2253,6 +2317,151 @@ class TestMultiTurn:
 
 
 class TestInterventionResume:
+    @pytest.mark.asyncio
+    async def test_pending_intervention_recovery_drains_fifo_without_resuming_superseded_call(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, user_id, model_id = seeded_chat
+        messages_repo = MessagesRepository()
+        active_path = await messages_repo.get_active_path(chat_id)
+        tool_call_id = "toolu_pending_recovery"
+        await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": tool_call_id,
+                        "name": "test__pending_recovery",
+                        "input": {},
+                    }
+                ],
+            },
+            parent_id=active_path[-1].id,
+        )
+        await ToolApprovalsRepository().create_pending(
+            chat_id=chat_id,
+            user_id=user_id,
+            tool_name="test__pending_recovery",
+            tool_input={},
+            tool_call_id=tool_call_id,
+        )
+        handler = ScriptedActionHandler(
+            requires_approval=True,
+            results=[ToolResult(content=[{"type": "text", "text": "must not run"}])],
+            tool_name="test__pending_recovery",
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM([("text", "Recovered safely.")], model_id)
+
+        await redis_client.set(run_lock_key(chat_id), "open")
+        first_id, second_id = str(ULID()), str(ULID())
+        for message_id, content in (
+            (first_id, "first queued instruction"),
+            (second_id, "second queued instruction"),
+        ):
+            assert (
+                await enqueue_steering_message(
+                    redis_client,
+                    chat_id,
+                    message_id,
+                    {"role": "user", "content": content},
+                )
+                == "accepted"
+            )
+        await redis_client.delete(run_lock_key(chat_id))
+
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        assert handler.executions == []
+        assert any(event_type == "end_of_stream" for event_type, _, _ in events)
+        assert len(llm.calls) == 1
+        provider_messages = llm.calls[0]["messages"]
+        assert [message["content"] for message in provider_messages[-2:]] == [
+            "first queued instruction",
+            "second queued instruction",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_same_run_oauth_preflight_skips_execution_when_steered(
+        self, seeded_chat, redis_client, redis_keys, monkeypatch
+    ):
+        chat_id, _user_id, model_id = seeded_chat
+        oauth_payload = OAuthRequiredPayload(
+            source_id="source-1",
+            source_type="google_drive",
+            provider="google",
+            oauth_start_url="/api/oauth/start?source_id=source-1",
+        )
+
+        class OAuthHandler:
+            executions: list[dict] = []
+            tool_name = "google_drive__create"
+
+            def get_tools(self):
+                return [
+                    {
+                        "name": self.tool_name,
+                        "description": "OAuth test tool",
+                        "input_schema": {"type": "object", "properties": {}},
+                    }
+                ]
+
+            def can_handle(self, tool_name: str) -> bool:
+                return tool_name == self.tool_name
+
+            def requires_approval(self, _tool_name: str) -> bool:
+                return False
+
+            async def check_oauth_required(self, _tool_name: str, _tool_input: dict, _context):
+                return oauth_payload
+
+            async def execute(self, _tool_name: str, tool_input: dict, _context):
+                self.executions.append(tool_input)
+                return ToolResult(content=[{"type": "text", "text": "must not run"}])
+
+        handler = OAuthHandler()
+        _install_scripted_registry(monkeypatch, handler)
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": handler.tool_name,
+                        "input": {"title": "blocked"},
+                        "id": "toolu_same_run_oauth",
+                    },
+                ),
+                ("text", "Steering handled instead."),
+            ],
+            model_id,
+        )
+        llm.hold(0, at="pre")
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            stream_task = asyncio.create_task(collect_sse_events(client, chat_id))
+            deadline = time.monotonic() + 5
+            while len(llm.calls) < 1 and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            steering_id = str(ULID())
+            response = await client.post(
+                f"/chat/{chat_id}/steering",
+                json={
+                    "message_id": steering_id,
+                    "message": {"role": "user", "content": "do this instead"},
+                },
+            )
+            assert response.status_code == 200
+            llm.release(0)
+            events = await stream_task
+
+        assert handler.executions == []
+        assert len(llm.calls) == 2
+        assert any(event_type == "end_of_stream" for event_type, _, _ in events)
+
     @pytest.mark.asyncio
     async def test_approved_action_executes_once_and_completes_intervention(
         self, seeded_chat, redis_client, redis_keys, monkeypatch

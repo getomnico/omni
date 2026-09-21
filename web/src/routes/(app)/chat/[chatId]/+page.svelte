@@ -71,6 +71,7 @@
         type NormalizedCitation,
     } from '$lib/utils/citations'
     import { afterNavigate, invalidate, invalidateAll } from '$app/navigation'
+    import { ulid } from 'ulid'
     import { page } from '$app/state'
     import UserInput from '$lib/components/user-input.svelte'
     import UploadChip from '$lib/components/upload-chip.svelte'
@@ -2272,7 +2273,7 @@
         }
     }
 
-    async function handleSubmit() {
+    async function handleSubmit(clientMessageId = ulid()) {
         if (isSending) return
 
         const userMsg = userMessage.trim()
@@ -2303,6 +2304,7 @@
                     parentId,
                     attachmentIds,
                     mentionedDocuments: submitMentionedDocs,
+                    clientMessageId,
                 }),
             })
         } catch (err) {
@@ -2318,7 +2320,7 @@
                     retryAfterRun?: boolean
                 } | null
                 if (body?.retryAfterRun) {
-                    setTimeout(() => void handleSubmit(), 150)
+                    setTimeout(() => void handleSubmit(clientMessageId), 150)
                 } else {
                     void resumeActiveStreamIfNeeded()
                     toast.info('The previous response is still in progress. Reconnecting to it now.')
@@ -2334,6 +2336,16 @@
             messageId: string
             status: string
             queued?: boolean
+            persisted?: boolean
+        }
+        if (responseBody.persisted) {
+            userMessage = ''
+            mentionedDocs = []
+            pendingUploads = []
+            isSending = false
+            await invalidate(`app:chat:${data.chat.id}`)
+            void resumeActiveStreamIfNeeded()
+            return
         }
         const { messageId } = responseBody
         const wasQueued = responseBody.queued === true

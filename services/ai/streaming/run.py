@@ -191,6 +191,8 @@ if queued == ARGV[3] then
   redis.call('LPOP', KEYS[1])
 end
 if redis.call('LLEN', KEYS[1]) == 0 then
+  redis.call('DEL', KEYS[1])
+else
   redis.call('EXPIRE', KEYS[1], ARGV[4])
 end
 redis.call('HSET', KEYS[2], ARGV[1], 'persisted:' .. ARGV[2])
@@ -223,7 +225,12 @@ async def enqueue_steering_message(
     )
     result_code = int(result[0])
     if result_code == 3:
-        return "persisted"
+        persisted = result[1]
+        if isinstance(persisted, bytes):
+            persisted = persisted.decode()
+        if not isinstance(persisted, str) or not persisted.startswith("persisted:"):
+            raise ValueError("Redis returned an invalid persisted steering result")
+        return persisted
     return "accepted" if result_code in (1, 2) else "closing"
 
 

@@ -642,6 +642,15 @@ async def enqueue_chat_steering(
         payload.message_id,
         message,
     )
+    if result.startswith("persisted:"):
+        persisted_message_id = result.removeprefix("persisted:")
+        if not persisted_message_id:
+            raise HTTPException(status_code=500, detail="Invalid persisted steering result")
+        return {
+            "status": "persisted",
+            "message_id": persisted_message_id,
+            "client_message_id": payload.message_id,
+        }
     if result != "accepted":
         raise HTTPException(
             status_code=409,
