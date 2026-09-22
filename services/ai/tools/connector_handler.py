@@ -6,17 +6,16 @@ import json
 import logging
 import re
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Literal, TypedDict
 from urllib.parse import urlencode
 
 import httpx
-import redis.asyncio as aioredis
 from anthropic.types import ToolParam
 
 from db.connection import get_db_pool
 from db.documents import DocumentsRepository
-from db.models import Source
+from db.models import Source, parse_allowed_action_origins
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
 from tools.sandbox import (
@@ -27,12 +26,31 @@ from tools.sandbox import (
 
 logger = logging.getLogger(__name__)
 
-ACTIONS_CACHE_TTL = 60  # seconds
 _TOOL_NAME_SAFE_RE = re.compile(r"[^a-zA-Z0-9_]")
 
 SourceMode = Literal["read", "write"]
 # Maps source_id -> list of modes allowed for that source.
 SourceFilter = dict[str, list[SourceMode]]
+ConnectorCatalog = list[dict[str, object]]
+
+
+def connector_catalog_from_payload(payload: object) -> ConnectorCatalog:
+    if not isinstance(payload, list):
+        raise TypeError("connector-manager /connectors response must be a list")
+
+    catalog: ConnectorCatalog = []
+    for item in payload:
+        if not isinstance(item, Mapping) or any(
+            not isinstance(key, str) for key in item
+        ):
+            raise TypeError("connector-manager /connectors response contains a non-object item")
+        catalog.append(dict(item))
+    return catalog
+
+
+def action_is_available_for_source(source: Source, action_origin: str) -> bool:
+    allowed_origins = parse_allowed_action_origins(source.config)
+    return allowed_origins is None or action_origin in allowed_origins
 
 
 def sources_from_sync_overview_response(payload: object) -> list[Source]:
@@ -103,6 +121,7 @@ class ConnectorAction:
     admin_only: bool = False
     hidden: bool = False
     integration_type: str = "connector"
+    origin: Literal["native", "mcp"] = "native"
     # True when the connector declares a per-user OAuth flow (manifest.oauth).
     # Org-only connectors (e.g. Darwinbox) run actions against the org
     # credential and must never surface an OAuth prompt.
@@ -121,7 +140,6 @@ class ConnectorToolHandler:
         self,
         connector_manager_url: str,
         user_id: str,
-        redis_client: aioredis.Redis | None = None,
         prefetched_sources: list[Source] | None = None,
         source_filter: SourceFilter | None = None,
         action_whitelist: list[str] | None = None,
@@ -132,8 +150,8 @@ class ConnectorToolHandler:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._sandbox_url = sandbox_url.rstrip("/") if sandbox_url else None
         self._user_id = user_id
-        self._redis = redis_client
         self._prefetched_sources = prefetched_sources
+        self._connector_catalog: ConnectorCatalog | None = None
         self._source_filter = source_filter
         self._action_whitelist = action_whitelist  # ["gmail__send_email"]
         self._documents_repo = documents_repo
@@ -143,41 +161,18 @@ class ConnectorToolHandler:
         self._search_operators: list[SearchOperator] = []
         self._initialized = False
 
+    @property
+    def connector_catalog(self) -> ConnectorCatalog | None:
+        return self._connector_catalog
+
     async def _ensure_initialized(self) -> None:
-        """Lazily fetch actions from connector-manager, using Redis cache."""
+        """Lazily fetch the current connector catalog and actions once per handler."""
         if self._initialized:
             return
 
-        actions = await self._load_cached_actions()
-        if actions is None:
-            actions = await self._fetch_actions()
-            await self._cache_actions(actions)
-
+        actions = await self._fetch_actions()
         self._build_tools(actions)
         self._initialized = True
-
-    async def _load_cached_actions(self) -> list[ConnectorAction] | None:
-        if not self._redis:
-            return None
-        try:
-            cached = await self._redis.get(f"actions:{self._user_id}")
-            if cached:
-                return [ConnectorAction(**d) for d in json.loads(cached)]
-        except Exception as e:
-            logger.warning(f"Failed to load cached actions: {e}")
-        return None
-
-    async def _cache_actions(self, actions: list[ConnectorAction]) -> None:
-        if not self._redis:
-            return
-        try:
-            await self._redis.set(
-                f"actions:{self._user_id}",
-                json.dumps([asdict(a) for a in actions]),
-                ex=ACTIONS_CACHE_TTL,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to cache actions: {e}")
 
     async def _fetch_actions(self) -> list[ConnectorAction]:
         """Fetch available actions from connector-manager.
@@ -193,7 +188,7 @@ class ConnectorToolHandler:
                     f"{self._connector_manager_url}/connectors"
                 )
                 connectors_resp.raise_for_status()
-                connectors = connectors_resp.json()
+                connectors = connector_catalog_from_payload(connectors_resp.json())
 
                 # Use pre-fetched sources if available, otherwise fetch from connector-manager
                 if self._prefetched_sources is not None:
@@ -202,6 +197,7 @@ class ConnectorToolHandler:
                     sources = await fetch_active_sources_from_connector_manager(
                         self._connector_manager_url
                     )
+                self._connector_catalog = connectors
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
@@ -266,10 +262,16 @@ class ConnectorToolHandler:
                 action_source_types = action_def.get("source_types") or []
                 if action_source_types and source_type not in action_source_types:
                     continue
-                # Find matching active sources for this integration/source type.
+                # A connector-wide manifest can serve source instances with different
+                # allowed origins, so bind each action to a source before exposing it.
                 for source in source_by_identity.get(
                     (integration_type, source_type), []
                 ):
+                    action_origin = action_def.get("origin", "native")
+                    if not isinstance(action_origin, str):
+                        raise TypeError("connector action origin must be a string")
+                    if not action_is_available_for_source(source, action_origin):
+                        continue
                     actions.append(
                         ConnectorAction(
                             source_id=source.id,
@@ -286,6 +288,7 @@ class ConnectorToolHandler:
                             hidden=action_def.get("hidden", False),
                             actor_scoped=action_def.get("actor_scoped", False),
                             integration_type=integration_type,
+                            origin=action_origin,
                             supports_user_oauth=(
                                 bool(manifest.get("oauth"))
                                 and not action_def.get("admin_only", False)

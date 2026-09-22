@@ -571,6 +571,7 @@ class SalesforceSourceConfig:
     """Typed connection and synchronization settings for one Salesforce source."""
 
     instance_url: str | None = None
+    sync_enabled: bool = True
     enabled_objects: frozenset[str] = frozenset()
     public_read_objects: frozenset[str] = frozenset()
     grant_access_using_hierarchies: bool = True
@@ -589,6 +590,7 @@ class SalesforceSourceConfig:
         validate_object_names(public_read, "public_read_objects")
         return cls(
             instance_url=instance_url,
+            sync_enabled=_bool_or(raw, "sync_enabled", True),
             enabled_objects=frozenset(enabled),
             public_read_objects=frozenset(public_read),
             grant_access_using_hierarchies=_bool_or(raw, "grant_access_using_hierarchies", True),

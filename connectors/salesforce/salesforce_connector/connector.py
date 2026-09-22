@@ -652,17 +652,21 @@ class SalesforceConnector(Connector):
             return
 
         try:
-            auth = SalesforceAuth.from_mapping(credentials)
-        except ValueError as e:
-            await ctx.fail(str(e))
-            return
-
-        try:
             config = SalesforceSourceConfig.from_mapping(source_config)
             config.validate()
         except ValueError as e:
             await ctx.fail(str(e))
             return
+        if not config.sync_enabled:
+            await ctx.fail("Salesforce data sync is disabled for this MCP-only source")
+            return
+
+        try:
+            auth = SalesforceAuth.from_mapping(credentials)
+        except ValueError as e:
+            await ctx.fail(str(e))
+            return
+
         client = SalesforceClient(auth, instance_url=config.instance_url)
 
         try:

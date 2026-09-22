@@ -33,6 +33,7 @@
     import imapLogo from '$lib/images/icons/imap.svg'
     import { copyTextToClipboard } from '$lib/utils'
     import { getSourceIconPath } from '$lib/utils/icons'
+    import { isSyncDisabledSource } from '$lib/utils/sources'
     import {
         AlertTriangle,
         Check,
@@ -91,6 +92,7 @@
         configured: boolean
         updatedAt: Date | string | null
         config: Record<string, unknown>
+        registrationRequiresInitialAccessToken: boolean
     }
 
     let latestSyncRuns = $state<Map<SourceId, SyncRun>>(data.latestSyncRuns)
@@ -313,13 +315,15 @@
                     <div>
                         <h2 class="text-xl font-semibold">Organization Integrations</h2>
                         <p class="text-muted-foreground text-sm">
-                            Org-level data sources syncing with Omni
+                            Org-level sources connected to Omni. Sync-enabled sources are indexed;
+                            MCP-only sources expose live agent actions without indexing data.
                         </p>
                     </div>
 
                     {#if data.connectedSources.length > 0}
                         <div class="space-y-2">
                             {#each data.connectedSources as source (source.id)}
+                                {@const isSyncDisabled = isSyncDisabledSource(source)}
                                 {@const noun = getSourceNoun(source.sourceType as SourceType)}
                                 {@const sync = latestSyncRuns.get(source.id)}
                                 {@const health = sourceHealth.get(source.id)}
@@ -353,7 +357,7 @@
                                                     class={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${getStatusColor(source.isActive)}`}>
                                                     {source.isActive ? 'Enabled' : 'Disabled'}
                                                 </span>
-                                                {#if health === 'unhealthy'}
+                                                {#if !isSyncDisabled && health === 'unhealthy'}
                                                     <span
                                                         class="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800 dark:bg-red-900/20 dark:text-red-400">
                                                         <AlertTriangle class="h-3 w-3" />
@@ -394,46 +398,53 @@
                                                     </Popover.Root>
                                                 {/if}
                                             </div>
-                                            <div
-                                                class="text-muted-foreground flex items-center gap-1 text-xs">
-                                                {#if sync && normalizeStatus(sync.status) === 'running'}
-                                                    {#if sync.documentsScanned && sync.documentsScanned > 0}
-                                                        <span
-                                                            >Syncing... {sync.documentsScanned.toLocaleString()}
-                                                            {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
-                                                                {sync.documentsUpdated.toLocaleString()}
-                                                                updated{/if}
-                                                            {#if documentCounts[source.id]}
-                                                                ({documentCounts[
-                                                                    source.id
-                                                                ].toLocaleString()} indexed, scanned includes
-                                                                duplicates across users)
-                                                            {/if}</span>
+                                            {#if isSyncDisabled}
+                                                <div class="text-muted-foreground text-xs">
+                                                    MCP actions only · Source data is not synced
+                                                </div>
+                                            {:else}
+                                                <div
+                                                    class="text-muted-foreground flex items-center gap-1 text-xs">
+                                                    {#if sync && normalizeStatus(sync.status) === 'running'}
+                                                        {#if sync.documentsScanned && sync.documentsScanned > 0}
+                                                            <span
+                                                                >Syncing... {sync.documentsScanned.toLocaleString()}
+                                                                {noun} scanned{#if sync.documentsUpdated && sync.documentsUpdated > 0},
+                                                                    {sync.documentsUpdated.toLocaleString()}
+                                                                    updated{/if}
+                                                                {#if documentCounts[source.id]}
+                                                                    ({documentCounts[
+                                                                        source.id
+                                                                    ].toLocaleString()} indexed, scanned
+                                                                    includes duplicates across users)
+                                                                {/if}</span>
+                                                        {:else}
+                                                            <span>Syncing...</span>
+                                                        {/if}
                                                     {:else}
-                                                        <span>Syncing...</span>
-                                                    {/if}
-                                                {:else}
-                                                    <span
-                                                        >Last sync: {formatDate(
-                                                            sync?.completedAt ?? null,
-                                                            page.data.user?.configuration,
-                                                        )}</span>
-                                                {/if}
-                                                {#if !sync || normalizeStatus(sync.status) !== 'running'}
-                                                    {#if documentCounts[source.id]}
-                                                        <span class="text-muted-foreground">·</span>
                                                         <span
-                                                            >{documentCounts[
-                                                                source.id
-                                                            ].toLocaleString()}
-                                                            {noun} indexed</span>
+                                                            >Last sync: {formatDate(
+                                                                sync?.completedAt ?? null,
+                                                                page.data.user?.configuration,
+                                                            )}</span>
                                                     {/if}
-                                                {/if}
-                                            </div>
+                                                    {#if !sync || normalizeStatus(sync.status) !== 'running'}
+                                                        {#if documentCounts[source.id]}
+                                                            <span class="text-muted-foreground"
+                                                                >·</span>
+                                                            <span
+                                                                >{documentCounts[
+                                                                    source.id
+                                                                ].toLocaleString()}
+                                                                {noun} indexed</span>
+                                                        {/if}
+                                                    {/if}
+                                                </div>
+                                            {/if}
                                         </div>
                                     </div>
                                     <div class="flex gap-2">
-                                        {#if source.isActive}
+                                        {#if source.isActive && !isSyncDisabled}
                                             <ButtonGroup.Root>
                                                 <Button
                                                     variant="default"
@@ -676,7 +687,9 @@
                                     <div class="flex items-center gap-2 font-medium">
                                         {#if oauthProviderIcons[provider.provider.split(':')[0]]}
                                             <img
-                                                src={oauthProviderIcons[provider.provider.split(':')[0]]}
+                                                src={oauthProviderIcons[
+                                                    provider.provider.split(':')[0]
+                                                ]}
                                                 alt={provider.displayName}
                                                 class="h-5 w-5 shrink-0 object-contain" />
                                         {:else}

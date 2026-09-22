@@ -12,6 +12,7 @@ import {
     removeDynamicallyRegisteredClient,
 } from '$lib/server/oauth/connectorOAuth'
 import { logger } from '$lib/server/logger'
+import { isSyncDisabledConfig } from '$lib/utils/sources'
 import {
     isValidSyncIntervalSeconds,
     MAX_SYNC_INTERVAL_SECONDS,
@@ -35,6 +36,10 @@ export const PATCH: RequestHandler = async ({ params, request, locals }) => {
 
     if (!source) {
         throw error(404, 'Source not found')
+    }
+
+    if (isSyncDisabledConfig(source.config)) {
+        throw error(400, 'Sync interval cannot be configured for this source')
     }
 
     let body: unknown

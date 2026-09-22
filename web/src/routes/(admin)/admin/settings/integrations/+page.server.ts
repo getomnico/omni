@@ -13,6 +13,7 @@ import {
 } from '$lib/server/oauth/connectorOAuth'
 import type { SyncRun } from '$lib/server/db/schema'
 import { IntegrationType, supportsDataSync } from '$lib/types'
+import { isSyncDisabledSource } from '$lib/utils/sources'
 import type { PageServerLoad } from './$types'
 
 const CONNECTOR_DISPLAY_ORDER: string[] = [
@@ -113,9 +114,11 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
 
     const orgSources = await sourcesRepository.getOrgWide()
     const connectedSources = orgSources.filter((source) => supportsDataSync(source.integrationType))
-    const connectedSourceIds = connectedSources.map((source) => source.id)
-    const connectedSourceIdSet = new Set(connectedSourceIds)
-    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(connectedSourceIds)
+    const syncSourceIds = connectedSources
+        .filter((source) => !isSyncDisabledSource(source))
+        .map((source) => source.id)
+    const connectedSourceIdSet = new Set(syncSourceIds)
+    const latestSyncRuns = await sourcesRepository.getLatestSyncRunsForSourceIds(syncSourceIds)
     const savedOAuthConfigs = await getAllConnectorConfigsPublic()
     const savedOAuthConfigByProvider = new Map(savedOAuthConfigs.map((row) => [row.provider, row]))
 

@@ -6,7 +6,8 @@
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import { Loader2, KeyRound, AlertTriangle } from '@lucide/svelte'
-    import { onMount } from 'svelte'
+    import { Badge } from '$lib/components/ui/badge'
+    import { onMount, untrack } from 'svelte'
     import { beforeNavigate } from '$app/navigation'
     import { toast } from 'svelte-sonner'
     import type { PageProps } from './$types'
@@ -15,8 +16,16 @@
 
     let { data }: PageProps = $props()
 
-    let enabled = $state(data.source.isActive)
-    let originalEnabled = data.source.isActive
+    const isMcpOnly = $derived(
+        data.source.sourceType === 'salesforce' &&
+            typeof data.source.config === 'object' &&
+            data.source.config !== null &&
+            !Array.isArray(data.source.config) &&
+            (data.source.config as Record<string, unknown>).sync_enabled === false,
+    )
+
+    let enabled = $state(untrack(() => data.source.isActive))
+    let originalEnabled = untrack(() => data.source.isActive)
 
     let isSubmitting = $state(false)
     let hasUnsavedChanges = $derived(enabled !== originalEnabled)
@@ -82,7 +91,9 @@
         const config = saved?.config ?? {}
         const configured =
             typeof config.oauth_client_id === 'string' &&
-            (typeof config.oauth_client_secret === 'string' ||
+            config.oauth_client_id.length > 0 &&
+            ((typeof config.oauth_client_secret === 'string' &&
+                config.oauth_client_secret.length > 0) ||
                 config.oauth_dynamic_client_registration === 'true')
         return {
             provider,
@@ -154,12 +165,19 @@
                         {data.source.name}
                     </Card.Title>
                     <Card.Description class="mt-1">
-                        Index accounts, contacts, opportunities, leads, cases, and tasks from
-                        Salesforce
+                        {#if isMcpOnly}
+                            Enable Salesforce MCP actions for this organization. No Salesforce data
+                            is synced or indexed.
+                        {:else}
+                            Index accounts, contacts, opportunities, leads, cases, and tasks from
+                            Salesforce
+                        {/if}
                     </Card.Description>
                 </div>
                 <div class="flex items-center gap-2">
-                    <Label for="enabled" class="text-sm">Enabled</Label>
+                    <Label for="enabled" class="text-sm">
+                        {isMcpOnly ? 'Actions enabled' : 'Enabled'}
+                    </Label>
                     <Switch
                         id="enabled"
                         bind:checked={enabled}
@@ -170,10 +188,18 @@
         </Card.Header>
 
         <Card.Content>
-            <p class="text-muted-foreground text-sm">
-                All accessible CRM records will be indexed, including accounts, contacts,
-                opportunities, leads, cases, and tasks.
-            </p>
+            {#if isMcpOnly}
+                <p class="text-muted-foreground text-sm">
+                    Salesforce records are accessed live through agent actions using each user's
+                    Salesforce authorization. There is no sync schedule, manual sync, sync status,
+                    or indexed record store for this source.
+                </p>
+            {:else}
+                <p class="text-muted-foreground text-sm">
+                    All accessible CRM records will be indexed, including accounts, contacts,
+                    opportunities, leads, cases, and tasks.
+                </p>
+            {/if}
         </Card.Content>
         <Card.Footer class="flex justify-end">
             <Button
@@ -211,6 +237,29 @@
             Dynamic Client Registration with an administrator-issued initial access token. The
             registration token is removed after successful registration.
         </p>
+        <div class="mt-3 flex flex-wrap items-center gap-2 text-sm">
+            {#if data.actionAuth.authorized}
+                <Badge variant="secondary">
+                    Authorized{data.actionAuth.principalEmail
+                        ? ` as ${data.actionAuth.principalEmail}`
+                        : ''}
+                </Badge>
+                {#if data.actionAuth.grantedScopes.length > 0}
+                    <span class="text-muted-foreground">
+                        Scopes: {data.actionAuth.grantedScopes.join(', ')}
+                    </span>
+                {/if}
+            {:else}
+                <Badge variant="outline">Not authorized for your account</Badge>
+            {/if}
+        </div>
+        {#if isMcpOnly && !data.actionAuth.authorized}
+            <p class="text-muted-foreground mt-3 text-sm">
+                Authorize this admin account once after setup to verify the Salesforce org and
+                discover the MCP catalog. Other users authorize from chat when they first use an
+                action.
+            </p>
+        {/if}
         {#if mcpOAuthConfigured === false}
             <Alert.Root
                 class="mt-3 border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
@@ -236,6 +285,20 @@
             {oauthDialogProvider?.configured
                 ? 'Edit MCP OAuth client'
                 : 'Configure MCP OAuth client'}
+        </Button>
+        <Button
+            type="button"
+            variant="outline"
+            class="cursor-pointer"
+            disabled={oauthDialogLoading || mcpOAuthConfigured !== true}
+            href={`/api/oauth/start?source_id=${data.source.id}&flow=user_read&return_to=${encodeURIComponent(`/admin/settings/integrations/salesforce/${data.source.id}`)}`}>
+            {#if mcpOAuthConfigured === false}
+                Configure OAuth client first
+            {:else if data.actionAuth.authorized}
+                Re-authorize Salesforce
+            {:else}
+                Authorize Salesforce
+            {/if}
         </Button>
     </Card.Footer>
 </Card.Root>

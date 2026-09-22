@@ -476,6 +476,46 @@ fn remote_mcp_in_process_manifest_is_healthy(manifest: &ConnectorManifest) -> bo
     manifest.integration_type == IntegrationType::RemoteMcp && manifest.connector_url.is_empty()
 }
 
+fn allowed_action_origins(source_config: &Value) -> Result<Option<Vec<ActionOrigin>>, String> {
+    let Some(raw_origins) = source_config.get("allowed_action_origins") else {
+        return Ok(None);
+    };
+    let origins = raw_origins
+        .as_array()
+        .ok_or_else(|| "allowed_action_origins must be an array".to_string())?
+        .iter()
+        .map(|origin| match origin.as_str() {
+            Some("native") => Ok(ActionOrigin::Native),
+            Some("mcp") => Ok(ActionOrigin::Mcp),
+            Some(value) => Err(format!(
+                "allowed_action_origins contains unsupported origin '{}', expected 'native' or 'mcp'",
+                value
+            )),
+            None => Err(
+                "allowed_action_origins must contain only 'native' or 'mcp' strings".to_string(),
+            ),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(origins))
+}
+
+fn source_allows_action_origin(
+    source_config: &Value,
+    action_origin: ActionOrigin,
+) -> Result<bool, String> {
+    let Some(allowed_origins) = allowed_action_origins(source_config)? else {
+        return Ok(true);
+    };
+    Ok(allowed_origins.contains(&action_origin))
+}
+
+fn action_is_available_for_source(
+    source: &Source,
+    action: &shared::models::ActionDefinition,
+) -> Result<bool, String> {
+    source_allows_action_origin(&source.config, action.origin)
+}
+
 pub async fn execute_action(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -623,6 +663,14 @@ pub async fn execute_action(
                     source_id
                 )));
             }
+            if !source_allows_action_origin(&db_source.config, ActionOrigin::Mcp)
+                .map_err(ApiError::BadRequest)?
+            {
+                return Err(ApiError::BadRequest(format!(
+                    "Action '{}' is unavailable for this source's allowed action-origin policy",
+                    request.action
+                )));
+            }
             let result = state
                 .remote_mcp_gateway
                 .execute_action(
@@ -670,6 +718,14 @@ pub async fn execute_action(
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' does not support source type {:?}",
                 request.action, source_type
+            )));
+        }
+        if !action_is_available_for_source(&db_source, action_def)
+            .map_err(ApiError::BadRequest)?
+        {
+            return Err(ApiError::BadRequest(format!(
+                "Action '{}' is unavailable for this source's allowed action-origin policy",
+                request.action
             )));
         }
         let action_admin_only = action_def.admin_only;
@@ -951,7 +1007,6 @@ pub async fn execute_action(
     Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
 }
 
-/// Outcome of resolving credentials for a tool/action invocation.
 async fn invalidate_native_mcp_catalog(
     state: &AppState,
     source_type: &str,
@@ -964,6 +1019,17 @@ async fn invalidate_native_mcp_catalog(
     }) else {
         return Ok(());
     };
+    let had_catalog = manifest.mcp_catalog_loaded
+        || manifest
+            .actions
+            .iter()
+            .any(|action| action.origin == ActionOrigin::Mcp)
+        || !manifest.resources.is_empty()
+        || !manifest.prompts.is_empty();
+    if !had_catalog {
+        return Ok(());
+    }
+
     manifest
         .actions
         .retain(|action| action.origin != ActionOrigin::Mcp);
@@ -1022,6 +1088,7 @@ async fn mcp_client_error_to_api_error(
     ApiError::Internal(err.to_string())
 }
 
+/// Outcome of resolving credentials for a tool/action invocation.
 enum CredentialResolution {
     Resolved(shared::models::ServiceCredential),
     NeedsUserAuth { provider: ServiceProvider },
@@ -2499,7 +2566,6 @@ pub async fn sdk_register(
         .get_multiplexed_async_connection()
         .await
         .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
-
     let _: () = conn
         .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
         .await
@@ -4007,6 +4073,36 @@ mod tests {
 
         manifest.integration_type = IntegrationType::Connector;
         assert!(!remote_mcp_in_process_manifest_is_healthy(&manifest));
+    }
+
+    #[test]
+    fn source_action_origin_policy_filters_configured_origins() {
+        assert!(!source_allows_action_origin(
+            &json!({"allowed_action_origins": ["mcp"]}),
+            ActionOrigin::Native
+        )
+        .unwrap());
+        assert!(source_allows_action_origin(
+            &json!({"allowed_action_origins": ["mcp"]}),
+            ActionOrigin::Mcp
+        )
+        .unwrap());
+        assert!(source_allows_action_origin(&json!({}), ActionOrigin::Native).unwrap());
+        assert!(source_allows_action_origin(&json!({}), ActionOrigin::Mcp).unwrap());
+    }
+
+    #[test]
+    fn malformed_source_action_origin_policy_fails_closed() {
+        assert!(source_allows_action_origin(
+            &json!({"allowed_action_origins": ["unsupported"]}),
+            ActionOrigin::Native
+        )
+        .is_err());
+        assert!(source_allows_action_origin(
+            &json!({"allowed_action_origins": "mcp"}),
+            ActionOrigin::Mcp
+        )
+        .is_err());
     }
 
     #[test]

@@ -5,6 +5,7 @@
     import { Button } from '$lib/components/ui/button'
     import * as Card from '$lib/components/ui/card'
     import { ArrowLeft } from '@lucide/svelte'
+    import { isSyncDisabledSource } from '$lib/utils/sources'
     import RemoveSourceDialog from './remove-source-dialog.svelte'
     import type { Snippet } from 'svelte'
     import type { LayoutData } from './$types.js'
@@ -16,6 +17,8 @@
 
     let { data, children }: Props = $props()
     let showRemoveDialog = $state(false)
+
+    const isSyncDisabled = $derived(data.source ? isSyncDisabledSource(data.source) : false)
 </script>
 
 {#if data.source}
@@ -28,23 +31,32 @@
                 Back to Integrations
             </a>
 
-            <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
+            {#if !isSyncDisabled}
+                <SourceSyncHealth health={data.health} syncRuns={data.syncRuns} />
+            {/if}
 
             {@render children()}
 
-            <SourceSyncIntervalCard
-                sourceId={data.source.id}
-                syncIntervalSeconds={data.source.syncIntervalSeconds} />
+            {#if !isSyncDisabled}
+                <SourceSyncIntervalCard
+                    sourceId={data.source.id}
+                    syncIntervalSeconds={data.source.syncIntervalSeconds} />
 
-            <SyncRunHistory runs={data.syncRuns} />
+                <SyncRunHistory runs={data.syncRuns} />
+            {/if}
 
             <Card.Root>
                 <Card.Content class="flex items-center justify-between">
                     <div>
                         <Card.Title>Delete Source</Card.Title>
                         <Card.Description>
-                            Permanently delete this source and all its synced data, credentials, and
-                            sync history
+                            {#if isSyncDisabled}
+                                Permanently delete this source and its credentials. This source does
+                                not sync or index data.
+                            {:else}
+                                Permanently delete this source and all its synced data, credentials,
+                                and sync history
+                            {/if}
                         </Card.Description>
                     </div>
                     <Button

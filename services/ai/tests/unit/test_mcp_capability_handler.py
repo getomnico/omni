@@ -166,6 +166,31 @@ async def test_publishes_resource_and_prompt_capabilities() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_prefetched_connector_catalog_avoids_second_connectors_request() -> None:
+    searcher = _FakeSearcherClient()
+    handler = McpCapabilityHandler(
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[_source("src-1")],
+        prefetched_connectors=[
+            {
+                "source_type": "docs",
+                "healthy": True,
+                "manifest": _manifest(),
+            }
+        ],
+    )
+
+    await handler.refresh()
+
+    assert handler.has_capabilities()
+    assert len(handler._resources) == 2
+    assert len(handler._prompts) == 1
+    assert respx.calls == []
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_empty_remote_mcp_catalog_syncs_empty_capability_publishers() -> None:
     searcher = _FakeSearcherClient()
     respx.get("http://cm.test/connectors").mock(

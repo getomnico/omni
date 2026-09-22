@@ -1,7 +1,7 @@
 import json
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, NotRequired, TypedDict, cast
@@ -509,6 +509,25 @@ class ModelRecord:
         )
 
 
+VALID_ACTION_ORIGINS = frozenset({"native", "mcp"})
+
+
+def parse_allowed_action_origins(
+    config: Mapping[str, object],
+) -> frozenset[str] | None:
+    if "allowed_action_origins" not in config:
+        return None
+    raw_origins = config["allowed_action_origins"]
+    if not isinstance(raw_origins, list) or any(
+        not isinstance(origin, str) or origin not in VALID_ACTION_ORIGINS
+        for origin in raw_origins
+    ):
+        raise ValueError(
+            "source allowed_action_origins must be a list containing only 'native' or 'mcp'"
+        )
+    return frozenset(raw_origins)
+
+
 @dataclass
 class Source:
     id: str
@@ -517,9 +536,15 @@ class Source:
     is_active: bool
     is_deleted: bool
     integration_type: str = "connector"
+    config: dict[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_row(cls, row: Mapping[str, object]) -> "Source":
+        raw_config = row.get("config", {})
+        if not isinstance(raw_config, Mapping):
+            raise TypeError("source config must be an object")
+        config = dict(raw_config)
+        parse_allowed_action_origins(config)
         return cls(
             id=cast(str, row["id"]),
             name=cast(str, row["name"]),
@@ -527,6 +552,7 @@ class Source:
             is_active=cast(bool, row["is_active"]),
             integration_type=cast(str, row.get("integration_type", "connector")),
             is_deleted=cast(bool, row["is_deleted"]),
+            config=config,
         )
 
 

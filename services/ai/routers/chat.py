@@ -279,7 +279,6 @@ async def _build_registry(
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=chat.user_id,
-        redis_client=request.app.state.redis_client,
         prefetched_sources=sources,
         documents_repo=DocumentsRepository(),
         sandbox_url=SANDBOX_URL,
@@ -309,6 +308,7 @@ async def _build_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         searcher_client=request.app.state.searcher_tool.client,
         prefetched_sources=sources,
+        prefetched_connectors=connector_handler.connector_catalog,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():
@@ -443,7 +443,6 @@ async def _build_agent_chat_registry(
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=agent.user_id if agent.agent_type == "user" else "",
-        redis_client=request.app.state.redis_client,
         prefetched_sources=sources,
         source_filter=source_filter,
         documents_repo=DocumentsRepository(),
@@ -457,6 +456,7 @@ async def _build_agent_chat_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         searcher_client=request.app.state.searcher_tool.client,
         prefetched_sources=sources,
+        prefetched_connectors=connector_handler.connector_catalog,
         source_filter=source_filter,
     )
     await mcp_handler.refresh()
