@@ -2,6 +2,7 @@ import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getSourceById } from '$lib/server/db/sources'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals'
+import { SourceType } from '$lib/types'
 import {
     generateAuthUrl,
     generateAuthUrlForOrgSource,
@@ -10,12 +11,37 @@ import {
     isProviderConfigured,
     getOAuthConfigForSource,
     getOAuthManifestForSourceType,
+    SOURCE_BINDING_CONFIG_KEY,
 } from '$lib/server/oauth/connectorOAuth'
 
 function oauthClientNotConfiguredMessage(provider: string): string {
     return (
         `OAuth client for ${provider} is not configured. Ask an admin to set it up under ` +
         'Admin → Settings → Integrations → OAuth Apps.'
+    )
+}
+
+function isSalesforceMcpOnlySource(source: { sourceType: string; config: unknown }): boolean {
+    return (
+        source.sourceType === SourceType.SALESFORCE &&
+        typeof source.config === 'object' &&
+        source.config !== null &&
+        !Array.isArray(source.config) &&
+        (source.config as Record<string, unknown>).sync_enabled === false
+    )
+}
+
+function hasSourceBinding(config: unknown): boolean {
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) return false
+    const binding = (config as Record<string, unknown>)[SOURCE_BINDING_CONFIG_KEY]
+    return (
+        typeof binding === 'object' &&
+        binding !== null &&
+        !Array.isArray(binding) &&
+        Object.keys(binding).length > 0 &&
+        Object.entries(binding).every(
+            ([key, value]) => key.length > 0 && typeof value === 'string' && value.length > 0,
+        )
     )
 }
 
@@ -48,6 +74,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         const source = await getSourceById(sourceId)
         if (!source || source.isDeleted) throw error(404, 'Source not found')
+        if (
+            isSalesforceMcpOnlySource(source) &&
+            !hasSourceBinding(source.config) &&
+            locals.user.role !== 'admin'
+        ) {
+            throw error(403, 'An administrator must authorize this Salesforce source first')
+        }
         if (source.scope === 'user') {
             if (flow === 'org_source') {
                 throw error(400, 'org_source OAuth is only valid for org-wide sources')

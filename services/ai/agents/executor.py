@@ -194,7 +194,6 @@ async def _build_agent_registry(
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=agent.user_id,
-        redis_client=app_state.redis_client,
         prefetched_sources=sources,
         source_filter=source_filter,
         action_whitelist=action_whitelist,
@@ -225,6 +224,7 @@ async def _build_agent_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         searcher_client=app_state.searcher_tool.client,
         prefetched_sources=sources,
+        prefetched_connectors=connector_handler.connector_catalog,
         source_filter=source_filter,
     )
     await mcp_handler.refresh()

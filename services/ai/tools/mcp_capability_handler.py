@@ -15,7 +15,11 @@ from anthropic.types import ToolParam
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from db.models import Source
-from tools.connector_handler import SourceFilter, sources_from_sync_overview_response
+from tools.connector_handler import (
+    ConnectorCatalog,
+    SourceFilter,
+    sources_from_sync_overview_response,
+)
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
 from tools.searcher_client import (
@@ -129,11 +133,13 @@ class McpCapabilityHandler:
         connector_manager_url: str,
         searcher_client: SearcherClient | None = None,
         prefetched_sources: list[Source] | None = None,
+        prefetched_connectors: ConnectorCatalog | None = None,
         source_filter: SourceFilter | None = None,
     ) -> None:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._searcher_client = searcher_client
         self._prefetched_sources = prefetched_sources
+        self._prefetched_connectors = prefetched_connectors
         self._source_filter = source_filter
         self._resources: dict[str, McpResourceRecord] = {}
         self._prompts: dict[str, McpPromptRecord] = {}
@@ -145,14 +151,24 @@ class McpCapabilityHandler:
             return
 
         try:
+            connectors = None
+            if self._prefetched_connectors is not None:
+                try:
+                    connectors = _CONNECTORS_RESPONSE_ADAPTER.validate_python(
+                        self._prefetched_connectors
+                    )
+                except Exception as e:
+                    logger.warning(f"Invalid prefetched MCP connector catalog: {e}")
+
             async with httpx.AsyncClient(timeout=10.0) as client:
-                connectors_resp = await client.get(
-                    f"{self._connector_manager_url}/connectors"
-                )
-                connectors_resp.raise_for_status()
-                connectors = _CONNECTORS_RESPONSE_ADAPTER.validate_python(
-                    connectors_resp.json()
-                )
+                if connectors is None:
+                    connectors_resp = await client.get(
+                        f"{self._connector_manager_url}/connectors"
+                    )
+                    connectors_resp.raise_for_status()
+                    connectors = _CONNECTORS_RESPONSE_ADAPTER.validate_python(
+                        connectors_resp.json()
+                    )
 
                 if self._prefetched_sources is not None:
                     sources = self._prefetched_sources

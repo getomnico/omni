@@ -1,6 +1,19 @@
 import { SourceType } from '$lib/types'
 import { formatDateTime, type TimeZoneInput } from '$lib/utils/datetime'
 
+export function isSyncDisabledConfig(config: unknown): boolean {
+    return (
+        typeof config === 'object' &&
+        config !== null &&
+        !Array.isArray(config) &&
+        (config as Record<string, unknown>).sync_enabled === false
+    )
+}
+
+export function isSyncDisabledSource(source: { config: unknown }): boolean {
+    return isSyncDisabledConfig(source.config)
+}
+
 export function formatDate(date: Date | null, timeZone?: TimeZoneInput) {
     if (!date) return 'Never'
     return formatDateTime(date, timeZone)

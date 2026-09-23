@@ -4,6 +4,7 @@ import { getConfig } from '$lib/server/config'
 import { logger } from '$lib/server/logger'
 import { sourcesRepository } from '$lib/server/repositories/sources'
 import { supportsDataSync } from '$lib/types'
+import { isSyncDisabledConfig } from '$lib/utils/sources'
 
 type SyncMode = 'incremental' | 'full'
 
@@ -42,6 +43,9 @@ export const POST: RequestHandler = async ({ params, request, fetch }) => {
         }
         if (!supportsDataSync(source.integrationType)) {
             throw error(400, 'Source does not support data sync')
+        }
+        if (isSyncDisabledConfig(source.config)) {
+            throw error(400, 'Data sync is disabled for this source')
         }
 
         const mode = await getSyncMode(request)

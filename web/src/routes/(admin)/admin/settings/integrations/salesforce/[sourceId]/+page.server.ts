@@ -4,10 +4,11 @@ import { requireAdmin } from '$lib/server/authHelpers'
 import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
 import { getOAuthManifestForSourceType } from '$lib/server/oauth/connectorOAuth'
+import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
 import { SourceType } from '$lib/types'
 
 export const load: PageServerLoad = async ({ params, locals }) => {
-    requireAdmin(locals)
+    const { user } = requireAdmin(locals)
 
     const source = await getSourceById(params.sourceId)
 
@@ -19,10 +20,24 @@ export const load: PageServerLoad = async ({ params, locals }) => {
         throw error(400, 'Invalid source type for this page')
     }
 
-    const oauthManifest = await getOAuthManifestForSourceType(SourceType.SALESFORCE)
+    const [oauthManifest, actionCredentials] = await Promise.all([
+        getOAuthManifestForSourceType(SourceType.SALESFORCE),
+        serviceCredentialsRepository.getByUserAndSource(source.id, user.id),
+    ])
+    const credentialConfig = (actionCredentials?.config ?? {}) as Record<string, unknown>
+    const grantedScopes = Array.isArray(credentialConfig.granted_scopes)
+        ? credentialConfig.granted_scopes.filter(
+              (scope): scope is string => typeof scope === 'string',
+          )
+        : []
 
     return {
         source,
+        actionAuth: {
+            authorized: Boolean(actionCredentials),
+            principalEmail: actionCredentials?.principalEmail ?? null,
+            grantedScopes,
+        },
         oauth: {
             registrationRequiresInitialAccessToken:
                 oauthManifest?.registration_requires_initial_access_token === true,
@@ -55,7 +70,8 @@ export const actions: Actions = {
                 config: source.config || {},
             })
 
-            if (isActive) {
+            const config = (source.config ?? {}) as Record<string, unknown>
+            if (isActive && config.sync_enabled !== false) {
                 const connectorManagerUrl = getConfig().services.connectorManagerUrl
                 try {
                     await fetch(`${connectorManagerUrl}/sync/${source.id}`, {

@@ -25,6 +25,41 @@ function isSafeLocalPath(value: string): boolean {
     return value.startsWith('/') && !value.startsWith('//')
 }
 
+function isSalesforceMcpOnlySource(source: { sourceType: string; config: unknown }): boolean {
+    if (source.sourceType !== SourceType.SALESFORCE) return false
+    return (
+        typeof source.config === 'object' &&
+        source.config !== null &&
+        !Array.isArray(source.config) &&
+        (source.config as Record<string, unknown>).sync_enabled === false
+    )
+}
+
+function sourceBindingFromConfig(config: unknown): OAuthSourceBinding | null {
+    if (typeof config !== 'object' || config === null || Array.isArray(config)) return null
+    const binding = (config as Record<string, unknown>)[SOURCE_BINDING_CONFIG_KEY]
+    if (typeof binding !== 'object' || binding === null || Array.isArray(binding)) return null
+    const entries = Object.entries(binding)
+    if (
+        entries.length === 0 ||
+        entries.some(
+            ([key, value]) => key.length === 0 || typeof value !== 'string' || value.length === 0,
+        )
+    ) {
+        return null
+    }
+    return Object.fromEntries(entries) as OAuthSourceBinding
+}
+
+function sourceBindingsEqual(left: OAuthSourceBinding, right: OAuthSourceBinding): boolean {
+    const leftKeys = Object.keys(left).sort()
+    const rightKeys = Object.keys(right).sort()
+    return (
+        leftKeys.length === rightKeys.length &&
+        leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key])
+    )
+}
+
 function withErrorParam(path: string, errorCode: string): string {
     const separator = path.includes('?') ? '&' : '?'
     return `${path}${separator}error=${encodeURIComponent(errorCode)}`
@@ -331,26 +366,103 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         )
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
         const credentials = credentialsWithRefreshFallback(existingCredentials)
-        // Validation runs for user flows too, but a returned binding is not
-        // applied: the source-level binding belongs to the org connect flows.
+        // Most user OAuth flows do not own a source-level identity binding.
+        // MCP-only Salesforce sources are different: the setup admin's first
+        // per-user authorization establishes which Salesforce org this
+        // source represents, so later users cannot authorize another org
+        // through the same source and client.
+        let binding: OAuthSourceBinding | null
         try {
-            await validateOAuthCredentialForSource(flow.sourceId, credentials)
+            binding = await validateOAuthCredentialForSource(flow.sourceId, credentials)
         } catch (err) {
             return redirectOAuthFailure(
                 err instanceof Error ? err.message : 'OAuth credential rejected',
             )
         }
 
-        await serviceCredentialsRepository.createForUser({
-            sourceId: flow.sourceId,
-            userId: user.id,
-            provider: credentialProvider,
-            authType: 'oauth',
-            principalEmail,
-            credentials,
-            config: { granted_scopes: storedGrantedScopes },
-            expiresAt: credentialExpiryFor(existingCredentials),
-        })
+        // TODO(#477): replace this Salesforce-specific binding/bootstrap branch with declarative OAuth manifest policy.
+        if (isSalesforceMcpOnlySource(source)) {
+            if (
+                !binding ||
+                Object.entries(binding).some(
+                    ([key, value]) => key.length === 0 || value.length === 0,
+                )
+            ) {
+                return redirectOAuthFailure('Salesforce OAuth did not identify an organization')
+            }
+            const bindingResult = await db.transaction(async (tx) => {
+                const [lockedSource] = await tx
+                    .select()
+                    .from(sources)
+                    .where(eq(sources.id, flow.sourceId))
+                    .for('update')
+                if (!lockedSource || lockedSource.isDeleted) return 'conflict' as const
+
+                const currentBinding = sourceBindingFromConfig(lockedSource.config)
+                if (currentBinding && !sourceBindingsEqual(currentBinding, binding)) {
+                    return 'conflict' as const
+                }
+                if (!currentBinding && user.role !== 'admin') {
+                    return 'conflict' as const
+                }
+
+                if (!currentBinding) {
+                    const lockedConfig =
+                        typeof lockedSource.config === 'object' &&
+                        lockedSource.config !== null &&
+                        !Array.isArray(lockedSource.config)
+                            ? { ...(lockedSource.config as Record<string, unknown>) }
+                            : {}
+                    await tx
+                        .update(sources)
+                        .set({
+                            config: {
+                                ...lockedConfig,
+                                [SOURCE_BINDING_CONFIG_KEY]: binding,
+                            },
+                            updatedAt: new Date(),
+                        })
+                        .where(eq(sources.id, flow.sourceId))
+                }
+
+                await tx
+                    .delete(serviceCredentials)
+                    .where(
+                        and(
+                            eq(serviceCredentials.sourceId, flow.sourceId),
+                            eq(serviceCredentials.userId, user.id),
+                        ),
+                    )
+                await tx.insert(serviceCredentials).values({
+                    id: ulid(),
+                    sourceId: flow.sourceId,
+                    userId: user.id,
+                    provider: credentialProvider,
+                    authType: 'oauth',
+                    principalEmail,
+                    credentials: encryptConfig(credentials),
+                    config: { granted_scopes: storedGrantedScopes },
+                    expiresAt: credentialExpiryFor(existingCredentials),
+                })
+                return 'stored' as const
+            })
+            if (bindingResult === 'conflict') {
+                return redirectOAuthFailure(
+                    'Salesforce OAuth does not match the organization bound to this source',
+                )
+            }
+        } else {
+            await serviceCredentialsRepository.createForUser({
+                sourceId: flow.sourceId,
+                userId: user.id,
+                provider: credentialProvider,
+                authType: 'oauth',
+                principalEmail,
+                credentials,
+                config: { granted_scopes: storedGrantedScopes },
+                expiresAt: credentialExpiryFor(existingCredentials),
+            })
+        }
         if (flow.type === 'user_write' && flow.approvalId) {
             if (!flow.approvalChatId || !flow.sourceType) {
                 throw error(400, 'OAuth approval state is incomplete')
@@ -365,7 +477,10 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             )
             if (!approval) throw error(400, 'OAuth approval is no longer pending')
         }
-        await notifyOAuthCredentialReady(flow.sourceId, user.id)
+        const credentialReady = await notifyOAuthCredentialReady(flow.sourceId, user.id)
+        if (isSalesforceMcpOnlySource(source) && credentialReady?.status !== 'completed') {
+            return redirectOAuthFailure('Salesforce MCP tool discovery failed')
+        }
         if (flow.returnTo && !(flow.type === 'user_write' && flow.approvalId)) {
             throw redirect(302, flow.returnTo)
         }

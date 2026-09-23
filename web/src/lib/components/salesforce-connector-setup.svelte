@@ -16,7 +16,7 @@
 
     let { open = false, onSuccess, onCancel }: Props = $props()
 
-    type AuthMode = 'jwt' | 'token'
+    type AuthMode = 'jwt' | 'token' | 'mcp'
     let authMode = $state<AuthMode>('jwt')
 
     // Connected App (JWT) fields
@@ -28,6 +28,10 @@
     // Static token fields
     let instanceUrl = $state('')
     let accessToken = $state('')
+
+    // Per-user MCP OAuth fields
+    let oauthClientId = $state('')
+    let oauthClientSecret = $state('')
 
     let isSubmitting = $state(false)
 
@@ -62,17 +66,17 @@
         try {
             const normalizedInstance = instanceUrl.trim()
                 ? normalizeUrl(instanceUrl, 'instance')
-                : ''
+                : null
             const normalizedLogin = normalizeUrl(loginUrl, 'login')
-            const sourceConfig: Record<string, string> = {
+            const sourceConfig: Record<string, unknown> = {
                 login_url: normalizedLogin,
             }
             if (normalizedInstance) {
                 sourceConfig.instance_url = normalizedInstance
             }
 
-            let credentials: Record<string, string>
-            let authType: AuthType
+            let credentials: Record<string, string> | null = null
+            let authType: AuthType | null = null
 
             if (authMode === 'jwt') {
                 if (!normalizedInstance) {
@@ -90,11 +94,9 @@
                     username: username.trim(),
                     login_url: normalizedLogin,
                 }
-                if (normalizedInstance) {
-                    credentials.instance_url = normalizedInstance
-                }
-            } else {
-                if (!instanceUrl.trim() || !accessToken.trim()) {
+                credentials.instance_url = normalizedInstance
+            } else if (authMode === 'token') {
+                if (!normalizedInstance || !accessToken.trim()) {
                     throw new Error('Instance URL and Access Token are required')
                 }
                 authType = AuthType.BEARER_TOKEN
@@ -102,6 +104,12 @@
                     access_token: accessToken,
                     instance_url: normalizedInstance,
                 }
+            } else {
+                if (!oauthClientId.trim() || !oauthClientSecret.trim()) {
+                    throw new Error('Client ID and Client Secret are required for MCP-only setup')
+                }
+                sourceConfig.sync_enabled = false
+                sourceConfig.allowed_action_origins = ['mcp']
             }
 
             const sourceResponse = await fetch('/api/sources', {
@@ -111,16 +119,57 @@
                     scope: 'org',
                     name: 'Salesforce',
                     sourceType: 'salesforce',
-                    config: { ...sourceConfig, instance_url: normalizedInstance },
+                    config: sourceConfig,
+                    isActive: authMode === 'mcp',
                 }),
             })
 
             if (!sourceResponse.ok) {
-                throw new Error('Failed to create Salesforce source')
+                const body = await sourceResponse.json().catch(() => null)
+                throw new Error(body?.message || 'Failed to create Salesforce source')
             }
 
-            const source = await sourceResponse.json()
+            const source: unknown = await sourceResponse.json()
+            if (
+                !source ||
+                typeof source !== 'object' ||
+                !('id' in source) ||
+                typeof source.id !== 'string'
+            ) {
+                throw new Error('Salesforce source response did not include an id')
+            }
 
+            if (authMode === 'mcp') {
+                const oauthConfigResponse = await fetch('/api/connector-configs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        provider: `salesforce:${source.id}`,
+                        config: {
+                            oauth_client_id: oauthClientId.trim(),
+                            oauth_client_secret: oauthClientSecret.trim(),
+                        },
+                    }),
+                })
+                if (!oauthConfigResponse.ok) {
+                    await fetch(`/api/sources/${source.id}`, { method: 'DELETE' }).catch(
+                        () => undefined,
+                    )
+                    const body = await oauthConfigResponse.json().catch(() => null)
+                    throw new Error(body?.message || 'Failed to save Salesforce OAuth client')
+                }
+
+                toast.success('Salesforce MCP configured. Authorize to discover its tools.')
+                const returnTo = encodeURIComponent(
+                    `/admin/settings/integrations/salesforce/${source.id}`,
+                )
+                window.location.href = `/api/oauth/start?source_id=${source.id}&flow=user_read&return_to=${returnTo}`
+                return
+            }
+
+            if (!authType || !credentials) {
+                throw new Error('Salesforce sync credentials are incomplete')
+            }
             const credentialsResponse = await fetch('/api/service-credentials', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -144,6 +193,8 @@
             loginUrl = 'https://login.salesforce.com'
             instanceUrl = ''
             accessToken = ''
+            oauthClientId = ''
+            oauthClientSecret = ''
 
             if (onSuccess) {
                 onSuccess()
@@ -163,6 +214,8 @@
         loginUrl = 'https://login.salesforce.com'
         instanceUrl = ''
         accessToken = ''
+        oauthClientId = ''
+        oauthClientSecret = ''
         if (onCancel) {
             onCancel()
         }
@@ -174,14 +227,16 @@
         <Dialog.Header>
             <Dialog.Title>Connect Salesforce</Dialog.Title>
             <Dialog.Description>
-                Set up your Salesforce integration with an External Client App (recommended) or a
-                static access token for quick trials.
+                Sync Salesforce data into Omni, or connect only its MCP tools with per-user OAuth.
             </Dialog.Description>
         </Dialog.Header>
 
         <Tabs.Root bind:value={authMode}>
             <div class="mt-1 mb-4 border-b pb-2">
-                <Tabs.List variant="line" class="gap-6 p-0" aria-label="Salesforce authentication mode">
+                <Tabs.List
+                    variant="line"
+                    class="gap-6 p-0"
+                    aria-label="Salesforce authentication mode">
                     <Tabs.Trigger
                         value="jwt"
                         class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
@@ -191,6 +246,11 @@
                         value="token"
                         class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
                         Access Token
+                    </Tabs.Trigger>
+                    <Tabs.Trigger
+                        value="mcp"
+                        class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
+                        MCP only
                     </Tabs.Trigger>
                 </Tabs.List>
             </div>
@@ -285,12 +345,51 @@
                     </p>
                 </div>
             </Tabs.Content>
+
+            <Tabs.Content value="mcp" class="space-y-4 pt-1">
+                <div class="rounded-md border p-3 text-sm">
+                    Omni will not sync or index Salesforce records. Each user authorizes Salesforce
+                    with their own account before invoking its APIs. After saving, you will
+                    authorize once so Omni can discover the Salesforce MCP tool catalog.
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="mcp-client-id">Client ID</Label>
+                    <Input
+                        id="mcp-client-id"
+                        bind:value={oauthClientId}
+                        placeholder="External Client App consumer key"
+                        required />
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="mcp-client-secret">Client Secret</Label>
+                    <Input
+                        id="mcp-client-secret"
+                        type="password"
+                        bind:value={oauthClientSecret}
+                        placeholder="External Client App consumer secret"
+                        required />
+                </div>
+
+                <div class="space-y-2">
+                    <Label for="mcp-login-url">Login URL</Label>
+                    <Input id="mcp-login-url" bind:value={loginUrl} required />
+                    <p class="text-muted-foreground text-sm">
+                        Use https://login.salesforce.com for production or
+                        https://test.salesforce.com for a sandbox. Add Omni's OAuth callback URL,
+                        shown under OAuth Apps, to the External Client App.
+                    </p>
+                </div>
+            </Tabs.Content>
         </Tabs.Root>
 
-        <p class="text-muted-foreground text-xs">
-            Per-user MCP actions require an External Client App; configure it after connecting under
-            Integrations &gt; OAuth Apps (Scoped to this org).
-        </p>
+        {#if authMode !== 'mcp'}
+            <p class="text-muted-foreground text-xs">
+                Per-user MCP actions require an External Client App; configure it after connecting
+                under Integrations &gt; OAuth Apps (scoped to this org).
+            </p>
+        {/if}
 
         <Dialog.Footer>
             <Button variant="outline" onclick={handleCancel} class="cursor-pointer">Cancel</Button>

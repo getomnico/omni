@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from omni_connector import OAuthCredentialFlow
+from omni_connector import OAuthCredentialFlow, OAuthCredentialReadyRequest
 from omni_connector.models import Source
 
 from salesforce_connector.connector import SalesforceConnector
@@ -90,6 +90,55 @@ async def test_validate_binds_first_seen_organization_id(mock_fetch_org_id) -> N
         {"organization_id": "00D000000000001"},
     )
     assert _binding_dict(binding) == {"organization_id": "00D000000000001"}
+
+
+@pytest.mark.asyncio
+async def test_mcp_only_source_can_bind_without_stored_instance(
+    mock_fetch_org_id,
+) -> None:
+    mock_fetch_org_id("00D000000000001")
+    connector = SalesforceConnector()
+    binding = await connector.validate_oauth_credential(
+        _source({"login_url": "https://login.salesforce.com", "sync_enabled": False}),
+        {"access_token": "token", "instance_url": "https://acme.my.salesforce.com"},
+        OAuthCredentialFlow.USER_READ,
+        {},
+    )
+    assert _binding_dict(binding) == {"organization_id": "00D000000000001"}
+
+
+@pytest.mark.asyncio
+async def test_user_oauth_ready_discovers_mcp_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAdapter:
+        def __init__(self) -> None:
+            self.auth: dict[str, object] | None = None
+
+        async def discover(self, **auth: object) -> None:
+            self.auth = auth
+
+    connector = SalesforceConnector()
+    adapter = FakeAdapter()
+    connector._mcp_adapter = adapter  # type: ignore[assignment]
+    monkeypatch.setattr(
+        connector,
+        "_prepare_mcp_auth",
+        lambda credentials: {"env": {"OMNI_SALESFORCE_SOURCE_ID": credentials["_omni_source_id"]}},
+    )
+
+    changed = await connector.oauth_credential_ready(
+        OAuthCredentialReadyRequest(
+            source_id="src-1",
+            user_id="user-1",
+            provider="salesforce",
+            flow="user_read",
+            credentials={"access_token": "token"},
+        )
+    )
+
+    assert changed is True
+    assert adapter.auth == {"env": {"OMNI_SALESFORCE_SOURCE_ID": "src-1"}}
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,18 @@ import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { IntegrationType, SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
 import { getSourcesByType } from '$lib/server/db/sources'
+import { isSyncDisabledConfig } from '$lib/utils/sources'
+
+function validateAllowedActionOrigins(value: unknown): string[] | undefined {
+    if (value === undefined) return undefined
+    if (!Array.isArray(value) || value.some((origin) => origin !== 'native' && origin !== 'mcp')) {
+        throw error(
+            400,
+            "allowed_action_origins must be an array containing only 'native' or 'mcp'",
+        )
+    }
+    return value
+}
 
 function validateSalesforceUrl(value: unknown, kind: 'login' | 'instance'): string {
     if (typeof value !== 'string' || !value.trim()) {
@@ -89,6 +101,7 @@ export const GET: RequestHandler = async ({ locals }) => {
             delete config.employee_scope
             sourceConfig = config
         }
+        const isSyncDisabled = isSyncDisabledConfig(source.config)
         return {
             id: source.id,
             name: source.name,
@@ -96,10 +109,10 @@ export const GET: RequestHandler = async ({ locals }) => {
             integrationType: source.integrationType,
             scope: source.scope,
             config: sourceConfig,
-            syncStatus: latestSync?.status ?? null,
+            syncStatus: isSyncDisabled ? null : (latestSync?.status ?? null),
             isActive: source.isActive,
-            lastSyncAt: latestSync?.completedAt ?? null,
-            syncError: latestSync?.errorMessage ?? null,
+            lastSyncAt: isSyncDisabled ? null : (latestSync?.completedAt ?? null),
+            syncError: isSyncDisabled ? null : (latestSync?.errorMessage ?? null),
             createdAt: source.createdAt,
             updatedAt: source.updatedAt,
             isConnected: credentialsMap.has(source.id),
@@ -124,9 +137,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
     let sourceConfig: Record<string, unknown> =
         config && typeof config === 'object' && !Array.isArray(config) ? { ...config } : {}
+    if (Object.prototype.hasOwnProperty.call(sourceConfig, 'allowed_action_origins')) {
+        sourceConfig.allowed_action_origins = validateAllowedActionOrigins(
+            sourceConfig.allowed_action_origins,
+        )
+    }
+    const isSyncDisabled = isSyncDisabledConfig(sourceConfig)
+    const requestedIsActive = isActive ?? false
     if (sourceType === SourceType.SALESFORCE) {
         sourceConfig.login_url = validateSalesforceUrl(sourceConfig.login_url, 'login')
-        sourceConfig.instance_url = validateSalesforceUrl(sourceConfig.instance_url, 'instance')
+        if (isSyncDisabled) {
+            delete sourceConfig.instance_url
+        } else {
+            sourceConfig.instance_url = validateSalesforceUrl(sourceConfig.instance_url, 'instance')
+        }
     }
 
     if (!name || !sourceType) {
@@ -174,7 +198,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
             sql`SELECT pg_advisory_xact_lock(hashtext(${`source_slug:${sourceType}`}))`,
         )
 
-        if (isActive ?? false) {
+        if (requestedIsActive) {
             const remoteConflicts = await tx
                 .select({ id: sources.id })
                 .from(sources)
@@ -205,8 +229,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                 scope,
                 config: sourceConfig,
                 createdBy: user.id,
-                isActive: isActive ?? false,
-                syncIntervalSeconds: DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType],
+                // A disabled sync interval prevents scheduling for any connector.
+                isActive: requestedIsActive,
+                syncIntervalSeconds: isSyncDisabled
+                    ? null
+                    : DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType],
             })
             .returning()
     })

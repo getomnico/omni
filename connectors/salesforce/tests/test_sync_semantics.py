@@ -159,6 +159,25 @@ def _published(fake: FakeSdkClient) -> dict[str, Any]:
     return fake.checkpoints[-1]
 
 
+@pytest.mark.asyncio
+async def test_mcp_only_source_rejects_sync_before_reading_credentials() -> None:
+    connector = SalesforceConnector()
+    fake = FakeSdkClient()
+    ctx = make_sync_context(
+        fake,
+        None,
+        sync_mode=SyncMode.FULL,
+        is_resume=False,
+        sync_run_id="run-mcp-only",
+        connector_state={},
+    )
+
+    await connector.sync({"sync_enabled": False}, {}, None, ctx)
+
+    assert fake.completed == 0
+    assert fake.failures == ["Salesforce data sync is disabled for this MCP-only source"]
+
+
 async def _baseline_full(
     mock_salesforce_api: MockSalesforceAPI,
     mock_server: str,

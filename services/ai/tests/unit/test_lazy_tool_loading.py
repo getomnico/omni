@@ -26,7 +26,9 @@ def _action(source_id: str, source_type: str, action_name: str) -> ConnectorActi
 
 
 def _connector_with(actions: list[ConnectorAction]) -> ConnectorToolHandler:
-    handler = ConnectorToolHandler(connector_manager_url="http://unused", user_id="u1")
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://unused", user_id="u1", is_admin=True
+    )
     handler._build_tools(actions)
     handler._initialized = True
     return handler

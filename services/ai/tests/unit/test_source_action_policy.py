@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import pytest
+import respx
+from httpx import Response
+
+from db.models import Source
+from tools.connector_handler import ConnectorToolHandler, action_is_available_for_source
+
+pytestmark = pytest.mark.unit
+
+
+def _source(source_id: str, config: dict[str, object]) -> Source:
+    return Source(
+        id=source_id,
+        source_type="crm",
+        name=source_id,
+        is_active=True,
+        is_deleted=False,
+        config=config,
+    )
+
+
+@pytest.mark.asyncio
+async def test_action_origins_are_filtered_per_source_and_default_allows_all():
+    restricted_source = _source(
+        "restricted",
+        {"allowed_action_origins": ["mcp"]},
+    )
+    unrestricted_source = _source("unrestricted", {})
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://cm.test",
+        user_id="user-1",
+        prefetched_sources=[restricted_source, unrestricted_source],
+    )
+    manifest = {
+        "source_type": "crm",
+        "healthy": True,
+        "manifest": {
+            "actions": [
+                {"name": "native_lookup", "origin": "native", "mode": "read"},
+                {"name": "mcp_lookup", "origin": "mcp", "mode": "read"},
+            ],
+            "search_operators": [
+                {
+                    "operator": "team",
+                    "attribute_key": "team",
+                    "value_type": "text",
+                }
+            ],
+        },
+    }
+
+    with respx.mock(assert_all_called=True) as mock:
+        connectors_route = mock.get("http://cm.test/connectors").mock(
+            return_value=Response(200, json=[manifest])
+        )
+        await handler._ensure_initialized()
+
+    by_source = {
+        source_id: {
+            (action.action_name, action.origin)
+            for action in handler.actions.values()
+            if action.source_id == source_id
+        }
+        for source_id in (restricted_source.id, unrestricted_source.id)
+    }
+    assert by_source[restricted_source.id] == {("mcp_lookup", "mcp")}
+    assert by_source[unrestricted_source.id] == {
+        ("native_lookup", "native"),
+        ("mcp_lookup", "mcp"),
+    }
+    assert len(handler.search_operators) == 1
+    assert handler.connector_catalog == [manifest]
+    assert len(connectors_route.calls) == 1
+
+
+def test_malformed_action_origin_policy_fails_closed():
+    source = _source("malformed", {"allowed_action_origins": ["unknown"]})
+
+    with pytest.raises(ValueError, match="allowed_action_origins"):
+        action_is_available_for_source(source, "native")
+
+
+def test_source_row_rejects_malformed_action_origin_policy():
+    with pytest.raises(ValueError, match="allowed_action_origins"):
+        Source.from_row(
+            {
+                "id": "malformed",
+                "name": "Malformed",
+                "source_type": "crm",
+                "is_active": True,
+                "is_deleted": False,
+                "config": {"allowed_action_origins": "mcp"},
+            }
+        )
