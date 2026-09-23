@@ -11,7 +11,9 @@ import logging
 import time
 from collections.abc import AsyncIterator, Mapping
 from typing import Any, ClassVar, cast
+from urllib.parse import urlsplit
 
+import httpx
 from openai import APIStatusError, AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -96,6 +98,151 @@ def _image_data_source(block: Mapping[str, Any]) -> tuple[str, str] | None:
 
 
 logger = logging.getLogger(__name__)
+
+# --- Endpoint vision-capability metadata ---------------------------------
+#
+# Resolution order for image support on OpenAI-compatible endpoints:
+#
+# 1. Host metadata: OpenRouter publishes per-model input modalities on its
+#    public catalog, Ollama reports model capabilities on /api/show.
+# 2. Live probe: a one-shot chat request carrying a tiny 1x1 PNG. Any
+#    completion means the model accepts images; a 4xx rejection that clearly
+#    blames the image means it does not; auth/quota/model-not-found errors
+#    stay unknown (vision stays off). Results are cached in-process.
+# Connections can always force an answer with visionMode: on/off.
+
+_PROBE_TIMEOUT_S = 3.0
+_OPENROUTER_CATALOG_TTL_S = 6 * 3600
+_OLLAMA_RESULT_TTL_S = 3600
+_LIVE_PROBE_TIMEOUT_S = 15.0
+_LIVE_PROBE_TTL_S = 7 * 24 * 3600
+_LIVE_PROBE_UNKNOWN_TTL_S = 300
+_openrouter_catalog_cache: dict[str, tuple[float, frozenset[str], frozenset[str]]] = {}
+_ollama_vision_cache: dict[str, tuple[float, bool]] = {}
+_live_vision_cache: dict[str, tuple[float, bool | None]] = {}
+
+# 1x1 transparent PNG.
+_PROBE_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+    "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+_IMAGE_UNSUPPORTED_MARKERS = ("image", "vision", "multimodal", "modalit")
+
+
+def _endpoint_origin(base_url: str) -> str:
+    parts = urlsplit(base_url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def _is_openrouter(base_url: str) -> bool:
+    host = (urlsplit(base_url).hostname or "").lower()
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+
+
+def _is_ollama(base_url: str) -> bool:
+    return urlsplit(base_url).port == 11434
+
+
+def _vision_and_all_ids_from_catalog(
+    payload: object,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """(ids accepting images, all catalog ids) from an OpenRouter catalog payload."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        return frozenset(), frozenset()
+    vision: set[str] = set()
+    all_ids: set[str] = set()
+    for entry in payload["data"]:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("id")
+        if not isinstance(model_id, str):
+            continue
+        all_ids.add(model_id)
+        architecture = entry.get("architecture")
+        if not isinstance(architecture, dict):
+            continue
+        modalities = architecture.get("input_modalities")
+        if isinstance(modalities, list) and "image" in modalities:
+            vision.add(model_id)
+    return frozenset(vision), frozenset(all_ids)
+
+
+def _catalog_supports_images(
+    vision_ids: frozenset[str], all_ids: frozenset[str], model_id: str
+) -> bool | None:
+    """Tri-state catalog answer: True/False when the id is known, else None."""
+    if model_id in vision_ids:
+        return True
+    base = model_id.split(":", 1)[0]
+    if base != model_id and base in vision_ids:
+        return True
+    if model_id in all_ids or (base != model_id and base in all_ids):
+        return False
+    return None
+
+
+def _ollama_supports_vision(payload: object) -> bool:
+    capabilities = payload.get("capabilities") if isinstance(payload, dict) else None
+    return isinstance(capabilities, list) and "vision" in capabilities
+
+
+def _probe_error_mentions_images(e: BaseException) -> bool:
+    """True when a 4xx rejection clearly blames the image input."""
+    status = _openai_compat_status_code(e)
+    if status is None or status >= 500:
+        return False
+    text = str(e).lower()
+    body = getattr(e, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            text += " " + error["message"].lower()
+        elif isinstance(error, str):
+            text += " " + error.lower()
+    return any(marker in text for marker in _IMAGE_UNSUPPORTED_MARKERS)
+
+
+async def _openrouter_supports_images(base_url: str, model_id: str) -> bool | None:
+    origin = _endpoint_origin(base_url)
+    now = time.monotonic()
+    cached = _openrouter_catalog_cache.get(origin)
+    if cached is not None and cached[0] >= now:
+        vision_ids, all_ids = cached[1], cached[2]
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S) as client:
+                resp = await client.get(f"{origin}/api/v1/models")
+                resp.raise_for_status()
+            vision_ids, all_ids = _vision_and_all_ids_from_catalog(resp.json())
+        except Exception as e:
+            logger.info("OpenRouter vision catalog probe failed for %s: %s", origin, e)
+            return None
+        _openrouter_catalog_cache[origin] = (
+            now + _OPENROUTER_CATALOG_TTL_S,
+            vision_ids,
+            all_ids,
+        )
+    return _catalog_supports_images(vision_ids, all_ids, model_id)
+
+
+async def _ollama_model_supports_vision(base_url: str, model_id: str) -> bool | None:
+    origin = _endpoint_origin(base_url)
+    cache_key = f"{origin}|{model_id}"
+    now = time.monotonic()
+    cached = _ollama_vision_cache.get(cache_key)
+    if cached is not None and cached[0] >= now:
+        return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_S) as client:
+            resp = await client.post(f"{origin}/api/show", json={"model": model_id})
+            resp.raise_for_status()
+        result = _ollama_supports_vision(resp.json())
+    except Exception as e:
+        logger.info("Ollama vision capability probe failed for %s: %s", cache_key, e)
+        return None
+    _ollama_vision_cache[cache_key] = (now + _OLLAMA_RESULT_TTL_S, result)
+    return result
+
 
 # Some OpenAI-compatible providers expose non-standard assistant-message fields
 # that must be round-tripped in later requests. Keep this as a narrow allowlist:
@@ -383,6 +530,79 @@ class OpenAICompatibleProvider(LLMProvider):
             api_key=api_key or "unused",
             base_url=f"{self.base_url}/v1",
         )
+
+    async def supports_vision(self, model_id: str) -> bool | None:
+        """Ask the endpoint whether the model accepts image inputs.
+
+        Host metadata first (OpenRouter catalog, Ollama), then a one-shot
+        live image probe. Returns None only when the endpoint cannot answer
+        (auth/quota/infra/model-not-found); callers must treat None as not
+        vision-capable unless overridden.
+        """
+        base_url = self.base_url or ""
+        if _is_openrouter(base_url):
+            answer = await _openrouter_supports_images(base_url, model_id)
+            if answer is not None:
+                return answer
+        elif _is_ollama(base_url):
+            answer = await _ollama_model_supports_vision(base_url, model_id)
+            if answer is not None:
+                return answer
+        return await self._probe_live_vision(model_id)
+
+    async def _probe_live_vision(self, model_id: str) -> bool | None:
+        """Send a tiny image ping and interpret the outcome.
+
+        Any completion proves the model accepts images. A 4xx that clearly
+        blames the image proves it does not. Everything else (auth, quota,
+        model not found, connection trouble) stays unknown.
+        """
+        cache_key = f"{self.base_url}|{model_id}"
+        now = time.monotonic()
+        cached = _live_vision_cache.get(cache_key)
+        if cached is not None and cached[0] >= now:
+            return cached[1]
+        try:
+            await self.client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "."},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{_PROBE_PNG_BASE64}"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=1,
+                stream=False,
+                timeout=_LIVE_PROBE_TIMEOUT_S,
+            )
+        except Exception as e:
+            result: bool | None = (
+                False if _probe_error_mentions_images(e) else None
+            )
+            logger.info(
+                "Live vision probe for %s on %s -> %s (%s)",
+                model_id,
+                self.base_url,
+                result,
+                e,
+            )
+        else:
+            result = True
+        ttl = (
+            _LIVE_PROBE_TTL_S
+            if result is not None
+            else _LIVE_PROBE_UNKNOWN_TTL_S
+        )
+        _live_vision_cache[cache_key] = (now + ttl, result)
+        return result
 
     async def stream_response(
         self,

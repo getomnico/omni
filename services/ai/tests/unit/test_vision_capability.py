@@ -8,40 +8,39 @@ from vision_capability import (
     VISION_MODE_AUTO,
     VISION_MODE_OFF,
     VISION_MODE_ON,
-    curated_vision_capable,
     effective_vision,
     parse_vision_mode,
+    static_vision,
 )
 
 
 @pytest.mark.parametrize(
-    "model_id",
-    [
-        "gpt-4o",
-        "gpt-4o-mini-2024-07-18",
-        "claude-sonnet-4-5",
-        "claude-3-5-haiku-latest",
-        "gemini-2.0-flash",
-        "openai/gpt-4.1",
-        "meta-llama/llama-4-scout",
-        "qwen2-vl-7b-instruct",
-    ],
+    "provider_type",
+    ["anthropic", "gemini", "bedrock", "vertex_ai"],
 )
-def test_curated_map_recognizes_vision_models(model_id: str):
-    assert curated_vision_capable(model_id)
+def test_vision_families_resolve_without_probing(provider_type: str):
+    assert static_vision(provider_type) is True
+    assert effective_vision("auto", provider_type) is True
 
 
-@pytest.mark.parametrize(
-    "model_id",
-    ["", None, "gpt-3.5-turbo", "claude-2.1", "gemini-1.0-pro", "text-embedding-3-small"],
-)
-def test_curated_map_rejects_non_vision_models(model_id):
-    assert not curated_vision_capable(model_id)
+def test_metadata_provider_defers_to_endpoint_answer():
+    assert static_vision("openai_compatible") is None
+    assert effective_vision("auto", "openai_compatible", None) is None
+    assert effective_vision("auto", "openai_compatible", True) is True
+    assert effective_vision("auto", "openai_compatible", False) is False
 
 
-def test_case_and_whitespace_insensitive():
-    assert curated_vision_capable("  GPT-4O  ")
-    assert curated_vision_capable("Claude-Sonnet-4")
+@pytest.mark.parametrize("provider_type", ["openai", "azure_foundry", "mystery_type"])
+def test_types_without_image_passthrough_default_off(provider_type: str):
+    assert static_vision(provider_type) is False
+    assert effective_vision("auto", provider_type, True) is False
+
+
+def test_override_wins_over_family_and_endpoint():
+    assert effective_vision("off", "anthropic") is False
+    assert effective_vision("on", "openai") is True
+    assert effective_vision("on", "openai_compatible", False) is True
+    assert effective_vision("off", "openai_compatible", True) is False
 
 
 def test_parse_vision_mode_lenient():
@@ -51,16 +50,3 @@ def test_parse_vision_mode_lenient():
     assert parse_vision_mode("sometimes") == VISION_MODE_AUTO
     assert parse_vision_mode(None) == VISION_MODE_AUTO
     assert parse_vision_mode(42) == VISION_MODE_AUTO
-
-
-def test_override_wins_over_curated_map():
-    # off beats a vision-capable model; on rescues a non-vision one
-    assert not effective_vision("off", "openai_compatible", "gpt-4o")
-    assert effective_vision("on", "openai_compatible", "gpt-3.5-turbo")
-
-
-def test_auto_defers_to_curated_map():
-    assert effective_vision("auto", "anthropic", "claude-sonnet-4-5")
-    assert not effective_vision("auto", "openai_compatible", "gpt-3.5-turbo")
-    assert effective_vision(None, "gemini", "gemini-2.0-flash")
-    assert effective_vision("garbage", "vertex_ai", "claude-opus-4-1")

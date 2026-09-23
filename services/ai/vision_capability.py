@@ -1,19 +1,28 @@
 """Vision-capability resolution for chat models.
 
-Ported from Windshift's `internal/llm/vision_capability.go`: provider APIs
-offer no portable "does this model accept images" signal, so capability is
-resolved from (1) an explicit per-connection override (`vision_mode` key in
-the provider config), then (2) a conservative curated model-ID map. Vision
-inputs are only attached when resolution says the model can see them;
-otherwise image uploads degrade to the workspace-pointer text path.
+Provider APIs offer no portable "does this model accept images" flag, and
+model-ID substring lists go stale with every release, so capability is
+resolved without name matching:
+
+1. The per-connection ``visionMode`` override wins outright
+   (``on`` / ``off``).
+2. Provider families whose adapters always accept images (Anthropic-style
+   Claude, Gemini) resolve to vision-capable.
+3. OpenAI-compatible endpoints are asked: OpenRouter publishes per-model
+   input modalities and Ollama exposes model capabilities; endpoints that
+   offer neither get a one-shot live probe (a tiny image ping — any
+   completion proves vision, a clear 4xx image rejection proves text-only).
+   Only truly unanswerable cases resolve as NOT vision-capable (images
+   degrade to the workspace-pointer path) until an admin opts in with
+   ``visionMode: on``.
 """
 
 from __future__ import annotations
 
-# Vision override modes for the provider_config vision_mode key.
-#   - auto: defer to the model's resolved capability (curated map)
-#   - on:   force vision on (e.g. a local/custom model id the map can't recognize)
-#   - off:  force vision off (a model the map wrongly marks capable)
+# Vision override modes for the provider config visionMode key.
+#   - auto: detect (family knowledge or endpoint metadata; else off)
+#   - on:   force vision on (e.g. a vLLM-served vision model)
+#   - off:  force vision off
 VISION_MODE_AUTO = "auto"
 VISION_MODE_ON = "on"
 VISION_MODE_OFF = "off"
@@ -26,8 +35,8 @@ def is_valid_vision_mode(mode: str) -> bool:
 def parse_vision_mode(raw: object) -> str:
     """Extract the vision override from a provider config dict value.
 
-    Missing or unrecognized values defer to auto (same leniency as Windshift's
-    ProviderConfigVisionMode).
+    Missing or unrecognized values defer to auto (the lenient default, so a
+    hand-edited config value can't break chat).
     """
     if not isinstance(raw, str):
         return VISION_MODE_AUTO
@@ -35,48 +44,54 @@ def parse_vision_mode(raw: object) -> str:
     return mode if is_valid_vision_mode(mode) else VISION_MODE_AUTO
 
 
-# Vision support uses a conservative case-insensitive model-ID map. Provider
-# config can override the map per connection.
-_VISION_MODEL_SUBSTRINGS = (
-    # OpenAI
-    "gpt-4o", "gpt-4.1", "gpt-4-turbo", "gpt-4-vision", "gpt-5", "chatgpt-4o",
-    "o1", "o3", "o4-mini",
-    # Anthropic (all Claude 3+ accept images)
-    "claude-3", "claude-sonnet-4", "claude-opus-4", "claude-haiku-4", "claude-4",
-    # Google Gemini (multimodal from 1.5 onward)
-    "gemini-1.5", "gemini-2", "gemini-3",
-    # xAI Grok
-    "grok-2-vision", "grok-3", "grok-4",
-    # Meta Llama vision
-    "llama-3.2", "llama-4",
-    # Generic vision markers used across vendors
-    "pixtral", "llava", "vision", "-vl-", "-vl",
+# Provider families whose wire format always accepts image blocks, so
+# capability follows from the adapter, not the model id.
+_VISION_FAMILY_PROVIDER_TYPES = frozenset(
+    {
+        "anthropic",
+        "gemini",
+        "bedrock",
+        "vertex_ai",
+    }
 )
 
+# Providers that must be asked (endpoint metadata) before images are sent.
+_METADATA_PROVIDER_TYPES = frozenset({"openai_compatible"})
 
-def curated_vision_capable(model_id: str | None) -> bool:
-    """Report whether the curated map recognizes the model id as vision-capable."""
-    id = (model_id or "").strip().lower()
-    if not id:
-        return False
-    return any(sub in id for sub in _VISION_MODEL_SUBSTRINGS)
+
+def static_vision(provider_type: str) -> bool | None:
+    """Resolve vision from provider-type knowledge alone.
+
+    Returns True/False when decidable without contacting the endpoint, or
+    None when the endpoint must be asked (openai_compatible).
+    """
+    if provider_type in _VISION_FAMILY_PROVIDER_TYPES:
+        return True
+    if provider_type in _METADATA_PROVIDER_TYPES:
+        return None
+    return False
 
 
 def effective_vision(
     vision_mode_raw: object,
     provider_type: str,
-    model_id: str,
-) -> bool:
+    endpoint_supports_vision: bool | None = None,
+) -> bool | None:
     """Resolve whether image inputs may be sent to this model.
 
-    The override wins: on/off are absolute; auto (or any unrecognized value)
-    defers to the curated map. provider_type is accepted for future
-    per-provider rules; the map is currently keyed purely by model id.
+    The override wins: on/off are absolute. Otherwise auto (or any
+    unrecognized value) defers to provider-family knowledge, then to the
+    endpoint's own metadata (``endpoint_supports_vision``; None means the
+    endpoint offers none). The result is None only when a metadata provider
+    could not be probed and no override is set — callers must treat None as
+    "not vision-capable".
     """
-    del provider_type
     mode = parse_vision_mode(vision_mode_raw)
     if mode == VISION_MODE_ON:
         return True
     if mode == VISION_MODE_OFF:
         return False
-    return curated_vision_capable(model_id)
+    static = static_vision(provider_type)
+    if static is not None:
+        return static
+    return endpoint_supports_vision

@@ -32,29 +32,14 @@ class ResolvedModel:
     ``model_name`` — the wire model string (e.g. ``"claude-haiku-4-5"``)
     to pass into ``stream_response(…, model=…)``.
     ``supports_vision`` — whether image inputs may be sent to this model
-    (resolved from the provider config ``vision_mode`` override and the
-    curated capability map; see ``vision_capability``).
+    (resolved from the ``vision_mode`` override, provider-family knowledge,
+    and endpoint metadata; see ``vision_capability``).
     """
 
     provider: LLMProvider
     model_record_id: str
     model_name: str
     supports_vision: bool = False
-
-    @classmethod
-    def of(cls, provider: LLMProvider, record: ModelRecord) -> "ResolvedModel":
-        from vision_capability import effective_vision
-
-        return cls(
-            provider=provider,
-            model_record_id=record.id,
-            model_name=record.model_id,
-            supports_vision=effective_vision(
-                record.config.get("vision_mode"),
-                record.provider_type,
-                record.model_id,
-            ),
-        )
 
 
 @dataclass
@@ -63,6 +48,16 @@ class _CachedEntry:
     model_provider_id: str
     provider_updated_at: datetime | None
     model_updated_at: datetime
+    supports_vision: bool = False
+
+
+def _to_resolved(record: ModelRecord, entry: _CachedEntry) -> ResolvedModel:
+    return ResolvedModel(
+        provider=entry.provider,
+        model_record_id=record.id,
+        model_name=record.model_id,
+        supports_vision=entry.supports_vision,
+    )
 
 
 class ProviderCache:
@@ -90,10 +85,10 @@ class ProviderCache:
         record = await repo.get(model_record_id)
         if record is None or record.is_deleted:
             return None
-        provider = await self._get_or_build(record)
-        if provider is None:
+        entry = await self._get_entry(record)
+        if entry is None:
             return None
-        return ResolvedModel.of(provider, record)
+        return _to_resolved(record, entry)
 
     async def resolve_default(self) -> ResolvedModel | None:
         """Resolve the default (is_default=True) model."""
@@ -101,10 +96,10 @@ class ProviderCache:
         record = await repo.get_default()
         if record is None:
             return None
-        provider = await self._get_or_build(record)
-        if provider is None:
+        entry = await self._get_entry(record)
+        if entry is None:
             return None
-        return ResolvedModel.of(provider, record)
+        return _to_resolved(record, entry)
 
     async def resolve_secondary_or_default(self) -> ResolvedModel | None:
         """Resolve the secondary model, falling back to default."""
@@ -114,46 +109,46 @@ class ProviderCache:
             record = await repo.get_default()
         if record is None:
             return None
-        provider = await self._get_or_build(record)
-        if provider is None:
+        entry = await self._get_entry(record)
+        if entry is None:
             return None
-        return ResolvedModel.of(provider, record)
+        return _to_resolved(record, entry)
 
-    async def _get_or_build(self, record: ModelRecord) -> LLMProvider | None:
-        """Return a cached or freshly-built provider for a model record.
-
-        Thread-safe: concurrent callers for the same model will serialise
-        on ``_lock`` (intended for burst startup, not steady state — the
-        first call builds the client; subsequent calls find a fresh entry).
-        """
+    async def _get_entry(self, record: ModelRecord) -> _CachedEntry | None:
+        """Return the cached entry for a model record, building it if stale."""
         key = self._cache_key(record)
 
         # Fast path — no lock.
         cached = self._cache.get(key)
         if cached is not None and _entry_is_fresh(cached, record):
-            return cached.provider
+            return cached
 
         async with self._lock:
             # Double-check after acquiring the lock.
             cached = self._cache.get(key)
             if cached is not None and _entry_is_fresh(cached, record):
-                return cached.provider
+                return cached
 
             provider = _build_provider_from_record(record)
             if provider is None:
                 return None
 
-            self._cache[key] = _CachedEntry(
+            entry = _CachedEntry(
                 provider=provider,
                 model_provider_id=record.model_provider_id,
                 provider_updated_at=record.provider_updated_at,
                 model_updated_at=record.updated_at,
+                supports_vision=await _resolve_supports_vision(record, provider),
             )
+            self._cache[key] = entry
             logger.info(
-                "Cached provider %s (type=%s, model=%s)",
-                key, record.provider_type, record.model_id,
+                "Cached provider %s (type=%s, model=%s, vision=%s)",
+                key,
+                record.provider_type,
+                record.model_id,
+                entry.supports_vision,
             )
-            return provider
+            return entry
 
     def invalidate(self, model_provider_id: str) -> None:
         """Drop all cached models belonging to a provider configuration."""
@@ -179,6 +174,34 @@ def _entry_is_fresh(entry: _CachedEntry, record: ModelRecord) -> bool:
         entry.provider_updated_at == record.provider_updated_at
         and entry.model_updated_at == record.updated_at
     )
+
+
+async def _resolve_supports_vision(record: ModelRecord, provider: LLMProvider) -> bool:
+    """Resolve vision capability once per cached provider entry.
+
+    Never raises: an endpoint probe that fails (or a provider without the
+    capability hook) resolves to not vision-capable, matching the graceful
+    image-degradation paths.
+    """
+    from vision_capability import effective_vision
+
+    try:
+        endpoint_supports_vision: bool | None = None
+        probe = getattr(provider, "supports_vision", None)
+        if probe is not None:
+            endpoint_supports_vision = await probe(record.model_id)
+        return bool(
+            effective_vision(
+                record.config.get("visionMode"),
+                record.provider_type,
+                endpoint_supports_vision,
+            )
+        )
+    except Exception as e:
+        logger.warning(
+            "Vision capability probe failed for model %s: %s", record.model_id, e
+        )
+        return False
 
 
 def _build_provider_from_record(record: ModelRecord) -> LLMProvider | None:

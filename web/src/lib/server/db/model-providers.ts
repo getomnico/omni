@@ -21,6 +21,7 @@ export interface ModelProviderConfig {
     apiUrl?: string | null
     regionName?: string | null
     projectId?: string | null
+    visionMode?: string | null
 }
 
 export interface CreateProviderInput {

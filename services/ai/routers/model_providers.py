@@ -23,20 +23,25 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/models")
-async def list_models():
-    """Return active models (no secrets)."""
+async def list_models(request: Request):
+    """Return active models (no secrets), with resolved vision capability."""
     repo = ModelsRepository()
     records = await repo.list_active()
-    return [
-        {
-            "id": r.id,
-            "modelId": r.model_id,
-            "displayName": r.display_name,
-            "providerType": r.provider_type,
-            "isDefault": r.is_default,
-        }
-        for r in records
-    ]
+    cache = request.app.state.provider_cache
+    result = []
+    for r in records:
+        resolved = await cache.resolve_for_model(r.id)
+        result.append(
+            {
+                "id": r.id,
+                "modelId": r.model_id,
+                "displayName": r.display_name,
+                "providerType": r.provider_type,
+                "isDefault": r.is_default,
+                "supportsVision": bool(resolved.supports_vision) if resolved else False,
+            }
+        )
+    return result
 
 
 @router.post("/admin/reload-providers")
@@ -81,6 +86,9 @@ class ListProviderModelsResponse(BaseModel):
 
 
 DISCOVERED_MODELS_LIMIT = 3
+# Full-catalog listing for the admin model picker; bounded so a huge
+# upstream catalog can't stall serialization.
+DISCOVERY_CATALOG_LIMIT = 500
 
 
 def _build_provider(provider_type: ProviderType, req: TestModelRequest) -> LLMProvider:
@@ -275,6 +283,24 @@ async def _first_provider_model(
     return models[0].model_id if models else None
 
 
+async def _list_models_response(
+    provider_type: ProviderType,
+    req: TestModelRequest,
+    limit: int,
+    timeout: float,
+) -> ListProviderModelsResponse:
+    try:
+        provider = _build_provider(provider_type, req)
+        models = await asyncio.wait_for(
+            _list_provider_models(provider_type, provider, req, limit=limit),
+            timeout=timeout,
+        )
+        return ListProviderModelsResponse(models=models)
+    except Exception as e:
+        logger.warning(f"List models: failed for {provider_type}: {e}")
+        return ListProviderModelsResponse(models=[])
+
+
 @router.post(
     "/admin/provider/{provider_type}/models", response_model=ListProviderModelsResponse
 )
@@ -282,16 +308,24 @@ async def list_provider_models(
     provider_type: ProviderType,
     req: TestModelRequest,
 ) -> ListProviderModelsResponse:
-    try:
-        provider = _build_provider(provider_type, req)
-        models = await asyncio.wait_for(
-            _list_provider_models(provider_type, provider, req),
-            timeout=15,
-        )
-        return ListProviderModelsResponse(models=models)
-    except Exception as e:
-        logger.warning(f"List models: failed for {provider_type}: {e}")
-        return ListProviderModelsResponse(models=[])
+    """Ranked shortlist (upstream behavior: a few suggested models)."""
+    return await _list_models_response(
+        provider_type, req, DISCOVERED_MODELS_LIMIT, timeout=15
+    )
+
+
+@router.post(
+    "/admin/provider/{provider_type}/models/catalog",
+    response_model=ListProviderModelsResponse,
+)
+async def list_provider_model_catalog(
+    provider_type: ProviderType,
+    req: TestModelRequest,
+) -> ListProviderModelsResponse:
+    """Full model catalog for the admin model picker."""
+    return await _list_models_response(
+        provider_type, req, DISCOVERY_CATALOG_LIMIT, timeout=30
+    )
 
 
 @router.post("/admin/provider/{provider_type}/test", response_model=TestModelResponse)

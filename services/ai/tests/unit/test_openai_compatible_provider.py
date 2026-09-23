@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APIStatusError
 
 from providers.openai_compatible import (
     REASONING_CONTENT_KEY,
@@ -364,3 +367,250 @@ def test_convert_messages_ignores_non_base64_image_source():
     )
 
     assert converted == [{"role": "user", "content": "hi"}]
+
+
+# --- Endpoint vision-capability metadata ---------------------------------
+
+_CATALOG = {
+    "data": [
+        {
+            "id": "vendor/vision-model",
+            "architecture": {"input_modalities": ["text", "image"]},
+        },
+        {
+            "id": "vendor/text-model",
+            "architecture": {"input_modalities": ["text"]},
+        },
+        {"id": "vendor/no-architecture"},
+    ]
+}
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    routes: dict[tuple[str, str], _FakeResponse] = {}
+    constructions = 0
+
+    def __init__(self, **kwargs):
+        type(self).constructions += 1
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def get(self, url, **kwargs):
+        return type(self).routes[("GET", url)]
+
+    async def post(self, url, **kwargs):
+        return type(self).routes[("POST", url)]
+
+
+class _FakeStatusError(APIStatusError):
+    def __init__(self, status_code, message, body=None):
+        super().__init__(
+            message,
+            response=httpx.Response(
+                status_code, request=httpx.Request("POST", "http://probe.test")
+            ),
+            body=body,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _reset_probe_caches(monkeypatch):
+    import providers.openai_compatible as oc
+
+    monkeypatch.setattr(oc, "_openrouter_catalog_cache", {})
+    monkeypatch.setattr(oc, "_ollama_vision_cache", {})
+    monkeypatch.setattr(oc, "_live_vision_cache", {})
+
+
+def _provider_with_client(monkeypatch, outcome="ok", exc=None):
+    """Provider whose SDK client answers the live probe with `outcome`/`exc`."""
+    import providers.openai_compatible as oc
+
+    provider = oc.OpenAICompatibleProvider(
+        base_url="http://gpu-box:8000/v1", model="some-model"
+    )
+    calls = {"count": 0}
+
+    async def create(**kwargs):
+        calls["count"] += 1
+        if exc is not None:
+            raise exc
+        assert kwargs["messages"][0]["content"][1]["type"] == "image_url"
+        return object()
+
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    return provider, calls
+
+
+@pytest.mark.asyncio
+async def test_generic_endpoint_live_probe_accepts_image_and_caches(monkeypatch):
+    provider, calls = _provider_with_client(monkeypatch, outcome="ok")
+
+    assert await provider.supports_vision("some-model") is True
+    assert await provider.supports_vision("some-model") is True
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_live_probe_image_rejection_means_no_vision(monkeypatch):
+    from providers.openai_compatible import _probe_error_mentions_images
+
+    exc = _FakeStatusError(
+        400,
+        "Model does not support image input",
+        body={"error": {"message": "Model does not support image input"}},
+    )
+    assert _probe_error_mentions_images(exc)
+    provider, _ = _provider_with_client(monkeypatch, exc=exc)
+
+    assert await provider.supports_vision("some-model") is False
+
+
+@pytest.mark.asyncio
+async def test_live_probe_auth_failure_stays_unknown(monkeypatch):
+    exc = _FakeStatusError(401, "Incorrect API key provided")
+    provider, _ = _provider_with_client(monkeypatch, exc=exc)
+
+    assert await provider.supports_vision("some-model") is None
+
+
+@pytest.mark.asyncio
+async def test_live_probe_server_error_stays_unknown(monkeypatch):
+    exc = _FakeStatusError(500, "image pipeline exploded")
+    provider, _ = _provider_with_client(monkeypatch, exc=exc)
+
+    assert await provider.supports_vision("some-model") is None
+
+
+def test_vision_and_all_ids_from_catalog_parses_modalities():
+    from providers.openai_compatible import _vision_and_all_ids_from_catalog
+
+    vision, all_ids = _vision_and_all_ids_from_catalog(_CATALOG)
+    assert vision == frozenset({"vendor/vision-model"})
+    assert all_ids == frozenset(
+        {"vendor/vision-model", "vendor/text-model", "vendor/no-architecture"}
+    )
+    assert _vision_and_all_ids_from_catalog({"data": "junk"}) == (frozenset(), frozenset())
+    assert _vision_and_all_ids_from_catalog(None) == (frozenset(), frozenset())
+
+
+def test_catalog_match_is_tri_state():
+    from providers.openai_compatible import _catalog_supports_images
+
+    vision_ids = frozenset({"vendor/vision-model"})
+    all_ids = frozenset({"vendor/vision-model", "vendor/text-model"})
+
+    assert _catalog_supports_images(vision_ids, all_ids, "vendor/vision-model") is True
+    assert (
+        _catalog_supports_images(vision_ids, all_ids, "vendor/vision-model:free")
+        is True
+    )
+    assert _catalog_supports_images(vision_ids, all_ids, "vendor/text-model") is False
+    assert _catalog_supports_images(vision_ids, all_ids, "vendor/unknown") is None
+
+
+def test_ollama_payload_vision_capability():
+    from providers.openai_compatible import _ollama_supports_vision
+
+    assert _ollama_supports_vision({"capabilities": ["completion", "vision"]})
+    assert not _ollama_supports_vision({"capabilities": ["completion"]})
+    assert not _ollama_supports_vision(None)
+
+
+@pytest.mark.asyncio
+async def test_openrouter_probe_reads_public_catalog(monkeypatch):
+    import providers.openai_compatible as oc
+
+    monkeypatch.setattr(oc.httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.constructions = 0
+    _FakeAsyncClient.routes = {
+        ("GET", "https://openrouter.ai/api/v1/models"): _FakeResponse(_CATALOG)
+    }
+
+    provider = oc.OpenAICompatibleProvider(
+        base_url="https://openrouter.ai/api/v1", model="vendor/vision-model"
+    )
+    assert await provider.supports_vision("vendor/vision-model") is True
+    assert await provider.supports_vision("vendor/text-model") is False
+    assert await provider.supports_vision("vendor/vision-model:free") is True
+
+    # The catalog is fetched once and reused across models.
+    assert _FakeAsyncClient.constructions == 1
+
+
+@pytest.mark.asyncio
+async def test_openrouter_unknown_model_falls_back_to_live_probe(monkeypatch):
+    import providers.openai_compatible as oc
+
+    monkeypatch.setattr(oc.httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.routes = {
+        ("GET", "https://openrouter.ai/api/v1/models"): _FakeResponse(_CATALOG)
+    }
+    provider, calls = _provider_with_client(monkeypatch, outcome="ok")
+
+    assert await provider.supports_vision("vendor/not-in-catalog") is True
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_openrouter_probe_failure_falls_back_to_live_probe(monkeypatch):
+    import providers.openai_compatible as oc
+
+    monkeypatch.setattr(oc.httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.routes = {
+        ("GET", "https://openrouter.ai/api/v1/models"): _FakeResponse({}, status_code=500)
+    }
+    provider, calls = _provider_with_client(monkeypatch, outcome="ok")
+
+    assert await provider.supports_vision("vendor/vision-model") is True
+    assert calls["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ollama_probe_asks_api_show(monkeypatch):
+    import providers.openai_compatible as oc
+
+    monkeypatch.setattr(oc.httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.routes = {
+        ("POST", "http://localhost:11434/api/show"): _FakeResponse(
+            {"capabilities": ["completion", "vision"]}
+        )
+    }
+
+    provider = oc.OpenAICompatibleProvider(
+        base_url="http://localhost:11434/v1", model="llava:13b"
+    )
+    assert await provider.supports_vision("llava:13b") is True
+
+
+@pytest.mark.asyncio
+async def test_ollama_unknown_model_falls_back_to_live_probe(monkeypatch):
+    import providers.openai_compatible as oc
+
+    monkeypatch.setattr(oc.httpx, "AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.routes = {
+        ("POST", "http://localhost:11434/api/show"): _FakeResponse({}, status_code=404)
+    }
+    provider, calls = _provider_with_client(monkeypatch, outcome="ok")
+
+    assert await provider.supports_vision("ghost") is True
+    assert calls["count"] == 1
