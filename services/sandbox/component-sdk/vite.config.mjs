@@ -32,7 +32,7 @@ function componentImportPolicy() {
     name: 'omni-component-import-policy',
     enforce: 'pre',
     resolveId(source, importer) {
-      if (!importer || importer.includes('/node_modules/')) return null
+      if (!importer || importer.includes('/node_modules/') || importer.startsWith(sdkRoot)) return null
       if (source.startsWith('\0')) return null
       if (source.startsWith('.') || isAbsolute(source)) {
         const candidates = isAbsolute(source)

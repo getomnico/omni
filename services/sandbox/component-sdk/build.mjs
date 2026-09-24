@@ -71,7 +71,7 @@ async function main() {
     )
     await writeFile(
       entryCss,
-      `@source ${JSON.stringify(workspace)};\n@import ${JSON.stringify(`${SDK_ROOT}/src/theme.css`)};\n`,
+      `@import ${JSON.stringify(`${SDK_ROOT}/src/theme.css`)};\n@source ${JSON.stringify(workspace)};\n`,
       'utf8',
     )
     await writeFile(
