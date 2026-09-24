@@ -69,6 +69,10 @@ async function cachedRecoveryResponse() {
 
 
 async function fetchNavigation(req, preloadResponse) {
+  // The old 30s deadline returned a synthetic "couldn't connect" 503 even when
+  // the server later returned 200. Do not mistake slow responses for offline ones.
+  // TODO: Reintroduce a measured navigation deadline with a distinct timeout
+  // message and telemetry, rather than using the offline recovery document.
   // A successful preload is the navigation response; only retry with fetch when
   // preload itself rejects or is unavailable, never alongside an in-flight one.
   let preload;
