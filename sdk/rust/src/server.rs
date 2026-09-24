@@ -7,7 +7,6 @@ use crate::models::{
     OAuthCredentialReadyRequest, PromptRequest, ResourceRequest, SkillRequest, SkillResponse,
     SyncRequest, SyncResponse, SyncStatusResponse,
 };
-use shared::models::OAuthCredentialValidationRequest;
 use anyhow::{Context, Result};
 use axum::{
     Router,
@@ -20,9 +19,8 @@ use axum::{
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use serde::de::DeserializeOwned;
-use shared::models::{
-    ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType,
-};
+use shared::models::OAuthCredentialValidationRequest;
+use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -711,7 +709,10 @@ where
 async fn oauth_validate<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<OAuthCredentialValidationRequest>,
-) -> Result<Json<shared::models::OAuthCredentialValidationResponse>, (StatusCode, Json<serde_json::Value>)>
+) -> Result<
+    Json<shared::models::OAuthCredentialValidationResponse>,
+    (StatusCode, Json<serde_json::Value>),
+>
 where
     C: Connector,
 {
@@ -988,13 +989,11 @@ where
         .map_err(|e| {
             let message = format!("{:#}", e);
             error!("Prompt get failed for {}: {}", name, message);
-            if let Some(body) =
-                mcp_auth_required_credentials_response(
-                    state.connector.as_ref(),
-                    &credentials,
-                    &message,
-                )
-            {
+            if let Some(body) = mcp_auth_required_credentials_response(
+                state.connector.as_ref(),
+                &credentials,
+                &message,
+            ) {
                 return (StatusCode::PRECONDITION_FAILED, Json(body));
             }
             (

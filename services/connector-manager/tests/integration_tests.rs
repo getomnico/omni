@@ -9,9 +9,8 @@ use serde_json::json;
 use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
-    ConnectorManifest, DocumentMetadata,
-    DocumentPermissions, IntegrationType, PersonSyncRecord, ServiceCredential, ServiceProvider,
-    SourceType, SyncStatus, SyncType,
+    ConnectorManifest, DocumentMetadata, DocumentPermissions, IntegrationType, PersonSyncRecord,
+    ServiceCredential, ServiceProvider, SourceType, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use time::OffsetDateTime;

@@ -5,13 +5,13 @@ use futures::StreamExt;
 use redis::AsyncCommands;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use shared::models::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, IntegrationType,
-    McpPromptArgument,
-    McpPromptDefinition, McpResourceDefinition, ServiceCredential, ServiceProvider, Source,
+    McpPromptArgument, McpPromptDefinition, McpResourceDefinition, ServiceCredential,
+    ServiceProvider, Source,
 };
-use shared::{traits::Repository, DatabasePool};
+use shared::{DatabasePool, traits::Repository};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use thiserror::Error;
@@ -1293,15 +1293,19 @@ mod tests {
     #[test]
     fn oversized_catalog_entries_are_ignored() {
         let oversized = "x".repeat(MAX_MCP_SCHEMA_BYTES + 1);
-        assert!(action_from_tool(
-            &json!({"name":"huge","inputSchema":{"description": oversized}}),
-            true
-        )
-        .is_none());
-        assert!(resource_from_value(
-            &json!({"name":"huge","uri":"file://huge","description": oversized})
-        )
-        .is_none());
+        assert!(
+            action_from_tool(
+                &json!({"name":"huge","inputSchema":{"description": oversized}}),
+                true
+            )
+            .is_none()
+        );
+        assert!(
+            resource_from_value(
+                &json!({"name":"huge","uri":"file://huge","description": oversized})
+            )
+            .is_none()
+        );
         assert!(prompt_from_value(&json!({"name":"huge","description": oversized})).is_none());
     }
 

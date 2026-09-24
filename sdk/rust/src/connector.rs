@@ -13,8 +13,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest,
-    ConnectorSkillDefinition, IntegrationType,
+    ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, IntegrationType,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, SearchOperator,
     ServiceCredential, Source, SourceType, SyncType,
 };

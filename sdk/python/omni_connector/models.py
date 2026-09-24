@@ -462,12 +462,6 @@ class OAuthCredentialReadyRequest(BaseModel):
     )
 
 
-class SkillRequest(BaseModel):
-    skill_id: str
-    arguments: dict[str, Any] | None = None
-    credentials: dict[str, Any] = Field(default_factory=dict)
-
-
 class SkillResponse(BaseModel):
     skill_id: str
     title: str
@@ -540,6 +534,13 @@ class Source(BaseModel):
     _normalize_updated_at = field_validator("updated_at", mode="before")(_normalize_rust_datetime)
 
 
+class SkillRequest(BaseModel):
+    skill_id: str
+    arguments: dict[str, Any] | None = None
+    credentials: dict[str, Any] = Field(default_factory=dict)
+    source: Source | None = None
+
+
 class ActionRequest(BaseModel):
     action: str
     params: dict[str, Any]
@@ -603,12 +604,14 @@ class ActionResponse(BaseModel):
 class ResourceRequest(BaseModel):
     uri: str
     credentials: dict[str, Any] = Field(default_factory=dict)
+    source: Source | None = None
 
 
 class PromptRequest(BaseModel):
     name: str
     arguments: dict[str, Any] | None = None
     credentials: dict[str, Any] = Field(default_factory=dict)
+    source: Source | None = None
 
 
 class SdkSourceSyncData(BaseModel):

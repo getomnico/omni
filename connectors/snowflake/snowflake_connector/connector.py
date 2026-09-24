@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -9,14 +10,15 @@ from omni_connector import (
     ActionDefinition,
     Connector,
     ConnectorManifest,
+    ConnectorSkillDefinition,
     ConnectorSourceCapabilities,
     HttpMcpServer,
+    ManifestSourceContext,
     McpPromptDefinition,
     McpResourceDefinition,
     OAuthCredentialFlow,
     OAuthManifestConfig,
     OAuthScopeSet,
-    ManifestSourceContext,
     Source,
 )
 from omni_connector.mcp_adapter import McpAdapter
@@ -42,6 +44,8 @@ class SnowflakeConnector(Connector):
         self._session_factory = session_factory or default_session_factory
         self._oauth_session_factory = oauth_session_factory or default_oauth_session_factory
         self._source_endpoints: dict[str, str] = {}
+        self._source_cache_keys: dict[str, str] = {}
+        self._source_skills: dict[str, list[ConnectorSkillDefinition]] = {}
         self._source_catalogs: dict[
             str,
             tuple[
@@ -101,12 +105,12 @@ class SnowflakeConnector(Connector):
         )
 
     @property
-    def mcp_server(self) -> HttpMcpServer:
-        return HttpMcpServer("https://invalid.snowflake.invalid/mcp")
+    def mcp_server(self) -> None:
+        return None
 
     def mcp_server_for_source(self, source: Source | None) -> HttpMcpServer | None:
         if source is None:
-            return self.mcp_server
+            return None
         config = SnowflakeConfig.model_validate(source.config)
         if not config.mcp_enabled or config.mcp_endpoint_url is None:
             return None
@@ -119,17 +123,26 @@ class SnowflakeConnector(Connector):
     def mcp_adapter_for_credentials(
         self, credentials: dict[str, Any], source: Source | None = None
     ) -> McpAdapter | None:
-        if source is not None:
-            return self.mcp_adapter_for_source(source)
-        source_id = credentials.get("source_id")
-        endpoint = self._source_endpoints.get(source_id) if isinstance(source_id, str) else None
-        return McpAdapter(HttpMcpServer(endpoint)) if endpoint is not None else None
+        return self.mcp_adapter_for_source(source)
+
+    def mcp_skill_for_source(
+        self, skill_id: str, source: Source | None
+    ) -> ConnectorSkillDefinition | None:
+        if source is None:
+            return None
+        return next(
+            (skill for skill in self._source_skills.get(source.id, []) if skill.id == skill_id),
+            None,
+        )
 
     async def mcp_action_names_for_source(self, source: Source | None) -> set[str]:
         if source is None:
             return set()
         catalog = self._source_catalogs.get(source.id)
         return {action.name for action in catalog[0]} if catalog is not None else set()
+
+    def _prepare_mcp_auth(self, credentials: dict[str, Any]) -> dict[str, Any]:
+        return {"headers": self.prepare_mcp_headers(credentials)}
 
     def prepare_mcp_headers(self, credentials: dict[str, Any]) -> dict[str, str]:
         token = _oauth_token(credentials)
@@ -157,6 +170,7 @@ class SnowflakeConnector(Connector):
         *,
         source_context: ManifestSourceContext | None = None,
         credentials: dict[str, Any] | None = None,
+        force_refresh: bool = False,
     ) -> ConnectorManifest:
         manifest = ConnectorManifest(
             name=self.name,
@@ -176,8 +190,50 @@ class SnowflakeConnector(Connector):
         config = SnowflakeConfig.model_validate(source_context.config)
         if not config.mcp_enabled or config.mcp_endpoint_url is None:
             return manifest.model_copy(update={"mcp_enabled": False})
+
+        cache_key = json.dumps(
+            {
+                "id": source_context.id,
+                "source_type": source_context.source_type,
+                "config": {
+                    key: source_context.config.get(key)
+                    for key in (
+                        "account_url",
+                        "mcp_endpoint_url",
+                        "mcp_enabled",
+                        "read_only",
+                        "write_tools_enabled",
+                    )
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if self._source_cache_keys.get(source_context.id) != cache_key:
+            self._source_cache_keys[source_context.id] = cache_key
+            self._source_catalogs.pop(source_context.id, None)
+            self._source_skills.pop(source_context.id, None)
+            self._source_endpoints.pop(source_context.id, None)
+
         if credentials is None:
             return manifest
+        cached_catalog = self._source_catalogs.get(source_context.id)
+        cached_skills = self._source_skills.get(source_context.id)
+        if not force_refresh and cached_catalog is not None and cached_skills is not None:
+            return manifest.model_copy(
+                update={
+                    "source_capabilities": [
+                        ConnectorSourceCapabilities(
+                            source_id=source_context.id,
+                            actions=cached_catalog[0],
+                            resources=cached_catalog[1],
+                            prompts=cached_catalog[2],
+                            skills=cached_skills,
+                        )
+                    ],
+                    "mcp_catalog_loaded": True,
+                }
+            )
 
         endpoint = validate_mcp_endpoint(config.mcp_endpoint_url, config.account_url)
         adapter = McpAdapter(HttpMcpServer(endpoint))
@@ -199,6 +255,7 @@ class SnowflakeConnector(Connector):
             skills.append(skill)
         self._source_endpoints[source_context.id] = endpoint
         self._source_catalogs[source_context.id] = (actions, resources, prompts)
+        self._source_skills[source_context.id] = skills
         return manifest.model_copy(
             update={
                 "source_capabilities": [

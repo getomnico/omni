@@ -1,8 +1,8 @@
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
-    ManifestSourceContext, OAuthCredentialReadyRequest,
-    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, PromptRequest,
-    ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
+    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, ManifestSourceContext,
+    OAuthCredentialReadyRequest, OAuthCredentialValidationRequest,
+    OAuthCredentialValidationResponse, PromptRequest, ResourceRequest, SkillRequest, SyncRequest,
+    SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
 use shared::models::{ServiceCredential, SyncType};
@@ -68,23 +68,32 @@ impl ConnectorClient {
         connector_url: &str,
         context: &ManifestSourceContext,
         credential: Option<&ServiceCredential>,
+        force_refresh: bool,
     ) -> Result<ConnectorManifest, ClientError> {
         use base64::Engine as _;
 
         let url = format!("{}/manifest", connector_url);
-        let encoded_context = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(context).map_err(|e| ClientError::InvalidResponse(e.to_string()))?);
+        let encoded_context = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(context).map_err(|e| ClientError::InvalidResponse(e.to_string()))?,
+        );
         let mut request = self
             .client
             .get(&url)
             .header("x-omni-manifest-source", encoded_context);
+        if force_refresh {
+            request = request.header("cache-control", "no-cache");
+        }
         if let Some(credential) = credential {
             let token = credential
                 .credentials
                 .get("access_token")
                 .and_then(|value| value.as_str())
                 .filter(|value| !value.is_empty())
-                .ok_or_else(|| ClientError::InvalidResponse("discovery credential has no access token".to_string()))?;
+                .ok_or_else(|| {
+                    ClientError::InvalidResponse(
+                        "discovery credential has no access token".to_string(),
+                    )
+                })?;
             request = request.bearer_auth(token);
         }
         let response = request

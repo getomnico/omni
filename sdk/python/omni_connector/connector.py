@@ -16,8 +16,6 @@ from .models import (
     ManifestSourceContext,
     OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
-    OAuthCredentialValidationRequest,
-    OAuthCredentialValidationResponse,
     OAuthManifestConfig,
     OAuthSourceBinding,
     SearchOperator,
@@ -159,6 +157,12 @@ class Connector(ABC):
             return set()
         return {action.name for action in await adapter.get_action_definitions()}
 
+    def mcp_skill_for_source(
+        self, skill_id: str, source: Source | None
+    ) -> ConnectorSkillDefinition | None:
+        """Resolve a source-scoped MCP skill, if this connector publishes one."""
+        return None
+
     def mcp_action_allowed(self, action: str, source: Source | None) -> bool:
         """Apply connector/source policy before dispatching an MCP action."""
         return True
@@ -276,6 +280,7 @@ class Connector(ABC):
         *,
         source_context: ManifestSourceContext | None = None,
         credentials: dict[str, Any] | None = None,
+        force_refresh: bool = False,
     ) -> ConnectorManifest:
         """Return the connector manifest.
 

@@ -122,10 +122,13 @@ def create_app(
     connector_url = config.connector_url
     server = ConnectorServer(connector, config)
 
-    def manifest_request_context(request: Request) -> tuple[ManifestSourceContext | None, dict[str, Any] | None]:
+    def manifest_request_context(
+        request: Request,
+    ) -> tuple[ManifestSourceContext | None, dict[str, Any] | None, bool]:
         encoded_context = request.headers.get("x-omni-manifest-source")
+        force_refresh = _manifest_force_refresh(request)
         if encoded_context is None:
-            return None, None
+            return None, None, force_refresh
         try:
             padding = "=" * (-len(encoded_context) % 4)
             decoded = base64.urlsafe_b64decode(encoded_context + padding)
@@ -135,11 +138,17 @@ def create_app(
 
         authorization = request.headers.get("authorization")
         if authorization is None or not authorization.startswith("Bearer "):
-            return source_context, None
+            return source_context, None, force_refresh
         token = authorization.removeprefix("Bearer ").strip()
         if not token:
-            return source_context, None
-        return source_context, {"access_token": token}
+            return source_context, None, force_refresh
+        return source_context, {"access_token": token}, force_refresh
+
+    def _manifest_force_refresh(request: Request) -> bool:
+        return any(
+            directive.strip().lower() == "no-cache"
+            for directive in request.headers.get("cache-control", "").split(",")
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
@@ -199,7 +208,7 @@ def create_app(
     @app.get("/manifest")
     async def manifest(request: Request) -> dict[str, Any]:
         try:
-            source_context, credentials = manifest_request_context(request)
+            source_context, credentials, force_refresh = manifest_request_context(request)
             if source_context is None:
                 m = await connector.get_manifest(connector_url=connector_url)
             else:
@@ -207,10 +216,14 @@ def create_app(
                     connector_url=connector_url,
                     source_context=source_context,
                     credentials=credentials,
+                    force_refresh=force_refresh,
                 )
             return m.model_dump()
         except ValueError as exc:
-            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(exc)})
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": str(exc)},
+            )
 
     @app.post("/oauth/validate")
     async def validate_oauth_credential(
@@ -557,6 +570,25 @@ def create_app(
     @app.post("/skill")
     async def get_skill(request: SkillRequest) -> JSONResponse:
         logger.info("Skill requested: %s", request.skill_id)
+        source_skill = connector.mcp_skill_for_source(request.skill_id, request.source)
+        if source_skill is not None:
+            if source_skill.content is not None:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=SkillResponse(
+                        skill_id=source_skill.id,
+                        title=source_skill.title,
+                        content=source_skill.content,
+                    ).model_dump(),
+                )
+            if source_skill.mcp_prompt:
+                return await _mcp_skill_response(
+                    source_skill.id,
+                    source_skill.title,
+                    source_skill.mcp_prompt,
+                    request,
+                )
+
         for skill in connector.skills:
             if skill.id != request.skill_id:
                 continue
@@ -595,7 +627,9 @@ def create_app(
         prompt_name: str,
         request: SkillRequest,
     ) -> JSONResponse:
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_credentials(
+            request.credentials, request.source
+        )
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

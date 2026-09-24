@@ -4,11 +4,11 @@ use shared::models::{Source, SourceType, SyncRun, SyncType};
 use time::OffsetDateTime;
 
 pub use shared::models::{
-    ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
-    McpCredentials, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
-    OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
-    PromptRequest, ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest,
-    SyncResponse, SyncStatusResponse,
+    ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest,
+    ConnectorManifest, McpCredentials, McpPromptDefinition, McpResourceDefinition,
+    OAuthCredentialFlow, OAuthCredentialValidationRequest, OAuthCredentialValidationResponse,
+    OAuthSourceBinding, PromptRequest, ResourceRequest, SearchOperator, SkillRequest,
+    SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
