@@ -2840,6 +2840,48 @@ async fn active_manifest_sources(
         .collect())
 }
 
+fn preserve_cached_mcp_catalog(
+    base: &ConnectorManifest,
+    cached: &ConnectorManifest,
+) -> ConnectorManifest {
+    let mut manifest = base.clone();
+    let native_names: std::collections::HashSet<String> = manifest
+        .actions
+        .iter()
+        .filter(|action| action.origin == ActionOrigin::Native)
+        .map(|action| action.name.clone())
+        .collect();
+    manifest.actions.extend(
+        cached
+            .actions
+            .iter()
+            .filter(|action| {
+                action.origin == ActionOrigin::Mcp && !native_names.contains(&action.name)
+            })
+            .cloned(),
+    );
+    manifest.resources = cached.resources.clone();
+    manifest.prompts = cached.prompts.clone();
+    let existing_skill_ids: std::collections::HashSet<String> = manifest
+        .skills
+        .iter()
+        .map(|skill| skill.id.clone())
+        .collect();
+    manifest.skills.extend(
+        cached
+            .skills
+            .iter()
+            .filter(|skill| !existing_skill_ids.contains(&skill.id))
+            .cloned(),
+    );
+    manifest.mcp_catalog_loaded = cached.mcp_catalog_loaded;
+    manifest
+}
+
+fn needs_native_mcp_catalog_recovery(manifest: &ConnectorManifest, is_snowflake: bool) -> bool {
+    !is_snowflake && manifest.mcp_enabled && !manifest.mcp_catalog_loaded
+}
+
 fn manifest_source_context(source: &Source) -> ManifestSourceContext {
     let config = if source.source_type == "snowflake" {
         let mut safe = serde_json::Map::new();
@@ -3012,6 +3054,112 @@ async fn pull_source_capabilities(
     manifest
 }
 
+async fn recover_native_mcp_catalog(
+    state: &AppState,
+    client: &ConnectorClient,
+    manifest: &ConnectorManifest,
+) {
+    let Some(provider) = manifest
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.get("provider").and_then(Value::as_str))
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let Some(provider_enum) = serde_json::from_value(Value::String(provider.clone())).ok() else {
+        return;
+    };
+    let credentials_repo = match ServiceCredentialsRepo::new(state.db_pool.pool().clone()) {
+        Ok(repo) => repo,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery credential repository unavailable");
+            return;
+        }
+    };
+    let Some((source_id, user_id)) = credentials_repo
+        .find_any_user_oauth_for_provider(&manifest.source_types, &provider)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let credential_service = CredentialService::new(state.db_pool.clone());
+    let credentials = match resolve_credentials_with_policy(
+        &credential_service,
+        &source_id,
+        Some(&user_id),
+        false,
+        true,
+        true,
+        Some(provider_enum),
+    )
+    .await
+    {
+        Ok(CredentialResolution::Resolved(credentials)) => credentials,
+        Ok(_) => return,
+        Err(error) => {
+            warn!(source_id = %source_id, error = %error, "MCP catalog recovery credential resolution failed");
+            return;
+        }
+    };
+    let credentials = match serde_json::to_value(McpCredentials::from_service_credential(
+        &credentials,
+    )) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            warn!(source_id = %source_id, error = %error, "MCP catalog recovery credential serialization failed");
+            return;
+        }
+    };
+    let request = OAuthCredentialReadyRequest {
+        source_id,
+        user_id: Some(user_id),
+        provider,
+        flow: "user_read".to_string(),
+        credentials,
+    };
+    let refreshed = match client
+        .oauth_credential_ready(&manifest.connector_url, &request)
+        .await
+    {
+        Ok(Some(refreshed)) => refreshed,
+        Ok(None) => return,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery credential-ready delivery failed");
+            return;
+        }
+    };
+    if let Err(error) = validate_connector_manifest(&refreshed) {
+        warn!(error = %error, "MCP catalog recovery returned invalid manifest");
+        return;
+    }
+    let manifest_json = match serde_json::to_string(&refreshed) {
+        Ok(manifest_json) => manifest_json,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery manifest serialization failed");
+            return;
+        }
+    };
+    let key = format!("connector:manifest:{}", refreshed.connector_id);
+    let mut connection = match state.redis_client.get_multiplexed_async_connection().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery Redis connection failed");
+            return;
+        }
+    };
+    if let Err(error) = connection
+        .set_ex::<_, _, ()>(&key, manifest_json, REGISTRATION_TTL_SECONDS)
+        .await
+    {
+        warn!(error = %error, "MCP catalog recovery manifest storage failed");
+    } else {
+        info!(connector_id = %refreshed.connector_id, "MCP catalog recovery updated connector manifest");
+    }
+}
+
 pub async fn sdk_register(
     State(state): State<AppState>,
     Json(base_manifest): Json<ConnectorManifest>,
@@ -3039,19 +3187,66 @@ pub async fn sdk_register(
     }
 
     let connector_id = manifest.connector_id.clone();
-    let pulled_manifest = match client.get_manifest(&manifest.connector_url).await {
-        Ok(pulled) => {
-            validate_connector_manifest(&pulled).map_err(ApiError::BadRequest)?;
-            pulled
-        }
+    let manifest_key = format!("connector:manifest:{}", connector_id);
+    let cached_manifest = match state.redis_client.get_multiplexed_async_connection().await {
+        Ok(mut connection) => connection
+            .get::<_, Option<String>>(&manifest_key)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|manifest_json| {
+                serde_json::from_str::<ConnectorManifest>(&manifest_json).ok()
+            }),
         Err(error) => {
-            warn!(connector_id = %connector_id, error = %error, "GET /manifest failed; retaining registration manifest");
-            manifest.clone()
+            warn!(connector_id = %connector_id, error = %error, "Cached connector manifest unavailable");
+            None
         }
     };
-    let active_sources = active_manifest_sources(&state, &pulled_manifest).await?;
-    manifest = pull_source_capabilities(&state, &client, &pulled_manifest, &active_sources).await;
+    let is_snowflake = manifest
+        .source_types
+        .iter()
+        .any(|source_type| source_type == "snowflake");
+    let pulled_manifest = client.get_manifest(&manifest.connector_url).await;
+    if is_snowflake {
+        let pulled_manifest = match pulled_manifest {
+            Ok(pulled) => {
+                validate_connector_manifest(&pulled).map_err(ApiError::BadRequest)?;
+                pulled
+            }
+            Err(error) => {
+                warn!(connector_id = %connector_id, error = %error, "GET /manifest failed; retaining registration manifest");
+                manifest.clone()
+            }
+        };
+        let active_sources = active_manifest_sources(&state, &pulled_manifest).await?;
+        manifest =
+            pull_source_capabilities(&state, &client, &pulled_manifest, &active_sources).await;
+    } else {
+        manifest = match pulled_manifest {
+            Ok(pulled) => {
+                validate_connector_manifest(&pulled).map_err(ApiError::BadRequest)?;
+                if pulled.mcp_enabled && !pulled.mcp_catalog_loaded {
+                    cached_manifest
+                        .as_ref()
+                        .filter(|cached| cached.mcp_catalog_loaded)
+                        .map(|cached| preserve_cached_mcp_catalog(&pulled, cached))
+                        .unwrap_or(pulled)
+                } else {
+                    pulled
+                }
+            }
+            Err(error) => {
+                warn!(connector_id = %connector_id, error = %error, "GET /manifest failed; retaining registration manifest");
+                cached_manifest
+                    .as_ref()
+                    .filter(|cached| cached.mcp_catalog_loaded)
+                    .map(|cached| preserve_cached_mcp_catalog(&manifest, cached))
+                    .unwrap_or(manifest)
+            }
+        };
+    }
     validate_connector_manifest(&manifest).map_err(ApiError::BadRequest)?;
+    let needs_mcp_catalog_recovery = needs_native_mcp_catalog_recovery(&manifest, is_snowflake);
 
     info!(
         "SDK: Registered connector '{}' (source_types: {:?}, url: {})",
@@ -3089,6 +3284,10 @@ pub async fn sdk_register(
 
     if let Ok(json) = serde_json::to_string(&all_operators) {
         let _: Result<(), _> = conn.set("search:operators", json).await;
+    }
+
+    if needs_mcp_catalog_recovery {
+        recover_native_mcp_catalog(&state, &client, &manifest).await;
     }
 
     Ok(Json(SdkStatusResponse {
@@ -4589,6 +4788,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["same", "legacy"]
         );
+    }
+
+    #[test]
+    fn unloaded_non_snowflake_manifest_preserves_cached_mcp_catalog() {
+        let mut cached = manifest_with_action_schema(json!({}));
+        cached.mcp_enabled = true;
+        cached.mcp_catalog_loaded = true;
+        cached.actions.push(shared::models::ActionDefinition {
+            name: "cached_tool".to_string(),
+            description: "Cached MCP tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            mode: ActionMode::Read,
+            credential_scope: Default::default(),
+            required_scopes: None,
+            source_types: Vec::new(),
+            admin_only: false,
+            hidden: false,
+            actor_scoped: false,
+            origin: ActionOrigin::Mcp,
+        });
+        cached
+            .resources
+            .push(shared::models::McpResourceDefinition {
+                uri_template: "cached://resource".to_string(),
+                name: "Cached resource".to_string(),
+                description: None,
+                mime_type: None,
+            });
+        cached.prompts.push(shared::models::McpPromptDefinition {
+            name: "cached_prompt".to_string(),
+            description: None,
+            arguments: Vec::new(),
+        });
+
+        let mut unloaded = manifest_with_action_schema(json!({}));
+        unloaded.mcp_enabled = true;
+        unloaded.mcp_catalog_loaded = false;
+        assert!(needs_native_mcp_catalog_recovery(&unloaded, false));
+        assert!(!needs_native_mcp_catalog_recovery(&unloaded, true));
+        let preserved = preserve_cached_mcp_catalog(&unloaded, &cached);
+
+        assert!(preserved.mcp_catalog_loaded);
+        assert!(
+            preserved
+                .actions
+                .iter()
+                .any(|action| action.name == "cached_tool")
+        );
+        assert_eq!(preserved.resources[0].uri_template, "cached://resource");
+        assert_eq!(preserved.prompts[0].name, "cached_prompt");
     }
 
     #[tokio::test]
