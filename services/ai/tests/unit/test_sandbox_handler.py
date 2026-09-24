@@ -78,6 +78,53 @@ async def test_edit_file_sends_replace_all(context: ToolContext):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_build_component_dispatches_typed_request(context: ToolContext):
+    route = respx.post("http://sandbox.test/components/build").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "path": "components/result.html",
+                "size_bytes": 8192,
+                "content_type": "text/html",
+                "version": "build123",
+            },
+        )
+    )
+
+    handler = SandboxToolHandler("http://sandbox.test")
+    result = await handler.execute(
+        "build_component",
+        {"source_path": "components/App.svelte", "output_path": "components/result.html"},
+        context,
+    )
+
+    assert result.is_error is False
+    request = json.loads(route.calls.last.request.content)
+    assert request == {
+        "source_path": "components/App.svelte",
+        "output_path": "components/result.html",
+        "chat_id": "chat-1",
+    }
+    assert json.loads(result.content[0]["text"])["content_type"] == "text/html"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_build_component_rejects_traversal_before_dispatch(context: ToolContext):
+    handler = SandboxToolHandler("http://sandbox.test")
+    result = await handler.execute(
+        "build_component",
+        {"source_path": "../App.svelte", "output_path": "result.html"},
+        context,
+    )
+
+    assert result.is_error is True
+    assert ".." in result.content[0]["text"]
+    assert not respx.calls
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_present_artifact_pins_versioned_url(context: ToolContext):
     respx.post("http://sandbox.test/files/stat").mock(
         return_value=httpx.Response(
@@ -103,6 +150,67 @@ async def test_present_artifact_pins_versioned_url(context: ToolContext):
     info = json.loads(result.content[0]["text"])
     assert info["url"] == f"/api/chat/{context.chat_id}/artifacts/report.docx?v=abc123"
     assert info["version"] == "abc123"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_present_artifact_can_request_inline_html(context: ToolContext):
+    respx.post("http://sandbox.test/files/stat").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "path": "chart.html",
+                "size_bytes": 4096,
+                "content_type": "text/html",
+                "exists": True,
+                "version": "def456",
+            },
+        )
+    )
+
+    handler = SandboxToolHandler("http://sandbox.test")
+    result = await handler.execute(
+        "present_artifact",
+        {
+            "path": "chart.html",
+            "title": "Interactive chart",
+            "display_mode": "inline",
+            "inline_height": 500,
+        },
+        context,
+    )
+
+    assert result.is_error is False
+    info = json.loads(result.content[0]["text"])
+    assert info["display_mode"] == "inline"
+    assert info["inline_height"] == 500
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_present_artifact_rejects_non_html_inline_file(context: ToolContext):
+    respx.post("http://sandbox.test/files/stat").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "path": "report.pdf",
+                "size_bytes": 4096,
+                "content_type": "application/pdf",
+                "exists": True,
+                "version": "def456",
+            },
+        )
+    )
+
+    handler = SandboxToolHandler("http://sandbox.test")
+    result = await handler.execute(
+        "present_artifact",
+        {"path": "report.pdf", "title": "Report", "display_mode": "inline"},
+        context,
+    )
+
+    assert result.is_error is True
+    assert "image or an HTML file" in result.content[0]["text"]
 
 
 @pytest.mark.asyncio

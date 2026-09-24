@@ -13,49 +13,59 @@ use crate::versioning;
 use crate::{AppState, SandboxError};
 
 fn get_chat_dir(scratch_dir: &Path, chat_id: &str) -> Result<PathBuf, SandboxError> {
-    let safe_id = chat_id.replace('/', "").replace('\\', "").replace("..", "");
-    if safe_id.is_empty() {
+    if chat_id.is_empty()
+        || chat_id.len() > 128
+        || !chat_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
         return Err(SandboxError::BadRequest("Invalid chat_id".into()));
     }
-    Ok(scratch_dir.join(safe_id))
+    Ok(scratch_dir.join(chat_id))
 }
 
 fn validate_path(chat_dir: &Path, relative_path: &str) -> Result<PathBuf, SandboxError> {
-    let full_path = chat_dir.join(relative_path);
-    // Resolve the parent to check containment (the file itself may not exist yet)
-    let parent = full_path
-        .parent()
-        .ok_or_else(|| SandboxError::BadRequest("Invalid path".into()))?;
+    if relative_path.is_empty() || relative_path.len() > 256 {
+        return Err(SandboxError::BadRequest("Invalid path".into()));
+    }
 
-    // For validation, we need the chat_dir to exist so we can canonicalize it
+    let relative = Path::new(relative_path);
+    if relative.is_absolute() || relative_path.contains('\0') {
+        return Err(SandboxError::BadRequest("Path must be relative".into()));
+    }
+    for component in relative.components() {
+        if !matches!(component, std::path::Component::Normal(_)) {
+            return Err(SandboxError::BadRequest(
+                "Paths may not contain '.', '..', or platform-specific path components".into(),
+            ));
+        }
+    }
+
+    let full_path = chat_dir.join(relative);
     let chat_dir_resolved = chat_dir
         .canonicalize()
         .map_err(|e| SandboxError::Internal(format!("Cannot resolve chat dir: {e}")))?;
 
-    // If parent doesn't exist yet, walk up to find an existing ancestor
-    let resolved = if parent.exists() {
-        let parent_resolved = parent
+    // Canonicalize the file when it exists, otherwise canonicalize its nearest
+    // existing ancestor. This rejects symlinks that point outside the chat.
+    let resolved = if full_path.exists() {
+        full_path
             .canonicalize()
-            .map_err(|e| SandboxError::Internal(format!("Cannot resolve path: {e}")))?;
-        // Re-append the filename
-        if let Some(name) = full_path.file_name() {
-            parent_resolved.join(name)
-        } else {
-            parent_resolved
-        }
+            .map_err(|e| SandboxError::Internal(format!("Cannot resolve path: {e}")))?
     } else {
-        // Parent doesn't exist — check that the relative path doesn't escape
-        // by ensuring no ".." components after normalization
-        let normalized: PathBuf = full_path
-            .components()
-            .filter(|c| !matches!(c, std::path::Component::ParentDir))
-            .collect();
-        if normalized != full_path {
-            return Err(SandboxError::BadRequest(
-                "Path traversal not allowed".into(),
-            ));
+        let mut ancestor = full_path.as_path();
+        while !ancestor.exists() {
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| SandboxError::BadRequest("Invalid path".into()))?;
         }
-        full_path.clone()
+        let suffix = full_path
+            .strip_prefix(ancestor)
+            .map_err(|_| SandboxError::BadRequest("Invalid path".into()))?;
+        ancestor
+            .canonicalize()
+            .map_err(|e| SandboxError::Internal(format!("Cannot resolve path: {e}")))?
+            .join(suffix)
     };
 
     if !resolved.starts_with(&chat_dir_resolved) {
@@ -65,6 +75,19 @@ fn validate_path(chat_dir: &Path, relative_path: &str) -> Result<PathBuf, Sandbo
     }
 
     Ok(full_path)
+}
+
+fn validate_component_path(
+    chat_dir: &Path,
+    path: &str,
+    extension: &str,
+) -> Result<PathBuf, SandboxError> {
+    if !path.ends_with(extension) {
+        return Err(SandboxError::BadRequest(format!(
+            "Component path must end in {extension}"
+        )));
+    }
+    validate_path(chat_dir, path)
 }
 
 pub async fn health() -> Json<HealthResponse> {
@@ -342,6 +365,94 @@ pub async fn read_file(
     }))
 }
 
+pub async fn build_component(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<BuildComponentRequest>,
+) -> Result<Json<BuildComponentResponse>, SandboxError> {
+    let chat_dir = get_chat_dir(&state.config.scratch_dir, &req.chat_id)?;
+    fs::create_dir_all(&chat_dir)
+        .await
+        .map_err(|e| SandboxError::Internal(format!("Cannot create chat dir: {e}")))?;
+
+    let source_path = validate_component_path(&chat_dir, &req.source_path, ".svelte")?;
+    let output_path = validate_component_path(&chat_dir, &req.output_path, ".html")?;
+    if source_path == output_path {
+        return Err(SandboxError::BadRequest(
+            "Component source and output must be different files".into(),
+        ));
+    }
+
+    let source_metadata = fs::metadata(&source_path).await.map_err(|_| {
+        SandboxError::NotFound(format!("Component source not found: {}", req.source_path))
+    })?;
+    if !source_metadata.is_file() {
+        return Err(SandboxError::BadRequest(
+            "Component source must be a regular file".into(),
+        ));
+    }
+    const MAX_COMPONENT_SOURCE_BYTES: u64 = 1_000_000;
+    if source_metadata.len() > MAX_COMPONENT_SOURCE_BYTES {
+        return Err(SandboxError::BadRequest(format!(
+            "Component source exceeds {MAX_COMPONENT_SOURCE_BYTES} bytes"
+        )));
+    }
+
+    let result = run_command(
+        &state.config,
+        &chat_dir,
+        &[
+            "/usr/local/bin/omni-component-build",
+            "--source",
+            &req.source_path,
+            "--output",
+            &req.output_path,
+        ],
+    )
+    .await
+    .map_err(SandboxError::Internal)?;
+    if result.exit_code != 0 {
+        let details = if result.stderr.is_empty() {
+            result.stdout
+        } else {
+            result.stderr
+        };
+        return Err(SandboxError::BadRequest(format!(
+            "Component build failed: {details}"
+        )));
+    }
+
+    let output_metadata = fs::metadata(&output_path)
+        .await
+        .map_err(|_| SandboxError::Internal("Component compiler produced no output".into()))?;
+    if !output_metadata.is_file() {
+        return Err(SandboxError::Internal(
+            "Component compiler output is not a file".into(),
+        ));
+    }
+    const MAX_COMPONENT_OUTPUT_BYTES: u64 = 10_000_000;
+    if output_metadata.len() > MAX_COMPONENT_OUTPUT_BYTES {
+        return Err(SandboxError::BadRequest(format!(
+            "Built component exceeds {MAX_COMPONENT_OUTPUT_BYTES} bytes"
+        )));
+    }
+
+    versioning::commit(
+        &chat_dir,
+        &req.chat_id,
+        &state.git_locks,
+        &versioning::commit_message("build_component", Some(&req.output_path)),
+    )
+    .await;
+    let version = versioning::head_version(&chat_dir, &req.output_path).await;
+
+    Ok(Json(BuildComponentResponse {
+        path: req.output_path,
+        size_bytes: output_metadata.len(),
+        content_type: "text/html".into(),
+        version,
+    }))
+}
+
 pub async fn file_stat(
     State(state): State<Arc<AppState>>,
     Json(req): Json<FileStatRequest>,
@@ -473,25 +584,29 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn test_get_chat_dir_sanitizes() {
+    fn test_get_chat_dir_accepts_safe_id() {
         let scratch = PathBuf::from("/scratch");
         let dir = get_chat_dir(&scratch, "abc-123").unwrap();
         assert_eq!(dir, PathBuf::from("/scratch/abc-123"));
     }
 
     #[test]
-    fn test_get_chat_dir_strips_traversal() {
+    fn test_get_chat_dir_rejects_traversal() {
         let scratch = PathBuf::from("/scratch");
-        let dir = get_chat_dir(&scratch, "../etc/passwd").unwrap();
-        // ".." is removed, "/" is removed → "etcpasswd"
-        assert_eq!(dir, PathBuf::from("/scratch/etcpasswd"));
+        assert!(get_chat_dir(&scratch, "../etc/passwd").is_err());
+        assert!(get_chat_dir(&scratch, "../../").is_err());
     }
 
     #[test]
-    fn test_get_chat_dir_empty_after_sanitize() {
-        let scratch = PathBuf::from("/scratch");
-        let result = get_chat_dir(&scratch, "../../");
-        assert!(result.is_err());
+    fn test_component_path_requires_fixed_extensions_and_no_traversal() {
+        let root = std::env::temp_dir().join(format!("omni-component-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        assert!(validate_component_path(&root, "../App.svelte", ".svelte").is_err());
+        assert!(validate_component_path(&root, "App.ts", ".svelte").is_err());
+        assert!(validate_component_path(&root, "components/App.svelte", ".svelte").is_ok());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

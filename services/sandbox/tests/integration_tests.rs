@@ -7,6 +7,31 @@ use serde_json::{Value, json};
 use common::SandboxTestFixture;
 
 // ---------------------------------------------------------------------------
+// Component build validation
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_component_build_rejects_invalid_paths_before_compilation() {
+    let f = SandboxTestFixture::shared().await;
+
+    let response = f
+        .client
+        .post(f.url("/components/build"))
+        .json(&json!({
+            "source_path": "../App.svelte",
+            "output_path": "result.html",
+            "chat_id": "component-validation"
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 400);
+    let body: Value = response.json().await.unwrap();
+    assert!(body["detail"].as_str().unwrap().contains("Path"));
+}
+
+// ---------------------------------------------------------------------------
 // Execution tests
 // ---------------------------------------------------------------------------
 

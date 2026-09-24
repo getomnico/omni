@@ -1,8 +1,7 @@
 import type { ProcessedMessage, ToolMessageContent } from '$lib/types/message'
 
-// How an artifact is presented in the chat UI. Hard-coded by content type:
-// images render inline in the message stream, everything else opens in the
-// right-hand artifact pane.
+// How an artifact is presented in the chat UI. File type supplies the default,
+// while generated HTML components can explicitly request inline presentation.
 export type ArtifactDisplayMode = 'inline' | 'panel'
 
 export type ArtifactKind =
@@ -21,6 +20,8 @@ export type ArtifactData = {
     title: string
     content_type: string
     size_bytes: number
+    display_mode?: ArtifactDisplayMode
+    inline_height?: number
 }
 
 export type ParsedArtifact = Omit<ArtifactData, 'key'>
@@ -75,7 +76,28 @@ export function parseArtifactResult(text: string): ParsedArtifact | null {
         typeof candidate.url !== 'string' ||
         typeof candidate.title !== 'string' ||
         typeof candidate.content_type !== 'string' ||
-        typeof candidate.size_bytes !== 'number'
+        candidate.content_type.length === 0 ||
+        typeof candidate.size_bytes !== 'number' ||
+        !Number.isInteger(candidate.size_bytes) ||
+        candidate.size_bytes < 0 ||
+        !Number.isSafeInteger(candidate.size_bytes) ||
+        candidate.title.length === 0
+    ) {
+        return null
+    }
+    if (
+        candidate.display_mode !== undefined &&
+        candidate.display_mode !== 'inline' &&
+        candidate.display_mode !== 'panel'
+    ) {
+        return null
+    }
+    if (
+        candidate.inline_height !== undefined &&
+        (typeof candidate.inline_height !== 'number' ||
+            !Number.isInteger(candidate.inline_height) ||
+            candidate.inline_height < 160 ||
+            candidate.inline_height > 800)
     ) {
         return null
     }
@@ -86,6 +108,12 @@ export function parseArtifactResult(text: string): ParsedArtifact | null {
         title: candidate.title,
         content_type: candidate.content_type,
         size_bytes: candidate.size_bytes,
+        ...(candidate.display_mode === undefined
+            ? {}
+            : { display_mode: candidate.display_mode as ArtifactDisplayMode }),
+        ...(candidate.inline_height === undefined
+            ? {}
+            : { inline_height: candidate.inline_height as number }),
     }
 }
 
@@ -104,7 +132,7 @@ export function artifactKind(
     contentType: string | null | undefined,
     url?: string | null,
 ): ArtifactKind {
-    const mime = (contentType ?? '').toLowerCase()
+    const mime = (contentType ?? '').toLowerCase().split(';', 1)[0].trim()
     if (mime.startsWith('image/')) return 'image'
     if (mime in MIME_KINDS) return MIME_KINDS[mime]
     if (MARKDOWN_MIMES.has(mime)) return 'markdown'
@@ -128,8 +156,12 @@ export function artifactKind(
 export function artifactDisplayMode(
     contentType: string | null | undefined,
     url?: string | null,
+    requestedMode?: ArtifactDisplayMode,
 ): ArtifactDisplayMode {
-    return artifactKind(contentType, url) === 'image' ? 'inline' : 'panel'
+    const kind = artifactKind(contentType, url)
+    if (requestedMode === 'inline' && (kind === 'image' || kind === 'html')) return 'inline'
+    if (requestedMode === 'panel') return 'panel'
+    return kind === 'image' ? 'inline' : 'panel'
 }
 
 export function artifactKindLabel(kind: ArtifactKind): string {
@@ -188,7 +220,11 @@ export function collectPanelArtifacts(messages: readonly ProcessedMessage[]): Ar
         for (const block of message.content) {
             if (block.type !== 'tool') continue
             const artifact = artifactFromToolCall(block)
-            if (artifact && artifactDisplayMode(artifact.content_type, artifact.url) === 'panel') {
+            if (
+                artifact &&
+                artifactDisplayMode(artifact.content_type, artifact.url, artifact.display_mode) ===
+                    'panel'
+            ) {
                 artifacts.push(artifact)
             }
         }

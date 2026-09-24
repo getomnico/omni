@@ -1,0 +1,23 @@
+{
+  "name": "@omni/component-sdk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "@sveltejs/vite-plugin-svelte": "5.0.0",
+    "bits-ui": "2.15.5",
+    "clsx": "2.1.1",
+    "layerchart": "2.5.0",
+    "lucide-svelte": "0.561.0",
+    "svelte": "5.55.7",
+    "tailwind-merge": "3.3.1",
+    "tailwind-variants": "3.2.2",
+    "tailwindcss": "4.3.2",
+    "tw-animate-css": "1.3.4",
+    "vite": "6.4.3",
+    "vite-plugin-singlefile": "2.3.3"
+  }
+}

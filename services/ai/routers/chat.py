@@ -1470,22 +1470,36 @@ async def download_artifact(
 
             resp.raise_for_status()
 
-            content_type = resp.headers.get("content-type", "application/octet-stream")
+            content_type = resp.headers.get("content-type")
+            if not content_type:
+                raise HTTPException(
+                    status_code=502, detail="Artifact response did not include a content type"
+                )
             # Version-pinned responses never change, so browsers can cache them
             # indefinitely; unpinned URLs always serve the latest file content.
             cache_control = (
                 "private, max-age=31536000, immutable" if v else "private, max-age=3600"
             )
-            return Response(
-                content=resp.content,
-                media_type=content_type,
-                headers={
-                    "Cache-Control": cache_control,
-                    # Artifact bytes may be read by sandboxed iframe previews
-                    # (unique origin), so allow cross-origin reads.
-                    "Access-Control-Allow-Origin": "*",
-                },
-            )
+            headers = {
+                "Cache-Control": cache_control,
+                # Artifact bytes may be read by sandboxed iframe previews
+                # (unique origin), so allow cross-origin reads.
+                "Access-Control-Allow-Origin": "*",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            }
+            if content_type.lower().startswith("text/html"):
+                headers["Content-Security-Policy"] = (
+                    "default-src 'none'; base-uri 'none'; "
+                    "script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                    "img-src 'none' data: blob:; font-src 'none'; connect-src 'none'; "
+                    "media-src 'none'; object-src 'none'; form-action 'none'; "
+                    "frame-ancestors 'self'; navigate-to 'none'; "
+                    "sandbox allow-scripts allow-downloads"
+                )
+            return Response(content=resp.content, media_type=content_type, headers=headers)
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as e:
         logger.error(f"Sandbox artifact download failed: {e}")
         raise HTTPException(
