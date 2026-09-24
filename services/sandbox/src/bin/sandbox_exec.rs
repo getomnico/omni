@@ -61,11 +61,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let read_access = AccessFs::Execute | AccessFs::ReadFile | AccessFs::ReadDir;
         let all_access = AccessFs::from_all(ABI::V3);
 
-        let read_only_paths: Vec<&str> = ["/usr", "/lib", "/bin", "/etc", "/lib64"]
-            .iter()
-            .copied()
-            .filter(|p| Path::new(p).exists())
-            .collect();
+        let read_only_paths: Vec<&str> = [
+            "/usr",
+            "/lib",
+            "/bin",
+            "/etc",
+            "/lib64",
+            "/opt/omni/component-sdk",
+        ]
+        .iter()
+        .copied()
+        .filter(|p| Path::new(p).exists())
+        .collect();
 
         let rw_paths: Vec<&str> = [chat_dir.as_str(), "/tmp", "/dev"]
             .iter()

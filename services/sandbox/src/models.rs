@@ -62,6 +62,21 @@ pub struct FileStatRequest {
     pub chat_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BuildComponentRequest {
+    pub source_path: String,
+    pub output_path: String,
+    pub chat_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BuildComponentResponse {
+    pub path: String,
+    pub size_bytes: u64,
+    pub content_type: String,
+    pub version: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct FileStatResponse {
     pub path: String,

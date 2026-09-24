@@ -28,6 +28,7 @@
         getSourceDisplayName,
     } from '$lib/utils/icons'
     import ArtifactChip from '$lib/components/artifacts/artifact-chip.svelte'
+    import ArtifactInline from '$lib/components/artifacts/artifact-inline.svelte'
     import { artifactDisplayMode, artifactFromToolCall } from '$lib/utils/artifacts'
     import { SourceType } from '$lib/types'
     import { themeStore } from '$lib/themes/store.svelte'
@@ -275,13 +276,8 @@
 {#if isArtifact}
     {#each artifactData as artifact (artifact.key)}
         <div class="mt-2">
-            {#if artifactDisplayMode(artifact.content_type, artifact.url) === 'inline'}
-                <figure class="border-border rounded-lg border p-2">
-                    <img src={artifact.url} alt={artifact.title} class="!m-0 max-w-full rounded" />
-                    <figcaption class="text-muted-foreground mt-1 text-center text-xs">
-                        {artifact.title}
-                    </figcaption>
-                </figure>
+            {#if artifactDisplayMode(artifact.content_type, artifact.url, artifact.display_mode) === 'inline'}
+                <ArtifactInline {artifact} />
             {:else}
                 <ArtifactChip
                     {artifact}

@@ -99,4 +99,29 @@ describe('ToolCallsGroup SSR', () => {
         expect(body).toContain('src="/api/chat/chat-1/artifacts/chart.png"')
         expect(body).toContain('Sales Chart')
     })
+
+    it('renders a requested HTML component in a sandboxed inline frame', () => {
+        const { body } = render(ToolCallsGroup, {
+            props: {
+                content: artifactContent(
+                    JSON.stringify({
+                        url: '/api/chat/chat-1/artifacts/chart.html',
+                        title: 'Interactive Sales Chart',
+                        content_type: 'text/html',
+                        size_bytes: 4096,
+                        display_mode: 'inline',
+                        inline_height: 500,
+                    }),
+                ),
+                isStreaming: false,
+                stripThinkingContent: (text: string) => text,
+            },
+        })
+
+        expect(body).toContain('<iframe')
+        expect(body).toContain('src="/api/chat/chat-1/artifacts/chart.html"')
+        expect(body).toContain('sandbox="allow-scripts allow-downloads"')
+        expect(body).not.toContain('allow-same-origin')
+        expect(body).toContain('height: 500px')
+    })
 })

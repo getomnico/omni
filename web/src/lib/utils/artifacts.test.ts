@@ -50,6 +50,28 @@ describe('parseArtifactResult', () => {
         })
     })
 
+    it('parses optional inline component metadata', () => {
+        expect(
+            parseArtifactResult(
+                JSON.stringify({
+                    url: '/api/chat/chat-1/artifacts/chart.html',
+                    title: 'Interactive chart',
+                    content_type: 'text/html',
+                    size_bytes: 4096,
+                    display_mode: 'inline',
+                    inline_height: 500,
+                }),
+            ),
+        ).toEqual({
+            url: '/api/chat/chat-1/artifacts/chart.html',
+            title: 'Interactive chart',
+            content_type: 'text/html',
+            size_bytes: 4096,
+            display_mode: 'inline',
+            inline_height: 500,
+        })
+    })
+
     it('rejects invalid JSON and malformed payloads', () => {
         expect(parseArtifactResult('not json')).toBeNull()
         expect(parseArtifactResult('{"url": 1}')).toBeNull()
@@ -63,6 +85,8 @@ describe('parseArtifactResult', () => {
                 }),
             ),
         ).toBeNull()
+        expect(parseArtifactResult(PDF_RESULT.replace('}', ',"display_mode":"float"}'))).toBeNull()
+        expect(parseArtifactResult(PDF_RESULT.replace('}', ',"inline_height":100}'))).toBeNull()
         expect(parseArtifactResult('')).toBeNull()
     })
 })
@@ -112,10 +136,13 @@ describe('artifactKind', () => {
 })
 
 describe('artifactDisplayMode', () => {
-    it('renders images inline and everything else in the panel', () => {
+    it('uses file-type defaults and permits inline HTML components', () => {
         expect(artifactDisplayMode('image/png')).toBe('inline')
         expect(artifactDisplayMode('application/pdf')).toBe('panel')
         expect(artifactDisplayMode('text/html')).toBe('panel')
+        expect(artifactDisplayMode('text/html', '/chart.html', 'inline')).toBe('inline')
+        expect(artifactDisplayMode('application/pdf', '/report.pdf', 'inline')).toBe('panel')
+        expect(artifactDisplayMode('image/png', '/chart.png', 'panel')).toBe('panel')
         expect(artifactDisplayMode('application/octet-stream', '/x/y.unknown')).toBe('panel')
     })
 })
@@ -173,7 +200,7 @@ describe('artifactFromToolCall', () => {
 })
 
 describe('collectPanelArtifacts', () => {
-    it('collects panel artifacts and skips images and other tools', () => {
+    it('collects panel artifacts and skips inline artifacts and other tools', () => {
         const messages: ProcessedMessage[] = [
             assistantMessage([
                 toolMessage({
@@ -190,6 +217,19 @@ describe('collectPanelArtifacts', () => {
                 }),
             ]),
             assistantMessage([
+                toolMessage({
+                    toolUse: { id: 't-html', name: 'present_artifact', input: {} },
+                    actionResult: {
+                        toolUseId: 't-html',
+                        text: JSON.stringify({
+                            url: '/api/chat/c/artifacts/chart.html',
+                            title: 'Interactive chart',
+                            content_type: 'text/html',
+                            size_bytes: 4096,
+                            display_mode: 'inline',
+                        }),
+                    },
+                }),
                 toolMessage({
                     toolUse: { id: 't-pdf', name: 'present_artifact', input: {} },
                     actionResult: { toolUseId: 't-pdf', text: PDF_RESULT },

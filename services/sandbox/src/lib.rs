@@ -78,6 +78,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/health", get(handlers::health))
         .route("/execute/bash", post(handlers::execute_bash))
         .route("/execute/python", post(handlers::execute_python))
+        .route("/components/build", post(handlers::build_component))
         // Override axum's 2 MB default body limit. Connector text results such as
         // Google Workspace discovery schemas can exceed that while still being
         // reasonable to save for selective inspection with read_file.
