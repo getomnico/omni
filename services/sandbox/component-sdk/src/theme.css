@@ -66,8 +66,13 @@
     font-family: ui-sans-serif, system-ui, sans-serif;
     box-sizing: border-box;
     min-width: 0;
+    min-height: 100vh;
     margin: 0;
     padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
   }
   button, input, select { font: inherit; }
 }
