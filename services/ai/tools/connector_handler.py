@@ -222,7 +222,7 @@ class ConnectorToolHandler:
                 if manifest
                 else "connector"
             )
-            if not manifest or not connector.get("healthy"):
+            if not manifest or connector.get("healthy") is False:
                 continue
 
             if (integration_type, source_type) not in source_by_identity:
@@ -256,7 +256,7 @@ class ConnectorToolHandler:
                 if manifest
                 else "connector"
             )
-            if not manifest or not connector.get("healthy"):
+            if not manifest or connector.get("healthy") is False:
                 continue
 
             for action_def in manifest.get("actions", []):
