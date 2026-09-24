@@ -57,7 +57,7 @@ COPY services/sandbox/component-sdk /opt/omni/component-sdk
 RUN cd /opt/omni/component-sdk && npm ci --omit=dev --ignore-scripts --no-audit --no-fund && \
     npm cache clean --force && \
     chmod 0555 /opt/omni/component-sdk/build.mjs
-COPY services/sandbox/component-sdk/build.mjs /usr/local/bin/omni-component-build
+COPY services/sandbox/scripts/omni-component-build /usr/local/bin/omni-component-build
 RUN chmod 0555 /usr/local/bin/omni-component-build
 
 # Run as non-root user

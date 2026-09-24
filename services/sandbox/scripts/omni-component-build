@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node /opt/omni/component-sdk/build.mjs "$@"
