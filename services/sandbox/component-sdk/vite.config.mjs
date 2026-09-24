@@ -59,7 +59,11 @@ function componentImportPolicy() {
 }
 
 export default defineConfig({
-  plugins: [componentImportPolicy(), svelte({ compilerOptions: { dev: false } }), viteSingleFile()],
+  plugins: [
+    componentImportPolicy(),
+    svelte({ compilerOptions: { dev: false }, include: /\.svelte$/ }),
+    viteSingleFile(),
+  ],
   resolve: {
     alias: [
       { find: '@omni/ui', replacement: `${sdkRoot}/src/ui/index.ts` },
