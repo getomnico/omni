@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { cn } from '../ui'
+    import { cn } from '../../ui.ts'
 
     type Props = {
         class?: string

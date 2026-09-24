@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { cn } from '../ui'
+    import { cn } from '../../ui.ts'
     let {
         class: className = '',
         value = $bindable<string | number | undefined>(),

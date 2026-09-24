@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { cn } from '../ui'
+    import { cn } from '../../ui.ts'
 
     type Variant = 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive'
     type Size = 'default' | 'sm' | 'lg' | 'icon'
