@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path'
 import { tmpdir } from 'node:os'
 import { build } from 'vite'
@@ -60,6 +60,7 @@ async function main() {
   const buildDir = await mkdtemp(join(tmpdir(), 'omni-component-'))
   const outputDir = join(buildDir, 'dist')
   try {
+    await symlink(join(SDK_ROOT, 'node_modules'), join(buildDir, 'node_modules'), 'dir')
     const entryScript = join(buildDir, 'main.js')
     const entryCss = join(buildDir, 'omni.css')
     const entryHtml = join(buildDir, 'index.html')

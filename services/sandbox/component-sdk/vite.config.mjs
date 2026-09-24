@@ -32,7 +32,13 @@ function componentImportPolicy() {
     name: 'omni-component-import-policy',
     enforce: 'pre',
     resolveId(source, importer) {
-      if (!importer || importer.startsWith('\0') || importer.includes('/node_modules/') || importer.includes(sdkRoot)) return null
+      if (
+        !importer ||
+        importer.startsWith('\0') ||
+        importer.includes('/node_modules/') ||
+        importer.includes(sdkRoot) ||
+        (process.env.OMNI_COMPONENT_BUILD_ROOT && importer.includes(process.env.OMNI_COMPONENT_BUILD_ROOT))
+      ) return null
       if (source.startsWith('\0')) return null
       if (source.startsWith('.') || isAbsolute(source)) {
         const candidates = isAbsolute(source)
@@ -55,11 +61,11 @@ function componentImportPolicy() {
 export default defineConfig({
   plugins: [componentImportPolicy(), svelte({ compilerOptions: { dev: false } }), viteSingleFile()],
   resolve: {
-    alias: {
-      '@omni/ui': `${sdkRoot}/src/ui/index.ts`,
-      '@omni/charts': `${sdkRoot}/src/charts.ts`,
-      '@omni/theme': `${sdkRoot}/src/theme.css`,
-    },
+    alias: [
+      { find: '@omni/ui', replacement: `${sdkRoot}/src/ui/index.ts` },
+      { find: '@omni/charts', replacement: `${sdkRoot}/src/charts.ts` },
+      { find: '@omni/theme', replacement: `${sdkRoot}/src/theme.css` },
+    ],
   },
   build: {
     target: 'es2022',

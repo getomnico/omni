@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { cn } from './ui'
+    import { cn } from '../ui'
     let { class: className = '', ...rest }: { class?: string; [key: string]: unknown } = $props()
 </script>
 <input
