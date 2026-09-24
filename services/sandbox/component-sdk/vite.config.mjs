@@ -35,8 +35,12 @@ function componentImportPolicy() {
       if (!importer || importer.includes('/node_modules/')) return null
       if (source.startsWith('\0')) return null
       if (source.startsWith('.') || isAbsolute(source)) {
-        const candidate = isAbsolute(source) ? source : resolve(dirname(importer), source)
-        if (!allowedFile(candidate)) throw new Error('Component imports must stay within the chat workspace or Omni SDK')
+        const candidates = isAbsolute(source)
+          ? [source, process.env.OMNI_COMPONENT_BUILD_ROOT && resolve(process.env.OMNI_COMPONENT_BUILD_ROOT, source.slice(1))]
+          : [resolve(dirname(importer), source)]
+        if (!candidates.some((candidate) => candidate && allowedFile(candidate))) {
+          throw new Error('Component imports must stay within the chat workspace or Omni SDK')
+        }
         return null
       }
       const packageName = source.startsWith('@') ? source.split('/').slice(0, 2).join('/') : source.split('/')[0]
