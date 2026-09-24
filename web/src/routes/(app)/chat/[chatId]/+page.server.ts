@@ -119,34 +119,30 @@ export const load = async ({ params, locals, fetch, depends }) => {
     const projects = await new ProjectRepository().getByUserId(locals.user.id)
     const activePathMessages = await chatMessageRepository.getActivePath(chat.id)
     const activePathToolCallIds = collectActiveUnansweredToolCallIds(activePathMessages)
-    const visibleSourceIds = new Set(
-        (await new SourcesRepository().getAll())
-            .filter(
-                (source) =>
-                    source.isActive &&
-                    !source.isDeleted &&
-                    (source.scope === 'org' ||
-                        (source.scope === 'user' && source.createdBy === locals.user.id)),
-            )
-            .map((source) => source.id),
-    )
-    const approvalSourceIsVisible = (sourceId: string | null) =>
-        sourceId === null || visibleSourceIds.has(sourceId)
-
     const allPendingApprovals = await toolApprovalRepository.getPendingForChatAll(
         chat.id,
         'approval',
-    )
-    const pendingApprovals = allPendingApprovals.filter(
-        (approval) =>
-            approval.toolCallId !== null &&
-            activePathToolCallIds.has(approval.toolCallId) &&
-            approvalSourceIsVisible(approval.sourceId),
     )
     const resumableOAuth = await toolApprovalRepository.getForChatAll(
         chat.id,
         ['pending', 'approved'],
         'oauth',
+    )
+    const needsSourceVisibility =
+        allPendingApprovals.some((approval) => approval.sourceId !== null) ||
+        resumableOAuth.length > 0
+    const visibleSourceIds = new Set(
+        needsSourceVisibility
+            ? (await new SourcesRepository().getVisibleActiveForUser(locals.user.id)).map(
+                  (source) => source.id,
+              )
+            : [],
+    )
+    const pendingApprovals = allPendingApprovals.filter(
+        (approval) =>
+            approval.toolCallId !== null &&
+            activePathToolCallIds.has(approval.toolCallId) &&
+            (approval.sourceId === null || visibleSourceIds.has(approval.sourceId)),
     )
     const activeOAuth = resumableOAuth.filter(
         (approval) =>
