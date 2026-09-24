@@ -17,7 +17,6 @@ use axum::{
     },
     Json,
 };
-use futures::future::join_all;
 use futures::stream::Stream;
 use redis::AsyncCommands;
 use serde_json::{json, Value};
@@ -434,46 +433,21 @@ pub async fn list_connectors(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ConnectorInfo>>, ApiError> {
     let manifests = get_registered_manifests(&state.redis_client).await;
-    let client = ConnectorClient::new();
-
-    // Health checks are independent per connector; run them concurrently
-    // instead of serially so a slow connector doesn't gate the rest.
-    let health_futures: Vec<_> = manifests
-        .iter()
-        .map(|manifest| {
-            let url = manifest.connector_url.clone();
-            let client_ref = &client;
-            let manifest_ref = manifest;
-            async move {
-                if remote_mcp_in_process_manifest_is_healthy(manifest_ref) {
-                    true
-                } else if !url.is_empty() {
-                    client_ref.health_check(&url).await
-                } else {
-                    false
-                }
-            }
-        })
-        .collect();
-    let healths = join_all(health_futures).await;
-
-    let mut connectors = Vec::new();
-    for (manifest, healthy) in manifests.iter().zip(healths) {
-        for source_type in &manifest.source_types {
-            connectors.push(ConnectorInfo {
-                source_type: source_type.clone(),
-                url: manifest.connector_url.clone(),
-                healthy,
-                manifest: Some(manifest.clone()),
-            });
-        }
-    }
-
-    Ok(Json(connectors))
+    Ok(Json(connector_infos_from_manifests(&manifests)))
 }
 
-fn remote_mcp_in_process_manifest_is_healthy(manifest: &ConnectorManifest) -> bool {
-    manifest.integration_type == IntegrationType::RemoteMcp && manifest.connector_url.is_empty()
+fn connector_infos_from_manifests(manifests: &[ConnectorManifest]) -> Vec<ConnectorInfo> {
+    manifests
+        .iter()
+        .flat_map(|manifest| {
+            manifest.source_types.iter().map(|source_type| ConnectorInfo {
+                source_type: source_type.clone(),
+                url: manifest.connector_url.clone(),
+                healthy: None,
+                manifest: Some(manifest.clone()),
+            })
+        })
+        .collect()
 }
 
 fn allowed_action_origins(source_config: &Value) -> Result<Option<Vec<ActionOrigin>>, String> {
@@ -4115,15 +4089,24 @@ mod tests {
     }
 
     #[test]
-    fn remote_mcp_in_process_manifest_is_healthy_without_connector_url() {
+    fn listing_connectors_does_not_probe_connector_urls_and_preserves_manifests() {
         let mut manifest = manifest_with_action_schema(json!({}));
-        manifest.integration_type = IntegrationType::RemoteMcp;
-        manifest.connector_url = String::new();
+        manifest.connector_url = "http://127.0.0.1:1".to_string();
 
-        assert!(remote_mcp_in_process_manifest_is_healthy(&manifest));
+        let connectors = connector_infos_from_manifests(&[manifest.clone()]);
 
-        manifest.integration_type = IntegrationType::Connector;
-        assert!(!remote_mcp_in_process_manifest_is_healthy(&manifest));
+        assert_eq!(connectors.len(), manifest.source_types.len());
+        assert!(connectors.iter().all(|connector| connector.healthy.is_none()));
+        assert!(connectors
+            .iter()
+            .all(|connector| connector.manifest.is_some()));
+        assert!(connectors.iter().all(|connector| {
+            !serde_json::to_value(connector)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("healthy")
+        }));
     }
 
     #[test]

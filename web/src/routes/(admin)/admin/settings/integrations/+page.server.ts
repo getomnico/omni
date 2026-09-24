@@ -52,7 +52,7 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
 interface ConnectorInfo {
     source_type: string
     url: string
-    healthy: boolean
+    healthy?: boolean
     manifest?: {
         connector_id?: string
         display_name?: string

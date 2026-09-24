@@ -88,7 +88,7 @@ class McpConnectorInfo(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     source_type: str
-    healthy: bool
+    healthy: bool | None = None
     manifest: McpConnectorManifest | None = None
 
 
@@ -201,7 +201,7 @@ class McpCapabilityHandler:
         publisher_source_ids: set[str] = set()
 
         for connector in connectors:
-            if not connector.healthy or connector.manifest is None:
+            if connector.healthy is False or connector.manifest is None:
                 continue
             source_type = connector.source_type
             manifest = connector.manifest

@@ -6,7 +6,6 @@
  * produces an unbootable white page when the device is offline. */
 const CACHE_PREFIX = 'omni-pwa-';
 const CACHE_VERSION = 'v1';
-const NAVIGATION_TIMEOUT_MS = 30_000;
 const scopePath = new URL(self.registration.scope).pathname;
 const scopeKey = encodeURIComponent(scopePath.replace(/^\/+|\/+$/g, '') || 'root');
 const CACHE_FAMILY = `${CACHE_PREFIX}${scopeKey}-`;
@@ -70,27 +69,15 @@ async function cachedRecoveryResponse() {
 
 
 async function fetchNavigation(req, preloadResponse) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), NAVIGATION_TIMEOUT_MS);
-  const deadline = new Promise((_, reject) => {
-    controller.signal.addEventListener('abort', () => reject(new Error('Navigation timed out')), {
-      once: true,
-    });
-  });
+  // A successful preload is the navigation response; only retry with fetch when
+  // preload itself rejects or is unavailable, never alongside an in-flight one.
+  let preload;
   try {
-    let preload = null;
-    try {
-      // A preload rejection (e.g. the browser aborted it) must not skip the
-      // direct fetch fallback below.
-      preload = await Promise.race([Promise.resolve(preloadResponse), deadline]);
-    } catch {
-      preload = null;
-    }
-    if (preload) return preload;
-    return await Promise.race([fetch(req, { signal: controller.signal }), deadline]);
-  } finally {
-    clearTimeout(timeout);
+    preload = await preloadResponse;
+  } catch {
+    preload = null;
   }
+  return preload || fetch(req);
 }
 
 function scopedURL(value = '/') {

@@ -188,7 +188,7 @@ async def test_mcp_prompt_capabilities_hide_foreign_personal_sources() -> None:
     respx.get("http://cm.test/connectors").mock(
         return_value=Response(
             200,
-            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+            json=[{"source_type": "docs", "manifest": _manifest()}],
         )
     )
     handler = McpCapabilityHandler(
@@ -210,6 +210,27 @@ async def test_mcp_prompt_capabilities_hide_foreign_personal_sources() -> None:
     assert "prompt:own:debug_error" in result.content[0]["text"]
     assert "prompt:foreign:debug_error" not in result.content[0]["text"]
     assert searcher.searches[0].allowed_source_ids == ["org", "own"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_explicitly_unhealthy_connector_is_not_published() -> None:
+    searcher = _FakeSearcherClient()
+    respx.get("http://cm.test/connectors").mock(
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": False, "manifest": _manifest()}],
+        )
+    )
+    handler = McpCapabilityHandler(
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[_source("src-1")],
+    )
+
+    await handler.refresh()
+
+    assert not handler.has_capabilities()
 
 
 @pytest.mark.asyncio

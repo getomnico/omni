@@ -61,7 +61,9 @@ pub struct ScheduleInfo {
 pub struct ConnectorInfo {
     pub source_type: String,
     pub url: String,
-    pub healthy: bool,
+    /// Omitted by metadata listings; live reachability is not checked on this endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub healthy: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub manifest: Option<ConnectorManifest>,
 }
