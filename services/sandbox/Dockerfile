@@ -55,6 +55,10 @@ RUN chmod +x /usr/local/bin/excel
 # configuration are kept outside each writable chat workspace.
 COPY services/sandbox/component-sdk /opt/omni/component-sdk
 RUN cd /opt/omni/component-sdk && npm ci --omit=dev --ignore-scripts --no-audit --no-fund && \
+    npm pack --silent @tailwindcss/oxide-linux-x64-gnu@4.3.2 && \
+    mkdir -p node_modules/@tailwindcss/oxide-linux-x64-gnu && \
+    tar -xzf tailwindcss-oxide-linux-x64-gnu-4.3.2.tgz --strip-components=1 -C node_modules/@tailwindcss/oxide-linux-x64-gnu && \
+    rm tailwindcss-oxide-linux-x64-gnu-4.3.2.tgz && \
     npm cache clean --force && \
     chmod 0555 /opt/omni/component-sdk/build.mjs
 COPY services/sandbox/scripts/omni-component-build /usr/local/bin/omni-component-build

@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@sveltejs/vite-plugin-svelte": "5.0.0",
+    "@tailwindcss/vite": "4.3.2",
     "bits-ui": "2.15.5",
     "clsx": "2.1.1",
     "layerchart": "2.5.0",

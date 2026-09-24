@@ -1,5 +1,6 @@
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { defineConfig } from 'vite'
+import tailwindcss from '@tailwindcss/vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 
@@ -60,6 +61,7 @@ function componentImportPolicy() {
 
 export default defineConfig({
   plugins: [
+    tailwindcss(),
     componentImportPolicy(),
     svelte({ compilerOptions: { dev: false }, include: /\.svelte$/ }),
     viteSingleFile(),
