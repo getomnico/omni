@@ -2563,6 +2563,7 @@ impl IntoResponse for ApiError {
 
 const REGISTRATION_TTL_SECONDS: u64 = 300;
 const SNOWFLAKE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const SNOWFLAKE_DISCOVERY_BUDGET: Duration = Duration::from_secs(20);
 const UNSUPPORTED_TOP_LEVEL_ACTION_SCHEMA_KEYWORDS: &[&str] = &["anyOf", "oneOf", "allOf"];
 const UNSUPPORTED_ACTION_SCHEMA_KEYWORDS: &[&str] = &[
     "$ref",
@@ -2921,6 +2922,30 @@ async fn discover_source_capability(
         .find(|group| group.source_id == source.id)
 }
 
+async fn collect_source_capabilities<'a>(
+    mut discoveries: std::pin::Pin<Box<dyn Stream<Item = ConnectorSourceCapabilities> + Send + 'a>>,
+    budget: Duration,
+) -> Vec<ConnectorSourceCapabilities> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut groups = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            warn!("Snowflake source discovery budget exhausted");
+            break;
+        }
+        match tokio::time::timeout(remaining, discoveries.next()).await {
+            Ok(Some(group)) => groups.push(group),
+            Ok(None) => break,
+            Err(_) => {
+                warn!("Snowflake source discovery budget exhausted with partial results");
+                break;
+            }
+        }
+    }
+    groups
+}
+
 async fn pull_source_capabilities(
     state: &AppState,
     client: &ConnectorClient,
@@ -2954,7 +2979,7 @@ async fn pull_source_capabilities(
         .filter(|source| source.source_type == "snowflake")
         .cloned()
         .collect();
-    manifest.source_capabilities = stream::iter(snowflake_sources)
+    let discovery_stream = stream::iter(snowflake_sources)
         .map(|source| {
             let provider = provider.clone();
             async move {
@@ -2976,9 +3001,13 @@ async fn pull_source_capabilities(
             }
         })
         .buffer_unordered(4)
-        .filter_map(async |group| group)
-        .collect()
-        .await;
+        .filter_map(async |group| group);
+    manifest.source_capabilities = collect_source_capabilities(
+        Box::pin(discovery_stream)
+            as std::pin::Pin<Box<dyn Stream<Item = ConnectorSourceCapabilities> + Send + '_>>,
+        SNOWFLAKE_DISCOVERY_BUDGET,
+    )
+    .await;
     manifest.mcp_catalog_loaded = !manifest.source_capabilities.is_empty();
     manifest
 }
@@ -4560,6 +4589,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["same", "legacy"]
         );
+    }
+
+    #[tokio::test]
+    async fn source_discovery_budget_preserves_completed_groups() {
+        let first = ConnectorSourceCapabilities {
+            source_id: "first".to_string(),
+            actions: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+            skills: Vec::new(),
+        };
+        let second = ConnectorSourceCapabilities {
+            source_id: "second".to_string(),
+            actions: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+            skills: Vec::new(),
+        };
+        let discoveries = stream::iter(vec![first]).chain(stream::once(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            second
+        }));
+        let groups = collect_source_capabilities(
+            Box::pin(discoveries)
+                as std::pin::Pin<Box<dyn Stream<Item = ConnectorSourceCapabilities> + Send>>,
+            Duration::from_millis(20),
+        )
+        .await;
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first"]
+        );
+        assert!(SNOWFLAKE_DISCOVERY_TIMEOUT <= SNOWFLAKE_DISCOVERY_BUDGET);
+        assert!(SNOWFLAKE_DISCOVERY_BUDGET < Duration::from_secs(30));
     }
 
     #[test]
