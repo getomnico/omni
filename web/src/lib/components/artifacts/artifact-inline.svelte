@@ -10,7 +10,7 @@
     let { artifact }: Props = $props()
 
     let kind = $derived(artifactKind(artifact.content_type, artifact.url))
-    let frameHeight = $derived(artifact.inline_height ?? 420)
+    let frameHeight = $derived(artifact.inline_height ?? 640)
 </script>
 
 <figure class="border-border overflow-hidden rounded-lg border">
