@@ -16,7 +16,7 @@
 
 {#if kind === 'html'}
     <div class="border-muted-foreground/30 w-full overflow-hidden rounded-lg border border-dashed">
-        <div class="flex h-8 items-center justify-end px-1">
+        <div class="flex h-10 items-center justify-end p-1">
             <Button
                 href={artifact.url}
                 download
