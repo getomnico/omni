@@ -84,6 +84,8 @@ async function main() {
     process.env.OMNI_COMPONENT_BUILD_ROOT = buildDir
     await build({
       configFile: join(SDK_ROOT, 'vite.config.mjs'),
+      configLoader: 'native',
+      cacheDir: join(buildDir, '.vite-cache'),
       root: buildDir,
       base: './',
       build: {
