@@ -68,6 +68,7 @@ async def test_multiple_sources_are_one_union_manifest() -> None:
     manifest = await connector.build_manifest_for_sources(sources, None, "http://snowflake:8000")
     assert manifest.mcp_catalog_loaded
     assert {action.name for action in manifest.actions} == {"inspect", "query"}
+    assert all(action.source_types == ["snowflake"] for action in manifest.actions)
     assert manifest.connector_id == "snowflake"
 
 

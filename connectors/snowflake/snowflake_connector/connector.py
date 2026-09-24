@@ -274,6 +274,8 @@ class SnowflakeConnector(Connector):
         prompts: dict[str, McpPromptDefinition] = {}
         for (source_actions, source_resources, source_prompts), config in catalogs:
             for action in source_actions:
+                if not action.source_types:
+                    action.source_types = list(self.source_types)
                 if action.mode == "write" and (not config.write_tools_enabled or config.read_only):
                     continue
                 existing = actions.get(action.name)
@@ -375,7 +377,10 @@ class SnowflakeConnector(Connector):
                 raise ValueError(
                     "trusted Omni user email is required for Snowflake OAuth validation"
                 )
-            if provider_email is None or provider_email.casefold() != expected_email.casefold():
+            if (
+                provider_email is None
+                or provider_email.strip().casefold() != expected_email.strip().casefold()
+            ):
                 raise ValueError(
                     "Snowflake OAuth principal does not match the authenticated Omni user"
                 )

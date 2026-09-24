@@ -1042,7 +1042,7 @@ pub struct ConnectorManifestSource {
     pub source_type: String,
     pub scope: SourceScope,
     pub config: JsonValue,
-    #[serde(with = "time::serde::iso8601")]
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 

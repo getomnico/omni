@@ -106,7 +106,7 @@ class SnowflakeClient:
             SELECT TABLE_ID, TABLE_CATALOG AS DATABASE_NAME, TABLE_SCHEMA AS SCHEMA_NAME,
                    TABLE_NAME AS OBJECT_NAME, TABLE_TYPE AS OBJECT_TYPE, COMMENT,
                    TABLE_OWNER AS OWNER_ROLE, CREATED AS CREATED_AT, LAST_DDL, DELETED,
-                   IS_TRANSIENT, IS_ICEBERG, IS_DYNAMIC, IS_HYBRID, IS_EVENT
+                   IS_TRANSIENT, IS_ICEBERG, IS_DYNAMIC, IS_HYBRID
             FROM SNOWFLAKE.ACCOUNT_USAGE.TABLES
             WHERE {" AND ".join(clauses)}
             ORDER BY TABLE_ID
@@ -214,12 +214,15 @@ class SnowflakeClient:
         return account, user, region
 
     def user_email(self, user: str) -> str | None:
-        escaped = _quote_identifier(user)
-        rows = self.rows(f"DESC USER {escaped}")
-        for row in rows:
-            if _optional_text(row, "PROPERTY") == "EMAIL":
-                return _optional_text(row, "PROPERTY_VALUE")
-        return None
+        escaped = _quote_literal(user)
+        rows = self.rows(f"""
+            SELECT EMAIL
+            FROM SNOWFLAKE.ACCOUNT_USAGE.USERS
+            WHERE NAME = '{escaped}' AND DELETED_ON IS NULL
+        """)
+        if len(rows) != 1:
+            return None
+        return _optional_text(rows[0], "EMAIL")
 
 
 def _included_database(row: Mapping[str, object], config: SnowflakeConfig) -> bool:

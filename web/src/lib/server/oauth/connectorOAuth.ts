@@ -425,10 +425,11 @@ export async function getOAuthConfigForSource(
         const sourceConfig = (source.config ?? {}) as Record<string, unknown>
         const issuerKey = manifest.issuer_source_config_key
         if (issuerKey && Object.prototype.hasOwnProperty.call(sourceConfig, issuerKey)) {
-            resolved = await discoverOAuthManifestFromIssuer(manifest, sourceConfig[issuerKey])
-            if (!resolved && source.sourceType === 'snowflake') {
-                resolved = await snowflakeOAuthManifestFallback(manifest, sourceConfig)
-            }
+            // Snowflake account URLs expose OAuth endpoints but are not OIDC issuers.
+            resolved =
+                source.sourceType === 'snowflake'
+                    ? await snowflakeOAuthManifestFallback(manifest, sourceConfig)
+                    : await discoverOAuthManifestFromIssuer(manifest, sourceConfig[issuerKey])
             if (!resolved) return null
         }
         return resolveSourceClientConfigProvider(resolved, source.id)
