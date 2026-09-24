@@ -1,5 +1,6 @@
 <script lang="ts">
     import { Download } from '@lucide/svelte'
+    import { Button } from '$lib/components/ui/button/index.js'
     import type { ArtifactData } from '$lib/utils/artifacts'
     import { artifactKind } from '$lib/utils/artifacts'
 
@@ -16,15 +17,17 @@
 {#if kind === 'html'}
     <div class="border-muted-foreground/30 w-full overflow-hidden rounded-lg border border-dashed">
         <div class="flex h-8 items-center justify-end px-1">
-            <a
+            <Button
                 href={artifact.url}
                 download
                 rel="external"
                 title="Download component"
                 aria-label={`Download ${artifact.title}`}
-                class="text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer rounded-md p-1.5">
+                variant="ghost"
+                size="icon-sm"
+                class="text-muted-foreground hover:text-foreground">
                 <Download class="h-4 w-4" />
-            </a>
+            </Button>
         </div>
         <!-- No allow-same-origin token: generated code gets an opaque origin. -->
         <iframe
