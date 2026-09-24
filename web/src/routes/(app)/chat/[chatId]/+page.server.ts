@@ -3,6 +3,7 @@ import { getModel } from '$lib/server/db/model-providers.js'
 import { getAgent } from '$lib/server/db/agents.js'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { ProjectRepository } from '$lib/server/db/projects.js'
+import { SourcesRepository } from '$lib/server/repositories/sources.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
 
@@ -118,13 +119,29 @@ export const load = async ({ params, locals, fetch, depends }) => {
     const projects = await new ProjectRepository().getByUserId(locals.user.id)
     const activePathMessages = await chatMessageRepository.getActivePath(chat.id)
     const activePathToolCallIds = collectActiveUnansweredToolCallIds(activePathMessages)
+    const visibleSourceIds = new Set(
+        (await new SourcesRepository().getAll())
+            .filter(
+                (source) =>
+                    source.isActive &&
+                    !source.isDeleted &&
+                    (source.scope === 'org' ||
+                        (source.scope === 'user' && source.createdBy === locals.user.id)),
+            )
+            .map((source) => source.id),
+    )
+    const approvalSourceIsVisible = (sourceId: string | null) =>
+        sourceId === null || visibleSourceIds.has(sourceId)
+
     const allPendingApprovals = await toolApprovalRepository.getPendingForChatAll(
         chat.id,
         'approval',
     )
     const pendingApprovals = allPendingApprovals.filter(
         (approval) =>
-            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+            approval.toolCallId !== null &&
+            activePathToolCallIds.has(approval.toolCallId) &&
+            approvalSourceIsVisible(approval.sourceId),
     )
     const resumableOAuth = await toolApprovalRepository.getForChatAll(
         chat.id,
@@ -133,7 +150,10 @@ export const load = async ({ params, locals, fetch, depends }) => {
     )
     const activeOAuth = resumableOAuth.filter(
         (approval) =>
-            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+            approval.toolCallId !== null &&
+            activePathToolCallIds.has(approval.toolCallId) &&
+            approval.sourceId !== null &&
+            visibleSourceIds.has(approval.sourceId),
     )
     const pendingOAuth = activeOAuth.find((approval) => approval.status === 'pending') ?? null
     const approvedOAuth = activeOAuth.find((approval) => approval.status === 'approved') ?? null

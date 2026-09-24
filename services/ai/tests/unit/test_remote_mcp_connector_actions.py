@@ -126,6 +126,8 @@ async def test_actions_fetch_active_sources_endpoint_including_remote_mcp_rows()
                         "integration_type": "remote_mcp",
                         "is_active": True,
                         "is_deleted": False,
+                        "scope": "org",
+                        "created_by": "admin-1",
                     },
                     "sync_runs": [],
                     "health": "healthy",
@@ -165,6 +167,8 @@ async def test_active_source_prefetch_helper_uses_active_endpoint_for_remote_mcp
                         "integration_type": "remote_mcp",
                         "is_active": True,
                         "is_deleted": False,
+                        "scope": "org",
+                        "created_by": "admin-1",
                     },
                     "sync_runs": [],
                     "health": "healthy",
@@ -182,6 +186,8 @@ async def test_active_source_prefetch_helper_uses_active_endpoint_for_remote_mcp
     assert not legacy_sources.called
     assert [source.id for source in sources] == ["src-remote"]
     assert sources[0].integration_type == "remote_mcp"
+    assert sources[0].scope == "org"
+    assert sources[0].created_by == "admin-1"
 
 
 @pytest.mark.asyncio
@@ -204,6 +210,8 @@ async def test_chat_and_agent_prefetch_helpers_use_active_sources_endpoint(monke
                         "integration_type": "remote_mcp",
                         "is_active": True,
                         "is_deleted": False,
+                        "scope": "org",
+                        "created_by": "admin-1",
                     },
                     "sync_runs": [],
                     "health": "healthy",

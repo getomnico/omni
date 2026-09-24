@@ -66,6 +66,7 @@ class SkillHandler:
         connector_manager_url: str | None = None,
         skills_repository: SkillsRepository | None = None,
         skill_user_id: str | None = None,
+        allowed_source_ids: set[str] | None = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._searcher_client = searcher_client
@@ -78,6 +79,7 @@ class SkillHandler:
         self._library_skills: dict[str, Skill] = {}
         self._skills_repository = skills_repository
         self._skill_user_id = skill_user_id
+        self._allowed_source_ids = allowed_source_ids
         self._discover_skills()
 
     def _discover_skills(self) -> None:
@@ -127,6 +129,11 @@ class SkillHandler:
             description = item.get("description")
             source_type = item.get("source_type")
             source_id = item.get("source_id")
+            if self._allowed_source_ids is not None and (
+                not isinstance(source_id, str)
+                or source_id not in self._allowed_source_ids
+            ):
+                continue
             skills[skill_id] = ConnectorSkill(
                 skill_id=skill_id,
                 title=title,

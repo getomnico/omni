@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from crypto import decrypt_config
@@ -528,6 +528,9 @@ def parse_allowed_action_origins(
     return frozenset(raw_origins)
 
 
+SourceScope = Literal["org", "user"]
+
+
 @dataclass
 class Source:
     id: str
@@ -537,12 +540,20 @@ class Source:
     is_deleted: bool
     integration_type: str = "connector"
     config: dict[str, object] = field(default_factory=dict)
+    scope: SourceScope = "org"
+    created_by: str | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, object]) -> "Source":
         raw_config = row.get("config", {})
         if not isinstance(raw_config, Mapping):
             raise TypeError("source config must be an object")
+        raw_scope = row["scope"]
+        if raw_scope not in ("org", "user"):
+            raise ValueError("source scope must be 'org' or 'user'")
+        created_by = row["created_by"]
+        if not isinstance(created_by, str):
+            raise TypeError("source created_by must be a string")
         config = dict(raw_config)
         parse_allowed_action_origins(config)
         return cls(
@@ -553,7 +564,21 @@ class Source:
             integration_type=cast(str, row.get("integration_type", "connector")),
             is_deleted=cast(bool, row["is_deleted"]),
             config=config,
+            scope=cast(SourceScope, raw_scope),
+            created_by=created_by,
         )
+
+    def is_visible_to_user(self, user_id: str | None) -> bool:
+        """Return whether this source may be exposed in a user's agent context."""
+        return self.scope == "org" or (
+            user_id is not None and self.created_by == user_id
+        )
+
+
+def filter_sources_for_user(
+    sources: list[Source], user_id: str | None
+) -> list[Source]:
+    return [source for source in sources if source.is_visible_to_user(user_id)]
 
 
 class ChatMessageError(TypedDict):

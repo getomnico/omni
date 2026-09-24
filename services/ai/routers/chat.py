@@ -46,7 +46,13 @@ from db import (
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.groups import GroupRepository
-from db.models import Chat, ProjectAttachmentType, Source, UserConfiguration
+from db.models import (
+    Chat,
+    ProjectAttachmentType,
+    Source,
+    UserConfiguration,
+    filter_sources_for_user,
+)
 from db.tool_approvals import (
     ToolApproval,
     ToolApprovalsRepository,
@@ -173,6 +179,7 @@ class RegistryResult:
     toolsets: list[ToolsetSummary]
     sources: list[Source]
     search_operators: list[SearchOperator]
+    sources_fetch_succeeded: bool = False
 
 
 def _loaded_tools_from_history(
@@ -248,6 +255,43 @@ def _loaded_source_ids(
     }
 
 
+def _inaccessible_intervention_ids(
+    interventions: list[ToolApproval],
+    visible_source_ids: set[str],
+    *,
+    sources_fetch_succeeded: bool,
+) -> set[str]:
+    """Return source-bound interventions to hide from this chat response.
+
+    A failed source fetch is fail-closed for visibility, but is not proof that a
+    source disappeared, so callers must not expire the returned interventions.
+    """
+    return {
+        intervention.id
+        for intervention in interventions
+        if intervention.source_id is not None
+        and (
+            not sources_fetch_succeeded
+            or intervention.source_id not in visible_source_ids
+        )
+    }
+
+
+def _intervention_ids_to_expire(
+    interventions: list[ToolApproval],
+    visible_source_ids: set[str],
+    *,
+    sources_fetch_succeeded: bool,
+) -> set[str]:
+    if not sources_fetch_succeeded:
+        return set()
+    return _inaccessible_intervention_ids(
+        interventions,
+        visible_source_ids,
+        sources_fetch_succeeded=True,
+    )
+
+
 async def _fetch_sources_from_connector_manager() -> list[Source] | None:
     try:
         return await fetch_active_sources_from_connector_manager(CONNECTOR_MANAGER_URL)
@@ -270,7 +314,9 @@ async def _build_registry(
     registry = ToolRegistry()
     always_on_handlers: list[ToolHandler] = []
 
-    sources = await _fetch_sources_from_connector_manager() or []
+    fetched_sources = await _fetch_sources_from_connector_manager()
+    sources_fetch_succeeded = fetched_sources is not None
+    sources = filter_sources_for_user(fetched_sources or [], chat.user_id)
 
     connector_handler: ConnectorToolHandler | None = None
     toolsets: list[ToolsetSummary] = []
@@ -280,6 +326,7 @@ async def _build_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=chat.user_id,
         prefetched_sources=sources,
+        acting_user_id=chat.user_id,
         documents_repo=DocumentsRepository(),
         sandbox_url=SANDBOX_URL,
         is_admin=is_admin,
@@ -309,6 +356,7 @@ async def _build_registry(
         searcher_client=request.app.state.searcher_tool.client,
         prefetched_sources=sources,
         prefetched_connectors=connector_handler.connector_catalog,
+        acting_user_id=chat.user_id,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():
@@ -377,6 +425,9 @@ async def _build_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         skills_repository=SkillsRepository(),
         skill_user_id=chat.user_id,
+        allowed_source_ids={
+            source.id for source in sources if source.is_active and not source.is_deleted
+        },
     )
     await skill_handler.refresh_library_skills()
     await skill_handler.refresh_connector_skills()
@@ -391,6 +442,7 @@ async def _build_registry(
         connector_handler=connector_handler,
         toolsets=toolsets,
         sources=sources,
+        sources_fetch_succeeded=sources_fetch_succeeded,
         search_operators=search_operators,
     )
 
@@ -430,21 +482,24 @@ async def _load_project_context(
 
 
 async def _build_agent_chat_registry(
-    request: Request, agent: Agent, is_admin: bool
+    request: Request, agent: Agent, is_admin: bool, acting_user_id: str
 ) -> RegistryResult:
     registry = ToolRegistry()
     always_on_handlers: list[ToolHandler] = []
 
-    sources = await _fetch_sources_from_connector_manager() or []
+    fetched_sources = await _fetch_sources_from_connector_manager()
+    sources_fetch_succeeded = fetched_sources is not None
+    sources = filter_sources_for_user(fetched_sources or [], acting_user_id)
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
 
     search_operators: list[SearchOperator] = []
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
-        user_id=agent.user_id if agent.agent_type == "user" else "",
+        user_id=acting_user_id,
         prefetched_sources=sources,
         source_filter=source_filter,
+        acting_user_id=acting_user_id,
         documents_repo=DocumentsRepository(),
         is_admin=is_admin,
     )
@@ -458,6 +513,7 @@ async def _build_agent_chat_registry(
         prefetched_sources=sources,
         prefetched_connectors=connector_handler.connector_catalog,
         source_filter=source_filter,
+        acting_user_id=acting_user_id,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():
@@ -526,6 +582,9 @@ async def _build_agent_chat_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         skills_repository=SkillsRepository(),
         skill_user_id=agent.user_id,
+        allowed_source_ids={
+            source.id for source in sources if source.is_active and not source.is_deleted
+        },
     )
     await skill_handler.refresh_library_skills()
     await skill_handler.refresh_connector_skills()
@@ -540,6 +599,7 @@ async def _build_agent_chat_registry(
         connector_handler=None,
         toolsets=[],
         sources=sources,
+        sources_fetch_succeeded=sources_fetch_succeeded,
         search_operators=search_operators,
     )
 
@@ -782,7 +842,10 @@ class StreamChatHandler:
                     )
 
             build_result = await _build_agent_chat_registry(
-                request, agent, is_admin=chat_user.role == "admin"
+                request,
+                agent,
+                is_admin=chat_user.role == "admin",
+                acting_user_id=chat.user_id,
             )
             registry = build_result.registry
             loaded_toolsets: set[str] = set()
@@ -917,6 +980,30 @@ class StreamChatHandler:
                     intervention.approval_type == ToolApprovalType.OAUTH
                     and intervention.status in oauth_intervention_statuses
                 )
+            ]
+
+            visible_source_ids = {
+                source.id
+                for source in build_result.sources
+                if source.is_active and not source.is_deleted
+            }
+            inaccessible_intervention_ids = _inaccessible_intervention_ids(
+                pending_interventions,
+                visible_source_ids,
+                sources_fetch_succeeded=build_result.sources_fetch_succeeded,
+            )
+            for intervention_id in _intervention_ids_to_expire(
+                pending_interventions,
+                visible_source_ids,
+                sources_fetch_succeeded=build_result.sources_fetch_succeeded,
+            ):
+                await approvals_repo.update_status(
+                    intervention_id, ToolApprovalStatus.EXPIRED, chat.user_id
+                )
+            pending_interventions = [
+                intervention
+                for intervention in pending_interventions
+                if intervention.id not in inaccessible_intervention_ids
             ]
 
             active_sources = [

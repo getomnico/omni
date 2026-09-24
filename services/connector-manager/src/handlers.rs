@@ -30,7 +30,7 @@ use shared::db::repositories::{
 use shared::models::{
     ActionCredentialScope, ActionMode, ActionOrigin, ConnectorManifest, GlobalConfiguration,
     IntegrationType, OAuthCredentialValidationResponse, SearchOperator, ServiceCredential,
-    ServiceProvider, Source, SourceType, SyncRun, SyncStatus, SyncType,
+    ServiceProvider, Source, SourceScope, SourceType, SyncRun, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -516,6 +516,13 @@ fn action_is_available_for_source(
     source_allows_action_origin(&source.config, action.origin)
 }
 
+/// System/background calls have no acting user and may access only org sources;
+/// personal sources require the source owner as the actor.
+fn source_allows_actor(source: &Source, user_id: Option<&str>) -> bool {
+    source.scope == SourceScope::Org
+        || user_id == Some(source.created_by.as_str())
+}
+
 pub async fn execute_action(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -652,6 +659,11 @@ pub async fn execute_action(
             .await
             .map_err(|e| ApiError::Internal(e.to_string()))?
             .ok_or_else(|| ApiError::NotFound(format!("Source not found: {source_id}")))?;
+        if !source_allows_actor(&db_source, request.user_id.as_deref()) {
+            return Err(ApiError::Unauthorized(
+                "Personal source is owned by another user".to_string(),
+            ));
+        }
 
         source_type = SourceType::try_from(db_source.source_type.as_str())
             .map_err(|e| ApiError::Internal(format!("Invalid source type: {}", e)))?;
@@ -1565,6 +1577,11 @@ pub async fn read_resource(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+    if !source_allows_actor(&source, request.user_id.as_deref()) {
+        return Err(ApiError::Unauthorized(
+            "Personal source is owned by another user".to_string(),
+        ));
+    }
 
     if source.integration_type == IntegrationType::RemoteMcp {
         if !source.is_active || source.is_deleted {
@@ -1715,6 +1732,11 @@ pub async fn get_prompt(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+    if !source_allows_actor(&source, request.user_id.as_deref()) {
+        return Err(ApiError::Unauthorized(
+            "Personal source is owned by another user".to_string(),
+        ));
+    }
 
     if source.integration_type == IntegrationType::RemoteMcp {
         if !source.is_active || source.is_deleted {
@@ -2164,6 +2186,11 @@ pub async fn get_skill(
                 "Source is inactive or deleted: {}",
                 source_id
             )));
+        }
+        if !source_allows_actor(&source, request.user_id.as_deref()) {
+            return Err(ApiError::Unauthorized(
+                "Personal source is owned by another user".to_string(),
+            ));
         }
         let source_type_for_skill = SourceType::try_from(source.source_type.as_str())
             .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -4004,6 +4031,30 @@ pub async fn sdk_get_connector_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::models::{IntegrationType, UserFilterMode};
+
+    fn source_for_actor_test(scope: SourceScope, created_by: &str) -> Source {
+        let now = time::OffsetDateTime::now_utc();
+        Source {
+            id: "source-1".to_string(),
+            name: "Source".to_string(),
+            source_type: SourceType::GoogleDrive.to_string(),
+            integration_type: IntegrationType::Connector,
+            config: json!({}),
+            is_active: true,
+            is_deleted: false,
+            scope,
+            user_filter_mode: UserFilterMode::All,
+            user_whitelist: None,
+            user_blacklist: None,
+            connector_state: None,
+            checkpoint: None,
+            sync_interval_seconds: None,
+            created_at: now,
+            updated_at: now,
+            created_by: created_by.to_string(),
+        }
+    }
 
     #[test]
     fn resource_uri_template_matching_is_delimiter_aware() {
@@ -4089,6 +4140,17 @@ mod tests {
         .unwrap());
         assert!(source_allows_action_origin(&json!({}), ActionOrigin::Native).unwrap());
         assert!(source_allows_action_origin(&json!({}), ActionOrigin::Mcp).unwrap());
+    }
+
+    #[test]
+    fn personal_source_only_allows_its_owner() {
+        let org_source = source_for_actor_test(SourceScope::Org, "owner");
+        let personal_source = source_for_actor_test(SourceScope::User, "owner");
+
+        assert!(source_allows_actor(&org_source, None));
+        assert!(source_allows_actor(&personal_source, Some("owner")));
+        assert!(!source_allows_actor(&personal_source, Some("other")));
+        assert!(!source_allows_actor(&personal_source, None));
     }
 
     #[test]

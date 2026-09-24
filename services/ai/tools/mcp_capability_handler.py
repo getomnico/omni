@@ -14,7 +14,7 @@ import httpx
 from anthropic.types import ToolParam
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
-from db.models import Source
+from db.models import Source, filter_sources_for_user
 from tools.connector_handler import (
     ConnectorCatalog,
     SourceFilter,
@@ -135,10 +135,12 @@ class McpCapabilityHandler:
         prefetched_sources: list[Source] | None = None,
         prefetched_connectors: ConnectorCatalog | None = None,
         source_filter: SourceFilter | None = None,
+        acting_user_id: str | None = None,
     ) -> None:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._searcher_client = searcher_client
         self._prefetched_sources = prefetched_sources
+        self._acting_user_id = acting_user_id
         self._prefetched_connectors = prefetched_connectors
         self._source_filter = source_filter
         self._resources: dict[str, McpResourceRecord] = {}
@@ -178,6 +180,7 @@ class McpCapabilityHandler:
                     )
                     sources_resp.raise_for_status()
                     sources = sources_from_sync_overview_response(sources_resp.json())
+                sources = filter_sources_for_user(sources, self._acting_user_id)
         except Exception as e:
             logger.warning(f"Failed to fetch MCP connector capabilities: {e}")
             self._initialized = True
