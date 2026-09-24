@@ -326,7 +326,6 @@ async def _build_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         user_id=chat.user_id,
         prefetched_sources=sources,
-        acting_user_id=chat.user_id,
         documents_repo=DocumentsRepository(),
         sandbox_url=SANDBOX_URL,
         is_admin=is_admin,
@@ -356,7 +355,7 @@ async def _build_registry(
         searcher_client=request.app.state.searcher_tool.client,
         prefetched_sources=sources,
         prefetched_connectors=connector_handler.connector_catalog,
-        acting_user_id=chat.user_id,
+        user_id=chat.user_id,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():
@@ -482,24 +481,23 @@ async def _load_project_context(
 
 
 async def _build_agent_chat_registry(
-    request: Request, agent: Agent, is_admin: bool, acting_user_id: str
+    request: Request, agent: Agent, is_admin: bool, user_id: str
 ) -> RegistryResult:
     registry = ToolRegistry()
     always_on_handlers: list[ToolHandler] = []
 
     fetched_sources = await _fetch_sources_from_connector_manager()
     sources_fetch_succeeded = fetched_sources is not None
-    sources = filter_sources_for_user(fetched_sources or [], acting_user_id)
+    sources = filter_sources_for_user(fetched_sources or [], user_id)
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
 
     search_operators: list[SearchOperator] = []
     connector_handler = ConnectorToolHandler(
         connector_manager_url=CONNECTOR_MANAGER_URL,
-        user_id=acting_user_id,
+        user_id=user_id,
         prefetched_sources=sources,
         source_filter=source_filter,
-        acting_user_id=acting_user_id,
         documents_repo=DocumentsRepository(),
         is_admin=is_admin,
     )
@@ -513,7 +511,7 @@ async def _build_agent_chat_registry(
         prefetched_sources=sources,
         prefetched_connectors=connector_handler.connector_catalog,
         source_filter=source_filter,
-        acting_user_id=acting_user_id,
+        user_id=user_id,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():
@@ -845,7 +843,7 @@ class StreamChatHandler:
                 request,
                 agent,
                 is_admin=chat_user.role == "admin",
-                acting_user_id=chat.user_id,
+                user_id=chat.user_id,
             )
             registry = build_result.registry
             loaded_toolsets: set[str] = set()

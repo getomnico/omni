@@ -199,7 +199,6 @@ async def _build_agent_registry(
         user_id=agent.user_id,
         prefetched_sources=sources,
         source_filter=source_filter,
-        acting_user_id=agent.user_id if agent.agent_type == "user" else None,
         action_whitelist=action_whitelist,
         documents_repo=DocumentsRepository(),
         sandbox_url=SANDBOX_URL,
@@ -230,7 +229,7 @@ async def _build_agent_registry(
         prefetched_sources=sources,
         prefetched_connectors=connector_handler.connector_catalog,
         source_filter=source_filter,
-        acting_user_id=agent.user_id if agent.agent_type == "user" else None,
+        user_id=agent.user_id if agent.agent_type == "user" else None,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():

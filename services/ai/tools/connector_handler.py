@@ -142,7 +142,6 @@ class ConnectorToolHandler:
         user_id: str,
         prefetched_sources: list[Source] | None = None,
         source_filter: SourceFilter | None = None,
-        acting_user_id: str | None = None,
         action_whitelist: list[str] | None = None,
         documents_repo: DocumentsRepository | None = None,
         sandbox_url: str | None = None,
@@ -151,7 +150,6 @@ class ConnectorToolHandler:
         self._connector_manager_url = connector_manager_url.rstrip("/")
         self._sandbox_url = sandbox_url.rstrip("/") if sandbox_url else None
         self._user_id = user_id
-        self._acting_user_id = user_id if acting_user_id is None else acting_user_id
         self._prefetched_sources = prefetched_sources
         self._connector_catalog: ConnectorCatalog | None = None
         self._source_filter = source_filter
@@ -199,7 +197,7 @@ class ConnectorToolHandler:
                     sources = await fetch_active_sources_from_connector_manager(
                         self._connector_manager_url
                     )
-                sources = filter_sources_for_user(sources, self._acting_user_id)
+                sources = filter_sources_for_user(sources, self._user_id)
                 self._connector_catalog = connectors
 
         except Exception as e:

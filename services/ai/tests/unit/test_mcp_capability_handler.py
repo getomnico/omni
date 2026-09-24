@@ -199,7 +199,7 @@ async def test_mcp_prompt_capabilities_hide_foreign_personal_sources() -> None:
             _source("own", scope="user", created_by="user-1"),
             _source("foreign", scope="user", created_by="user-2"),
         ],
-        acting_user_id="user-1",
+        user_id="user-1",
     )
 
     await handler.refresh()

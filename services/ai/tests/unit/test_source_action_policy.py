@@ -118,7 +118,6 @@ async def test_connector_actions_and_toolsets_hide_foreign_personal_sources():
     handler = ConnectorToolHandler(
         connector_manager_url="http://cm.test",
         user_id="user-1",
-        acting_user_id="user-1",
         prefetched_sources=sources,
     )
     manifest = {
