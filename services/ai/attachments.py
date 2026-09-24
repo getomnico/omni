@@ -5,6 +5,8 @@ User messages may carry blocks shaped like::
     {"type": "document"|"image", "source": {"type": "omni_upload", "upload_id": "..."}}
 
 These are persisted as-is (compact, replayable). At provider-call time we expand them:
+- image upload (png/jpeg/gif/webp, small enough) -> inline as a base64 image block the
+  model can see (vision)
 - text upload <= 32KB  -> inline as a text block
 - otherwise            -> stage in /scratch/{chat_id}/<upload_id>_<filename> and emit a
                           short text pointer block telling the model the file is in the
@@ -38,6 +40,11 @@ from tools.registry import ToolContext
 logger = logging.getLogger(__name__)
 
 INLINE_TEXT_THRESHOLD = 32_000  # characters
+
+# Media types accepted inline by the model APIs (Anthropic's image allowlist).
+_IMAGE_MEDIA_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+# Raw bytes; base64 inflates by 4/3 and providers cap request size (Anthropic: 5MB).
+MAX_INLINE_IMAGE_BYTES = 3_500_000
 
 # Content types we treat as text and try to inline when small enough.
 _TEXT_PREFIXES = ("text/",)
@@ -115,24 +122,46 @@ async def _expand_omni_upload(
     storage: ContentStorage,
     uploads_repo: UploadsRepository,
     sandbox_url: str | None,
-    cache: dict[UploadId, list[TextBlockParam]],
+    cache: dict[UploadId, list[ContentBlockParam]],
     user_id: str | None = None,
-) -> list[TextBlockParam]:
+    supports_vision: bool = True,
+) -> list[ContentBlockParam]:
     if upload_id in cache:
         return cache[upload_id]
 
     upload = await uploads_repo.get(upload_id)
     if not upload:
-        expanded: list[TextBlockParam] = [_text_block(f"[upload {upload_id} not found]")]
+        expanded: list[ContentBlockParam] = [_text_block(f"[upload {upload_id} not found]")]
         cache[upload_id] = expanded
         return expanded
 
     if user_id is not None and upload.user_id != user_id:
-        expanded: list[TextBlockParam] = [_text_block(f"[upload {upload_id} not found]")]
+        expanded: list[ContentBlockParam] = [_text_block(f"[upload {upload_id} not found]")]
         cache[upload_id] = expanded
         return expanded
 
     content = await storage.get_bytes(upload.content_id)
+
+    if (
+        supports_vision
+        and upload.content_type in _IMAGE_MEDIA_TYPES
+        and len(content) <= MAX_INLINE_IMAGE_BYTES
+    ):
+        expanded: list[ContentBlockParam] = [
+            cast(
+                ContentBlockParam,
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": upload.content_type,
+                        "data": base64.b64encode(content).decode("ascii"),
+                    },
+                },
+            )
+        ]
+        cache[upload_id] = expanded
+        return expanded
 
     if _is_textual(upload.content_type):
         try:
@@ -146,11 +175,14 @@ async def _expand_omni_upload(
             return expanded
 
     if not sandbox_url:
+        reason = (
+            "is too large to inline" if supports_vision else "cannot be shown to this model"
+        )
         expanded = [
             _text_block(
                 f"[uploaded file '{upload.filename}' "
                 f"({upload.content_type}, {upload.size_bytes} bytes) "
-                f"is too large to inline and no sandbox is available]"
+                f"{reason} and no sandbox is available]"
             )
         ]
         cache[upload_id] = expanded
@@ -359,13 +391,14 @@ async def expand_uploads(
     uploads_repo: UploadsRepository,
     sandbox_url: str | None,
     user_id: str | None = None,
+    supports_vision: bool = True,
 ) -> list[MessageParam]:
     """Return a new message list with all omni_upload blocks expanded.
 
     Cheap to call every turn: deterministic per upload_id, with an in-call cache and a
     sandbox stat-before-write to avoid re-uploading staged files.
     """
-    cache: dict[UploadId, list[TextBlockParam]] = {}
+    cache: dict[UploadId, list[ContentBlockParam]] = {}
     out: list[MessageParam] = []
     for msg in messages:
         content = msg["content"]
@@ -390,6 +423,7 @@ async def expand_uploads(
                     sandbox_url,
                     cache,
                     user_id=user_id,
+                    supports_vision=supports_vision,
                 )
             )
             changed = True

@@ -28,6 +28,8 @@ import type {
     TestModelResponse,
 } from '$lib/types/model-provider'
 
+const VISION_MODES = ['auto', 'on', 'off']
+
 async function reloadAIProviders() {
     try {
         await fetch(`${env.AI_SERVICE_URL}/admin/reload-providers`, { method: 'POST' })
@@ -88,15 +90,21 @@ async function testProviderConnection(
     }
 }
 
-async function listAvailableProviderModels(
+async function fetchProviderModels(
     providerType: ModelProviderType,
     config: ModelProviderConfig,
-) {
+    opts: { catalog?: boolean } = {},
+): Promise<AvailableModel[]> {
     const built = buildTestRequest(providerType, config, null)
     if ('error' in built) return []
 
+    // 'catalog' hits the unbounded-catalog endpoint used by the admin model
+    // picker; the default endpoint returns the ranked shortlist.
+    const path = opts.catalog
+        ? `admin/provider/${providerType}/models/catalog`
+        : `admin/provider/${providerType}/models`
     try {
-        const resp = await fetch(`${env.AI_SERVICE_URL}/admin/provider/${providerType}/models`, {
+        const resp = await fetch(`${env.AI_SERVICE_URL}/${path}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(built),
@@ -104,10 +112,33 @@ async function listAvailableProviderModels(
         if (!resp.ok) return []
 
         const body = (await resp.json()) as ListProviderModelsResponse
-        return rankDiscoveredModels(providerType, body.models ?? [])
+        return body.models ?? []
     } catch (err) {
-        logger.warn('Failed to list provider models', { providerType, err })
+        logger.warn('Failed to fetch provider models', {
+            providerType,
+            catalog: !!opts.catalog,
+            err,
+        })
         return []
+    }
+}
+
+async function listAvailableProviderModels(
+    providerType: ModelProviderType,
+    config: ModelProviderConfig,
+) {
+    return rankDiscoveredModels(providerType, await fetchProviderModels(providerType, config))
+}
+
+async function fetchVisionByModelId(): Promise<Record<string, boolean>> {
+    try {
+        const resp = await fetch(`${env.AI_SERVICE_URL}/models`)
+        if (!resp.ok) return {}
+        const models = (await resp.json()) as { id: string; supportsVision?: boolean }[]
+        return Object.fromEntries(models.map((m) => [m.id, !!m.supportsVision]))
+    } catch (err) {
+        logger.warn('Failed to fetch model vision capabilities', { err })
+        return {}
     }
 }
 
@@ -115,6 +146,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     requireAdmin(locals)
 
     const providers = await listActiveProviders()
+    const visionByModelId = await fetchVisionByModelId()
 
     const providersWithModels = await Promise.all(
         providers.map(async (p) => {
@@ -138,6 +170,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 
     return {
         providers: providersWithModels,
+        visionByModelId,
     }
 }
 
@@ -293,6 +326,34 @@ export const actions: Actions = {
         }
     },
 
+    discoverModels: async ({ request, locals }) => {
+        requireAdmin(locals)
+
+        const formData = await request.formData()
+        const providerId = formData.get('providerId') as string
+        if (!providerId) return fail(400, { error: 'Provider ID is required' })
+
+        try {
+            const provider = await getProvider(providerId)
+            if (!provider) return fail(404, { error: 'Provider not found' })
+
+            const models = await fetchProviderModels(
+                provider.providerType as ModelProviderType,
+                provider.config as ModelProviderConfig,
+                { catalog: true },
+            )
+            return {
+                models: models.map((m) => ({
+                    modelId: m.model_id,
+                    displayName: m.display_name,
+                })),
+            }
+        } catch (err) {
+            logger.error('Failed to discover provider models', { err })
+            return { models: [] }
+        }
+    },
+
     setSecondaryModel: async ({ request, locals }) => {
         requireAdmin(locals)
 
@@ -420,6 +481,7 @@ function parseConfig(formData: FormData, providerType: string): ModelProviderCon
         apiUrl: (formData.get('apiUrl') as string) || null,
         regionName: (formData.get('regionName') as string) || null,
         projectId: (formData.get('projectId') as string) || null,
+        visionMode: (formData.get('visionMode') as string) || 'auto',
     }
 }
 
@@ -442,6 +504,7 @@ function validateConfig(
         return 'GCP Region is required for Vertex AI'
     if (providerType === 'vertex_ai' && !config.projectId)
         return 'GCP Project ID is required for Vertex AI'
+    if (config.visionMode && !VISION_MODES.includes(config.visionMode)) return 'Invalid vision mode'
 
     return null
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { enhance } from '$app/forms'
+    import { deserialize, enhance } from '$app/forms'
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
@@ -7,10 +7,24 @@
     import { Badge } from '$lib/components/ui/badge'
     import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
+    import * as Select from '$lib/components/ui/select'
+    import * as Command from '$lib/components/ui/command'
+    import * as Popover from '$lib/components/ui/popover'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
     import * as Tooltip from '$lib/components/ui/tooltip'
-    import { Loader2, Info, Pencil, Trash2, Server, CircleAlert, CircleCheck } from '@lucide/svelte'
+    import {
+        Loader2,
+        Info,
+        Pencil,
+        Trash2,
+        Server,
+        CircleAlert,
+        CircleCheck,
+        Eye,
+        EyeOff,
+        ChevronsUpDown,
+    } from '@lucide/svelte'
     import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
@@ -40,7 +54,14 @@
         apiUrl: string
         regionName: string
         projectId: string
+        visionMode: string
     }
+
+    const visionModeOptions = [
+        { value: 'auto', label: 'Auto-detect' },
+        { value: 'on', label: 'Always allow image input' },
+        { value: 'off', label: 'Never allow image input' },
+    ]
 
     interface ModelFormState {
         providerId: string
@@ -57,6 +78,7 @@
         apiUrl: '',
         regionName: '',
         projectId: '',
+        visionMode: 'auto',
     }
 
     const emptyModelForm: ModelFormState = {
@@ -81,6 +103,10 @@
     let modelDialogOpen = $state(false)
     let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
     let isModelSubmitting = $state(false)
+    let modelPickerOpen = $state(false)
+    let modelSearch = $state('')
+    let availableModels = $state<{ modelId: string; displayName: string }[]>([])
+    let modelsLoading = $state(false)
 
     let manageMode = $state<Record<string, boolean>>({})
     let roleForms = $state<Record<string, HTMLFormElement>>({})
@@ -217,6 +243,7 @@
             apiUrl: (provider.config as Record<string, string>).apiUrl || '',
             regionName: (provider.config as Record<string, string>).regionName || '',
             projectId: (provider.config as Record<string, string>).projectId || '',
+            visionMode: (provider.config as Record<string, string>).visionMode || 'auto',
         }
         dialogOpen = true
     }
@@ -239,7 +266,58 @@
             providerId,
         }
         modelDialogOpen = true
+        loadAvailableModels(providerId)
     }
+
+    async function loadAvailableModels(providerId: string) {
+        modelsLoading = true
+        availableModels = []
+        modelSearch = ''
+        try {
+            const formData = new FormData()
+            formData.set('providerId', providerId)
+            const resp = await fetch('?/discoverModels', {
+                method: 'POST',
+                body: formData,
+                headers: { 'x-sveltekit-action': 'true' },
+            })
+            const actionResult = deserialize<
+                { models?: { modelId: string; displayName: string }[] },
+                { error?: string }
+            >(await resp.text())
+            availableModels =
+                actionResult.type === 'success' ? (actionResult.data?.models ?? []) : []
+            if (actionResult.type !== 'success') {
+                console.error(
+                    'Failed to discover provider models:',
+                    actionResult.type === 'failure'
+                        ? actionResult.data?.error
+                        : `HTTP ${resp.status}`,
+                )
+            }
+        } catch {
+            availableModels = []
+        } finally {
+            modelsLoading = false
+        }
+    }
+
+    function applyModelChoice(model: { modelId: string; displayName: string }) {
+        modelFormState.modelId = model.modelId
+        if (!modelFormState.displayName.trim()) {
+            modelFormState.displayName = model.displayName
+        }
+        modelPickerOpen = false
+    }
+
+    let filteredModels = $derived.by(() => {
+        const tokens = modelSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
+        if (tokens.length === 0) return availableModels
+        return availableModels.filter((m) => {
+            const haystack = `${m.displayName} ${m.modelId}`.toLowerCase()
+            return tokens.every((t) => haystack.includes(t))
+        })
+    })
 
     function resetTestResult() {
         testResult = null
@@ -372,124 +450,147 @@
                                 {/if}
                             </div>
 
-                            <!-- Model list -->
+                            <!-- Model table -->
                             {#if provider.models.length > 0}
-                                <div class="mt-1 space-y-0.5">
-                                    {#each provider.models as model (model.id)}
-                                        <!-- Hidden forms for role cycling -->
-                                        <form
-                                            method="POST"
-                                            action="?/setDefaultModel"
-                                            use:enhance={enhanceWithToast}
-                                            class="hidden"
-                                            bind:this={roleForms[`default-${model.id}`]}>
-                                            <input type="hidden" name="id" value={model.id} />
-                                        </form>
-                                        <form
-                                            method="POST"
-                                            action="?/setSecondaryModel"
-                                            use:enhance={enhanceWithToast}
-                                            class="hidden"
-                                            bind:this={roleForms[`secondary-${model.id}`]}>
-                                            <input type="hidden" name="id" value={model.id} />
-                                        </form>
+                                {#each provider.models as model (model.id)}
+                                    <!-- Hidden forms for role cycling (kept outside the table: forms are
+                                        invalid directly inside tbody and browsers would hoist them) -->
+                                    <form
+                                        method="POST"
+                                        action="?/setDefaultModel"
+                                        use:enhance={enhanceWithToast}
+                                        class="hidden"
+                                        bind:this={roleForms[`default-${model.id}`]}>
+                                        <input type="hidden" name="id" value={model.id} />
+                                    </form>
+                                    <form
+                                        method="POST"
+                                        action="?/setSecondaryModel"
+                                        use:enhance={enhanceWithToast}
+                                        class="hidden"
+                                        bind:this={roleForms[`secondary-${model.id}`]}>
+                                        <input type="hidden" name="id" value={model.id} />
+                                    </form>
+                                {/each}
 
-                                        <div
-                                            class="flex min-h-8 items-center justify-between rounded-md px-1">
-                                            <div class="flex items-center gap-2.5">
-                                                {#if model.isDefault && model.isSecondary}
-                                                    <span
-                                                        class="block h-2.5 w-2.5 shrink-0 rounded-full bg-gradient-to-r from-amber-400 to-blue-500"
-                                                    ></span>
-                                                {:else}
-                                                    <span
-                                                        class={cn(
-                                                            'block h-2.5 w-2.5 shrink-0 rounded-full',
-                                                            model.isDefault
-                                                                ? 'bg-amber-400'
-                                                                : model.isSecondary
-                                                                  ? 'bg-blue-500'
-                                                                  : 'bg-muted-foreground/40',
-                                                        )}></span>
-                                                {/if}
-
-                                                <div class="flex items-baseline gap-2">
-                                                    <span class="text-sm font-medium">
-                                                        {model.displayName}
-                                                    </span>
-                                                    {#if model.isDefault}
-                                                        <span
-                                                            class="text-xs font-medium text-amber-600 dark:text-amber-400">
-                                                            Default
-                                                        </span>
-                                                    {/if}
-                                                    {#if model.isSecondary}
-                                                        <span
-                                                            class="text-xs font-medium text-blue-600 dark:text-blue-400">
-                                                            Secondary
-                                                        </span>
-                                                    {/if}
-                                                </div>
-                                            </div>
-
+                                <table class="mt-1 w-full text-sm">
+                                    <thead>
+                                        <tr
+                                            class="text-muted-foreground border-border border-b text-left text-[11px] font-semibold tracking-wider uppercase">
+                                            <th class="py-1.5 pr-2 pl-1 font-semibold">Model</th>
+                                            <th class="w-14 py-1.5 pr-2 font-semibold">Vision</th>
                                             {#if manageMode[provider.id]}
-                                                <div class="flex items-center gap-1">
-                                                    {#if !model.isDefault}
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            class="h-6 cursor-pointer px-2 text-xs"
-                                                            onclick={() =>
-                                                                roleForms[
-                                                                    `default-${model.id}`
-                                                                ]?.requestSubmit()}>
-                                                            Set default
-                                                        </Button>
-                                                    {/if}
-                                                    {#if !model.isSecondary}
-                                                        <Button
-                                                            variant="outline"
-                                                            size="sm"
-                                                            class="h-6 cursor-pointer px-2 text-xs"
-                                                            onclick={() =>
-                                                                roleForms[
-                                                                    `secondary-${model.id}`
-                                                                ]?.requestSubmit()}>
-                                                            Set secondary
-                                                        </Button>
-                                                    {/if}
-                                                    <form
-                                                        method="POST"
-                                                        action="?/deleteModel"
-                                                        use:enhance={enhanceWithToast}
-                                                        class="flex items-center">
-                                                        <input
-                                                            type="hidden"
-                                                            name="id"
-                                                            value={model.id} />
-                                                        <Button
-                                                            variant="outline"
-                                                            size="icon"
-                                                            class="hover:text-destructive h-6 w-6 cursor-pointer"
-                                                            title="Remove model"
-                                                            onclick={(e) => {
-                                                                const form = (
-                                                                    e.currentTarget as HTMLElement
-                                                                ).closest('form')!
-                                                                requestConfirm(
-                                                                    'Remove Model',
-                                                                    `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
-                                                                    form as HTMLFormElement,
-                                                                )
-                                                            }}>
-                                                            <Trash2 class="h-3.5 w-3.5" />
-                                                        </Button>
-                                                    </form>
-                                                </div>
+                                                <th class="py-1.5 text-right font-semibold">
+                                                    Actions
+                                                </th>
                                             {/if}
-                                        </div>
-                                    {/each}
-                                </div>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {#each provider.models as model (model.id)}
+                                            <tr class="border-border/50 border-b last:border-b-0">
+                                                <td class="py-1.5 pr-2 pl-1 align-middle">
+                                                    <div class="flex flex-col gap-0.5">
+                                                        <div class="flex items-baseline gap-2">
+                                                            <span class="text-sm font-medium">
+                                                                {model.displayName}
+                                                            </span>
+                                                            {#if model.isDefault}
+                                                                <span
+                                                                    class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                                                                    Default
+                                                                </span>
+                                                            {/if}
+                                                            {#if model.isSecondary}
+                                                                <span
+                                                                    class="text-xs font-medium text-blue-600 dark:text-blue-400">
+                                                                    Secondary
+                                                                </span>
+                                                            {/if}
+                                                        </div>
+                                                        <span
+                                                            class="text-muted-foreground font-mono text-[11px] break-all">
+                                                            {model.modelId}
+                                                        </span>
+                                                    </div>
+                                                </td>
+                                                <td class="py-1.5 pr-2 align-middle">
+                                                    {#if data.visionByModelId?.[model.id]}
+                                                        <span
+                                                            class="inline-flex items-center text-emerald-600 dark:text-emerald-400"
+                                                            title="Accepts image input">
+                                                            <Eye class="h-4 w-4" />
+                                                        </span>
+                                                    {:else}
+                                                        <span
+                                                            class="text-muted-foreground/50 inline-flex items-center"
+                                                            title="No image input">
+                                                            <EyeOff class="h-4 w-4" />
+                                                        </span>
+                                                    {/if}
+                                                </td>
+                                                {#if manageMode[provider.id]}
+                                                    <td class="py-1.5 align-middle">
+                                                        <div
+                                                            class="flex items-center justify-end gap-1">
+                                                            {#if !model.isDefault}
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    class="h-6 cursor-pointer px-2 text-xs"
+                                                                    onclick={() =>
+                                                                        roleForms[
+                                                                            `default-${model.id}`
+                                                                        ]?.requestSubmit()}>
+                                                                    Set default
+                                                                </Button>
+                                                            {/if}
+                                                            {#if !model.isSecondary}
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="sm"
+                                                                    class="h-6 cursor-pointer px-2 text-xs"
+                                                                    onclick={() =>
+                                                                        roleForms[
+                                                                            `secondary-${model.id}`
+                                                                        ]?.requestSubmit()}>
+                                                                    Set secondary
+                                                                </Button>
+                                                            {/if}
+                                                            <form
+                                                                method="POST"
+                                                                action="?/deleteModel"
+                                                                use:enhance={enhanceWithToast}
+                                                                class="flex items-center">
+                                                                <input
+                                                                    type="hidden"
+                                                                    name="id"
+                                                                    value={model.id} />
+                                                                <Button
+                                                                    variant="outline"
+                                                                    size="icon"
+                                                                    class="hover:text-destructive h-6 w-6 cursor-pointer"
+                                                                    title="Remove model"
+                                                                    onclick={(e) => {
+                                                                        const form = (
+                                                                            e.currentTarget as HTMLElement
+                                                                        ).closest('form')!
+                                                                        requestConfirm(
+                                                                            'Remove Model',
+                                                                            `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
+                                                                            form as HTMLFormElement,
+                                                                        )
+                                                                    }}>
+                                                                    <Trash2 class="h-3.5 w-3.5" />
+                                                                </Button>
+                                                            </form>
+                                                        </div>
+                                                    </td>
+                                                {/if}
+                                            </tr>
+                                        {/each}
+                                    </tbody>
+                                </table>
                             {/if}
 
                             <Button
@@ -672,6 +773,31 @@
                         </Alert.Root>
                     {/if}
 
+                    {#if formState.providerType === 'openai_compatible' || formState.providerType === 'azure_foundry'}
+                        <div class="space-y-2">
+                            <Label>Image input</Label>
+                            <input type="hidden" name="visionMode" value={formState.visionMode} />
+                            <Select.Root type="single" bind:value={formState.visionMode}>
+                                <Select.Trigger class="w-full cursor-pointer">
+                                    {visionModeOptions.find((o) => o.value === formState.visionMode)
+                                        ?.label ?? 'Auto-detect'}
+                                </Select.Trigger>
+                                <Select.Content>
+                                    {#each visionModeOptions as option (option.value)}
+                                        <Select.Item value={option.value} class="cursor-pointer">
+                                            {option.label}
+                                        </Select.Item>
+                                    {/each}
+                                </Select.Content>
+                            </Select.Root>
+                            <p class="text-muted-foreground text-xs">
+                                Auto-detect uses the endpoint's model info when available
+                                (OpenRouter, Ollama) and is treated as off otherwise. Set explicitly
+                                for endpoints that can't say whether a model accepts images.
+                            </p>
+                        </div>
+                    {/if}
+
                     {#if showRegion(formState.providerType)}
                         <div class="space-y-2">
                             <Label for="regionName">
@@ -842,12 +968,67 @@
 
                     <div class="space-y-2">
                         <Label for="modelId">Model ID *</Label>
-                        <Input
-                            id="modelId"
-                            name="modelId"
-                            bind:value={modelFormState.modelId}
-                            placeholder="e.g., claude-sonnet-4-5-20250929"
-                            required />
+                        <Popover.Root bind:open={modelPickerOpen}>
+                            <Popover.Trigger
+                                id="modelId"
+                                class="dark:bg-input/30 flex w-full items-center justify-between gap-2 rounded-md border bg-transparent px-3 py-2 text-left text-sm">
+                                {#if modelFormState.modelId}
+                                    <span class="truncate font-mono text-[13px]">
+                                        {modelFormState.modelId}
+                                    </span>
+                                {:else}
+                                    <span class="text-muted-foreground"> Select a model… </span>
+                                {/if}
+                                <ChevronsUpDown class="h-4 w-4 shrink-0 opacity-50" />
+                            </Popover.Trigger>
+                            <Popover.Content class="w-[360px] p-0" align="start">
+                                <Command.Root shouldFilter={false}>
+                                    <Command.Input
+                                        placeholder="Search models..."
+                                        bind:value={modelSearch} />
+                                    <Command.List>
+                                        <Command.Empty>
+                                            {modelsLoading
+                                                ? 'Loading model list…'
+                                                : 'No models found.'}
+                                        </Command.Empty>
+                                        <Command.Group>
+                                            {#each filteredModels as option (option.modelId)}
+                                                <Command.Item
+                                                    value={`${option.displayName} ${option.modelId}`}
+                                                    onSelect={() => applyModelChoice(option)}>
+                                                    <div class="flex flex-col py-0.5">
+                                                        <span class="text-sm">
+                                                            {option.displayName}
+                                                        </span>
+                                                        <span
+                                                            class="text-muted-foreground font-mono text-[11px]">
+                                                            {option.modelId}
+                                                        </span>
+                                                    </div>
+                                                </Command.Item>
+                                            {/each}
+                                        </Command.Group>
+                                    </Command.List>
+                                    {#if modelSearch.trim()}
+                                        <div class="border-border border-t p-1">
+                                            <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                type="button"
+                                                class="w-full justify-start"
+                                                onclick={() => {
+                                                    modelFormState.modelId = modelSearch.trim()
+                                                    modelPickerOpen = false
+                                                }}>
+                                                Use “{modelSearch.trim()}”
+                                            </Button>
+                                        </div>
+                                    {/if}
+                                </Command.Root>
+                            </Popover.Content>
+                        </Popover.Root>
+                        <input type="hidden" name="modelId" value={modelFormState.modelId} />
                     </div>
 
                     <div class="space-y-2">
@@ -890,7 +1071,10 @@
                             onclick={() => (modelDialogOpen = false)}>
                             Cancel
                         </Button>
-                        <Button type="submit" disabled={isModelSubmitting} class="cursor-pointer">
+                        <Button
+                            type="submit"
+                            disabled={isModelSubmitting || !modelFormState.modelId.trim()}
+                            class="cursor-pointer">
                             {#if isModelSubmitting}
                                 <Loader2 class="mr-2 h-4 w-4 animate-spin" />
                                 Adding...
