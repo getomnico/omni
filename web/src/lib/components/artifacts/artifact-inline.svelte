@@ -14,7 +14,7 @@
 </script>
 
 {#if kind === 'html'}
-    <div class="w-full">
+    <div class="border-muted-foreground/30 w-full overflow-hidden rounded-lg border border-dotted">
         <div class="flex h-6 items-center justify-end">
             <a
                 href={artifact.url}
