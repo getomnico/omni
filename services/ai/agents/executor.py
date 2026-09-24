@@ -49,7 +49,7 @@ from db import (
 from db.configuration import ConfigurationRepository
 from db.documents import DocumentsRepository
 from db.groups import GroupRepository
-from db.models import Source, UserConfiguration
+from db.models import Source, UserConfiguration, filter_sources_for_user
 from db.usage import UsageRepository
 from db.users import UsersRepository
 from memory import MemoryMode, agent_key, resolve_memory_mode
@@ -176,6 +176,9 @@ async def _build_agent_registry(
     """
     registry = ToolRegistry()
     always_on_handlers: list[ToolHandler] = []
+    sources = filter_sources_for_user(
+        sources or [], agent.user_id if agent.agent_type == "user" else None
+    )
 
     source_filter = _build_source_filter(agent) if agent.agent_type == "user" else None
     action_whitelist = agent.allowed_actions if agent.agent_type == "org" else None
@@ -226,6 +229,7 @@ async def _build_agent_registry(
         prefetched_sources=sources,
         prefetched_connectors=connector_handler.connector_catalog,
         source_filter=source_filter,
+        user_id=agent.user_id if agent.agent_type == "user" else None,
     )
     await mcp_handler.refresh()
     if mcp_handler.has_capabilities():
@@ -298,6 +302,9 @@ async def _build_agent_registry(
         connector_manager_url=CONNECTOR_MANAGER_URL,
         skills_repository=SkillsRepository(),
         skill_user_id=agent.user_id,
+        allowed_source_ids={
+            source.id for source in sources if source.is_active and not source.is_deleted
+        },
     )
     await skill_handler.refresh_library_skills()
     await skill_handler.refresh_connector_skills()
@@ -471,7 +478,10 @@ async def _run_agent_loop(
     llm_provider = resolved_model.provider
     llm_model_record_id = resolved_model.model_record_id
     llm_model_name = resolved_model.model_name
-    sources = await _fetch_sources()
+    sources = filter_sources_for_user(
+        await _fetch_sources() or [],
+        agent.user_id if agent.agent_type == "user" else None,
+    )
 
     # Each agent run starts with no connector tools loaded — discovery is per-run.
     loaded_toolsets: set[str] = set()

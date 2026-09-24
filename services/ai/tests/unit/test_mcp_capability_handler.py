@@ -47,6 +47,8 @@ def _source(
     *,
     active: bool = True,
     integration_type: str = "connector",
+    scope: str = "org",
+    created_by: str | None = None,
 ) -> Source:
     return Source(
         id=source_id,
@@ -55,6 +57,8 @@ def _source(
         integration_type=integration_type,
         is_active=active,
         is_deleted=False,
+        scope=scope,
+        created_by=created_by,
     )
 
 
@@ -162,6 +166,50 @@ async def test_publishes_resource_and_prompt_capabilities() -> None:
     prompt = prompt_caps[0]
     assert prompt.id == "prompt:src-1:debug_error"
     assert prompt.data["arguments"][0]["required"] is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_mcp_prompt_capabilities_hide_foreign_personal_sources() -> None:
+    searcher = _FakeSearcherClient()
+    searcher.results = [
+        CapabilitySearchResult(
+            id=f"prompt:{source_id}:debug_error",
+            capability_type="prompt",
+            name="debug_error",
+            description="Debug an error",
+            search_text="debug error",
+            data={},
+            score=1.0,
+            source_id=source_id,
+        )
+        for source_id in ("org", "own", "foreign")
+    ]
+    respx.get("http://cm.test/connectors").mock(
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": _manifest()}],
+        )
+    )
+    handler = McpCapabilityHandler(
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[
+            _source("org", created_by="admin-1"),
+            _source("own", scope="user", created_by="user-1"),
+            _source("foreign", scope="user", created_by="user-2"),
+        ],
+        user_id="user-1",
+    )
+
+    await handler.refresh()
+    result = await handler._prompt_search({"query": "debug"})
+
+    assert not result.is_error
+    assert "prompt:org:debug_error" in result.content[0]["text"]
+    assert "prompt:own:debug_error" in result.content[0]["text"]
+    assert "prompt:foreign:debug_error" not in result.content[0]["text"]
+    assert searcher.searches[0].allowed_source_ids == ["org", "own"]
 
 
 @pytest.mark.asyncio

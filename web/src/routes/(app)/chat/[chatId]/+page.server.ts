@@ -3,6 +3,7 @@ import { getModel } from '$lib/server/db/model-providers.js'
 import { getAgent } from '$lib/server/db/agents.js'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals.js'
 import { ProjectRepository } from '$lib/server/db/projects.js'
+import { SourcesRepository } from '$lib/server/repositories/sources.js'
 import { error } from '@sveltejs/kit'
 import type { ChatMessage } from '$lib/server/db/schema.js'
 
@@ -122,18 +123,33 @@ export const load = async ({ params, locals, fetch, depends }) => {
         chat.id,
         'approval',
     )
-    const pendingApprovals = allPendingApprovals.filter(
-        (approval) =>
-            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
-    )
     const resumableOAuth = await toolApprovalRepository.getForChatAll(
         chat.id,
         ['pending', 'approved'],
         'oauth',
     )
+    const needsSourceVisibility =
+        allPendingApprovals.some((approval) => approval.sourceId !== null) ||
+        resumableOAuth.length > 0
+    const visibleSourceIds = new Set(
+        needsSourceVisibility
+            ? (await new SourcesRepository().getVisibleActiveForUser(locals.user.id)).map(
+                  (source) => source.id,
+              )
+            : [],
+    )
+    const pendingApprovals = allPendingApprovals.filter(
+        (approval) =>
+            approval.toolCallId !== null &&
+            activePathToolCallIds.has(approval.toolCallId) &&
+            (approval.sourceId === null || visibleSourceIds.has(approval.sourceId)),
+    )
     const activeOAuth = resumableOAuth.filter(
         (approval) =>
-            approval.toolCallId !== null && activePathToolCallIds.has(approval.toolCallId),
+            approval.toolCallId !== null &&
+            activePathToolCallIds.has(approval.toolCallId) &&
+            approval.sourceId !== null &&
+            visibleSourceIds.has(approval.sourceId),
     )
     const pendingOAuth = activeOAuth.find((approval) => approval.status === 'pending') ?? null
     const approvedOAuth = activeOAuth.find((approval) => approval.status === 'approved') ?? null

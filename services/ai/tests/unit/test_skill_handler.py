@@ -210,6 +210,32 @@ async def test_connector_skill_loads() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_connector_skills_hide_foreign_personal_sources() -> None:
+    respx.get("http://cm.test/skills").mock(
+        return_value=Response(
+            200,
+            json={
+                "skills": [
+                    {"id": "own", "title": "Own", "source_id": "src-own"},
+                    {"id": "foreign", "title": "Foreign", "source_id": "src-foreign"},
+                    {"id": "missing", "title": "Missing source id"},
+                ]
+            },
+        )
+    )
+    handler = SkillHandler(
+        SKILLS_DIR,
+        connector_manager_url="http://cm.test",
+        allowed_source_ids={"src-own"},
+    )
+
+    await handler.refresh_connector_skills()
+
+    assert set(handler._connector_skills) == {"own"}
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_connector_skill_412_surfaces_oauth_required_payload() -> None:
     """A 412 needs_user_auth response must set both the encoded envelope in
     content and the typed ToolResult.oauth_required field."""

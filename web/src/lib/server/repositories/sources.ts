@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db'
 import { sources } from '$lib/server/db/schema'
-import { eq, desc, sql, and } from 'drizzle-orm'
+import { eq, desc, sql, and, or } from 'drizzle-orm'
 import type { Source, SyncRun } from '$lib/server/db/schema'
 
 export class SourcesRepository {
@@ -10,6 +10,22 @@ export class SourcesRepository {
             .from(sources)
             .where(eq(sources.isDeleted, false))
             .orderBy(desc(sources.createdAt))
+    }
+
+    async getVisibleActiveForUser(userId: string): Promise<Source[]> {
+        return await db
+            .select()
+            .from(sources)
+            .where(
+                and(
+                    eq(sources.isActive, true),
+                    eq(sources.isDeleted, false),
+                    or(
+                        eq(sources.scope, 'org'),
+                        and(eq(sources.scope, 'user'), eq(sources.createdBy, userId)),
+                    ),
+                ),
+            )
     }
 
     async getById(sourceId: string): Promise<Source | null> {

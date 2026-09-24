@@ -15,7 +15,7 @@ from anthropic.types import ToolParam
 
 from db.connection import get_db_pool
 from db.documents import DocumentsRepository
-from db.models import Source, parse_allowed_action_origins
+from db.models import Source, filter_sources_for_user, parse_allowed_action_origins
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
 from tools.registry import ToolContext, ToolResult
 from tools.sandbox import (
@@ -197,6 +197,7 @@ class ConnectorToolHandler:
                     sources = await fetch_active_sources_from_connector_manager(
                         self._connector_manager_url
                     )
+                sources = filter_sources_for_user(sources, self._user_id)
                 self._connector_catalog = connectors
 
         except Exception as e:

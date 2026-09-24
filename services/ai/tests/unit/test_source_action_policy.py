@@ -6,11 +6,19 @@ from httpx import Response
 
 from db.models import Source
 from tools.connector_handler import ConnectorToolHandler, action_is_available_for_source
+from tools.meta_handler import MetaToolHandler
+from tools.registry import ToolContext
 
 pytestmark = pytest.mark.unit
 
 
-def _source(source_id: str, config: dict[str, object]) -> Source:
+def _source(
+    source_id: str,
+    config: dict[str, object],
+    *,
+    scope: str = "org",
+    created_by: str | None = None,
+) -> Source:
     return Source(
         id=source_id,
         source_type="crm",
@@ -18,6 +26,8 @@ def _source(source_id: str, config: dict[str, object]) -> Source:
         is_active=True,
         is_deleted=False,
         config=config,
+        scope=scope,
+        created_by=created_by,
     )
 
 
@@ -91,6 +101,60 @@ def test_source_row_rejects_malformed_action_origin_policy():
                 "source_type": "crm",
                 "is_active": True,
                 "is_deleted": False,
+                "scope": "org",
+                "created_by": "admin-1",
                 "config": {"allowed_action_origins": "mcp"},
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_connector_actions_and_toolsets_hide_foreign_personal_sources():
+    sources = [
+        _source("org", {}, scope="org", created_by="admin-1"),
+        _source("own", {}, scope="user", created_by="user-1"),
+        _source("foreign", {}, scope="user", created_by="user-2"),
+    ]
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://cm.test",
+        user_id="user-1",
+        prefetched_sources=sources,
+    )
+    manifest = {
+        "source_type": "crm",
+        "healthy": True,
+        "manifest": {
+            "actions": [
+                {"name": "list_records", "origin": "native", "mode": "read"}
+            ]
+        },
+    }
+
+    with respx.mock:
+        respx.get("http://cm.test/connectors").mock(
+            return_value=Response(200, json=[manifest])
+        )
+        await handler._ensure_initialized()
+
+    assert {action.source_id for action in handler.actions.values()} == {"org", "own"}
+    assert {toolset["source_id"] for toolset in handler.list_toolsets()} == {
+        "org",
+        "own",
+    }
+    stale_foreign_tool = "crm__list_records__source_foreign"
+    assert handler.filtered_tools({stale_foreign_tool}) == []
+    assert (
+        await handler.check_oauth_required(
+            stale_foreign_tool, {}, ToolContext(chat_id="chat-1", user_id="user-1")
+        )
+        is None
+    )
+
+    meta = MetaToolHandler(handler, set(), lambda _: _noop())
+    result = await meta._load_tool_set({"source_id": "foreign"})
+    assert result.is_error
+    assert "No connector toolset" in result.content[0]["text"]
+
+
+async def _noop() -> None:
+    return None
