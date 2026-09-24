@@ -14,16 +14,16 @@
 </script>
 
 {#if kind === 'html'}
-    <div class="border-muted-foreground/30 w-full overflow-hidden rounded-lg border border-dotted">
-        <div class="flex h-6 items-center justify-end">
+    <div class="border-muted-foreground/30 w-full overflow-hidden rounded-lg border border-dashed">
+        <div class="flex h-8 items-center justify-end px-1">
             <a
                 href={artifact.url}
                 download
                 rel="external"
                 title="Download component"
                 aria-label={`Download ${artifact.title}`}
-                class="text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer rounded p-1">
-                <Download class="h-3.5 w-3.5" />
+                class="text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer rounded-md p-1.5">
+                <Download class="h-4 w-4" />
             </a>
         </div>
         <!-- No allow-same-origin token: generated code gets an opaque origin. -->
