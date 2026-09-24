@@ -45,7 +45,6 @@ async def test_action_origins_are_filtered_per_source_and_default_allows_all():
     )
     manifest = {
         "source_type": "crm",
-        "healthy": True,
         "manifest": {
             "actions": [
                 {"name": "native_lookup", "origin": "native", "mode": "read"},
@@ -106,6 +105,41 @@ def test_source_row_rejects_malformed_action_origin_policy():
                 "config": {"allowed_action_origins": "mcp"},
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_explicitly_unhealthy_connector_hides_actions_and_search_operators():
+    source = _source("org", {})
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://cm.test",
+        user_id="user-1",
+        prefetched_sources=[source],
+    )
+    manifest = {
+        "source_type": "crm",
+        "healthy": False,
+        "manifest": {
+            "actions": [
+                {"name": "list_records", "origin": "native", "mode": "read"}
+            ],
+            "search_operators": [
+                {
+                    "operator": "team",
+                    "attribute_key": "team",
+                    "value_type": "text",
+                }
+            ],
+        },
+    }
+
+    with respx.mock:
+        respx.get("http://cm.test/connectors").mock(
+            return_value=Response(200, json=[manifest])
+        )
+        await handler._ensure_initialized()
+
+    assert handler.actions == {}
+    assert handler.search_operators == []
 
 
 @pytest.mark.asyncio
