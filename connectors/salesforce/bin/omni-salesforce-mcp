@@ -103,18 +103,40 @@ elif [ "$OMNI_SALESFORCE_AUTH_MODE" = "access_token" ]; then
   # supplied through the child environment, never a command-line argument.
   actual_org_id=$(SF_USERINFO_URL="$SF_LOGIN_URL/services/oauth2/userinfo" \
     SF_USER_ACCESS_TOKEN="$token_value" python3 -c '
-import json, os, urllib.request
+import json, os, sys, urllib.error, urllib.request
+
 request = urllib.request.Request(
     os.environ["SF_USERINFO_URL"],
     headers={"Authorization": "Bearer " + os.environ["SF_USER_ACCESS_TOKEN"]},
 )
-with urllib.request.urlopen(request, timeout=15) as response:
-    value = json.load(response).get("organization_id")
+try:
+    with urllib.request.urlopen(request, timeout=15) as response:
+        value = json.load(response).get("organization_id")
+except urllib.error.HTTPError as exc:
+    print(
+        f"Salesforce OAuth userinfo request failed: status={exc.code} reason={exc.reason}",
+        file=sys.stderr,
+    )
+    raise
+except urllib.error.URLError as exc:
+    print(
+        f"Salesforce OAuth userinfo request failed: network_error={exc.reason}",
+        file=sys.stderr,
+    )
+    raise
+except TimeoutError:
+    print("Salesforce OAuth userinfo request failed: timeout", file=sys.stderr)
+    raise
+
 if not isinstance(value, str) or not value:
-    raise SystemExit("Salesforce userinfo did not return organization_id")
+    print(
+        "Salesforce OAuth userinfo response missing organization_id",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 print(value)
-' 2>/dev/null) || {
-      printf '%s\n' "Unable to validate Salesforce OAuth organization" >&2
+') || {
+      printf '%s\n' "Salesforce OAuth userinfo validation failed; see the preceding diagnostic" >&2
       auth_failure
     }
   if [ -n "$token_org_id" ] && [ "$actual_org_id" != "$token_org_id" ]; then
