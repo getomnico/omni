@@ -1844,6 +1844,7 @@ async fn register_action_manifest(
         mcp_catalog_loaded: false,
         prompts: vec![],
         skills: vec![],
+        source_capabilities: vec![],
         resources: vec![],
         oauth,
     };

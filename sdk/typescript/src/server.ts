@@ -5,7 +5,6 @@ import type { Connector } from "./connector.js";
 import { SyncContext } from "./context.js";
 import {
   SyncMode,
-  ConnectorManifestRequestSchema,
   SyncRequestSchema,
   CancelRequestSchema,
   ActionRequestSchema,
@@ -84,25 +83,6 @@ export function createServer(connector: Connector): Express {
   app.get("/manifest", async (_req: Request, res: Response) => {
     const manifest = await connector.getManifest(connectorUrl);
     res.json(manifest);
-  });
-
-  app.post("/manifest", async (req: Request, res: Response) => {
-    const parseResult = ConnectorManifestRequestSchema.safeParse(req.body);
-    if (!parseResult.success) {
-      res.status(400).json({ error: "Invalid source-aware manifest request" });
-      return;
-    }
-    try {
-      const manifest = await connector.buildManifestForSources(
-        parseResult.data.sources,
-        parseResult.data.current_manifest,
-        connectorUrl,
-      );
-      res.json(manifest);
-    } catch (err) {
-      logger.warn({ err }, "Source-aware manifest construction failed");
-      res.status(500).json({ error: "Manifest construction failed" });
-    }
   });
 
   app.post("/oauth/validate", async (req: Request, res: Response) => {

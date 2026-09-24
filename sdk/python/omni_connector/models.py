@@ -390,6 +390,14 @@ class OAuthManifestConfig(BaseModel):
     )
 
 
+class ConnectorSourceCapabilities(BaseModel):
+    source_id: str
+    actions: list[ActionDefinition] = Field(default_factory=list)
+    resources: list[McpResourceDefinition] = Field(default_factory=list)
+    prompts: list[McpPromptDefinition] = Field(default_factory=list)
+    skills: list[ConnectorSkillDefinition] = Field(default_factory=list)
+
+
 class ConnectorManifest(BaseModel):
     name: str
     display_name: str
@@ -399,6 +407,9 @@ class ConnectorManifest(BaseModel):
     connector_url: str
     source_types: list[str] = Field(default_factory=list)
     description: str | None = None
+    # Deprecated compatibility catalog. New and migrated connectors should
+    # publish actions in source_capabilities; source-specific definitions win
+    # over a legacy definition with the same name for that source.
     actions: list[ActionDefinition] = Field(default_factory=list)
     search_operators: list[SearchOperator] = Field(default_factory=list)
     extra_schema: dict[str, Any] | None = None
@@ -406,31 +417,22 @@ class ConnectorManifest(BaseModel):
     mcp_enabled: bool = False
     mcp_catalog_loaded: bool = Field(
         default=False,
-        description=(
-            "True when the connector has an MCP catalog available in memory "
-            "from live discovery. Connector-manager uses this to recover missing "
-            "authenticated MCP catalogs."
-        ),
+        description="True when the connector has an MCP catalog available from live discovery.",
     )
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
     skills: list[ConnectorSkillDefinition] = Field(default_factory=list)
+    source_capabilities: list[ConnectorSourceCapabilities] = Field(default_factory=list)
     oauth: OAuthManifestConfig | None = None
 
 
-class ConnectorManifestSource(BaseModel):
-    """Non-secret source context used for source-aware manifest construction."""
+class ManifestSourceContext(BaseModel):
+    """Non-secret context carried by the manager's GET /manifest request."""
 
     id: str
     source_type: str
-    scope: str
     config: dict[str, Any]
     updated_at: datetime
-
-
-class ConnectorManifestRequest(BaseModel):
-    sources: list[ConnectorManifestSource] = Field(default_factory=list)
-    current_manifest: ConnectorManifest | None = None
 
 
 class OAuthCredentialReadyRequest(BaseModel):

@@ -1,11 +1,13 @@
 import asyncio
+import base64
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
@@ -18,7 +20,7 @@ from .models import (
     ActionRequest,
     CancelRequest,
     CancelResponse,
-    ConnectorManifestRequest,
+    ManifestSourceContext,
     OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest,
     PromptRequest,
@@ -120,6 +122,25 @@ def create_app(
     connector_url = config.connector_url
     server = ConnectorServer(connector, config)
 
+    def manifest_request_context(request: Request) -> tuple[ManifestSourceContext | None, dict[str, Any] | None]:
+        encoded_context = request.headers.get("x-omni-manifest-source")
+        if encoded_context is None:
+            return None, None
+        try:
+            padding = "=" * (-len(encoded_context) % 4)
+            decoded = base64.urlsafe_b64decode(encoded_context + padding)
+            source_context = ManifestSourceContext.model_validate(json.loads(decoded))
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid manifest source context") from exc
+
+        authorization = request.headers.get("authorization")
+        if authorization is None or not authorization.startswith("Bearer "):
+            return source_context, None
+        token = authorization.removeprefix("Bearer ").strip()
+        if not token:
+            return source_context, None
+        return source_context, {"access_token": token}
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         nonlocal connector_url
@@ -176,18 +197,20 @@ def create_app(
         return {"status": "healthy", "service": connector.name}
 
     @app.get("/manifest")
-    async def manifest() -> dict[str, Any]:
-        m = await connector.get_manifest(connector_url=connector_url)
-        return m.model_dump()
-
-    @app.post("/manifest")
-    async def source_aware_manifest(
-        request: ConnectorManifestRequest,
-    ) -> dict[str, Any]:
-        m = await connector.build_manifest_for_sources(
-            request.sources, request.current_manifest, connector_url
-        )
-        return m.model_dump()
+    async def manifest(request: Request) -> dict[str, Any]:
+        try:
+            source_context, credentials = manifest_request_context(request)
+            if source_context is None:
+                m = await connector.get_manifest(connector_url=connector_url)
+            else:
+                m = await connector.get_manifest(
+                    connector_url=connector_url,
+                    source_context=source_context,
+                    credentials=credentials,
+                )
+            return m.model_dump()
+        except ValueError as exc:
+            return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST, content={"error": str(exc)})
 
     @app.post("/oauth/validate")
     async def validate_oauth_credential(
@@ -481,7 +504,7 @@ def create_app(
 
     @app.post("/resource")
     async def read_resource(request: ResourceRequest) -> JSONResponse:
-        adapter = connector.mcp_adapter_for_credentials(request.credentials)
+        adapter = connector.mcp_adapter_for_credentials(request.credentials, request.source)
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -507,7 +530,7 @@ def create_app(
 
     @app.post("/prompt")
     async def get_prompt(request: PromptRequest) -> JSONResponse:
-        adapter = connector.mcp_adapter_for_credentials(request.credentials)
+        adapter = connector.mcp_adapter_for_credentials(request.credentials, request.source)
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

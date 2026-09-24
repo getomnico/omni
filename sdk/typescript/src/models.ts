@@ -259,6 +259,17 @@ export type ConnectorSkillDefinition = z.infer<
   typeof ConnectorSkillDefinitionSchema
 >;
 
+export const ConnectorSourceCapabilitiesSchema = z.object({
+  source_id: z.string(),
+  actions: z.array(ActionDefinitionSchema).default([]),
+  resources: z.array(McpResourceDefinitionSchema).default([]),
+  prompts: z.array(McpPromptDefinitionSchema).default([]),
+  skills: z.array(ConnectorSkillDefinitionSchema).default([]),
+});
+export type ConnectorSourceCapabilities = z.infer<
+  typeof ConnectorSourceCapabilitiesSchema
+>;
+
 export const ConnectorManifestSchema = z.object({
   name: z.string(),
   display_name: z.string(),
@@ -269,6 +280,9 @@ export const ConnectorManifestSchema = z.object({
   integration_type: z.enum(['connector', 'remote_mcp']).default('connector'),
   source_types: z.array(z.string()).default([]),
   description: z.string().optional(),
+  // Deprecated compatibility catalog. New and migrated connectors should
+  // publish actions in source_capabilities; source-specific definitions win
+  // over a legacy definition with the same name for that source.
   actions: z.array(ActionDefinitionSchema).default([]),
   search_operators: z.array(SearchOperatorSchema).default([]),
   extra_schema: z.record(z.unknown()).optional(),
@@ -279,28 +293,10 @@ export const ConnectorManifestSchema = z.object({
   resources: z.array(McpResourceDefinitionSchema).default([]),
   prompts: z.array(McpPromptDefinitionSchema).default([]),
   skills: z.array(ConnectorSkillDefinitionSchema).default([]),
+  source_capabilities: z.array(ConnectorSourceCapabilitiesSchema).default([]),
   oauth: OAuthManifestConfigSchema.nullable().optional(),
 });
 export type ConnectorManifest = z.infer<typeof ConnectorManifestSchema>;
-
-export const ConnectorManifestSourceSchema = z.object({
-  id: z.string(),
-  source_type: z.string(),
-  scope: z.string(),
-  config: z.record(z.unknown()),
-  updated_at: z.string().datetime(),
-});
-export type ConnectorManifestSource = z.infer<
-  typeof ConnectorManifestSourceSchema
->;
-
-export const ConnectorManifestRequestSchema = z.object({
-  sources: z.array(ConnectorManifestSourceSchema).default([]),
-  current_manifest: ConnectorManifestSchema.nullable().optional(),
-});
-export type ConnectorManifestRequest = z.infer<
-  typeof ConnectorManifestRequestSchema
->;
 
 export const SyncRequestSchema = z.object({
   sync_run_id: z.string(),
@@ -443,6 +439,7 @@ export class ActionResponse {
 export const ResourceRequestSchema = z.object({
   uri: z.string(),
   credentials: z.record(z.unknown()).default({}),
+  source: SourceSchema.nullable().optional(),
 });
 export type ResourceRequest = z.infer<typeof ResourceRequestSchema>;
 
@@ -450,6 +447,7 @@ export const PromptRequestSchema = z.object({
   name: z.string(),
   arguments: z.record(z.unknown()).optional(),
   credentials: z.record(z.unknown()).default({}),
+  source: SourceSchema.nullable().optional(),
 });
 export type PromptRequest = z.infer<typeof PromptRequestSchema>;
 

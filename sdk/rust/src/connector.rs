@@ -13,7 +13,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value as JsonValue;
 use shared::models::{
-    ActionDefinition, ConnectorManifest, ConnectorManifestSource,
+    ActionDefinition, ConnectorManifest,
     ConnectorSkillDefinition, IntegrationType,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, SearchOperator,
     ServiceCredential, Source, SourceType, SyncType,
@@ -154,17 +154,6 @@ pub trait Connector: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Build one connector-wide manifest from all active source contexts.
-    /// Legacy connectors use the default implementation and ignore the contexts.
-    async fn build_manifest_for_sources(
-        &self,
-        _sources: Vec<ConnectorManifestSource>,
-        _current_manifest: Option<ConnectorManifest>,
-        connector_url: String,
-    ) -> ConnectorManifest {
-        self.build_manifest(connector_url).await
-    }
-
     async fn sync(
         &self,
         source: Source,
@@ -218,6 +207,7 @@ pub trait Connector: Send + Sync + 'static {
             resources: vec![],
             prompts: vec![],
             skills: self.skills(),
+            source_capabilities: vec![],
             oauth: self
                 .oauth_config()
                 .and_then(|c| serde_json::to_value(c).ok()),

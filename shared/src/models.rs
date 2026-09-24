@@ -1001,6 +1001,9 @@ pub struct ConnectorManifest {
     pub source_types: Vec<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Deprecated compatibility catalog. New and migrated connectors should
+    /// publish actions in `source_capabilities`; a source-specific definition
+    /// wins over a legacy definition with the same name for that source.
     #[serde(default)]
     pub actions: Vec<ActionDefinition>,
     #[serde(default)]
@@ -1014,8 +1017,7 @@ pub struct ConnectorManifest {
     #[serde(default)]
     pub mcp_enabled: bool,
     /// True when the connector has MCP tools/resources/prompts available from
-    /// live discovery or an in-memory catalog cache. Connector-manager uses this to
-    /// recover missing authenticated MCP catalogs after connector restart.
+    /// live discovery or an in-memory catalog cache.
     #[serde(default)]
     pub mcp_catalog_loaded: bool,
     #[serde(default)]
@@ -1024,6 +1026,10 @@ pub struct ConnectorManifest {
     pub prompts: Vec<McpPromptDefinition>,
     #[serde(default)]
     pub skills: Vec<ConnectorSkillDefinition>,
+    /// Capabilities discovered for one exact source. Legacy top-level
+    /// capabilities remain supported during migration.
+    #[serde(default)]
+    pub source_capabilities: Vec<ConnectorSourceCapabilities>,
     /// Declarative OAuth2 config consumed by the web app's generic OAuth
     /// service. Connectors that use OAuth populate this. The typed shape
     /// lives in the connector SDK (`omni_connector_sdk::OAuthManifestConfig`);
@@ -1033,24 +1039,17 @@ pub struct ConnectorManifest {
     pub oauth: Option<JsonValue>,
 }
 
-/// Non-secret source context supplied to a connector when building a manifest.
-/// Credentials, checkpoints, creator details, and connector state are deliberately
-/// excluded so source-aware discovery cannot accidentally receive sync secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifestSource {
-    pub id: String,
-    pub source_type: String,
-    pub scope: SourceScope,
-    pub config: JsonValue,
-    #[serde(with = "time::serde::rfc3339")]
-    pub updated_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectorManifestRequest {
-    pub sources: Vec<ConnectorManifestSource>,
+pub struct ConnectorSourceCapabilities {
+    pub source_id: String,
     #[serde(default)]
-    pub current_manifest: Option<ConnectorManifest>,
+    pub actions: Vec<ActionDefinition>,
+    #[serde(default)]
+    pub resources: Vec<McpResourceDefinition>,
+    #[serde(default)]
+    pub prompts: Vec<McpPromptDefinition>,
+    #[serde(default)]
+    pub skills: Vec<ConnectorSkillDefinition>,
 }
 
 /// Which web OAuth flow produced a credential. Passed to the connector's
@@ -1548,6 +1547,9 @@ pub struct ResourceRequest {
     pub uri: String,
     #[serde(default)]
     pub credentials: McpCredentials,
+    /// Exact source selected by connector-manager. Legacy connectors may ignore it.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1557,6 +1559,9 @@ pub struct PromptRequest {
     pub arguments: Option<JsonValue>,
     #[serde(default)]
     pub credentials: McpCredentials,
+    /// Exact source selected by connector-manager. Legacy connectors may ignore it.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

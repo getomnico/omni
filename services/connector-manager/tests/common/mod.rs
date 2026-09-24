@@ -94,6 +94,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
             mcp_catalog_loaded: false,
             prompts: vec![],
             skills: vec![],
+            source_capabilities: vec![],
             resources: vec![],
             oauth: None,
         };

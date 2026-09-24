@@ -23,8 +23,8 @@ pub use server::{ServerConfig, create_router, serve, serve_with_config, serve_wi
 pub use shared::models::DocumentAttributes;
 pub use shared::models::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
-    ConnectorManifest, ConnectorManifestRequest, ConnectorManifestSource,
-    ConnectorSkillDefinition, DocumentMetadata, DocumentPermissions,
+    ConnectorManifest, ConnectorSkillDefinition, ConnectorSourceCapabilities,
+    DocumentMetadata, DocumentPermissions,
     IntegrationType, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
     PersonSyncRecord, SearchOperator,

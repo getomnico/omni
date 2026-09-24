@@ -12,7 +12,7 @@ query results, samples, or query history. MCP tools remain live and Snowflake en
 MCP-server, object, masking, row-access, and effective-role permissions for the
 invoking user.
 
-The connector supports multiple Snowflake sources and publishes one union manifest.
+The connector supports multiple Snowflake sources and publishes source-grouped capabilities in one manifest. Each group is bound to one source ID; catalogs are never unioned across sources.
 Endpoints are source configuration, not connector-wide state. Conflicting tool names
 are omitted rather than exposed ambiguously. MCP write tools are disabled by default
 at the product layer and every user-facing call requires that user's Snowflake OAuth

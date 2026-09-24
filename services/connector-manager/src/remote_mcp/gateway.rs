@@ -948,6 +948,7 @@ pub fn build_manifest(
         resources,
         prompts,
         skills: Vec::new(),
+        source_capabilities: Vec::new(),
         oauth: oauth.or_else(|| {
             config.auth_type.filter(|a| *a == AuthType::OAuth).map(|_| {
                 json!({

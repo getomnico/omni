@@ -75,6 +75,14 @@ class McpPromptDefinition(BaseModel):
     arguments: list[McpPromptArgument] = Field(default_factory=list)
 
 
+class McpSourceCapabilities(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_id: str
+    resources: list[McpResourceDefinition] = Field(default_factory=list)
+    prompts: list[McpPromptDefinition] = Field(default_factory=list)
+
+
 class McpConnectorManifest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -82,6 +90,7 @@ class McpConnectorManifest(BaseModel):
     mcp_enabled: bool = False
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
+    source_capabilities: list[McpSourceCapabilities] = Field(default_factory=list)
 
 
 class McpConnectorInfo(BaseModel):
@@ -219,13 +228,20 @@ class McpCapabilityHandler:
 
             for source in matching_sources:
                 source_name = source.name or source_type
-                for resource_def in manifest.resources:
+                source_group = next(
+                    (group for group in manifest.source_capabilities if group.source_id == source.id),
+                    None,
+                )
+                resource_defs = source_group.resources if source_group is not None else manifest.resources
+                prompt_defs = source_group.prompts if source_group is not None else manifest.prompts
+                for resource_def in resource_defs:
                     record = self._resource_record(
                         source, source_type, source_name, resource_def
                     )
                     resources[record.id] = record
 
-                for prompt_def in manifest.prompts:
+                for prompt_payload in prompt_defs:
+                    prompt_def = McpPromptDefinition.model_validate(prompt_payload)
                     record = self._prompt_record(
                         source, source_type, source_name, prompt_def
                     )

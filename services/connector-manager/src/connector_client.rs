@@ -1,11 +1,11 @@
 use crate::models::{
-    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest, ConnectorManifestRequest,
-    OAuthCredentialReadyRequest,
+    ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
+    ManifestSourceContext, OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, PromptRequest,
     ResourceRequest, SkillRequest, SyncRequest, SyncResponse, SyncStatusResponse,
 };
 use reqwest::Client;
-use shared::models::SyncType;
+use shared::models::{ServiceCredential, SyncType};
 use shared::{RateLimiter, RetryableError};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -63,21 +63,45 @@ impl ConnectorClient {
             .map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
-    pub async fn build_manifest_for_sources(
+    pub async fn get_manifest_for_source(
         &self,
         connector_url: &str,
-        request: &ConnectorManifestRequest,
+        context: &ManifestSourceContext,
+        credential: Option<&ServiceCredential>,
     ) -> Result<ConnectorManifest, ClientError> {
+        use base64::Engine as _;
+
         let url = format!("{}/manifest", connector_url);
-        debug!("Building source-aware manifest from {} active sources", request.sources.len());
-        let response = self.client.post(&url).json(request).send().await
+        let encoded_context = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(context).map_err(|e| ClientError::InvalidResponse(e.to_string()))?);
+        let mut request = self
+            .client
+            .get(&url)
+            .header("x-omni-manifest-source", encoded_context);
+        if let Some(credential) = credential {
+            let token = credential
+                .credentials
+                .get("access_token")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ClientError::InvalidResponse("discovery credential has no access token".to_string()))?;
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
             .map_err(|e| ClientError::RequestFailed(e.to_string()))?;
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(ClientError::ConnectorError { status: status.as_u16(), message: body });
+            return Err(ClientError::ConnectorError {
+                status: status.as_u16(),
+                message: format!("manifest source request failed with status {status}"),
+            });
         }
-        response.json().await.map_err(|e| ClientError::InvalidResponse(e.to_string()))
+        response
+            .json()
+            .await
+            .map_err(|e| ClientError::InvalidResponse(e.to_string()))
     }
 
     pub async fn trigger_sync(

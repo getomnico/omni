@@ -1,166 +1,141 @@
 from datetime import UTC, datetime
 
 import pytest
-from omni_connector import ActionDefinition, ConnectorManifestSource
 
+from omni_connector import ActionDefinition, ManifestSourceContext
+
+from snowflake_connector import connector as connector_module
 from snowflake_connector.connector import SnowflakeConnector
 
 
+class FakeAdapter:
+    catalogs = {
+        "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M": [
+            ActionDefinition(
+                name="inspect",
+                description="One inspect",
+                input_schema={"type": "object"},
+                mode="read",
+                origin="mcp",
+            )
+        ],
+        "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M": [
+            ActionDefinition(
+                name="inspect",
+                description="Two inspect",
+                input_schema={"type": "object"},
+                mode="read",
+                origin="mcp",
+            ),
+            ActionDefinition(
+                name="query",
+                description="Two query",
+                input_schema={"type": "object"},
+                mode="write",
+                origin="mcp",
+            ),
+        ],
+    }
+    calls: list[tuple[str, dict[str, str]]] = []
+
+    def __init__(self, server) -> None:
+        self.endpoint = server.url
+
+    async def discover(self, *, headers):
+        self.calls.append((self.endpoint, headers))
+
+    async def get_action_definitions(self):
+        return list(self.catalogs[self.endpoint])
+
+    async def get_resource_definitions(self):
+        return []
+
+    async def get_prompt_definitions(self):
+        return []
+
+
+@pytest.fixture
+def source_context():
+    def build(source_id: str, account: str, *, read_only: bool = False):
+        endpoint = f"https://{account}.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M"
+        return ManifestSourceContext(
+            id=source_id,
+            source_type="snowflake",
+            config={
+                "account_url": f"https://{account}.snowflakecomputing.com",
+                "warehouse": "W",
+                "role": "R",
+                "databases": ["D"],
+                "mcp_enabled": True,
+                "write_tools_enabled": True,
+                "read_only": read_only,
+                "mcp_endpoint_url": endpoint,
+            },
+            updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
+        )
+
+    return build
+
+
 @pytest.mark.asyncio
-async def test_multiple_sources_are_one_union_manifest() -> None:
+async def test_get_manifest_groups_each_discovery_by_exact_source(monkeypatch, source_context):
+    FakeAdapter.calls.clear()
+    monkeypatch.setattr(connector_module, "McpAdapter", FakeAdapter)
     connector = SnowflakeConnector()
-    connector._source_catalogs["one"] = (
-        [ActionDefinition(name="inspect", description="Inspect", mode="read", origin="mcp")],
-        [],
-        [],
+
+    first = await connector.get_manifest(
+        "http://snowflake:8000",
+        source_context=source_context("one", "one"),
+        credentials={"access_token": "token-one"},
     )
-    connector._source_catalogs["two"] = (
-        [ActionDefinition(name="query", description="Query", mode="write", origin="mcp")],
-        [],
-        [],
+    second = await connector.get_manifest(
+        "http://snowflake:8000",
+        source_context=source_context("two", "two"),
+        credentials={"access_token": "token-two"},
     )
-    updated_at = datetime(2026, 6, 23, 10, tzinfo=UTC)
-    connector._source_catalog_versions["one"] = (
-        updated_at,
-        "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-        True,
-        True,
-    )
-    connector._source_catalog_versions["two"] = (
-        updated_at,
-        "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-        True,
-        False,
-    )
-    sources = [
-        ConnectorManifestSource(
-            id="one",
-            source_type="snowflake",
-            scope="org",
-            config={
-                "account_url": "https://one.snowflakecomputing.com",
-                "warehouse": "W",
-                "role": "R",
-                "databases": ["D"],
-                "mcp_enabled": True,
-                "write_tools_enabled": True,
-                "mcp_endpoint_url": "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-            },
-            updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
-        ),
-        ConnectorManifestSource(
-            id="two",
-            source_type="snowflake",
-            scope="org",
-            config={
-                "account_url": "https://two.snowflakecomputing.com",
-                "warehouse": "W",
-                "role": "R",
-                "databases": ["D"],
-                "mcp_enabled": True,
-                "write_tools_enabled": True,
-                "read_only": False,
-                "mcp_endpoint_url": "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-            },
-            updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
-        ),
+
+    assert first.actions == []
+    assert [group.source_id for group in first.source_capabilities] == ["one"]
+    assert [action.name for action in first.source_capabilities[0].actions] == ["inspect"]
+    assert [group.source_id for group in second.source_capabilities] == ["two"]
+    assert {action.name for action in second.source_capabilities[0].actions} == {
+        "inspect",
+        "query",
+    }
+    assert FakeAdapter.calls == [
+        (FakeAdapter.calls[0][0], {"Authorization": "Bearer token-one"}),
+        (FakeAdapter.calls[1][0], {"Authorization": "Bearer token-two"}),
     ]
-    manifest = await connector.build_manifest_for_sources(sources, None, "http://snowflake:8000")
-    assert manifest.mcp_catalog_loaded
-    assert {action.name for action in manifest.actions} == {"inspect", "query"}
-    assert all(action.source_types == ["snowflake"] for action in manifest.actions)
-    assert manifest.connector_id == "snowflake"
 
 
 @pytest.mark.asyncio
-async def test_conflicting_tool_names_are_omitted() -> None:
+async def test_missing_discovery_credential_does_not_advertise_source(
+    monkeypatch, source_context
+):
+    monkeypatch.setattr(connector_module, "McpAdapter", FakeAdapter)
     connector = SnowflakeConnector()
-    connector._source_catalogs["one"] = (
-        [ActionDefinition(name="same", description="A", mode="read", origin="mcp")],
-        [],
-        [],
+
+    manifest = await connector.get_manifest(
+        "http://snowflake:8000",
+        source_context=source_context("one", "one"),
+        credentials=None,
     )
-    connector._source_catalogs["two"] = (
-        [ActionDefinition(name="same", description="B", mode="read", origin="mcp")],
-        [],
-        [],
-    )
-    updated_at = datetime(2026, 6, 23, 10, tzinfo=UTC)
-    connector._source_catalog_versions["one"] = (
-        updated_at,
-        "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-        False,
-        True,
-    )
-    connector._source_catalog_versions["two"] = (
-        updated_at,
-        "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-        False,
-        True,
-    )
-    source = ConnectorManifestSource(
-        id="one",
-        source_type="snowflake",
-        scope="org",
-        config={
-            "account_url": "https://one.snowflakecomputing.com",
-            "warehouse": "W",
-            "role": "R",
-            "databases": ["D"],
-            "mcp_enabled": True,
-            "mcp_endpoint_url": "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-        },
-        updated_at=datetime(2026, 6, 23, 10, tzinfo=UTC),
-    )
-    second = source.model_copy(
-        update={
-            "id": "two",
-            "config": {
-                **source.config,
-                "account_url": "https://two.snowflakecomputing.com",
-                "mcp_endpoint_url": "https://two.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M",
-            },
-        }
-    )
-    manifest = await connector.build_manifest_for_sources(
-        [source, second], None, "http://snowflake:8000"
-    )
+
+    assert manifest.source_capabilities == []
     assert manifest.actions == []
 
 
 @pytest.mark.asyncio
-async def test_catalog_is_invalidated_when_source_policy_or_timestamp_changes() -> None:
+async def test_read_only_source_omits_write_capabilities(monkeypatch, source_context):
+    monkeypatch.setattr(connector_module, "McpAdapter", FakeAdapter)
     connector = SnowflakeConnector()
-    endpoint = "https://one.snowflakecomputing.com/api/v2/databases/D/schemas/S/mcp-servers/M"
-    original_time = datetime(2026, 6, 23, 10, tzinfo=UTC)
-    connector._source_catalogs["one"] = (
-        [ActionDefinition(name="inspect", description="Inspect", mode="read", origin="mcp")],
-        [],
-        [],
-    )
-    connector._source_catalog_versions["one"] = (original_time, endpoint, False, True)
-    source = ConnectorManifestSource(
-        id="one",
-        source_type="snowflake",
-        scope="org",
-        config={
-            "account_url": "https://one.snowflakecomputing.com",
-            "mcp_enabled": True,
-            "mcp_endpoint_url": endpoint,
-        },
-        updated_at=original_time,
-    )
-    initial = await connector.build_manifest_for_sources([source], None, "http://snowflake:8000")
-    assert initial.mcp_catalog_loaded
 
-    changed = source.model_copy(
-        update={
-            "updated_at": datetime(2026, 6, 23, 11, tzinfo=UTC),
-            "config": {**source.config, "read_only": False},
-        }
+    manifest = await connector.get_manifest(
+        "http://snowflake:8000",
+        source_context=source_context("two", "two", read_only=True),
+        credentials={"access_token": "token"},
     )
-    refreshed = await connector.build_manifest_for_sources(
-        [changed], initial, "http://snowflake:8000"
-    )
-    assert refreshed.actions == []
-    assert not refreshed.mcp_catalog_loaded
+
+    assert [action.name for action in manifest.source_capabilities[0].actions] == [
+        "inspect"
+    ]

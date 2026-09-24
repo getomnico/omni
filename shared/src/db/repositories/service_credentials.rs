@@ -198,8 +198,33 @@ impl ServiceCredentialsRepo {
         Ok(())
     }
 
+    /// Find one per-user OAuth credential for this exact source and provider.
+    pub async fn find_any_user_oauth_for_source(
+        &self,
+        source_id: &str,
+        provider: &str,
+    ) -> Result<Option<String>> {
+        let result: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT sc.user_id
+            FROM service_credentials sc
+            WHERE sc.source_id = $1
+              AND sc.user_id IS NOT NULL
+              AND sc.auth_type = 'oauth'
+              AND sc.provider = $2
+            ORDER BY sc.updated_at DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(source_id)
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(result)
+    }
+
     /// Find any per-user OAuth credential for sources matching the given
-    /// source types and provider. Used for recovering a missing MCP catalog
+    /// source types and provider. Used by older connector recovery paths.
     /// when a connector registers with `mcp_catalog_loaded: false`.
     pub async fn find_any_user_oauth_for_provider(
         &self,

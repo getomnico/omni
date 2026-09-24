@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use shared::models::{Source, SourceType, SyncRun, SyncType};
+use time::OffsetDateTime;
 
 pub use shared::models::{
     ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest, ConnectorManifest,
-    ConnectorManifestRequest, ConnectorManifestSource,
     McpCredentials, McpPromptDefinition, McpResourceDefinition, OAuthCredentialFlow,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, OAuthSourceBinding,
     PromptRequest, ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest,
@@ -56,6 +56,26 @@ pub struct ScheduleInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_sync_at: Option<String>,
     pub sync_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManifestSourceContext {
+    pub id: String,
+    pub source_type: String,
+    pub config: JsonValue,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
+}
+
+impl ManifestSourceContext {
+    pub fn from_source(source: &Source, config: JsonValue) -> Self {
+        Self {
+            id: source.id.clone(),
+            source_type: source.source_type.clone(),
+            config,
+            updated_at: source.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

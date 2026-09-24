@@ -84,6 +84,53 @@ async def test_action_origins_are_filtered_per_source_and_default_allows_all():
     assert len(connectors_route.calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_source_capabilities_are_bound_to_their_exact_source():
+    first = _source("source-one", {})
+    second = _source("source-two", {})
+    handler = ConnectorToolHandler(
+        connector_manager_url="http://cm.test",
+        user_id="user-1",
+        prefetched_sources=[first, second],
+    )
+    manifest = {
+        "source_type": "crm",
+        "healthy": True,
+        "manifest": {
+            "actions": [
+                {"name": "legacy", "origin": "native", "mode": "read"},
+                {"name": "shared", "origin": "native", "mode": "read"},
+            ],
+            "source_capabilities": [
+                {
+                    "source_id": "source-one",
+                    "actions": [
+                        {"name": "shared", "origin": "mcp", "mode": "read"},
+                        {"name": "one_only", "origin": "mcp", "mode": "read"},
+                    ],
+                }
+            ],
+        },
+    }
+
+    with respx.mock:
+        respx.get("http://cm.test/connectors").mock(
+            return_value=Response(200, json=[manifest])
+        )
+        await handler._ensure_initialized()
+
+    by_source = {
+        source_id: {action.action_name for action in handler.actions.values() if action.source_id == source_id}
+        for source_id in (first.id, second.id)
+    }
+    assert by_source[first.id] == {"legacy", "shared", "one_only"}
+    assert by_source[second.id] == {"legacy", "shared"}
+    assert next(
+        action for action in handler.actions.values()
+        if action.source_id == first.id and action.action_name == "shared"
+    ).origin == "mcp"
+
+
 def test_malformed_action_origin_policy_fails_closed():
     source = _source("malformed", {"allowed_action_origins": ["unknown"]})
 

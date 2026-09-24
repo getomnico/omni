@@ -12,8 +12,8 @@ from .models import (
     ActionDefinition,
     ActionResponse,
     ConnectorManifest,
-    ConnectorManifestSource,
     ConnectorSkillDefinition,
+    ManifestSourceContext,
     OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest,
@@ -270,8 +270,19 @@ class Connector(ABC):
             mcp_prompt=prompt_name,
         )
 
-    async def get_manifest(self, connector_url: str) -> ConnectorManifest:
-        """Return connector manifest."""
+    async def get_manifest(
+        self,
+        connector_url: str,
+        *,
+        source_context: ManifestSourceContext | None = None,
+        credentials: dict[str, Any] | None = None,
+    ) -> ConnectorManifest:
+        """Return the connector manifest.
+
+        Connector-manager may supply one non-secret source context and an
+        authenticated discovery token through GET /manifest headers. Legacy
+        connectors ignore both optional values.
+        """
         adapter = self.mcp_adapter
         resources = []
         prompts = []
@@ -309,20 +320,6 @@ class Connector(ABC):
             skills=skills,
             oauth=self.oauth_config(),
         )
-
-    async def build_manifest_for_sources(
-        self,
-        sources: list[ConnectorManifestSource],
-        current_manifest: ConnectorManifest | None,
-        connector_url: str,
-    ) -> ConnectorManifest:
-        """Build one manifest for all active source contexts.
-
-        The default preserves legacy connector behavior. Connectors with
-        source-dependent catalogs may override this hook; the SDK server keeps
-        the response shape identical to ``GET /manifest``.
-        """
-        return await self.get_manifest(connector_url)
 
     @abstractmethod
     async def sync(

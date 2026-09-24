@@ -3,21 +3,20 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import datetime
-from typing import Any, TypeAlias
+from typing import Any
 
 from omni_connector import (
     ActionDefinition,
     Connector,
     ConnectorManifest,
-    ConnectorManifestSource,
+    ConnectorSourceCapabilities,
     HttpMcpServer,
     McpPromptDefinition,
     McpResourceDefinition,
     OAuthCredentialFlow,
-    OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
+    ManifestSourceContext,
     Source,
 )
 from omni_connector.mcp_adapter import McpAdapter
@@ -33,12 +32,6 @@ from .sync import SnowflakeSync
 
 logger = logging.getLogger(__name__)
 
-McpCatalog: TypeAlias = tuple[
-    list[ActionDefinition], list[McpResourceDefinition], list[McpPromptDefinition]
-]
-CatalogVersion: TypeAlias = tuple[datetime, str, bool, bool]
-
-
 class SnowflakeConnector(Connector):
     def __init__(
         self,
@@ -49,10 +42,14 @@ class SnowflakeConnector(Connector):
         self._session_factory = session_factory or default_session_factory
         self._oauth_session_factory = oauth_session_factory or default_oauth_session_factory
         self._source_endpoints: dict[str, str] = {}
-        self._source_catalogs: dict[str, McpCatalog] = {}
-        self._source_catalog_versions: dict[str, CatalogVersion] = {}
-        self._cached_manifest_action_names: set[str] = set()
-        self._source_contexts: list[ConnectorManifestSource] = []
+        self._source_catalogs: dict[
+            str,
+            tuple[
+                list[ActionDefinition],
+                list[McpResourceDefinition],
+                list[McpPromptDefinition],
+            ],
+        ] = {}
         self._sync = SnowflakeSync(self._session_factory)
 
     @property
@@ -105,9 +102,6 @@ class SnowflakeConnector(Connector):
 
     @property
     def mcp_server(self) -> HttpMcpServer:
-        # The source-aware adapter below is authoritative. This placeholder
-        # only keeps the generic SDK manifest contract MCP-enabled for legacy
-        # GET /manifest callers; it is never used for a selected source.
         return HttpMcpServer("https://invalid.snowflake.invalid/mcp")
 
     def mcp_server_for_source(self, source: Source | None) -> HttpMcpServer | None:
@@ -120,27 +114,22 @@ class SnowflakeConnector(Connector):
 
     def mcp_adapter_for_source(self, source: Source | None) -> McpAdapter | None:
         server = self.mcp_server_for_source(source)
-        if server is None:
-            return None
-        return McpAdapter(server)
+        return McpAdapter(server) if server is not None else None
 
     def mcp_adapter_for_credentials(
         self, credentials: dict[str, Any], source: Source | None = None
     ) -> McpAdapter | None:
+        if source is not None:
+            return self.mcp_adapter_for_source(source)
         source_id = credentials.get("source_id")
         endpoint = self._source_endpoints.get(source_id) if isinstance(source_id, str) else None
-        if endpoint is None:
-            return super().mcp_adapter_for_credentials(credentials, source)
-        return McpAdapter(HttpMcpServer(endpoint))
+        return McpAdapter(HttpMcpServer(endpoint)) if endpoint is not None else None
 
     async def mcp_action_names_for_source(self, source: Source | None) -> set[str]:
-        if source is not None:
-            config = SnowflakeConfig.model_validate(source.config)
-            catalog = self._source_catalogs.get(source.id)
-            if catalog is not None and self._catalog_version_matches(source, config):
-                return {action.name for action in catalog[0]}
+        if source is None:
             return set()
-        return set(self._cached_manifest_action_names)
+        catalog = self._source_catalogs.get(source.id)
+        return {action.name for action in catalog[0]} if catalog is not None else set()
 
     def prepare_mcp_headers(self, credentials: dict[str, Any]) -> dict[str, str]:
         token = _oauth_token(credentials)
@@ -153,76 +142,22 @@ class SnowflakeConnector(Connector):
             return False
         config = SnowflakeConfig.model_validate(source.config)
         catalog = self._source_catalogs.get(source.id)
-        if catalog is None or not self._catalog_version_matches(source, config):
+        if catalog is None:
             return False
         definition = next((item for item in catalog[0] if item.name == action), None)
         if definition is None:
             return False
-        if definition.mode == "read":
-            return True
-        return config.write_tools_enabled and not config.read_only
-
-    def _catalog_version_matches(
-        self, source: ConnectorManifestSource | Source, config: SnowflakeConfig
-    ) -> bool:
-        endpoint = config.mcp_endpoint_url
-        if endpoint is None:
-            return False
-        validated_endpoint = validate_mcp_endpoint(endpoint, config.account_url)
-        expected = (
-            source.updated_at,
-            validated_endpoint,
-            config.write_tools_enabled,
-            config.read_only,
+        return definition.mode == "read" or (
+            config.write_tools_enabled and not config.read_only
         )
-        return self._source_catalog_versions.get(source.id) == expected
 
-    async def build_manifest_for_sources(
+    async def get_manifest(
         self,
-        sources: list[ConnectorManifestSource],
-        current_manifest: ConnectorManifest | None,
         connector_url: str,
+        *,
+        source_context: ManifestSourceContext | None = None,
+        credentials: dict[str, Any] | None = None,
     ) -> ConnectorManifest:
-        previous_sources = {source.id: source for source in self._source_contexts}
-        current_sources = {source.id: source for source in sources}
-        source_context_changed = previous_sources != current_sources
-        self._source_contexts = list(sources)
-        self._source_endpoints = {}
-        active_source_ids: set[str] = set()
-        self._cached_manifest_action_names = {
-            action.name
-            for action in (current_manifest.actions if current_manifest is not None else [])
-            if action.origin == "mcp"
-        }
-        catalogs: list[tuple[McpCatalog, SnowflakeConfig]] = []
-        for source in sources:
-            config = SnowflakeConfig.model_validate(source.config)
-            if not config.mcp_enabled or config.mcp_endpoint_url is None:
-                continue
-            endpoint = validate_mcp_endpoint(config.mcp_endpoint_url, config.account_url)
-            self._source_endpoints[source.id] = endpoint
-            active_source_ids.add(source.id)
-            catalog = self._source_catalogs.get(source.id)
-            expected_version: CatalogVersion = (
-                source.updated_at,
-                endpoint,
-                config.write_tools_enabled,
-                config.read_only,
-            )
-            if (
-                catalog is not None
-                and self._source_catalog_versions.get(source.id) == expected_version
-            ):
-                catalogs.append((catalog, config))
-            else:
-                self._source_catalogs.pop(source.id, None)
-                self._source_catalog_versions.pop(source.id, None)
-
-        self._source_catalogs = {
-            source_id: catalog
-            for source_id, catalog in self._source_catalogs.items()
-            if source_id in active_source_ids
-        }
         manifest = ConnectorManifest(
             name=self.name,
             display_name=self.display_name,
@@ -232,109 +167,52 @@ class SnowflakeConnector(Connector):
             connector_url=connector_url,
             source_types=self.source_types,
             description=self.description,
-            actions=[],
-            mcp_enabled=bool(active_source_ids),
-            mcp_catalog_loaded=False,
+            mcp_enabled=True,
             oauth=self.oauth_config(),
         )
-        if current_manifest is not None and active_source_ids and not catalogs:
-            # A source edit invalidates its old capabilities immediately. On a
-            # restart, the unchanged source context may retain the compatible
-            # Redis catalog until authenticated discovery is replayed.
-            if source_context_changed:
-                return current_manifest.model_copy(
-                    update={
-                        "connector_url": connector_url,
-                        "actions": [
-                            action for action in current_manifest.actions if action.origin != "mcp"
-                        ],
-                        "resources": [],
-                        "prompts": [],
-                        "mcp_catalog_loaded": False,
-                    }
-                )
-            all_sources_allow_writes = all(
-                SnowflakeConfig.model_validate(source.config).write_tools_enabled
-                and not SnowflakeConfig.model_validate(source.config).read_only
-                for source in sources
-                if source.id in active_source_ids
-            )
-            cached_actions = [
-                action
-                for action in current_manifest.actions
-                if action.origin != "mcp" or action.mode == "read" or all_sources_allow_writes
-            ]
-            return current_manifest.model_copy(
-                update={"connector_url": connector_url, "actions": cached_actions}
-            )
+        if source_context is None:
+            return manifest
 
-        actions: dict[str, ActionDefinition] = {}
-        conflicts: set[str] = set()
-        resources: dict[str, McpResourceDefinition] = {}
-        prompts: dict[str, McpPromptDefinition] = {}
-        for (source_actions, source_resources, source_prompts), config in catalogs:
-            for action in source_actions:
-                if not action.source_types:
-                    action.source_types = list(self.source_types)
-                if action.mode == "write" and (not config.write_tools_enabled or config.read_only):
-                    continue
-                existing = actions.get(action.name)
-                if existing is None and action.name not in conflicts:
-                    actions[action.name] = action
-                elif existing is not None and _same_action(existing, action):
-                    continue
-                else:
-                    actions.pop(action.name, None)
-                    conflicts.add(action.name)
-                    logger.warning("Omitting conflicting Snowflake MCP tool %s", action.name)
-            for resource in source_resources:
-                resources.setdefault(resource.uri_template, resource)
-            for prompt in source_prompts:
-                prompts.setdefault(prompt.name, prompt)
-        manifest.actions = [
-            action for name, action in sorted(actions.items()) if name not in conflicts
-        ]
-        manifest.resources = list(resources.values())
-        manifest.prompts = list(prompts.values())
-        manifest.mcp_catalog_loaded = bool(catalogs)
-        return manifest
+        config = SnowflakeConfig.model_validate(source_context.config)
+        if not config.mcp_enabled or config.mcp_endpoint_url is None:
+            return manifest.model_copy(update={"mcp_enabled": False})
+        if credentials is None:
+            return manifest
 
-    async def get_manifest(self, connector_url: str) -> ConnectorManifest:
-        if self._source_contexts:
-            return await self.build_manifest_for_sources(self._source_contexts, None, connector_url)
-        return await super().get_manifest(connector_url)
-
-    async def oauth_credential_ready(self, request: OAuthCredentialReadyRequest) -> bool:
-        endpoint = self._source_endpoints.get(request.source_id)
-        if endpoint is None:
-            logger.warning(
-                "Ignoring OAuth catalog refresh for unknown Snowflake source %s", request.source_id
-            )
-            return False
+        endpoint = validate_mcp_endpoint(config.mcp_endpoint_url, config.account_url)
         adapter = McpAdapter(HttpMcpServer(endpoint))
-        await adapter.discover(headers=self.prepare_mcp_headers(request.credentials))
-        self._source_catalogs[request.source_id] = (
-            await adapter.get_action_definitions(),
-            await adapter.get_resource_definitions(),
-            await adapter.get_prompt_definitions(),
+        await adapter.discover(headers=self.prepare_mcp_headers(credentials))
+        actions = await adapter.get_action_definitions()
+        for action in actions:
+            action.origin = "mcp"
+            if not action.source_types:
+                action.source_types = list(self.source_types)
+        if not config.write_tools_enabled or config.read_only:
+            actions = [action for action in actions if action.mode == "read"]
+        resources = await adapter.get_resource_definitions()
+        prompts = await adapter.get_prompt_definitions()
+        skills = []
+        for prompt in prompts:
+            skill = self._mcp_prompt_skill(prompt.name, prompt.description)
+            skill.id = f"mcp:{source_context.id}:{prompt.name}"
+            skill.source_types = self.source_types
+            skills.append(skill)
+        self._source_endpoints[source_context.id] = endpoint
+        self._source_catalogs[source_context.id] = (actions, resources, prompts)
+        return manifest.model_copy(
+            update={
+                "source_capabilities": [
+                    ConnectorSourceCapabilities(
+                        source_id=source_context.id,
+                        actions=actions,
+                        resources=resources,
+                        prompts=prompts,
+                        skills=skills,
+                    )
+                ],
+                "mcp_catalog_loaded": True,
+            }
         )
-        source = next(
-            (item for item in self._source_contexts if item.id == request.source_id), None
-        )
-        if source is None:
-            self._source_catalogs.pop(request.source_id, None)
-            return False
-        config = SnowflakeConfig.model_validate(source.config)
-        if config.mcp_endpoint_url is None:
-            self._source_catalogs.pop(request.source_id, None)
-            return False
-        self._source_catalog_versions[request.source_id] = (
-            source.updated_at,
-            validate_mcp_endpoint(config.mcp_endpoint_url, config.account_url),
-            config.write_tools_enabled,
-            config.read_only,
-        )
-        return True
 
     async def validate_oauth_credential(
         self,
@@ -409,11 +287,3 @@ def _oauth_token(credentials: dict[str, Any]) -> str | None:
     payload: dict[str, Any] = nested if isinstance(nested, dict) else credentials
     token = payload.get("access_token")
     return token if isinstance(token, str) and token else None
-
-
-def _same_action(left: Any, right: Any) -> bool:
-    return bool(
-        left.description == right.description
-        and left.input_schema == right.input_schema
-        and left.mode == right.mode
-    )
