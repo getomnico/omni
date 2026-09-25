@@ -12,12 +12,14 @@ import {
     deleteModel,
     setDefaultModel,
     setSecondaryModel,
+    setModelRole,
     createModelSeeds,
     createPredefinedModels,
     MODEL_PROVIDER_TYPES,
     PREDEFINED_MODELS,
     type ModelProviderConfig,
     type ModelProviderType,
+    type ModelRole,
 } from '$lib/server/db/model-providers'
 import { env } from '$env/dynamic/private'
 import { logger } from '$lib/server/logger'
@@ -39,8 +41,7 @@ async function reloadAIProviders() {
 }
 
 function stripSecrets(config: Record<string, unknown>): Record<string, unknown> {
-    const { apiKey, ...rest } = config
-    return rest
+    return Object.fromEntries(Object.entries(config).filter(([key]) => key !== 'apiKey'))
 }
 
 function rankDiscoveredModels(providerType: ModelProviderType, models: AvailableModel[]) {
@@ -186,7 +187,7 @@ export const actions: Actions = {
         if (!providerType || !MODEL_PROVIDER_TYPES.includes(providerType))
             return fail(400, { error: 'Invalid provider type' })
 
-        const config = parseConfig(formData, providerType)
+        const config = parseConfig(formData)
         const validation = validateConfig(providerType, config)
         if (validation) return fail(400, { error: validation })
 
@@ -222,7 +223,7 @@ export const actions: Actions = {
         const name = (formData.get('name') as string)?.trim()
         const providerType = existing.providerType as ModelProviderType
 
-        const config = parseConfig(formData, providerType)
+        const config = parseConfig(formData)
 
         // Preserve existing API key if not provided
         if (!config.apiKey) {
@@ -270,8 +271,17 @@ export const actions: Actions = {
         const providerId = formData.get('providerId') as string
         const modelId = (formData.get('modelId') as string)?.trim()
         const displayName = (formData.get('displayName') as string)?.trim()
-        const isDefault = formData.get('isDefault') === 'true'
-        const isSecondary = formData.get('isSecondary') === 'true'
+        const requestedRole = formData.get('role')
+        const role: ModelRole =
+            requestedRole === 'default' ||
+            requestedRole === 'secondary' ||
+            requestedRole === 'unassigned'
+                ? requestedRole
+                : formData.get('isDefault') === 'true'
+                  ? 'default'
+                  : formData.get('isSecondary') === 'true'
+                    ? 'secondary'
+                    : 'unassigned'
 
         if (!providerId) return fail(400, { error: 'Provider ID is required' })
         if (!modelId) return fail(400, { error: 'Model ID is required' })
@@ -282,8 +292,8 @@ export const actions: Actions = {
                 modelProviderId: providerId,
                 modelId,
                 displayName,
-                isDefault,
-                isSecondary,
+                isDefault: role === 'default',
+                isSecondary: role === 'secondary',
             })
             await reloadAIProviders()
             return { success: true, message: 'Model added' }
@@ -370,6 +380,27 @@ export const actions: Actions = {
         }
     },
 
+    setModelRole: async ({ request, locals }) => {
+        requireAdmin(locals)
+
+        const formData = await request.formData()
+        const id = formData.get('id') as string
+        const role = formData.get('role')
+        if (!id) return fail(400, { error: 'Model ID is required' })
+        if (role !== 'default' && role !== 'secondary' && role !== 'unassigned')
+            return fail(400, { error: 'Invalid model role' })
+
+        try {
+            const updated = await setModelRole(id, role)
+            if (!updated) return fail(404, { error: 'Model not found' })
+            await reloadAIProviders()
+            return { success: true, message: 'Model role updated' }
+        } catch (err) {
+            console.error('Failed to set model role:', err)
+            return fail(500, { error: 'Failed to set model role' })
+        }
+    },
+
     testConnection: async ({ request, locals }) => {
         requireAdmin(locals)
 
@@ -380,7 +411,7 @@ export const actions: Actions = {
         if (!providerType || !MODEL_PROVIDER_TYPES.includes(providerType))
             return fail(400, { error: 'Invalid provider type' })
 
-        const config = parseConfig(formData, providerType)
+        const config = parseConfig(formData)
         let modelId = (formData.get('modelId') as string) || null
 
         if (id) {
@@ -475,7 +506,7 @@ function buildTestRequest(
     }
 }
 
-function parseConfig(formData: FormData, providerType: string): ModelProviderConfig {
+function parseConfig(formData: FormData): ModelProviderConfig {
     return {
         apiKey: (formData.get('apiKey') as string) || null,
         apiUrl: (formData.get('apiUrl') as string) || null,

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Providers — minimal provider cards</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px 24px 64px; background: #eeece8; color: #22211e; font: 14px/1.5 Inter, ui-sans-serif, system-ui, sans-serif; }
+    main { max-width: 1160px; margin: auto; }
+    h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -.02em; }
+    p { margin: 4px 0 18px; color: #65635e; }
+    nav { display: flex; gap: 6px; margin: 0 0 18px; }
+    button { border: 1px solid #d8d6d0; background: transparent; color: #55534e; border-radius: 8px; padding: 8px 14px; font: inherit; cursor: pointer; }
+    button[aria-selected="true"] { background: #282722; color: #fff; border-color: #282722; }
+    figure { margin: 0; }
+    img { display: block; width: 100%; height: auto; border-radius: 12px; box-shadow: 0 10px 32px #28272219; background: #fff; }
+    figcaption { margin-top: 12px; color: #65635e; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LLM Providers — minimal provider cards</h1>
+    <p>Provider cards stay. Model details and role changes move into a dialog.</p>
+    <nav aria-label="Design states">
+      <button type="button" aria-selected="true" onclick="show('overview', this)">Overview</button>
+      <button type="button" aria-selected="false" onclick="show('dialog', this)">Model dialog</button>
+    </nav>
+    <figure id="overview"><img src="final-overview.png" alt="Two minimal provider cards with models and assigned roles"><figcaption>One card per provider. Rows show only model name and an assigned role; details open on click.</figcaption></figure>
+    <figure id="dialog" hidden><img src="final-dialog.png" alt="Model details dialog with role choices"><figcaption>Role and removal are editable here. Image support is read-only; any override is configured at the provider connection.</figcaption></figure>
+  </main>
+  <script>
+    function show(id, button) {
+      for (const figure of document.querySelectorAll('figure')) figure.hidden = figure.id !== id;
+      for (const tab of document.querySelectorAll('nav button')) tab.setAttribute('aria-selected', String(tab === button));
+    }
+  </script>
+</body>
+</html>

@@ -36,6 +36,15 @@ def test_types_without_image_passthrough_default_off(provider_type: str):
     assert effective_vision("auto", provider_type, True) is False
 
 
+def test_openai_vision_model_families_are_recognized():
+    for model_id in ("gpt-5.6-luna", "gpt-4o", "gpt-4.1", "o3"):
+        assert static_vision("openai", model_id) is True
+        assert effective_vision("auto", "openai", model_id=model_id) is True
+
+    assert static_vision("openai", "gpt-3.5-turbo") is False
+    assert effective_vision("auto", "openai", model_id="gpt-3.5-turbo") is False
+
+
 def test_override_wins_over_family_and_endpoint():
     assert effective_vision("off", "anthropic") is False
     assert effective_vision("on", "openai") is True

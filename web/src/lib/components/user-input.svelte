@@ -686,7 +686,7 @@
                         }}>
                         <Select.Trigger
                             size="sm"
-                            class="omni-composer-model hover:bg-muted text-muted-foreground h-8 max-w-[180px] cursor-pointer overflow-hidden border-none text-sm shadow-none"
+                            class="omni-composer-model hover:bg-muted text-muted-foreground h-8 max-w-[280px] min-w-0 cursor-pointer overflow-hidden border-none text-sm shadow-none"
                             title={selectedModel?.displayName ?? 'Select model'}
                             onclick={(e) => e.stopPropagation()}>
                             <span class="truncate">
