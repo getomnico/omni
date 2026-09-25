@@ -59,7 +59,8 @@ metadata synchronization.
   retains the Redis catalog while authenticated discovery is pending; if Redis is
   lost, a stored valid per-user discovery credential is replayed.
 
-The local icon is a compact derivative mark stored at
-`web/src/lib/images/icons/snowflake.svg`; use Snowflake's official brand guidance for
-production branding. The integration references Snowflake's public documentation:
+The local icon is the Snowflake mark extracted from the Wikimedia Commons
+[Snowflake logo SVG](https://commons.wikimedia.org/wiki/File:Snowflake_Logo.svg); the
+wordmark paths were omitted. Wikimedia Commons lists the source artwork as public
+domain. The integration references Snowflake's public documentation:
 <https://docs.snowflake.com/en/user-guide/snowflake-cortex/cortex-agents-mcp>.
