@@ -5,7 +5,7 @@ import { getSourceById, updateSourceById } from '$lib/server/db/sources'
 import { getConfig } from '$lib/server/config'
 import { getOAuthManifestForSourceType } from '$lib/server/oauth/connectorOAuth'
 import { serviceCredentialsRepository } from '$lib/server/repositories/service-credentials'
-import { SourceType } from '$lib/types'
+import { AuthType, SourceType } from '$lib/types'
 
 function objectConfig(value: unknown): Record<string, unknown> {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
@@ -62,9 +62,11 @@ export const load: PageServerLoad = async ({ params, locals }) => {
     const { user } = requireAdmin(locals)
     const source = await snowflakeSource(params.sourceId)
     const config = objectConfig(source.config)
-    const [manifest, credentials] = await Promise.all([
+    const [manifest, credentials, orgCredentials, userCredentials] = await Promise.all([
         getOAuthManifestForSourceType(SourceType.SNOWFLAKE),
         serviceCredentialsRepository.getByUserAndSource(source.id, user.id),
+        serviceCredentialsRepository.getOrgCredsBySourceId(source.id),
+        serviceCredentialsRepository.listUserCredentialsForSource(source.id),
     ])
     const credentialConfig = objectConfig(credentials?.config)
     const grantedScopes = Array.isArray(credentialConfig.granted_scopes)
@@ -96,6 +98,8 @@ export const load: PageServerLoad = async ({ params, locals }) => {
             mcpEnabled: config.mcp_enabled === true,
             mcpEndpointUrl:
                 typeof config.mcp_endpoint_url === 'string' ? config.mcp_endpoint_url : '',
+            canChangeMcpEndpoint: !config.source_binding && userCredentials.length === 0,
+            hasOrgJwtCredentials: orgCredentials?.authType === AuthType.JWT,
             writeToolsEnabled: config.write_tools_enabled === true,
             readOnly: config.read_only !== false,
         },
@@ -117,16 +121,33 @@ export const actions: Actions = {
         const source = await snowflakeSource(params.sourceId)
         const current = objectConfig(source.config)
         const form = await request.formData()
-        const enabled = parseBoolean(form, 'enabled')
 
         try {
+            const enabled = parseBoolean(form, 'enabled')
             const accountText = String(form.get('accountUrl') ?? '').trim()
             const accountUrl = parseHttpsUrl(accountText, 'Snowflake account URL')
+            const storedAccountUrl =
+                typeof current.account_url === 'string' ? current.account_url : null
+            if (storedAccountUrl && accountUrl.origin !== new URL(storedAccountUrl).origin) {
+                throw new Error(
+                    'The Snowflake account cannot be changed here because its credentials and user authorizations are bound to the existing account. Create a new source to connect a different account.',
+                )
+            }
             if (accountUrl.pathname !== '/' || accountUrl.hostname.length > 253) {
                 throw new Error('Snowflake account URL must contain only the account origin')
             }
             const syncEnabled = parseBoolean(form, 'syncEnabled')
             const mcpEnabled = parseBoolean(form, 'mcpEnabled')
+            if (syncEnabled && current.sync_enabled === false) {
+                const orgCredentials = await serviceCredentialsRepository.getOrgCredsBySourceId(
+                    source.id,
+                )
+                if (orgCredentials?.authType !== AuthType.JWT) {
+                    throw new Error(
+                        'Metadata sync requires organization Snowflake JWT credentials. Credential setup or rotation is not available on this page; create a new source with metadata credentials to enable sync.',
+                    )
+                }
+            }
             const warehouse = String(form.get('warehouse') ?? '').trim()
             const role = String(form.get('role') ?? '').trim()
             const databases = parseList(String(form.get('databases') ?? ''), 'Database')
@@ -150,6 +171,21 @@ export const actions: Actions = {
                     )
                 }
                 mcpEndpointUrl = endpoint.href.replace(/\/$/, '')
+                const storedEndpoint =
+                    typeof current.mcp_endpoint_url === 'string'
+                        ? current.mcp_endpoint_url.replace(/\/$/, '')
+                        : null
+                if (
+                    storedEndpoint &&
+                    storedEndpoint !== mcpEndpointUrl &&
+                    (current.source_binding ||
+                        (await serviceCredentialsRepository.listUserCredentialsForSource(source.id))
+                            .length > 0)
+                ) {
+                    throw new Error(
+                        'The managed MCP endpoint cannot be changed while account-bound authorization exists. Create a new source to use a different endpoint.',
+                    )
+                }
             }
             if (mcpEnabled && !mcpEndpointUrl)
                 throw new Error('Managed MCP endpoint is required when MCP is enabled')

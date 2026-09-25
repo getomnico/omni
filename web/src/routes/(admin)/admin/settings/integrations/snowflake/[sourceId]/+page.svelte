@@ -177,7 +177,12 @@
                         id="accountUrl"
                         name="accountUrl"
                         bind:value={accountUrl}
+                        readonly
                         required />
+                    <p class="text-muted-foreground text-xs">
+                        The account is fixed to the credentials and OAuth authorizations already
+                        bound to this source. Create a new source to connect another account.
+                    </p>
                 </div>
                 <label class="flex items-center gap-2 text-sm"
                     ><input
@@ -238,6 +243,14 @@
                     <p class="text-muted-foreground text-sm">
                         Metadata sync is disabled. MCP actions can still use live Snowflake access.
                     </p>
+                    {#if !data.config.hasOrgJwtCredentials}
+                        <p
+                            class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+                            Enabling metadata sync requires organization Snowflake JWT credentials.
+                            Credential setup or rotation is not available here; create a new source
+                            with metadata credentials first.
+                        </p>
+                    {/if}
                     <input type="hidden" name="warehouse" value={warehouse} />
                     <input type="hidden" name="role" value={role} />
                     <input type="hidden" name="databases" value={databases} />
@@ -268,7 +281,14 @@
                         id="mcpEndpointUrl"
                         name="mcpEndpointUrl"
                         bind:value={mcpEndpointUrl}
+                        readonly={!data.config.canChangeMcpEndpoint}
                         required />
+                    {#if !data.config.canChangeMcpEndpoint}
+                        <p class="text-muted-foreground text-xs">
+                            This endpoint is locked because the source has account-bound
+                            authorization. Create a new source to connect a different endpoint.
+                        </p>
+                    {/if}
                     <label class="flex items-center gap-2 text-sm"
                         ><input
                             type="checkbox"

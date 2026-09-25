@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => ({
     updateSourceById: vi.fn(),
     getOAuthManifestForSourceType: vi.fn(),
     getByUserAndSource: vi.fn(),
+    getOrgCredsBySourceId: vi.fn(),
+    listUserCredentialsForSource: vi.fn(),
     requireAdmin: vi.fn(),
     fetch: vi.fn(),
 }))
@@ -22,7 +24,11 @@ vi.mock('$lib/server/oauth/connectorOAuth', () => ({
     getOAuthManifestForSourceType: mocks.getOAuthManifestForSourceType,
 }))
 vi.mock('$lib/server/repositories/service-credentials', () => ({
-    serviceCredentialsRepository: { getByUserAndSource: mocks.getByUserAndSource },
+    serviceCredentialsRepository: {
+        getByUserAndSource: mocks.getByUserAndSource,
+        getOrgCredsBySourceId: mocks.getOrgCredsBySourceId,
+        listUserCredentialsForSource: mocks.listUserCredentialsForSource,
+    },
 }))
 
 const baseSource = {
@@ -58,6 +64,8 @@ beforeEach(() => {
     mocks.requireAdmin.mockReturnValue({ user: { id: 'admin-1', role: 'admin' } })
     mocks.getOAuthManifestForSourceType.mockResolvedValue(null)
     mocks.getByUserAndSource.mockResolvedValue(null)
+    mocks.getOrgCredsBySourceId.mockResolvedValue(null)
+    mocks.listUserCredentialsForSource.mockResolvedValue([])
     vi.stubGlobal('fetch', mocks.fetch)
     mocks.fetch.mockResolvedValue({ ok: true })
 })
@@ -69,6 +77,35 @@ describe('Snowflake settings route', () => {
         expect(pageData.config.accountUrl).toBe('https://acme.snowflakecomputing.com')
         expect(JSON.stringify(pageData)).not.toContain('must-not-be-returned')
         expect(JSON.stringify(pageData)).not.toContain('preserve-me')
+    })
+
+    it('rejects unauthorized and wrong-source loads', async () => {
+        mocks.requireAdmin.mockImplementation(() => {
+            throw Object.assign(new Error('Forbidden'), { status: 403 })
+        })
+        await expect(load(event(new FormData()))).rejects.toMatchObject({ status: 403 })
+
+        mocks.requireAdmin.mockReturnValue({ user: { id: 'admin-1', role: 'admin' } })
+        mocks.getSourceById.mockResolvedValue({ ...baseSource, sourceType: 'salesforce' })
+        await expect(load(event(new FormData()))).rejects.toMatchObject({ status: 400 })
+    })
+
+    it('rejects an account switch and does not persist it', async () => {
+        const form = new FormData()
+        form.set('enabled', 'true')
+        form.set('syncEnabled', 'true')
+        form.set('mcpEnabled', 'true')
+        form.set('accountUrl', 'https://other.snowflakecomputing.com')
+        form.set('warehouse', 'META')
+        form.set('role', 'READER')
+        form.set('databases', 'ANALYTICS')
+        form.set(
+            'mcpEndpointUrl',
+            'https://other.snowflakecomputing.com/api/v2/databases/ANALYTICS/schemas/PUBLIC/mcp-servers/omni',
+        )
+        const result = await actions.default?.(event(form))
+        expect(result).toMatchObject({ status: 400 })
+        expect(mocks.updateSourceById).not.toHaveBeenCalled()
     })
 
     it('rejects an account endpoint mismatch and does not persist it', async () => {
@@ -89,7 +126,68 @@ describe('Snowflake settings route', () => {
         expect(mocks.updateSourceById).not.toHaveBeenCalled()
     })
 
+    it('rejects enabling metadata sync without organization JWT credentials', async () => {
+        mocks.getSourceById.mockResolvedValue({
+            ...structuredClone(baseSource),
+            config: { ...baseSource.config, sync_enabled: false },
+        })
+        const form = new FormData()
+        form.set('enabled', 'true')
+        form.set('syncEnabled', 'true')
+        form.set('mcpEnabled', 'true')
+        form.set('accountUrl', 'https://acme.snowflakecomputing.com')
+        form.set('warehouse', 'META')
+        form.set('role', 'READER')
+        form.set('databases', 'ANALYTICS')
+        form.set(
+            'mcpEndpointUrl',
+            'https://acme.snowflakecomputing.com/api/v2/databases/ANALYTICS/schemas/PUBLIC/mcp-servers/omni',
+        )
+        const result = await actions.default?.(event(form))
+        expect(result).toMatchObject({ status: 400 })
+        expect(mocks.updateSourceById).not.toHaveBeenCalled()
+        expect(mocks.fetch).not.toHaveBeenCalled()
+    })
+
+    it('returns a 400 instead of throwing for malformed enabled values', async () => {
+        const form = new FormData()
+        form.set('enabled', 'maybe')
+        const result = await actions.default?.(event(form))
+        expect(result).toMatchObject({ status: 400 })
+        expect(mocks.updateSourceById).not.toHaveBeenCalled()
+    })
+
+    it('rejects changing an endpoint bound to existing authorization', async () => {
+        const source = {
+            ...structuredClone(baseSource),
+            config: {
+                ...baseSource.config,
+                source_binding: { account: 'acme', user: 'service' },
+            },
+        }
+        mocks.getSourceById.mockResolvedValue(source)
+        const form = new FormData()
+        form.set('enabled', 'true')
+        form.set('syncEnabled', 'true')
+        form.set('mcpEnabled', 'true')
+        form.set('accountUrl', 'https://acme.snowflakecomputing.com')
+        form.set('warehouse', 'META')
+        form.set('role', 'READER')
+        form.set('databases', 'ANALYTICS')
+        form.set(
+            'mcpEndpointUrl',
+            'https://acme.snowflakecomputing.com/api/v2/databases/OTHER/schemas/PUBLIC/mcp-servers/omni',
+        )
+        const result = await actions.default?.(event(form))
+        expect(result).toMatchObject({ status: 400 })
+        expect(mocks.updateSourceById).not.toHaveBeenCalled()
+    })
+
     it('preserves unknown connector config and never syncs an MCP-only source', async () => {
+        mocks.getSourceById.mockResolvedValue({
+            ...structuredClone(baseSource),
+            config: { ...baseSource.config, sync_enabled: false },
+        })
         const form = new FormData()
         form.set('enabled', 'true')
         form.set('syncEnabled', 'false')
