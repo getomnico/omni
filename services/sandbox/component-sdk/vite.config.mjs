@@ -1,7 +1,7 @@
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { defineConfig } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
-import { svelte } from '@sveltejs/vite-plugin-svelte'
+import { svelte, vitePreprocess } from '@sveltejs/vite-plugin-svelte'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 
 const sdkRoot = '/opt/omni/component-sdk'
@@ -63,7 +63,7 @@ export default defineConfig({
   plugins: [
     tailwindcss(),
     componentImportPolicy(),
-    svelte({ compilerOptions: { dev: false }, include: /\.svelte$/ }),
+    svelte({ preprocess: vitePreprocess({ script: true }), compilerOptions: { dev: false }, include: /\.svelte$/ }),
     viteSingleFile(),
   ],
   resolve: {
