@@ -4,6 +4,7 @@ import {
     dynamicRegistrationPayload,
     isAutoManagedOAuthProvider,
     isClientConfigComplete,
+    normalizeOAuthTokens,
     oauthCredentialExpiry,
     oauthServiceBaseUrl,
     parseOAuthSourceBinding,
@@ -276,6 +277,41 @@ describe('OAuth connector helpers', () => {
         expect(
             oauthServiceBaseUrl('https://example.com/windshift/oauth/authorize?prompt=login'),
         ).toBe('https://example.com/windshift')
+    })
+
+    it('normalizes Slack hosted-MCP user tokens and rejects bot tokens', () => {
+        expect(
+            normalizeOAuthTokens('slack', {
+                ok: true,
+                access_token: 'xoxp-user-token',
+                token_type: 'user',
+                scope: 'chat:write,channels:history',
+                refresh_token: 'xoxe-1-refresh',
+                expires_in: 43200,
+                authed_user: { id: 'U123' },
+            }),
+        ).toMatchObject({
+            access_token: 'xoxp-user-token',
+            token_type: 'user',
+            scope: 'chat:write,channels:history',
+            refresh_token: 'xoxe-1-refresh',
+            expires_in: 43200,
+        })
+
+        expect(() =>
+            normalizeOAuthTokens('slack', {
+                ok: true,
+                access_token: 'xoxb-bot-token',
+                token_type: 'Bearer',
+            }),
+        ).toThrow('delegated user access token')
+
+        expect(() =>
+            normalizeOAuthTokens('slack', {
+                ok: false,
+                error: 'invalid_code',
+            }),
+        ).toThrow('invalid_code')
     })
 
     it('limits write elevation to the requested connector scopes', () => {
