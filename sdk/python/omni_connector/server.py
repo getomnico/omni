@@ -16,6 +16,7 @@ from .exceptions import SdkClientError
 from .mcp_adapter import MCP_AUTH_REQUIRED_MESSAGE, MCP_AUTH_STATUS_FILE_ENV
 from .models import (
     ActionRequest,
+    ActionResponse,
     CancelRequest,
     CancelResponse,
     OAuthCredentialReadyRequest,
@@ -386,10 +387,9 @@ def create_app(
     async def execute_action(request: ActionRequest) -> Response:
         logger.info("Action requested: %s", request.action)
 
-        # Native action names are reserved. Only a cached, explicitly
-        # discovered MCP action may enter the MCP branch; an MCP auth failure
-        # must never fall through and execute a native action with different
-        # authorization semantics.
+        # Native action names are reserved. MCP actions are validated here so
+        # connector-specific policies run before a tool reaches the server;
+        # native actions fall through to connector overrides.
         adapter = connector.mcp_adapter
         native_action_names = {action.name for action in connector.actions}
         if adapter is not None and request.action not in native_action_names:
@@ -411,6 +411,9 @@ def create_app(
 
             auth: dict[str, Any] = {}
             try:
+                connector.validate_mcp_action(
+                    request.action, dict(request.params), request.source
+                )
                 auth = connector._prepare_mcp_auth(request.credentials)
                 arguments = connector.prepare_mcp_tool_arguments(
                     request.action, request.params
@@ -437,6 +440,12 @@ def create_app(
                 )
                 return JSONResponse(
                     content=response.model_dump(), status_code=status_code
+                )
+            except ValueError as e:
+                logger.info("MCP action rejected by connector validation: %s", e)
+                return JSONResponse(
+                    content=ActionResponse.failure(str(e)).model_dump(),
+                    status_code=status.HTTP_400_BAD_REQUEST,
                 )
             except Exception as e:
                 auth_response = mcp_auth_required_response(

@@ -1,8 +1,7 @@
 """Integration tests: full sync creates all document types."""
 
-import pytest
 import httpx
-
+import pytest
 from omni_connector.testing import count_events, wait_for_sync
 
 pytestmark = pytest.mark.integration

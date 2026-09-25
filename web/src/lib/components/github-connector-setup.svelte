@@ -4,7 +4,7 @@
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
     import { Checkbox } from '$lib/components/ui/checkbox'
-    import { AuthType, type GitHubSourceConfig, type GitHubCredentials } from '$lib/types'
+    import { AuthType, SourceType, type GitHubSourceConfig, type GitHubCredentials } from '$lib/types'
     import { toast } from 'svelte-sonner'
 
     interface Props {
@@ -15,6 +15,10 @@
 
     let { open = false, onSuccess, onCancel }: Props = $props()
 
+    // 'oauth' drives the per-user GitHub OAuth app; 'pat' is the legacy
+    // personal-access-token path (useful when the OAuth client is not yet
+    // configured or for GitHub Enterprise servers without OAuth apps).
+    let authMode = $state<'oauth' | 'pat'>('oauth')
     let token = $state('')
     let apiUrl = $state('')
     let includeDiscussions = $state(true)
@@ -22,36 +26,51 @@
     let readOnly = $state(false)
     let isSubmitting = $state(false)
 
-    async function handleSubmit() {
+    async function createSource(): Promise<{ id: string }> {
+        const config: GitHubSourceConfig = {
+            include_discussions: includeDiscussions,
+            include_forks: includeForks,
+            read_only: readOnly,
+            ...(apiUrl.trim() ? { api_url: apiUrl.trim() } : {}),
+        }
+        const response = await fetch('/api/sources', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                scope: 'org',
+                name: 'GitHub',
+                sourceType: SourceType.GITHUB,
+                config,
+            }),
+        })
+        if (!response.ok) {
+            throw new Error('Failed to create GitHub source')
+        }
+        return (await response.json()) as { id: string }
+    }
+
+    async function handleOAuthConnect() {
+        isSubmitting = true
+        try {
+            const source = await createSource()
+            toast.success('GitHub source created. Continue with GitHub to authorize access.')
+            const returnTo = encodeURIComponent('/admin/settings/integrations?success=connected')
+            window.location.href = `/api/oauth/start?source_id=${source.id}&flow=org_source&return_to=${returnTo}`
+        } catch (error: unknown) {
+            console.error('Error setting up GitHub:', error)
+            toast.error(error instanceof Error ? error.message : 'Failed to set up GitHub')
+            isSubmitting = false
+        }
+    }
+
+    async function handlePatConnect() {
         isSubmitting = true
         try {
             if (!token.trim()) {
                 throw new Error('Personal access token is required')
             }
 
-            const config: GitHubSourceConfig = {
-                include_discussions: includeDiscussions,
-                include_forks: includeForks,
-                read_only: readOnly,
-                ...(apiUrl.trim() ? { api_url: apiUrl.trim() } : {}),
-            }
-
-            const sourceResponse = await fetch('/api/sources', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    scope: 'org',
-                    name: 'GitHub',
-                    sourceType: 'github',
-                    config,
-                }),
-            })
-
-            if (!sourceResponse.ok) {
-                throw new Error('Failed to create GitHub source')
-            }
-
-            const source = await sourceResponse.json()
+            const source = await createSource()
 
             const credentialsResponse = await fetch('/api/service-credentials', {
                 method: 'POST',
@@ -70,29 +89,36 @@
 
             toast.success('GitHub connected successfully!')
 
-            token = ''
-            apiUrl = ''
-            includeDiscussions = true
-            includeForks = false
-            readOnly = false
-
+            reset()
             if (onSuccess) {
                 onSuccess()
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Error setting up GitHub:', error)
-            toast.error(error.message || 'Failed to set up GitHub')
+            toast.error(error instanceof Error ? error.message : 'Failed to set up GitHub')
         } finally {
             isSubmitting = false
         }
     }
 
-    function handleCancel() {
+    function handleSubmit() {
+        if (authMode === 'oauth') {
+            void handleOAuthConnect()
+        } else {
+            void handlePatConnect()
+        }
+    }
+
+    function reset() {
         token = ''
         apiUrl = ''
         includeDiscussions = true
         includeForks = false
         readOnly = false
+    }
+
+    function handleCancel() {
+        reset()
         if (onCancel) {
             onCancel()
         }
@@ -109,24 +135,52 @@
         </Dialog.Header>
 
         <div class="space-y-4">
-            <div class="space-y-2">
-                <Label for="github-token">Personal Access Token</Label>
-                <Input
-                    id="github-token"
-                    bind:value={token}
-                    placeholder="ghp_..."
-                    type="password"
-                    required />
-                <p class="text-muted-foreground text-sm">
-                    Create a token at
-                    <a
-                        href="https://github.com/settings/tokens"
-                        target="_blank"
-                        class="text-blue-600 hover:underline"
-                        >GitHub Settings &rarr; Developer settings &rarr; Personal access tokens</a
-                    >. Requires <code>repo</code> and <code>read:org</code> scopes.
-                </p>
+            <div class="flex gap-2">
+                <Button
+                    type="button"
+                    variant={authMode === 'oauth' ? 'default' : 'outline'}
+                    class="cursor-pointer"
+                    onclick={() => (authMode = 'oauth')}>
+                    Connect with GitHub (recommended)
+                </Button>
+                <Button
+                    type="button"
+                    variant={authMode === 'pat' ? 'default' : 'outline'}
+                    class="cursor-pointer"
+                    onclick={() => (authMode = 'pat')}>
+                    Personal access token
+                </Button>
             </div>
+
+            {#if authMode === 'oauth'}
+                <div class="space-y-2">
+                    <p class="text-muted-foreground text-sm">
+                        Creates the source, then redirects to GitHub to authorize it with the
+                        organization's OAuth app. The OAuth client must be configured under
+                        Admin &rarr; Settings &rarr; Integrations &rarr; OAuth Apps
+                        (requires <code>repo</code> and <code>read:org</code> scopes).
+                    </p>
+                </div>
+            {:else}
+                <div class="space-y-2">
+                    <Label for="github-token">Personal Access Token</Label>
+                    <Input
+                        id="github-token"
+                        bind:value={token}
+                        placeholder="ghp_..."
+                        type="password"
+                        required />
+                    <p class="text-muted-foreground text-sm">
+                        Create a token at
+                        <a
+                            href="https://github.com/settings/tokens"
+                            target="_blank"
+                            class="text-blue-600 hover:underline"
+                            >GitHub Settings &rarr; Developer settings &rarr; Personal access tokens</a
+                        >. Requires <code>repo</code> and <code>read:org</code> scopes.
+                    </p>
+                </div>
+            {/if}
 
             <div class="space-y-2">
                 <Label for="github-api-url">API URL (optional)</Label>
@@ -168,7 +222,13 @@
         <Dialog.Footer>
             <Button variant="outline" onclick={handleCancel} class="cursor-pointer">Cancel</Button>
             <Button onclick={handleSubmit} disabled={isSubmitting} class="cursor-pointer">
-                {isSubmitting ? 'Connecting...' : 'Connect'}
+                {#if isSubmitting}
+                    Connecting...
+                {:else if authMode === 'oauth'}
+                    Continue with GitHub
+                {:else}
+                    Connect
+                {/if}
             </Button>
         </Dialog.Footer>
     </Dialog.Content>

@@ -42,6 +42,12 @@
     let sourceToDisconnect = $state<UserSource | null>(null)
     let togglingSourceId = $state<string | null>(null)
 
+    function connectGithub(sourceId: string) {
+        const returnTo = encodeURIComponent('/settings/integrations')
+        window.location.href =
+            `/api/oauth/start?source_id=${sourceId}&flow=user_write&return_to=${returnTo}`
+    }
+
     type SourceId = string
     type SyncStatusPayload = {
         overall?: {
@@ -405,7 +411,10 @@
 
         <!-- Available Connections -->
         <!-- TODO: Generate these cards from OAuth-capable, admin-configured providers instead of Google-specific state. -->
-        {#if data.googleOAuthConfigured || data.windshiftBaseUrl}
+        {#if
+            data.googleOAuthConfigured ||
+            data.windshiftBaseUrl ||
+            (data.githubOAuthConfigured && data.githubConnectable.length > 0)}
             <div class="space-y-4">
                 <div>
                     <h2 class="text-xl font-semibold">Available Integrations</h2>
@@ -490,6 +499,48 @@
                                 </CardFooter>
                             {/if}
                         </Card>
+                    {/if}
+
+                    {#if data.githubOAuthConfigured && data.githubConnectable.length > 0}
+                        {#each data.githubConnectable as githubSource (githubSource.id)}
+                            <Card class="flex flex-col">
+                                <CardHeader>
+                                    <CardTitle class="flex items-center gap-3">
+                                        <div
+                                            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm dark:border-white/10 dark:shadow-none">
+                                            <img
+                                                src={getSourceIconPath(SourceType.GITHUB)}
+                                                alt="GitHub"
+                                                class="h-6 w-6 object-contain" />
+                                        </div>
+                                        <span>GitHub · {githubSource.name}</span>
+                                        {#if githubSource.connected}
+                                            <span
+                                                class="ml-auto inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900/20 dark:text-green-400">
+                                                Connected
+                                            </span>
+                                        {/if}
+                                    </CardTitle>
+                                </CardHeader>
+                                <CardContent class="flex-1">
+                                    <p class="text-muted-foreground text-sm">
+                                        Connect your own GitHub account so agent actions
+                                        (issues, pull requests, discussions) run as you instead
+                                        of the organization credential.
+                                    </p>
+                                </CardContent>
+                                {#if !githubSource.connected}
+                                    <CardFooter>
+                                        <Button
+                                            size="sm"
+                                            class="cursor-pointer"
+                                            onclick={() => connectGithub(githubSource.id)}>
+                                            Connect your GitHub account
+                                        </Button>
+                                    </CardFooter>
+                                {/if}
+                            </Card>
+                        {/each}
                     {/if}
                 </div>
             </div>
