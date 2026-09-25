@@ -3,29 +3,29 @@
     import { Button } from '$lib/components/ui/button'
     import { Input } from '$lib/components/ui/input'
     import { Label } from '$lib/components/ui/label'
-    import { Checkbox } from '$lib/components/ui/checkbox'
-    import { Badge } from '$lib/components/ui/badge'
-    import * as Card from '$lib/components/ui/card'
     import * as Alert from '$lib/components/ui/alert'
     import * as Select from '$lib/components/ui/select'
+    import * as RadioGroup from '$lib/components/ui/radio-group'
     import * as Command from '$lib/components/ui/command'
     import * as Popover from '$lib/components/ui/popover'
     import * as AlertDialog from '$lib/components/ui/alert-dialog'
     import * as Dialog from '$lib/components/ui/dialog'
+    import * as DropdownMenu from '$lib/components/ui/dropdown-menu'
     import * as Tooltip from '$lib/components/ui/tooltip'
     import {
-        Loader2,
-        Info,
-        Pencil,
-        Trash2,
-        Server,
+        Check,
         CircleAlert,
         CircleCheck,
-        Eye,
-        EyeOff,
         ChevronsUpDown,
+        Info,
+        Loader2,
+        MoreHorizontal,
+        Pencil,
+        Plus,
+        Server,
+        Trash2,
+        X,
     } from '@lucide/svelte'
-    import { cn } from '$lib/utils'
     import { toast } from 'svelte-sonner'
     import type { PageData } from './$types'
     import anthropicIcon from '$lib/images/icons/anthropic.svg'
@@ -45,6 +45,7 @@
         | 'gemini'
         | 'azure_foundry'
         | 'vertex_ai'
+    type ModelRole = 'default' | 'secondary' | 'unassigned'
 
     interface ProviderFormState {
         id?: string
@@ -57,92 +58,12 @@
         visionMode: string
     }
 
-    const visionModeOptions = [
-        { value: 'auto', label: 'Auto-detect' },
-        { value: 'on', label: 'Always allow image input' },
-        { value: 'off', label: 'Never allow image input' },
-    ]
-
     interface ModelFormState {
         providerId: string
         modelId: string
         displayName: string
-        isDefault: boolean
-        isSecondary: boolean
+        role: ModelRole
     }
-
-    const emptyProviderForm: ProviderFormState = {
-        name: '',
-        providerType: 'anthropic',
-        apiKey: '',
-        apiUrl: '',
-        regionName: '',
-        projectId: '',
-        visionMode: 'auto',
-    }
-
-    const emptyModelForm: ModelFormState = {
-        providerId: '',
-        modelId: '',
-        displayName: '',
-        isDefault: false,
-        isSecondary: false,
-    }
-
-    let dialogOpen = $state(false)
-    let editMode = $state(false)
-    let formState = $state<ProviderFormState>({ ...emptyProviderForm })
-    let isSubmitting = $state(false)
-    let editingHasApiKey = $state(false)
-
-    type TestResult =
-        | { ok: true; message: string }
-        | { ok: false; message: string; detail: string | null }
-    let testResult = $state<TestResult | null>(null)
-
-    let modelDialogOpen = $state(false)
-    let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
-    let isModelSubmitting = $state(false)
-    let modelPickerOpen = $state(false)
-    let modelSearch = $state('')
-    let availableModels = $state<{ modelId: string; displayName: string }[]>([])
-    let modelsLoading = $state(false)
-
-    let manageMode = $state<Record<string, boolean>>({})
-    let roleForms = $state<Record<string, HTMLFormElement>>({})
-
-    let confirmDialogOpen = $state(false)
-    let confirmTitle = $state('')
-    let confirmDescription = $state('')
-    let confirmFormRef = $state<HTMLFormElement | null>(null)
-
-    function requestConfirm(title: string, description: string, formEl: HTMLFormElement) {
-        confirmTitle = title
-        confirmDescription = description
-        confirmFormRef = formEl
-        confirmDialogOpen = true
-    }
-
-    type ActionMessageData = { message?: string; error?: string }
-
-    function actionMessage(
-        resultData: unknown,
-        field: keyof ActionMessageData,
-        fallback: string,
-    ): string {
-        if (resultData && typeof resultData === 'object') {
-            const value = (resultData as ActionMessageData)[field]
-            if (typeof value === 'string') return value
-        }
-        return fallback
-    }
-
-    const showApiKey = (p: ProviderType) =>
-        p === 'anthropic' || p === 'openai' || p === 'gemini' || p === 'openai_compatible'
-    const showApiUrl = (p: ProviderType) => p === 'openai_compatible' || p === 'azure_foundry'
-    const apiKeyOptional = (p: ProviderType) => p === 'openai_compatible'
-    const showRegion = (p: ProviderType) => p === 'bedrock' || p === 'vertex_ai'
-    const showProjectId = (p: ProviderType) => p === 'vertex_ai'
 
     interface ProviderMeta {
         label: string
@@ -168,8 +89,7 @@
         },
         openai_compatible: {
             label: 'OpenAI Compatible',
-            description:
-                'Any OpenAI-compatible endpoint (vLLM, Ollama, LM Studio, LiteLLM, OpenRouter, etc.)',
+            description: 'Use Ollama, vLLM, or another OpenAI-compatible API.',
             icon: null,
         },
         gemini: {
@@ -189,8 +109,6 @@
         },
     }
 
-    const MULTI_INSTANCE_TYPES: ProviderType[] = ['openai_compatible']
-
     const providerTypes: ProviderType[] = [
         'anthropic',
         'openai',
@@ -200,73 +118,166 @@
         'vertex_ai',
         'openai_compatible',
     ]
+    const multiInstanceTypes: ProviderType[] = ['openai_compatible']
+    const visionModeOptions = [
+        { value: 'auto', label: 'Auto-detect' },
+        { value: 'on', label: 'Always allow image input' },
+        { value: 'off', label: 'Never allow image input' },
+    ]
+    const roleOptions: { value: ModelRole; label: string; hint: string }[] = [
+        { value: 'default', label: 'Default', hint: 'Chat and agent responses' },
+        { value: 'secondary', label: 'Secondary', hint: 'Quick, lightweight tasks' },
+        {
+            value: 'unassigned',
+            label: 'Unassigned',
+            hint: 'Available when choosing a model in chat',
+        },
+    ]
+
+    const emptyProviderForm: ProviderFormState = {
+        name: '',
+        providerType: 'anthropic',
+        apiKey: '',
+        apiUrl: '',
+        regionName: '',
+        projectId: '',
+        visionMode: 'auto',
+    }
+    const emptyModelForm: ModelFormState = {
+        providerId: '',
+        modelId: '',
+        displayName: '',
+        role: 'unassigned',
+    }
+
+    let providerPickerOpen = $state(false)
+    let dialogOpen = $state(false)
+    let editMode = $state(false)
+    let formState = $state<ProviderFormState>({ ...emptyProviderForm })
+    let isSubmitting = $state(false)
+    let editingHasApiKey = $state(false)
+    let testResult = $state<
+        { ok: true; message: string } | { ok: false; message: string; detail: string | null } | null
+    >(null)
+
+    let modelDialogOpen = $state(false)
+    let modelFormState = $state<ModelFormState>({ ...emptyModelForm })
+    let isModelSubmitting = $state(false)
+    let modelPickerOpen = $state(false)
+    let modelSearch = $state('')
+    let availableModels = $state<{ modelId: string; displayName: string }[]>([])
+    let modelsLoading = $state(false)
+
+    let selectedModel = $state<(typeof data.providers)[number]['models'][number] | null>(null)
+    let selectedProvider = $state<(typeof data.providers)[number] | null>(null)
+    let selectedModelRole = $state<ModelRole>('unassigned')
+    let modelDetailOpen = $state(false)
+    let isRoleSubmitting = $state(false)
+
+    let confirmDialogOpen = $state(false)
+    let confirmTitle = $state('')
+    let confirmDescription = $state('')
+    let confirmFormRef = $state<HTMLFormElement | null>(null)
+    let providerDeleteForms = $state<Record<string, HTMLFormElement>>({})
 
     let connectedProviders = $derived(
-        data.providers.map((p) => ({
-            type: p.providerType as ProviderType,
-            provider: p,
-            meta: providerMeta[p.providerType as ProviderType],
+        data.providers.map((provider) => ({
+            provider,
+            meta: providerMeta[provider.providerType as ProviderType],
         })),
     )
-
     let configuredSingletonTypes = $derived(
         data.providers
-            .map((p) => p.providerType as ProviderType)
-            .filter((t) => !MULTI_INSTANCE_TYPES.includes(t)),
+            .map((provider) => provider.providerType as ProviderType)
+            .filter((type) => !multiInstanceTypes.includes(type)),
     )
-
     let unconfiguredTypes = $derived(
-        providerTypes.filter((t) => !configuredSingletonTypes.includes(t)),
+        providerTypes.filter((type) => !configuredSingletonTypes.includes(type)),
     )
+    let filteredModels = $derived.by(() => {
+        const tokens = modelSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
+        if (tokens.length === 0) return availableModels
+        return availableModels.filter((model) => {
+            const haystack = `${model.displayName} ${model.modelId}`.toLowerCase()
+            return tokens.every((token) => haystack.includes(token))
+        })
+    })
+
+    function requestConfirm(title: string, description: string, form: HTMLFormElement) {
+        confirmTitle = title
+        confirmDescription = description
+        confirmFormRef = form
+        confirmDialogOpen = true
+    }
+
+    function actionMessage(
+        resultData: unknown,
+        field: 'message' | 'error',
+        fallback: string,
+    ): string {
+        if (resultData && typeof resultData === 'object') {
+            const value = (resultData as Record<string, unknown>)[field]
+            if (typeof value === 'string') return value
+        }
+        return fallback
+    }
+
+    function providerRole(model: (typeof data.providers)[number]['models'][number]): ModelRole {
+        if (model.isDefault) return 'default'
+        if (model.isSecondary) return 'secondary'
+        return 'unassigned'
+    }
+
+    function roleLabel(role: ModelRole): string {
+        return roleOptions.find((option) => option.value === role)?.label ?? 'Unassigned'
+    }
+
+    function openProviderPicker() {
+        providerPickerOpen = true
+    }
 
     function openSetupDialog(type: ProviderType) {
+        providerPickerOpen = false
         editMode = false
         editingHasApiKey = false
         testResult = null
-        formState = {
-            ...emptyProviderForm,
-            providerType: type,
-            name: providerMeta[type].label,
-        }
+        formState = { ...emptyProviderForm, providerType: type, name: providerMeta[type].label }
         dialogOpen = true
     }
 
-    function openEditDialog(provider: (typeof data.providers)[0]) {
+    function openEditDialog(provider: (typeof data.providers)[number]) {
+        providerPickerOpen = false
         editMode = true
         editingHasApiKey = provider.hasApiKey
         testResult = null
+        const config = provider.config as Record<string, unknown>
         formState = {
             id: provider.id,
             name: provider.name,
             providerType: provider.providerType as ProviderType,
             apiKey: '',
-            apiUrl: (provider.config as Record<string, string>).apiUrl || '',
-            regionName: (provider.config as Record<string, string>).regionName || '',
-            projectId: (provider.config as Record<string, string>).projectId || '',
-            visionMode: (provider.config as Record<string, string>).visionMode || 'auto',
+            apiUrl: typeof config.apiUrl === 'string' ? config.apiUrl : '',
+            regionName: typeof config.regionName === 'string' ? config.regionName : '',
+            projectId: typeof config.projectId === 'string' ? config.projectId : '',
+            visionMode: typeof config.visionMode === 'string' ? config.visionMode : 'auto',
         }
         dialogOpen = true
     }
 
-    function enhanceWithToast() {
-        return async ({ result, update }: { result: any; update: () => Promise<void> }) => {
-            await update()
-            confirmDialogOpen = false
-            if (result.type === 'success') {
-                toast.success(result.data?.message || 'Operation completed successfully')
-            } else if (result.type === 'failure') {
-                toast.error(result.data?.error || 'Something went wrong')
-            }
-        }
+    function openModelDetail(
+        provider: (typeof data.providers)[number],
+        model: (typeof data.providers)[number]['models'][number],
+    ) {
+        selectedProvider = provider
+        selectedModel = model
+        selectedModelRole = providerRole(model)
+        modelDetailOpen = true
     }
 
     function openAddModelDialog(providerId: string) {
-        modelFormState = {
-            ...emptyModelForm,
-            providerId,
-        }
+        modelFormState = { ...emptyModelForm, providerId }
         modelDialogOpen = true
-        loadAvailableModels(providerId)
+        void loadAvailableModels(providerId)
     }
 
     async function loadAvailableModels(providerId: string) {
@@ -276,25 +287,16 @@
         try {
             const formData = new FormData()
             formData.set('providerId', providerId)
-            const resp = await fetch('?/discoverModels', {
+            const response = await fetch('?/discoverModels', {
                 method: 'POST',
                 body: formData,
                 headers: { 'x-sveltekit-action': 'true' },
             })
-            const actionResult = deserialize<
+            const result = deserialize<
                 { models?: { modelId: string; displayName: string }[] },
                 { error?: string }
-            >(await resp.text())
-            availableModels =
-                actionResult.type === 'success' ? (actionResult.data?.models ?? []) : []
-            if (actionResult.type !== 'success') {
-                console.error(
-                    'Failed to discover provider models:',
-                    actionResult.type === 'failure'
-                        ? actionResult.data?.error
-                        : `HTTP ${resp.status}`,
-                )
-            }
+            >(await response.text())
+            availableModels = result.type === 'success' ? (result.data?.models ?? []) : []
         } catch {
             availableModels = []
         } finally {
@@ -304,27 +306,12 @@
 
     function applyModelChoice(model: { modelId: string; displayName: string }) {
         modelFormState.modelId = model.modelId
-        if (!modelFormState.displayName.trim()) {
-            modelFormState.displayName = model.displayName
-        }
+        if (!modelFormState.displayName.trim()) modelFormState.displayName = model.displayName
         modelPickerOpen = false
     }
 
-    let filteredModels = $derived.by(() => {
-        const tokens = modelSearch.trim().toLowerCase().split(/\s+/).filter(Boolean)
-        if (tokens.length === 0) return availableModels
-        return availableModels.filter((m) => {
-            const haystack = `${m.displayName} ${m.modelId}`.toLowerCase()
-            return tokens.every((t) => haystack.includes(t))
-        })
-    })
-
-    function resetTestResult() {
-        testResult = null
-    }
-
     function setConnectionError(resultData: unknown, fallback: string) {
-        const data = resultData as
+        const result = resultData as
             | {
                   error?: string
                   provider?: string | null
@@ -332,759 +319,706 @@
                   model?: string | null
               }
             | undefined
-        const detailParts: string[] = []
-        if (data?.provider) detailParts.push(data.provider)
-        if (data?.model) detailParts.push(data.model)
-        if (data?.statusCode) detailParts.push(`HTTP ${data.statusCode}`)
+        const details = [
+            result?.provider,
+            result?.model,
+            result?.statusCode ? `HTTP ${result.statusCode}` : null,
+        ].filter((part): part is string => typeof part === 'string')
         testResult = {
             ok: false,
-            message: data?.error || fallback,
-            detail: detailParts.length ? detailParts.join(' · ') : null,
+            message: result?.error ?? fallback,
+            detail: details.length > 0 ? details.join(' · ') : null,
         }
     }
+
+    function resetTestResult() {
+        testResult = null
+    }
+
+    const showApiKey = (type: ProviderType) =>
+        type === 'anthropic' ||
+        type === 'openai' ||
+        type === 'gemini' ||
+        type === 'openai_compatible'
+    const showApiUrl = (type: ProviderType) =>
+        type === 'openai_compatible' || type === 'azure_foundry'
+    const apiKeyOptional = (type: ProviderType) => type === 'openai_compatible'
+    const showRegion = (type: ProviderType) => type === 'bedrock' || type === 'vertex_ai'
+    const showProjectId = (type: ProviderType) => type === 'vertex_ai'
 </script>
 
-<div class="h-full overflow-y-auto p-6 py-8 pb-24">
-    <div class="mx-auto max-w-screen-lg space-y-8">
-        <div>
-            <h1 class="text-3xl font-bold tracking-tight">LLM Providers</h1>
-            <p class="text-muted-foreground mt-2">
-                Connect an LLM provider to enable AI-powered features
-            </p>
-        </div>
+<div class="bg-background min-h-full p-5 pb-24 sm:p-8 sm:pb-24">
+    <div class="mx-auto max-w-[1160px] space-y-8">
+        <header class="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+                <h1 class="text-3xl font-semibold tracking-tight">LLM Providers</h1>
+                <p class="text-muted-foreground mt-2 text-base">
+                    Manage the providers and models Omni can use.
+                </p>
+            </div>
+            <Button onclick={openProviderPicker} class="cursor-pointer gap-2 sm:mt-1">
+                <Plus class="h-4 w-4" />
+                Connect provider
+            </Button>
+        </header>
 
-        <!-- Connected Provider Cards -->
         {#if connectedProviders.length > 0}
-            <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                {#each connectedProviders as { type, provider, meta } (provider.id)}
-                    <Card.Root class="group/card">
-                        <Card.Header class="pb-2">
-                            <div class="flex items-center gap-3">
-                                {#if meta.icon}
-                                    <div
-                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
-                                        <img
-                                            src={meta.icon}
-                                            alt={meta.label}
-                                            class="h-7 w-7 object-contain" />
-                                    </div>
-                                {:else}
-                                    <div
-                                        class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
-                                        <Server class="h-6 w-6 text-slate-700" />
-                                    </div>
-                                {/if}
-                                <div class="flex items-center gap-2">
-                                    <span class="text-base leading-tight font-semibold">
-                                        {provider.name}
-                                    </span>
-                                    <Badge
-                                        variant="secondary"
-                                        class="border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-950 dark:text-green-400">
-                                        <span
-                                            class="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-green-500"
-                                        ></span>
-                                        Connected
-                                    </Badge>
-                                </div>
-                            </div>
-                            <Card.Action>
+            <div class="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
+                {#each connectedProviders as { provider, meta } (provider.id)}
+                    <section
+                        class="bg-card overflow-hidden rounded-2xl border shadow-none"
+                        aria-labelledby={`provider-${provider.id}`}>
+                        <header class="flex items-center gap-3 px-4 py-3">
+                            {#if meta.icon}
                                 <div
-                                    class="flex items-center gap-1 opacity-0 transition-opacity group-hover/card:opacity-100">
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        class="h-8 w-8 cursor-pointer"
-                                        title="Edit provider"
-                                        onclick={() => openEditDialog(provider)}>
-                                        <Pencil class="h-4 w-4" />
-                                    </Button>
-                                    <form
-                                        method="POST"
-                                        action="?/delete"
-                                        use:enhance={enhanceWithToast}>
-                                        <input type="hidden" name="id" value={provider.id} />
-                                        <Button
-                                            variant="ghost"
-                                            size="icon"
-                                            class="hover:text-destructive h-8 w-8 cursor-pointer"
-                                            title="Remove provider"
-                                            onclick={(e) => {
-                                                const form = (
-                                                    e.currentTarget as HTMLElement
-                                                ).closest('form')!
-                                                requestConfirm(
-                                                    'Remove Provider',
-                                                    `Are you sure you want to remove "${provider.name}" and all its models? This action cannot be undone.`,
-                                                    form as HTMLFormElement,
-                                                )
-                                            }}>
-                                            <Trash2 class="h-4 w-4" />
-                                        </Button>
-                                    </form>
+                                    class="bg-background flex h-8 w-8 shrink-0 items-center justify-center rounded-md border">
+                                    <img src={meta.icon} alt="" class="h-5 w-5 object-contain" />
                                 </div>
-                            </Card.Action>
-                        </Card.Header>
-
-                        <Card.Content class="pb-0">
-                            <!-- Models section header -->
-                            <div class="flex items-center justify-between px-1">
-                                <span
-                                    class="text-muted-foreground text-xs font-semibold tracking-wider uppercase">
-                                    Models
-                                </span>
-                                {#if provider.models.length > 0}
-                                    <Button
-                                        variant="link"
-                                        size="sm"
-                                        class={cn(
-                                            'h-auto cursor-pointer px-1.5 py-0.5 text-xs font-medium transition-opacity',
-                                            manageMode[provider.id]
-                                                ? 'text-primary'
-                                                : 'text-muted-foreground opacity-0 group-hover/card:opacity-100',
-                                        )}
-                                        onclick={() =>
-                                            (manageMode[provider.id] = !manageMode[provider.id])}>
-                                        {manageMode[provider.id] ? 'Done' : 'Manage'}
-                                    </Button>
-                                {/if}
-                            </div>
-
-                            <!-- Model table -->
-                            {#if provider.models.length > 0}
-                                {#each provider.models as model (model.id)}
-                                    <!-- Hidden forms for role cycling (kept outside the table: forms are
-                                        invalid directly inside tbody and browsers would hoist them) -->
-                                    <form
-                                        method="POST"
-                                        action="?/setDefaultModel"
-                                        use:enhance={enhanceWithToast}
-                                        class="hidden"
-                                        bind:this={roleForms[`default-${model.id}`]}>
-                                        <input type="hidden" name="id" value={model.id} />
-                                    </form>
-                                    <form
-                                        method="POST"
-                                        action="?/setSecondaryModel"
-                                        use:enhance={enhanceWithToast}
-                                        class="hidden"
-                                        bind:this={roleForms[`secondary-${model.id}`]}>
-                                        <input type="hidden" name="id" value={model.id} />
-                                    </form>
-                                {/each}
-
-                                <table class="mt-1 w-full text-sm">
-                                    <thead>
-                                        <tr
-                                            class="text-muted-foreground border-border border-b text-left text-[11px] font-semibold tracking-wider uppercase">
-                                            <th class="py-1.5 pr-2 pl-1 font-semibold">Model</th>
-                                            <th class="w-14 py-1.5 pr-2 font-semibold">Vision</th>
-                                            {#if manageMode[provider.id]}
-                                                <th class="py-1.5 text-right font-semibold">
-                                                    Actions
-                                                </th>
-                                            {/if}
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {#each provider.models as model (model.id)}
-                                            <tr class="border-border/50 border-b last:border-b-0">
-                                                <td class="py-1.5 pr-2 pl-1 align-middle">
-                                                    <div class="flex flex-col gap-0.5">
-                                                        <div class="flex items-baseline gap-2">
-                                                            <span class="text-sm font-medium">
-                                                                {model.displayName}
-                                                            </span>
-                                                            {#if model.isDefault}
-                                                                <span
-                                                                    class="text-xs font-medium text-amber-600 dark:text-amber-400">
-                                                                    Default
-                                                                </span>
-                                                            {/if}
-                                                            {#if model.isSecondary}
-                                                                <span
-                                                                    class="text-xs font-medium text-blue-600 dark:text-blue-400">
-                                                                    Secondary
-                                                                </span>
-                                                            {/if}
-                                                        </div>
-                                                        <span
-                                                            class="text-muted-foreground font-mono text-[11px] break-all">
-                                                            {model.modelId}
-                                                        </span>
-                                                    </div>
-                                                </td>
-                                                <td class="py-1.5 pr-2 align-middle">
-                                                    {#if data.visionByModelId?.[model.id]}
-                                                        <span
-                                                            class="inline-flex items-center text-emerald-600 dark:text-emerald-400"
-                                                            title="Accepts image input">
-                                                            <Eye class="h-4 w-4" />
-                                                        </span>
-                                                    {:else}
-                                                        <span
-                                                            class="text-muted-foreground/50 inline-flex items-center"
-                                                            title="No image input">
-                                                            <EyeOff class="h-4 w-4" />
-                                                        </span>
-                                                    {/if}
-                                                </td>
-                                                {#if manageMode[provider.id]}
-                                                    <td class="py-1.5 align-middle">
-                                                        <div
-                                                            class="flex items-center justify-end gap-1">
-                                                            {#if !model.isDefault}
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    class="h-6 cursor-pointer px-2 text-xs"
-                                                                    onclick={() =>
-                                                                        roleForms[
-                                                                            `default-${model.id}`
-                                                                        ]?.requestSubmit()}>
-                                                                    Set default
-                                                                </Button>
-                                                            {/if}
-                                                            {#if !model.isSecondary}
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    class="h-6 cursor-pointer px-2 text-xs"
-                                                                    onclick={() =>
-                                                                        roleForms[
-                                                                            `secondary-${model.id}`
-                                                                        ]?.requestSubmit()}>
-                                                                    Set secondary
-                                                                </Button>
-                                                            {/if}
-                                                            <form
-                                                                method="POST"
-                                                                action="?/deleteModel"
-                                                                use:enhance={enhanceWithToast}
-                                                                class="flex items-center">
-                                                                <input
-                                                                    type="hidden"
-                                                                    name="id"
-                                                                    value={model.id} />
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="icon"
-                                                                    class="hover:text-destructive h-6 w-6 cursor-pointer"
-                                                                    title="Remove model"
-                                                                    onclick={(e) => {
-                                                                        const form = (
-                                                                            e.currentTarget as HTMLElement
-                                                                        ).closest('form')!
-                                                                        requestConfirm(
-                                                                            'Remove Model',
-                                                                            `Are you sure you want to remove "${model.displayName}"? Existing chats using this model will fall back to the default.`,
-                                                                            form as HTMLFormElement,
-                                                                        )
-                                                                    }}>
-                                                                    <Trash2 class="h-3.5 w-3.5" />
-                                                                </Button>
-                                                            </form>
-                                                        </div>
-                                                    </td>
-                                                {/if}
-                                            </tr>
-                                        {/each}
-                                    </tbody>
-                                </table>
+                            {:else}
+                                <div
+                                    class="bg-background flex h-8 w-8 shrink-0 items-center justify-center rounded-md border">
+                                    <Server class="text-muted-foreground h-4 w-4" />
+                                </div>
                             {/if}
-
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                class="text-muted-foreground hover:text-foreground mt-1 cursor-pointer gap-1.5 text-sm font-medium"
-                                onclick={() => openAddModelDialog(provider.id)}>
-                                <span class="text-base leading-none">+</span>
-                                Add model
-                            </Button>
-                        </Card.Content>
-                    </Card.Root>
+                            <div class="min-w-0">
+                                <h2
+                                    id={`provider-${provider.id}`}
+                                    class="truncate text-base font-semibold">
+                                    {provider.name}
+                                </h2>
+                                <p class="text-muted-foreground mt-0.5 text-sm">
+                                    {provider.models.length}
+                                    {provider.models.length === 1 ? 'model' : 'models'}
+                                </p>
+                            </div>
+                            <div class="ml-auto flex shrink-0 items-center gap-2">
+                                <span
+                                    class="text-muted-foreground hidden items-center gap-1.5 text-xs sm:inline-flex">
+                                    <span class="h-1.5 w-1.5 rounded-full bg-green-600"></span>
+                                    Connected
+                                </span>
+                                <DropdownMenu.Root>
+                                    <DropdownMenu.Trigger>
+                                        {#snippet child({ props })}
+                                            <Button
+                                                {...props}
+                                                variant="ghost"
+                                                size="icon"
+                                                class="text-muted-foreground hover:text-foreground h-9 w-9 cursor-pointer"
+                                                aria-label={`Actions for ${provider.name}`}>
+                                                <MoreHorizontal class="h-5 w-5" />
+                                            </Button>
+                                        {/snippet}
+                                    </DropdownMenu.Trigger>
+                                    <DropdownMenu.Content align="end" class="w-44">
+                                        <DropdownMenu.Item
+                                            class="cursor-pointer"
+                                            onclick={() => openEditDialog(provider)}>
+                                            <Pencil class="mr-2 h-4 w-4" />
+                                            Edit connection
+                                        </DropdownMenu.Item>
+                                        <DropdownMenu.Item
+                                            class="text-destructive hover:text-destructive focus:text-destructive cursor-pointer"
+                                            onclick={() =>
+                                                requestConfirm(
+                                                    'Remove provider',
+                                                    `Are you sure you want to remove "${provider.name}" and all its models? This action cannot be undone.`,
+                                                    providerDeleteForms[provider.id],
+                                                )}>
+                                            <Trash2 class="mr-2 h-4 w-4" />
+                                            Remove provider
+                                        </DropdownMenu.Item>
+                                    </DropdownMenu.Content>
+                                </DropdownMenu.Root>
+                            </div>
+                        </header>
+                        <div class="border-t">
+                            {#if provider.models.length > 0}
+                                <div class="flex flex-col gap-1 p-2">
+                                    {#each provider.models as model (model.id)}
+                                        {@const role = providerRole(model)}
+                                        <button
+                                            type="button"
+                                            class="group hover:bg-sidebar-accent hover:text-sidebar-accent-foreground dark:hover:bg-sidebar-accent/50 focus-visible:bg-sidebar-accent focus-visible:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring flex min-h-11 w-full cursor-pointer items-center gap-3 rounded-md px-4 text-left transition-colors focus-visible:ring-2"
+                                            onclick={() => openModelDetail(provider, model)}>
+                                            <span
+                                                class="min-w-0 flex-1 truncate text-sm font-medium"
+                                                >{model.displayName}</span>
+                                            {#if role !== 'unassigned'}
+                                                <span
+                                                    class={`inline-flex shrink-0 items-center gap-1.5 text-xs ${role === 'default' ? 'text-amber-700 dark:text-amber-400' : 'text-blue-700 dark:text-blue-400'}`}>
+                                                    <span
+                                                        class={`h-1.5 w-1.5 rounded-full ${role === 'default' ? 'bg-amber-600' : 'bg-blue-600'}`}
+                                                    ></span>
+                                                    {roleLabel(role)}
+                                                </span>
+                                            {/if}
+                                            <span
+                                                class="text-muted-foreground/60 shrink-0 text-lg leading-none opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                                                aria-hidden="true">›</span>
+                                        </button>
+                                    {/each}
+                                </div>
+                            {:else}
+                                <p class="text-muted-foreground px-5 py-6 text-sm">
+                                    No models configured yet.
+                                </p>
+                            {/if}
+                            <div class="p-2">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    class="cursor-pointer gap-2"
+                                    onclick={() => openAddModelDialog(provider.id)}>
+                                    <Plus class="h-4 w-4" />
+                                    Add model
+                                </Button>
+                            </div>
+                        </div>
+                    </section>
+                    <form
+                        method="POST"
+                        action="?/delete"
+                        use:enhance={() =>
+                            async ({ result, update }) => {
+                                await update()
+                                confirmDialogOpen = false
+                                if (result.type === 'success')
+                                    toast.success(
+                                        actionMessage(result.data, 'message', 'Provider deleted'),
+                                    )
+                                else if (result.type === 'failure')
+                                    toast.error(
+                                        actionMessage(
+                                            result.data,
+                                            'error',
+                                            'Could not remove provider',
+                                        ),
+                                    )
+                            }}
+                        class="hidden"
+                        bind:this={providerDeleteForms[provider.id]}>
+                        <input type="hidden" name="id" value={provider.id} />
+                    </form>
                 {/each}
             </div>
+        {:else}
+            <div
+                class="border-muted-foreground/20 bg-card rounded-2xl border border-dashed px-6 py-12 text-center">
+                <h2 class="text-lg font-semibold">No providers connected</h2>
+                <p class="text-muted-foreground mt-2 text-sm">
+                    Connect a provider to start using AI features.
+                </p>
+                <Button onclick={openProviderPicker} class="mt-5 cursor-pointer gap-2">
+                    <Plus class="h-4 w-4" /> Connect provider
+                </Button>
+            </div>
         {/if}
+    </div>
+</div>
 
-        <!-- Connect a Provider -->
-        {#if unconfiguredTypes.length > 0}
-            <div class="space-y-3">
-                <h2 class="text-lg font-semibold">Connect a Provider</h2>
-                <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {#each unconfiguredTypes as type}
-                        {@const meta = providerMeta[type]}
-                        <button
-                            type="button"
-                            class="cursor-pointer text-left"
-                            onclick={() => openSetupDialog(type)}>
-                            <Card.Root
-                                class="hover:border-foreground/20 hover:bg-accent/50 h-full transition-colors">
-                                <Card.Header>
-                                    <div class="flex items-start gap-3">
-                                        {#if meta.icon}
-                                            <div
-                                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
-                                                <img
-                                                    src={meta.icon}
-                                                    alt={meta.label}
-                                                    class="h-7 w-7 object-contain" />
-                                            </div>
-                                        {:else}
-                                            <div
-                                                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200/70 bg-white/95 shadow-sm">
-                                                <Server class="h-6 w-6 text-slate-700" />
-                                            </div>
-                                        {/if}
-                                        <div>
-                                            <Card.Title class="text-sm">{meta.label}</Card.Title>
-                                            <Card.Description class="text-xs">
-                                                {meta.description}
-                                            </Card.Description>
-                                        </div>
-                                    </div>
-                                </Card.Header>
-                            </Card.Root>
-                        </button>
-                    {/each}
+<!-- Provider picker -->
+<Dialog.Root bind:open={providerPickerOpen}>
+    <Dialog.Content class="sm:max-w-xl">
+        <Dialog.Header>
+            <Dialog.Title>Connect a provider</Dialog.Title>
+            <Dialog.Description>Choose a provider to configure.</Dialog.Description>
+        </Dialog.Header>
+        <div class="grid auto-rows-fr gap-3 sm:grid-cols-2">
+            {#each unconfiguredTypes as type (type)}
+                {@const meta = providerMeta[type]}
+                <button
+                    type="button"
+                    class="bg-card hover:bg-muted/60 flex h-full cursor-pointer items-start gap-3 rounded-xl border p-4 text-left transition-colors"
+                    onclick={() => openSetupDialog(type)}>
+                    {#if meta.icon}
+                        <img src={meta.icon} alt="" class="h-8 w-8 object-contain" />
+                    {:else}
+                        <Server class="text-muted-foreground mt-1 h-7 w-7" />
+                    {/if}
+                    <span class="min-w-0">
+                        <span class="block text-sm font-semibold">{meta.label}</span>
+                        <span class="text-muted-foreground mt-1 block text-xs leading-5"
+                            >{meta.description}</span>
+                    </span>
+                </button>
+            {:else}
+                <p class="text-muted-foreground col-span-full py-4 text-sm">
+                    All built-in providers are already connected.
+                </p>
+            {/each}
+        </div>
+    </Dialog.Content>
+</Dialog.Root>
+
+<!-- Provider connection form. The existing connection fields and validation remain unchanged. -->
+<Dialog.Root bind:open={dialogOpen}>
+    <Dialog.Content class="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+        <Dialog.Header>
+            <Dialog.Title
+                >{editMode ? 'Edit' : 'Connect'}
+                {providerMeta[formState.providerType].label}</Dialog.Title>
+            <Dialog.Description>
+                {editMode
+                    ? 'Update the connection configuration'
+                    : providerMeta[formState.providerType].description}
+            </Dialog.Description>
+        </Dialog.Header>
+        <form
+            id="llm-provider-form"
+            method="POST"
+            action={editMode ? '?/edit' : '?/add'}
+            use:enhance={() => {
+                isSubmitting = true
+                testResult = null
+                return async ({ result, update }) => {
+                    isSubmitting = false
+                    if (result.type === 'success') {
+                        await update()
+                        dialogOpen = false
+                        toast.success(
+                            actionMessage(
+                                result.data,
+                                'message',
+                                'Operation completed successfully',
+                            ),
+                        )
+                    } else if (result.type === 'failure')
+                        setConnectionError(result.data, 'Connection failed')
+                    else setConnectionError(null, 'Connection failed')
+                }
+            }}
+            class="space-y-4">
+            {#if editMode}<input type="hidden" name="id" value={formState.id} />{/if}
+            <input type="hidden" name="providerType" value={formState.providerType} />
+            <div class="space-y-2">
+                <Label for="provider-name">Display Name *</Label><Input
+                    id="provider-name"
+                    name="name"
+                    bind:value={formState.name}
+                    placeholder="e.g., Production Claude"
+                    required />
+            </div>
+            {#if showApiKey(formState.providerType)}
+                <div class="space-y-2">
+                    <Label for="provider-api-key"
+                        >API Key {apiKeyOptional(formState.providerType)
+                            ? '(optional)'
+                            : editingHasApiKey && editMode
+                              ? ''
+                              : '*'}</Label>
+                    <Input
+                        id="provider-api-key"
+                        name="apiKey"
+                        type="password"
+                        bind:value={formState.apiKey}
+                        oninput={resetTestResult}
+                        placeholder={editingHasApiKey && editMode
+                            ? 'Leave empty to keep current key'
+                            : formState.providerType === 'anthropic'
+                              ? 'sk-ant-...'
+                              : 'sk-...'}
+                        required={!editMode && !apiKeyOptional(formState.providerType)} />
+                </div>
+            {/if}
+            {#if showApiUrl(formState.providerType)}
+                <div class="space-y-2">
+                    <Label for="provider-api-url"
+                        >{formState.providerType === 'azure_foundry' ? 'Endpoint URL' : 'Base URL'} *</Label>
+                    <Input
+                        id="provider-api-url"
+                        name="apiUrl"
+                        bind:value={formState.apiUrl}
+                        oninput={resetTestResult}
+                        placeholder={formState.providerType === 'azure_foundry'
+                            ? 'https://<project>.services.ai.azure.com'
+                            : 'https://openrouter.ai/api/v1'}
+                        required />
+                    {#if formState.providerType === 'openai_compatible'}<p
+                            class="text-muted-foreground text-xs">
+                            Running the bundled local-inference stack? Use <code
+                                class="bg-muted rounded px-1 py-0.5 font-mono text-xs"
+                                >http://llama-cpp:8000</code
+                            >.
+                        </p>{/if}
+                </div>
+            {/if}
+            {#if formState.providerType === 'azure_foundry'}
+                <Alert.Root
+                    ><Info class="h-4 w-4" /><Alert.Description
+                        >Authentication uses Azure Managed Identity. Ensure the VM or container has
+                        a managed identity with the Cognitive Services User role assigned.</Alert.Description
+                    ></Alert.Root>
+            {/if}
+            {#if formState.providerType === 'openai_compatible' || formState.providerType === 'azure_foundry'}
+                <div class="space-y-2">
+                    <Label>Image input</Label>
+                    <input type="hidden" name="visionMode" value={formState.visionMode} />
+                    <Select.Root type="single" bind:value={formState.visionMode}>
+                        <Select.Trigger class="w-full cursor-pointer"
+                            >{visionModeOptions.find(
+                                (option) => option.value === formState.visionMode,
+                            )?.label ?? 'Auto-detect'}</Select.Trigger>
+                        <Select.Content
+                            >{#each visionModeOptions as option (option.value)}<Select.Item
+                                    value={option.value}
+                                    class="cursor-pointer">{option.label}</Select.Item
+                                >{/each}</Select.Content>
+                    </Select.Root>
+                    <p class="text-muted-foreground text-xs">
+                        This setting applies to every model on this connection.
+                    </p>
+                </div>
+            {/if}
+            {#if showRegion(formState.providerType)}
+                <div class="space-y-2">
+                    <Label for="provider-region"
+                        >{formState.providerType === 'vertex_ai'
+                            ? 'GCP Region'
+                            : 'AWS Region'}{formState.providerType === 'vertex_ai'
+                            ? ' *'
+                            : ''}</Label
+                    ><Input
+                        id="provider-region"
+                        name="regionName"
+                        bind:value={formState.regionName}
+                        oninput={resetTestResult}
+                        placeholder={formState.providerType === 'vertex_ai'
+                            ? 'us-central1'
+                            : 'us-east-1 (auto-detected if empty)'}
+                        required={formState.providerType === 'vertex_ai'} />
+                </div>
+            {/if}
+            {#if showProjectId(formState.providerType)}
+                <div class="space-y-2">
+                    <Label for="provider-project">GCP Project ID *</Label><Input
+                        id="provider-project"
+                        name="projectId"
+                        bind:value={formState.projectId}
+                        oninput={resetTestResult}
+                        placeholder="my-gcp-project"
+                        required />
+                </div>
+            {/if}
+            {#if formState.providerType === 'vertex_ai'}<Alert.Root
+                    ><Info class="h-4 w-4" /><Alert.Description
+                        >Authentication uses Application Default Credentials (ADC). Ensure the
+                        service account has Vertex AI permissions.</Alert.Description
+                    ></Alert.Root
+                >{/if}
+            {#if formState.providerType === 'bedrock'}<Alert.Root
+                    ><Info class="h-4 w-4" /><Alert.Description
+                        >Ensure your application has appropriate IAM permissions to invoke Bedrock
+                        models.</Alert.Description
+                    ></Alert.Root
+                >{/if}
+            {#if testResult}
+                {@const connectionResult = testResult}
+                {#if connectionResult.ok}<Alert.Root
+                        class="border-green-500/50 bg-green-50 text-green-900 dark:bg-green-950/40 dark:text-green-100"
+                        ><CircleCheck class="h-4 w-4" /><Alert.Title
+                            >{connectionResult.message}</Alert.Title
+                        ></Alert.Root>
+                {:else}<Alert.Root variant="destructive"
+                        ><CircleAlert class="h-4 w-4" /><Tooltip.Provider delayDuration={300}
+                            ><Tooltip.Root
+                                ><Tooltip.Trigger
+                                    >{#snippet child({ props })}<Alert.Title
+                                            {...props}
+                                            class="cursor-help"
+                                            >{connectionResult.message}</Alert.Title
+                                        >{/snippet}</Tooltip.Trigger
+                                ><Tooltip.Content class="max-w-sm break-words"
+                                    >{connectionResult.message}</Tooltip.Content
+                                ></Tooltip.Root
+                            ></Tooltip.Provider
+                        >{#if connectionResult.detail}<Alert.Description
+                                >{connectionResult.detail}</Alert.Description
+                            >{/if}</Alert.Root
+                    >{/if}
+            {/if}
+        </form>
+        <Dialog.Footer>
+            <Button
+                variant="outline"
+                type="button"
+                class="cursor-pointer"
+                onclick={() => (dialogOpen = false)}>Cancel</Button>
+            <Button
+                type="submit"
+                form="llm-provider-form"
+                disabled={isSubmitting}
+                class="cursor-pointer"
+                >{#if isSubmitting}<Loader2 class="mr-2 h-4 w-4 animate-spin" />{editMode
+                        ? 'Updating...'
+                        : 'Connecting...'}{:else}{editMode ? 'Update' : 'Connect'}{/if}</Button>
+        </Dialog.Footer>
+    </Dialog.Content>
+</Dialog.Root>
+
+<!-- Model detail dialog -->
+<Dialog.Root bind:open={modelDetailOpen}>
+    <Dialog.Content class="gap-0 overflow-hidden p-0 sm:max-w-xl">
+        {#if selectedModel && selectedProvider}
+            {@const meta = providerMeta[selectedProvider.providerType as ProviderType]}
+            <div class="border-b px-6 py-4 pr-14">
+                <div class="flex items-center gap-3">
+                    <div
+                        class="bg-background flex h-8 w-8 shrink-0 items-center justify-center rounded-md border">
+                        {#if meta?.icon}
+                            <img src={meta.icon} alt="" class="h-5 w-5 object-contain" />
+                        {:else}
+                            <Server class="text-muted-foreground h-4 w-4" />
+                        {/if}
+                    </div>
+                    <div class="min-w-0">
+                        <Dialog.Title>{selectedModel.displayName}</Dialog.Title>
+                        <Dialog.Description class="mt-1 font-mono text-sm"
+                            >{selectedModel.modelId}<span class="mx-2 font-sans">·</span><span
+                                class="font-sans">{selectedProvider.name}</span
+                            ></Dialog.Description>
+                    </div>
+                </div>
+            </div>
+            <form
+                id="model-role-form"
+                method="POST"
+                action="?/setModelRole"
+                use:enhance={() => {
+                    isRoleSubmitting = true
+                    return async ({ result, update }) => {
+                        isRoleSubmitting = false
+                        if (result.type === 'success') {
+                            await update()
+                            modelDetailOpen = false
+                            toast.success(
+                                actionMessage(result.data, 'message', 'Model role updated'),
+                            )
+                        } else if (result.type === 'failure')
+                            toast.error(
+                                actionMessage(result.data, 'error', 'Could not update model role'),
+                            )
+                    }
+                }}>
+                <input type="hidden" name="id" value={selectedModel.id} />
+                <input type="hidden" name="role" value={selectedModelRole} />
+                <div class="px-6 py-6">
+                    <h3 class="mb-3 text-sm font-semibold">Model role</h3>
+                    <RadioGroup.Root bind:value={selectedModelRole} class="gap-0">
+                        <div class="rounded-xl border">
+                            {#each roleOptions as option, index (option.value)}
+                                {@const optionId = `model-role-${option.value}`}
+                                <Label
+                                    for={optionId}
+                                    class={`flex cursor-pointer items-center gap-3 py-3 pr-6 pl-3 transition-colors ${selectedModelRole === option.value ? 'dark:bg-muted/50 bg-[#f4f3ef]' : 'dark:hover:bg-muted/40 hover:bg-[#faf9f6]'} ${index > 0 ? 'border-t' : 'rounded-t-xl'} ${index === roleOptions.length - 1 ? 'rounded-b-xl' : ''}`}>
+                                    <RadioGroup.Item id={optionId} value={option.value} />
+                                    <span>
+                                        <span class="block text-sm font-medium"
+                                            >{option.label}</span>
+                                        <span class="text-muted-foreground block text-xs"
+                                            >{option.hint}</span>
+                                    </span>
+                                </Label>
+                            {/each}
+                        </div>
+                    </RadioGroup.Root>
+                    <div
+                        class="text-muted-foreground mt-6 flex items-center justify-between text-sm">
+                        <span>Image input</span>
+                        {#if data.visionByModelId?.[selectedModel.id]}
+                            <span
+                                class="inline-flex items-center gap-2 text-green-700 dark:text-green-400">
+                                <Check class="h-4 w-4" />
+                                Supported
+                            </span>
+                        {:else}
+                            <span class="inline-flex items-center gap-2">
+                                <X class="h-4 w-4" />
+                                Not supported
+                            </span>
+                        {/if}
+                    </div>
+                </div>
+            </form>
+            <div class="flex items-center justify-between border-t px-6 py-5">
+                <form
+                    method="POST"
+                    action="?/deleteModel"
+                    use:enhance={() =>
+                        async ({ result, update }) => {
+                            await update()
+                            confirmDialogOpen = false
+                            if (result.type === 'success') {
+                                modelDetailOpen = false
+                                toast.success(
+                                    actionMessage(result.data, 'message', 'Model deleted'),
+                                )
+                            } else if (result.type === 'failure')
+                                toast.error(
+                                    actionMessage(result.data, 'error', 'Could not remove model'),
+                                )
+                        }}>
+                    <input type="hidden" name="id" value={selectedModel.id} />
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        class="text-destructive hover:text-destructive -ml-4 cursor-pointer"
+                        onclick={(event) =>
+                            requestConfirm(
+                                'Remove model',
+                                `Are you sure you want to remove "${selectedModel?.displayName}"? Existing chats using this model will fall back to the default.`,
+                                (event.currentTarget as HTMLElement).closest(
+                                    'form',
+                                ) as HTMLFormElement,
+                            )}>Remove model</Button>
+                </form>
+                <div class="flex gap-3">
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        class="cursor-pointer"
+                        onclick={() => (modelDetailOpen = false)}>Cancel</Button>
+                    <Button
+                        type="submit"
+                        form="model-role-form"
+                        disabled={isRoleSubmitting}
+                        class="cursor-pointer"
+                        >{#if isRoleSubmitting}<Loader2
+                                class="mr-2 h-4 w-4 animate-spin" />Saving...{:else}Save changes{/if}</Button>
                 </div>
             </div>
         {/if}
+    </Dialog.Content>
+</Dialog.Root>
 
-        <!-- Provider Setup / Edit Dialog (connection fields only) -->
-        <Dialog.Root bind:open={dialogOpen}>
-            <Dialog.Content class="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-                <Dialog.Header>
-                    <Dialog.Title>
-                        {editMode ? 'Edit' : 'Connect'}
-                        {providerMeta[formState.providerType].label}
-                    </Dialog.Title>
-                    <Dialog.Description>
-                        {editMode
-                            ? 'Update the connection configuration'
-                            : providerMeta[formState.providerType].description}
-                    </Dialog.Description>
-                </Dialog.Header>
+<!-- Add/discover model dialog -->
+<Dialog.Root bind:open={modelDialogOpen}>
+    <Dialog.Content class="sm:max-w-md">
+        <Dialog.Header
+            ><Dialog.Title>Add model</Dialog.Title><Dialog.Description
+                >Add a model to this provider.</Dialog.Description
+            ></Dialog.Header>
+        <form
+            method="POST"
+            action="?/addModel"
+            use:enhance={() => {
+                isModelSubmitting = true
+                return async ({ result, update }) => {
+                    await update()
+                    isModelSubmitting = false
+                    if (result.type === 'success') {
+                        modelDialogOpen = false
+                        toast.success(
+                            actionMessage(result.data, 'message', 'Model added successfully'),
+                        )
+                    } else if (result.type === 'failure')
+                        toast.error(actionMessage(result.data, 'error', 'Something went wrong'))
+                }
+            }}
+            class="space-y-4">
+            <input type="hidden" name="providerId" value={modelFormState.providerId} />
+            <div class="space-y-2">
+                <Label for="model-id-picker">Model ID *</Label>
+                <Popover.Root bind:open={modelPickerOpen}>
+                    <Popover.Trigger
+                        id="model-id-picker"
+                        class="dark:bg-input/30 flex w-full cursor-pointer items-center justify-between gap-2 rounded-md border bg-transparent px-3 py-2 text-left text-sm">
+                        {#if modelFormState.modelId}<span class="truncate font-mono text-sm"
+                                >{modelFormState.modelId}</span
+                            >{:else}<span class="text-muted-foreground">Select a model…</span
+                            >{/if}<ChevronsUpDown class="h-4 w-4 shrink-0 opacity-50" />
+                    </Popover.Trigger>
+                    <Popover.Content class="w-[var(--bits-popover-anchor-width)] p-0" align="start">
+                        <Command.Root shouldFilter={false}
+                            ><Command.Input
+                                placeholder="Search or enter a model ID…"
+                                bind:value={modelSearch} /><Command.List
+                                ><Command.Empty
+                                    >{modelsLoading
+                                        ? 'Loading model list…'
+                                        : 'No models found.'}</Command.Empty
+                                ><Command.Group
+                                    >{#each filteredModels as option (option.modelId)}<Command.Item
+                                            value={`${option.displayName} ${option.modelId}`}
+                                            onSelect={() => applyModelChoice(option)}
+                                            ><div class="flex flex-col py-0.5">
+                                                <span class="text-sm">{option.displayName}</span
+                                                ><span
+                                                    class="text-muted-foreground font-mono text-xs"
+                                                    >{option.modelId}</span>
+                                            </div></Command.Item
+                                        >{/each}</Command.Group
+                                ></Command.List
+                            >{#if modelSearch.trim()}<div class="border-t p-1">
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        type="button"
+                                        class="w-full cursor-pointer justify-start"
+                                        onclick={() => {
+                                            modelFormState.modelId = modelSearch.trim()
+                                            modelPickerOpen = false
+                                        }}>Use custom model ID</Button>
+                                </div>{/if}</Command.Root>
+                    </Popover.Content>
+                </Popover.Root>
+                <p class="text-muted-foreground text-xs">
+                    Search available models or enter any model ID to add it manually.
+                </p>
+                <input type="hidden" name="modelId" value={modelFormState.modelId} />
+            </div>
+            <div class="space-y-2">
+                <Label for="model-display-name">Display Name *</Label><Input
+                    id="model-display-name"
+                    name="displayName"
+                    bind:value={modelFormState.displayName}
+                    placeholder="e.g., Claude Sonnet 4.5"
+                    required />
+            </div>
+            <div class="space-y-2">
+                <Label for="model-role">Role</Label><input
+                    type="hidden"
+                    name="role"
+                    value={modelFormState.role} /><Select.Root
+                    type="single"
+                    bind:value={modelFormState.role}
+                    ><Select.Trigger id="model-role" class="w-full cursor-pointer"
+                        >{roleLabel(modelFormState.role)}</Select.Trigger
+                    ><Select.Content
+                        >{#each roleOptions as option (option.value)}<Select.Item
+                                value={option.value}
+                                class="cursor-pointer">{option.label}</Select.Item
+                            >{/each}</Select.Content
+                    ></Select.Root>
+            </div>
+            <Dialog.Footer
+                ><Button
+                    variant="outline"
+                    type="button"
+                    class="cursor-pointer"
+                    onclick={() => (modelDialogOpen = false)}>Cancel</Button
+                ><Button
+                    type="submit"
+                    disabled={isModelSubmitting || !modelFormState.modelId.trim()}
+                    class="cursor-pointer"
+                    >{#if isModelSubmitting}<Loader2
+                            class="mr-2 h-4 w-4 animate-spin" />Adding...{:else}Add model{/if}</Button
+                ></Dialog.Footer>
+        </form>
+    </Dialog.Content>
+</Dialog.Root>
 
-                <form
-                    id="llm-provider-form"
-                    method="POST"
-                    action={editMode ? '?/edit' : '?/add'}
-                    use:enhance={() => {
-                        isSubmitting = true
-                        testResult = null
-                        return async ({ result, update }) => {
-                            isSubmitting = false
-                            if (result.type === 'success') {
-                                await update()
-                                dialogOpen = false
-                                toast.success(
-                                    actionMessage(
-                                        result.data,
-                                        'message',
-                                        'Operation completed successfully',
-                                    ),
-                                )
-                            } else if (result.type === 'failure') {
-                                setConnectionError(result.data, 'Connection failed')
-                            } else {
-                                setConnectionError(null, 'Connection failed')
-                            }
-                        }
-                    }}
-                    class="space-y-4">
-                    {#if editMode}
-                        <input type="hidden" name="id" value={formState.id} />
-                    {/if}
-                    <input type="hidden" name="providerType" value={formState.providerType} />
-
-                    <div class="space-y-2">
-                        <Label for="name">Display Name *</Label>
-                        <Input
-                            id="name"
-                            name="name"
-                            bind:value={formState.name}
-                            placeholder="e.g., Production Claude"
-                            required />
-                    </div>
-
-                    {#if showApiKey(formState.providerType)}
-                        <div class="space-y-2">
-                            <Label for="apiKey">
-                                API Key {apiKeyOptional(formState.providerType)
-                                    ? '(optional)'
-                                    : editingHasApiKey && editMode
-                                      ? ''
-                                      : '*'}
-                            </Label>
-                            <Input
-                                id="apiKey"
-                                name="apiKey"
-                                type="password"
-                                bind:value={formState.apiKey}
-                                oninput={resetTestResult}
-                                placeholder={editingHasApiKey && editMode
-                                    ? 'Leave empty to keep current key'
-                                    : formState.providerType === 'anthropic'
-                                      ? 'sk-ant-...'
-                                      : 'sk-...'}
-                                required={!editMode &&
-                                    showApiKey(formState.providerType) &&
-                                    !apiKeyOptional(formState.providerType)} />
-                        </div>
-                    {/if}
-
-                    {#if showApiUrl(formState.providerType)}
-                        <div class="space-y-2">
-                            <Label for="apiUrl">
-                                {formState.providerType === 'azure_foundry'
-                                    ? 'Endpoint URL'
-                                    : 'Base URL'} *
-                            </Label>
-                            <Input
-                                id="apiUrl"
-                                name="apiUrl"
-                                bind:value={formState.apiUrl}
-                                oninput={resetTestResult}
-                                placeholder={formState.providerType === 'azure_foundry'
-                                    ? 'https://<project>.services.ai.azure.com'
-                                    : 'https://openrouter.ai/api/v1'}
-                                required={showApiUrl(formState.providerType)} />
-                            {#if formState.providerType === 'openai_compatible'}
-                                <p class="text-muted-foreground text-xs">
-                                    Running the bundled local-inference stack? Use
-                                    <code
-                                        class="bg-muted rounded px-1 py-0.5 font-mono text-[11px]">
-                                        http://llama-cpp:8000
-                                    </code>.
-                                </p>
-                            {/if}
-                        </div>
-                    {/if}
-
-                    {#if formState.providerType === 'azure_foundry'}
-                        <Alert.Root>
-                            <Info class="h-4 w-4" />
-                            <Alert.Description>
-                                Authentication uses Azure Managed Identity. Ensure the VM or
-                                container has a managed identity with the Cognitive Services User
-                                role assigned.
-                            </Alert.Description>
-                        </Alert.Root>
-                    {/if}
-
-                    {#if formState.providerType === 'openai_compatible' || formState.providerType === 'azure_foundry'}
-                        <div class="space-y-2">
-                            <Label>Image input</Label>
-                            <input type="hidden" name="visionMode" value={formState.visionMode} />
-                            <Select.Root type="single" bind:value={formState.visionMode}>
-                                <Select.Trigger class="w-full cursor-pointer">
-                                    {visionModeOptions.find((o) => o.value === formState.visionMode)
-                                        ?.label ?? 'Auto-detect'}
-                                </Select.Trigger>
-                                <Select.Content>
-                                    {#each visionModeOptions as option (option.value)}
-                                        <Select.Item value={option.value} class="cursor-pointer">
-                                            {option.label}
-                                        </Select.Item>
-                                    {/each}
-                                </Select.Content>
-                            </Select.Root>
-                            <p class="text-muted-foreground text-xs">
-                                Auto-detect uses the endpoint's model info when available
-                                (OpenRouter, Ollama) and is treated as off otherwise. Set explicitly
-                                for endpoints that can't say whether a model accepts images.
-                            </p>
-                        </div>
-                    {/if}
-
-                    {#if showRegion(formState.providerType)}
-                        <div class="space-y-2">
-                            <Label for="regionName">
-                                {formState.providerType === 'vertex_ai'
-                                    ? 'GCP Region'
-                                    : 'AWS Region'}
-                                {formState.providerType === 'vertex_ai' ? ' *' : ''}
-                            </Label>
-                            <Input
-                                id="regionName"
-                                name="regionName"
-                                bind:value={formState.regionName}
-                                oninput={resetTestResult}
-                                placeholder={formState.providerType === 'vertex_ai'
-                                    ? 'us-central1'
-                                    : 'us-east-1 (auto-detected if empty)'}
-                                required={formState.providerType === 'vertex_ai'} />
-                        </div>
-                    {/if}
-
-                    {#if showProjectId(formState.providerType)}
-                        <div class="space-y-2">
-                            <Label for="projectId">GCP Project ID *</Label>
-                            <Input
-                                id="projectId"
-                                name="projectId"
-                                bind:value={formState.projectId}
-                                oninput={resetTestResult}
-                                placeholder="my-gcp-project"
-                                required />
-                        </div>
-                    {/if}
-
-                    {#if formState.providerType === 'vertex_ai'}
-                        <Alert.Root>
-                            <Info class="h-4 w-4" />
-                            <Alert.Description>
-                                Authentication uses Application Default Credentials (ADC). Ensure
-                                the VM or container has a service account with Vertex AI
-                                permissions, or set the GOOGLE_APPLICATION_CREDENTIALS environment
-                                variable.
-                            </Alert.Description>
-                        </Alert.Root>
-                    {/if}
-
-                    {#if formState.providerType === 'bedrock'}
-                        <Alert.Root>
-                            <Info class="h-4 w-4" />
-                            <Alert.Description>
-                                Ensure your application has appropriate IAM permissions to invoke
-                                Bedrock models
-                            </Alert.Description>
-                        </Alert.Root>
-                    {/if}
-
-                    {#if testResult}
-                        {#if testResult.ok}
-                            <Alert.Root
-                                class="border-green-500/50 bg-green-50 text-green-900 dark:border-green-500/40 dark:bg-green-950/40 dark:text-green-100">
-                                <CircleCheck class="h-4 w-4" />
-                                <Alert.Title>{testResult.message}</Alert.Title>
-                            </Alert.Root>
-                        {:else}
-                            {@const errorMessage = testResult.message}
-                            <Alert.Root variant="destructive">
-                                <CircleAlert class="h-4 w-4" />
-                                <Tooltip.Provider delayDuration={300}>
-                                    <Tooltip.Root>
-                                        <Tooltip.Trigger>
-                                            {#snippet child({ props })}
-                                                <Alert.Title {...props} class="cursor-help">
-                                                    {errorMessage}
-                                                </Alert.Title>
-                                            {/snippet}
-                                        </Tooltip.Trigger>
-                                        <Tooltip.Content class="max-w-sm text-left break-words">
-                                            {errorMessage}
-                                        </Tooltip.Content>
-                                    </Tooltip.Root>
-                                </Tooltip.Provider>
-                                {#if testResult.detail}
-                                    <Alert.Description>{testResult.detail}</Alert.Description>
-                                {/if}
-                            </Alert.Root>
-                        {/if}
-                    {/if}
-                </form>
-
-                <Dialog.Footer>
-                    <Button
-                        variant="outline"
-                        type="button"
-                        class="cursor-pointer"
-                        onclick={() => (dialogOpen = false)}>
-                        Cancel
-                    </Button>
-
-                    <Button
-                        type="submit"
-                        form="llm-provider-form"
-                        disabled={isSubmitting}
-                        class="cursor-pointer">
-                        {#if isSubmitting}
-                            <Loader2 class="mr-2 h-4 w-4 animate-spin" />
-                            {editMode ? 'Updating...' : 'Connecting...'}
-                        {:else}
-                            {editMode ? 'Update' : 'Connect'}
-                        {/if}
-                    </Button>
-                </Dialog.Footer>
-            </Dialog.Content>
-        </Dialog.Root>
-
-        <!-- Confirm Delete Dialog -->
-        <AlertDialog.Root bind:open={confirmDialogOpen}>
-            <AlertDialog.Content>
-                <AlertDialog.Header>
-                    <AlertDialog.Title>{confirmTitle}</AlertDialog.Title>
-                    <AlertDialog.Description>{confirmDescription}</AlertDialog.Description>
-                </AlertDialog.Header>
-                <AlertDialog.Footer>
-                    <AlertDialog.Cancel class="cursor-pointer">Cancel</AlertDialog.Cancel>
-                    <AlertDialog.Action
-                        class="bg-destructive text-destructive-foreground hover:bg-destructive/90 cursor-pointer"
-                        onclick={() => {
-                            confirmFormRef?.requestSubmit()
-                        }}>
-                        Remove
-                    </AlertDialog.Action>
-                </AlertDialog.Footer>
-            </AlertDialog.Content>
-        </AlertDialog.Root>
-
-        <!-- Add Model Dialog -->
-        <Dialog.Root bind:open={modelDialogOpen}>
-            <Dialog.Content class="sm:max-w-md">
-                <Dialog.Header>
-                    <Dialog.Title>Add Model</Dialog.Title>
-                    <Dialog.Description>Add a new model to this provider</Dialog.Description>
-                </Dialog.Header>
-
-                <form
-                    method="POST"
-                    action="?/addModel"
-                    use:enhance={() => {
-                        isModelSubmitting = true
-                        return async ({ result, update }) => {
-                            await update()
-                            isModelSubmitting = false
-                            modelDialogOpen = false
-                            if (result.type === 'success') {
-                                toast.success(
-                                    actionMessage(
-                                        result.data,
-                                        'message',
-                                        'Model added successfully',
-                                    ),
-                                )
-                            } else if (result.type === 'failure') {
-                                toast.error(
-                                    actionMessage(result.data, 'error', 'Something went wrong'),
-                                )
-                            }
-                        }
-                    }}
-                    class="space-y-4">
-                    <input type="hidden" name="providerId" value={modelFormState.providerId} />
-
-                    <div class="space-y-2">
-                        <Label for="modelId">Model ID *</Label>
-                        <Popover.Root bind:open={modelPickerOpen}>
-                            <Popover.Trigger
-                                id="modelId"
-                                class="dark:bg-input/30 flex w-full items-center justify-between gap-2 rounded-md border bg-transparent px-3 py-2 text-left text-sm">
-                                {#if modelFormState.modelId}
-                                    <span class="truncate font-mono text-[13px]">
-                                        {modelFormState.modelId}
-                                    </span>
-                                {:else}
-                                    <span class="text-muted-foreground"> Select a model… </span>
-                                {/if}
-                                <ChevronsUpDown class="h-4 w-4 shrink-0 opacity-50" />
-                            </Popover.Trigger>
-                            <Popover.Content class="w-[360px] p-0" align="start">
-                                <Command.Root shouldFilter={false}>
-                                    <Command.Input
-                                        placeholder="Search models..."
-                                        bind:value={modelSearch} />
-                                    <Command.List>
-                                        <Command.Empty>
-                                            {modelsLoading
-                                                ? 'Loading model list…'
-                                                : 'No models found.'}
-                                        </Command.Empty>
-                                        <Command.Group>
-                                            {#each filteredModels as option (option.modelId)}
-                                                <Command.Item
-                                                    value={`${option.displayName} ${option.modelId}`}
-                                                    onSelect={() => applyModelChoice(option)}>
-                                                    <div class="flex flex-col py-0.5">
-                                                        <span class="text-sm">
-                                                            {option.displayName}
-                                                        </span>
-                                                        <span
-                                                            class="text-muted-foreground font-mono text-[11px]">
-                                                            {option.modelId}
-                                                        </span>
-                                                    </div>
-                                                </Command.Item>
-                                            {/each}
-                                        </Command.Group>
-                                    </Command.List>
-                                    {#if modelSearch.trim()}
-                                        <div class="border-border border-t p-1">
-                                            <Button
-                                                variant="ghost"
-                                                size="sm"
-                                                type="button"
-                                                class="w-full justify-start"
-                                                onclick={() => {
-                                                    modelFormState.modelId = modelSearch.trim()
-                                                    modelPickerOpen = false
-                                                }}>
-                                                Use “{modelSearch.trim()}”
-                                            </Button>
-                                        </div>
-                                    {/if}
-                                </Command.Root>
-                            </Popover.Content>
-                        </Popover.Root>
-                        <input type="hidden" name="modelId" value={modelFormState.modelId} />
-                    </div>
-
-                    <div class="space-y-2">
-                        <Label for="displayName">Display Name *</Label>
-                        <Input
-                            id="displayName"
-                            name="displayName"
-                            bind:value={modelFormState.displayName}
-                            placeholder="e.g., Claude Sonnet 4.5"
-                            required />
-                    </div>
-
-                    <div class="flex items-center gap-2">
-                        <Checkbox
-                            id="isDefaultModel"
-                            name="isDefault"
-                            value="true"
-                            checked={modelFormState.isDefault}
-                            onCheckedChange={(v) => (modelFormState.isDefault = v === true)} />
-                        <Label for="isDefaultModel" class="font-normal">Set as default model</Label>
-                    </div>
-
-                    <div class="flex items-center gap-2">
-                        <Checkbox
-                            id="isSecondaryModel"
-                            name="isSecondary"
-                            value="true"
-                            checked={modelFormState.isSecondary}
-                            onCheckedChange={(v) => (modelFormState.isSecondary = v === true)} />
-                        <Label for="isSecondaryModel" class="font-normal">
-                            Set as secondary (lightweight) model
-                        </Label>
-                    </div>
-
-                    <Dialog.Footer>
-                        <Button
-                            variant="outline"
-                            type="button"
-                            class="cursor-pointer"
-                            onclick={() => (modelDialogOpen = false)}>
-                            Cancel
-                        </Button>
-                        <Button
-                            type="submit"
-                            disabled={isModelSubmitting || !modelFormState.modelId.trim()}
-                            class="cursor-pointer">
-                            {#if isModelSubmitting}
-                                <Loader2 class="mr-2 h-4 w-4 animate-spin" />
-                                Adding...
-                            {:else}
-                                Add Model
-                            {/if}
-                        </Button>
-                    </Dialog.Footer>
-                </form>
-            </Dialog.Content>
-        </Dialog.Root>
-    </div>
-</div>
+<AlertDialog.Root bind:open={confirmDialogOpen}>
+    <AlertDialog.Content>
+        <AlertDialog.Header
+            ><AlertDialog.Title>{confirmTitle}</AlertDialog.Title><AlertDialog.Description
+                >{confirmDescription}</AlertDialog.Description
+            ></AlertDialog.Header>
+        <AlertDialog.Footer
+            ><AlertDialog.Cancel class="cursor-pointer">Cancel</AlertDialog.Cancel
+            ><AlertDialog.Action
+                class="bg-destructive text-destructive-foreground hover:bg-destructive/90 cursor-pointer"
+                onclick={() => confirmFormRef?.requestSubmit()}>Remove</AlertDialog.Action
+            ></AlertDialog.Footer>
+    </AlertDialog.Content>
+</AlertDialog.Root>

@@ -214,7 +214,7 @@
             <Sidebar.Trigger class="size-11 cursor-pointer" />
             <span class="ml-2 text-sm font-medium">Admin Settings</span>
         </header>
-        <main class="min-h-0 flex-1">
+        <main class="min-h-0 flex-1 overflow-y-auto">
             {@render children()}
         </main>
     </div>

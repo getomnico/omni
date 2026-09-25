@@ -195,6 +195,7 @@ async def _resolve_supports_vision(record: ModelRecord, provider: LLMProvider) -
                 record.config.get("visionMode"),
                 record.provider_type,
                 endpoint_supports_vision,
+                record.model_id,
             )
         )
     except Exception as e:

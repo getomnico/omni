@@ -59,8 +59,8 @@ _VISION_FAMILY_PROVIDER_TYPES = frozenset(
 _METADATA_PROVIDER_TYPES = frozenset({"openai_compatible"})
 
 
-def static_vision(provider_type: str) -> bool | None:
-    """Resolve vision from provider-type knowledge alone.
+def static_vision(provider_type: str, model_id: str | None = None) -> bool | None:
+    """Resolve vision from provider and known model-family capabilities.
 
     Returns True/False when decidable without contacting the endpoint, or
     None when the endpoint must be asked (openai_compatible).
@@ -69,6 +69,9 @@ def static_vision(provider_type: str) -> bool | None:
         return True
     if provider_type in _METADATA_PROVIDER_TYPES:
         return None
+    if provider_type == "openai" and model_id is not None:
+        normalized_model_id = model_id.lower()
+        return normalized_model_id.startswith(("gpt-5", "gpt-4o", "gpt-4.1", "o3", "o4"))
     return False
 
 
@@ -76,6 +79,7 @@ def effective_vision(
     vision_mode_raw: object,
     provider_type: str,
     endpoint_supports_vision: bool | None = None,
+    model_id: str | None = None,
 ) -> bool | None:
     """Resolve whether image inputs may be sent to this model.
 
@@ -91,7 +95,7 @@ def effective_vision(
         return True
     if mode == VISION_MODE_OFF:
         return False
-    static = static_vision(provider_type)
+    static = static_vision(provider_type, model_id)
     if static is not None:
         return static
     return endpoint_supports_vision
