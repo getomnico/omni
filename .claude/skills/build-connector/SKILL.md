@@ -29,7 +29,7 @@ Every new built-in connector usually requires changes across these areas:
 2. **Connector implementation** — sync logic, provider client, config/credential types, manifest, actions/tools/resources/prompts/skills.
 3. **Database migration** — add source type to `sources_source_type_check`; add service provider to `service_credentials_provider_check` if new.
 4. **Rust `SourceType` enum** — add variant in `shared/src/models.rs` even for Python/TS connectors, because connector-manager is Rust.
-5. **Frontend** — `SourceType`, `ServiceProvider` if new, icon, setup dialog, integrations page, OAuth/catalog state, sync interval defaults.
+5. **Frontend** — `SourceType`, `ServiceProvider` if new, icon, setup dialog, integrations page, **per-source settings route**, OAuth/catalog state, sync interval defaults.
 6. **Docker Compose** — service definition, dev override, port in `.env.example`, `ENABLED_CONNECTORS` comment.
 7. **Terraform** — AWS ECS task/service and GCP Cloud Run service.
 8. **GitHub Actions** — path filter, build job, release matrix entry.
@@ -352,6 +352,9 @@ Read existing connector patterns before editing. Typical files:
 4. **`web/src/lib/components/*-setup.svelte`** — setup dialog component.
 5. **`web/src/routes/(admin)/admin/settings/integrations/+page.svelte`** — import/render setup component.
 6. **`web/src/routes/(admin)/admin/settings/integrations/+page.server.ts`** — `CONNECTOR_DISPLAY_ORDER`.
+7. **`web/src/routes/(admin)/admin/settings/integrations/<source-type>/[sourceId]/+page.server.ts` and `+page.svelte`** — admin-only source settings load/save and UI. Verify the Settings link from the integrations list resolves to this route (some source types use an explicit slug mapping in `+page.svelte`).
+
+A setup dialog alone is not enough: existing sources need a working Settings page. Follow a neighboring connector route for admin and source-type guards, enable/disable, sync controls where applicable, OAuth reconnect/client configuration, and honest status/error messaging. Preserve unrelated source config when saving; validate editable fields on the server. Never return or prefill secrets, tokens, or internal bindings in page props. Rotate credentials only through an explicit write-only flow; changing the account/tenant must not silently retain credentials or identity bindings from the old account. Do not trigger metadata sync for MCP-only sources or enable sync without required credentials. Add route tests for navigation, permissions, config preservation, invalid input, and sync gating.
 
 ## Icon Sourcing
 
@@ -473,6 +476,7 @@ cargo test -p omni-my-connector
 | Setup dialog examples | `web/src/lib/components/*-setup.svelte` |
 | Integrations page | `web/src/routes/(admin)/admin/settings/integrations/+page.svelte` |
 | Display order | `web/src/routes/(admin)/admin/settings/integrations/+page.server.ts` |
+| Source settings route examples | `web/src/routes/(admin)/admin/settings/integrations/salesforce/[sourceId]/`, `web/src/routes/(admin)/admin/settings/integrations/snowflake/[sourceId]/` |
 
 ## Infrastructure and CI
 
@@ -506,6 +510,7 @@ Before calling a connector complete, verify:
 - The auth matrix proves every user-facing operation uses the intended principal and least privilege.
 - OAuth bootstrap, refresh, tenant/principal validation, and catalog recovery work after service restarts.
 - Setup UI reports missing privileges/auth/catalog state with actionable remediation.
+- The integrations-list Settings link opens a tested per-source settings page; admins can manage supported configuration without exposing secrets or triggering unsupported sync.
 - Source type/provider migrations, shared enums, frontend, icon/license, Compose, Terraform, CI, and release matrix are updated.
 - A README/runbook documents minimum provider privileges, callback URLs, credential rotation, reconnect, rate limits, expected latency, exclusions, and troubleshooting.
 - Unit/type/lint checks and connector-manager-backed integration tests pass.
