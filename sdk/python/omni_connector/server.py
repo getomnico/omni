@@ -15,7 +15,7 @@ from .client import SdkClient
 from .config import SdkConfig
 from .context import SyncContext
 from .exceptions import SdkClientError
-from .mcp_adapter import MCP_AUTH_REQUIRED_MESSAGE, MCP_AUTH_STATUS_FILE_ENV
+from .mcp_config import MCP_AUTH_REQUIRED_MESSAGE, MCP_AUTH_STATUS_FILE_ENV
 from .models import (
     ActionRequest,
     CancelRequest,
@@ -507,6 +507,19 @@ def create_app(
                     content={"error": "MCP action execution failed"},
                 )
 
+        if (
+            request.source is not None
+            and request.source.source_type == "salesforce"
+            and request.action in {"run_soql_query", "get_username"}
+        ):
+            return await connector.execute_action(
+                request.action,
+                dict(request.params),
+                request.credentials,
+                source=request.source,
+                actor_email=request.actor_email,
+                actor_user_id=request.actor_user_id,
+            )
         return await connector.execute_action(
             request.action,
             dict(request.params),

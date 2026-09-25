@@ -48,9 +48,19 @@ def connector_catalog_from_payload(payload: object) -> ConnectorCatalog:
     return catalog
 
 
-def action_is_available_for_source(source: Source, action_origin: str) -> bool:
+def action_is_available_for_source(
+    source: Source, action_origin: str, action_name: str
+) -> bool:
     allowed_origins = parse_allowed_action_origins(source.config)
-    return allowed_origins is None or action_origin in allowed_origins
+    if allowed_origins is None or action_origin in allowed_origins:
+        return True
+    return (
+        action_origin == "native"
+        and source.source_type == "salesforce"
+        and source.config.get("sync_enabled") is False
+        and "mcp" in allowed_origins
+        and action_name in {"run_soql_query", "get_username"}
+    )
 
 
 def sources_from_sync_overview_response(payload: object) -> list[Source]:
@@ -286,14 +296,17 @@ class ConnectorToolHandler:
                     action_origin = action_def.get("origin", "native")
                     if not isinstance(action_origin, str):
                         raise TypeError("connector action origin must be a string")
-                    if not action_is_available_for_source(source, action_origin):
+                    action_name = action_def.get("name")
+                    if not isinstance(action_name, str):
+                        raise TypeError("connector action name must be a string")
+                    if not action_is_available_for_source(source, action_origin, action_name):
                         continue
                     actions.append(
                         ConnectorAction(
                             source_id=source.id,
                             source_type=source_type,
                             source_name=source.name or source_type,
-                            action_name=action_def["name"],
+                            action_name=action_name,
                             description=action_def.get("description", ""),
                             input_schema=action_def.get(
                                 "input_schema", {"type": "object", "properties": {}}

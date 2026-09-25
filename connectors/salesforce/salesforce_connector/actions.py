@@ -19,6 +19,7 @@ from .client import (
 )
 from .config import SalesforceObjectConfig, config_for
 from .models import SalesforceAuth, SalesforceSourceConfig, _as_int, _as_str
+from .query_actions import QUERY_ACTION_DEFINITIONS, execute_query_action
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +177,7 @@ ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         credential_scope="org",
         source_types=["salesforce"],
     ),
-) + CASE_ACTION_DEFINITIONS
+) + CASE_ACTION_DEFINITIONS + QUERY_ACTION_DEFINITIONS
 
 
 @dataclass(frozen=True)
@@ -556,9 +557,15 @@ async def execute_action(
     params: Mapping[str, object],
     credentials: Mapping[str, object],
     source_config: SalesforceSourceConfig | None = None,
+    source: Mapping[str, object] | None = None,
 ) -> JSONResponse | Response:
     """Dispatch generic native actions for the source organization."""
     config = source_config or SalesforceSourceConfig()
+    if action in {definition.name for definition in QUERY_ACTION_DEFINITIONS}:
+        try:
+            return await execute_query_action(action, params, credentials, config, source)
+        except ValueError as e:
+            return ActionResponse.failure(str(e)).to_response(status_code=400)
     if action in {definition.name for definition in CASE_ACTION_DEFINITIONS}:
         return await execute_case_action(action, params, credentials, config)
     try:

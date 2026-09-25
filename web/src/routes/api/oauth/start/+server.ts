@@ -21,7 +21,7 @@ function oauthClientNotConfiguredMessage(provider: string): string {
     )
 }
 
-function isSalesforceMcpOnlySource(source: { sourceType: string; config: unknown }): boolean {
+function isSalesforceNoSyncSource(source: { sourceType: string; config: unknown }): boolean {
     return (
         source.sourceType === SourceType.SALESFORCE &&
         typeof source.config === 'object' &&
@@ -75,11 +75,11 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         const source = await getSourceById(sourceId)
         if (!source || source.isDeleted) throw error(404, 'Source not found')
         if (
-            isSalesforceMcpOnlySource(source) &&
+            isSalesforceNoSyncSource(source) &&
             !hasSourceBinding(source.config) &&
             locals.user.role !== 'admin'
         ) {
-            throw error(403, 'An administrator must authorize this Salesforce source first')
+            throw error(403, 'An administrator must authorize and bind this Salesforce source first')
         }
         if (source.scope === 'user') {
             if (flow === 'org_source') {

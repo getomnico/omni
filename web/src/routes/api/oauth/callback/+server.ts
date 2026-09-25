@@ -25,7 +25,7 @@ function isSafeLocalPath(value: string): boolean {
     return value.startsWith('/') && !value.startsWith('//')
 }
 
-function isSalesforceMcpOnlySource(source: { sourceType: string; config: unknown }): boolean {
+function isSalesforceNoSyncSource(source: { sourceType: string; config: unknown }): boolean {
     if (source.sourceType !== SourceType.SALESFORCE) return false
     return (
         typeof source.config === 'object' &&
@@ -371,9 +371,9 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
         const credentials = credentialsWithRefreshFallback(existingCredentials)
         // Most user OAuth flows do not own a source-level identity binding.
-        // MCP-only Salesforce sources are different: the setup admin's first
-        // per-user authorization establishes which Salesforce org this
-        // source represents, so later users cannot authorize another org
+        // No-sync Salesforce sources use the setup admin's first per-user
+        // authorization to establish this source's org; later users cannot
+        // authorize another org through the same source.
         // through the same source and client.
         let binding: OAuthSourceBinding | null
         try {
@@ -384,8 +384,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             )
         }
 
-        // TODO(#477): replace this Salesforce-specific binding/bootstrap branch with declarative OAuth manifest policy.
-        if (isSalesforceMcpOnlySource(source)) {
+        if (isSalesforceNoSyncSource(source)) {
             if (
                 !binding ||
                 Object.entries(binding).some(
@@ -482,9 +481,6 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             if (!approval) throw error(400, 'OAuth approval is no longer pending')
         }
         const credentialReady = await notifyOAuthCredentialReady(flow.sourceId, user.id)
-        if (isSalesforceMcpOnlySource(source) && credentialReady?.status !== 'completed') {
-            return redirectOAuthFailure('Salesforce MCP tool discovery failed')
-        }
         if (flow.returnTo && !(flow.type === 'user_write' && flow.approvalId)) {
             throw redirect(302, flow.returnTo)
         }

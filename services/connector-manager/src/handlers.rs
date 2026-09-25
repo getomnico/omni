@@ -489,6 +489,13 @@ fn action_is_available_for_source(
     source: &Source,
     action: &shared::models::ActionDefinition,
 ) -> Result<bool, String> {
+    if source.source_type == SourceType::Salesforce.to_string()
+        && source.config.get("sync_enabled").and_then(Value::as_bool) == Some(false)
+        && matches!(action.name.as_str(), "run_soql_query" | "get_username")
+        && source_allows_action_origin(&source.config, ActionOrigin::Mcp)?
+    {
+        return Ok(true);
+    }
     source_allows_action_origin(&source.config, action.origin)
 }
 
@@ -511,6 +518,7 @@ pub async fn execute_action(
     let mut params = request.params.clone();
     let mut transient_actor_email = None;
     let mut is_mcp_action = false;
+    let mut is_salesforce_user_action = false;
     let mut write_needs_admin = false;
     let manifests = get_registered_manifests(&state.redis_client).await;
 
@@ -713,6 +721,8 @@ pub async fn execute_action(
             ));
         }
         is_mcp_action = action_def.origin == ActionOrigin::Mcp;
+        is_salesforce_user_action = source_type == SourceType::Salesforce
+            && matches!(request.action.as_str(), "run_soql_query" | "get_username");
 
         // Credential policy: admin-only and connector-declared Org actions
         // execute with the source's org credential. Every other action is
@@ -942,6 +952,7 @@ pub async fn execute_action(
         credentials: Some(creds),
         source,
         actor_email,
+        actor_user_id: request.user_id.clone(),
     };
 
     // Proxy the connector's full HTTP response (status, headers, body) verbatim.
@@ -973,13 +984,8 @@ pub async fn execute_action(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    if is_mcp_action
-        && status == StatusCode::PRECONDITION_FAILED
-        && serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|body| body.get("error").and_then(Value::as_str).map(str::to_owned))
-            .as_deref()
-            == Some("needs_user_auth")
+    if (is_mcp_action || is_salesforce_user_action)
+        && is_needs_user_auth_response(status, &bytes)
     {
         if let Some(user_id) = credential_user_id.as_deref() {
             CredentialService::new(state.db_pool.clone())
@@ -990,6 +996,20 @@ pub async fn execute_action(
     }
 
     Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
+}
+
+fn is_needs_user_auth_response(status: StatusCode, body: &[u8]) -> bool {
+    status == StatusCode::PRECONDITION_FAILED
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("needs_user_auth")
 }
 
 async fn invalidate_native_mcp_catalog(
@@ -4896,6 +4916,88 @@ mod tests {
                 .unwrap()
                 .contains_key("healthy")
         }));
+    }
+
+    #[test]
+    fn missing_user_credential_response_contains_salesforce_reconnect_details() {
+        let response = needs_user_auth_json(
+            "source-1",
+            "salesforce",
+            ServiceProvider::Salesforce,
+        );
+        assert_eq!(response["error"], "needs_user_auth");
+        assert_eq!(response["source_id"], "source-1");
+        assert_eq!(response["source_type"], "salesforce");
+        assert_eq!(response["provider"], "salesforce");
+        assert_eq!(
+            response["oauth_start_url"],
+            "/api/oauth/start?source_id=source-1"
+        );
+    }
+
+    #[test]
+    fn only_needs_user_auth_precondition_failures_are_credential_invalidation_signals() {
+        assert!(is_needs_user_auth_response(
+            StatusCode::PRECONDITION_FAILED,
+            br#"{"error":"needs_user_auth"}"#,
+        ));
+        assert!(!is_needs_user_auth_response(
+            StatusCode::FORBIDDEN,
+            br#"{"error":"needs_user_auth"}"#,
+        ));
+        assert!(!is_needs_user_auth_response(
+            StatusCode::PRECONDITION_FAILED,
+            br#"{"error":"Salesforce credential is not authorized for this source"}"#,
+        ));
+    }
+
+    #[test]
+    fn no_sync_salesforce_allows_replacements_for_legacy_and_new_sources_only() {
+        let mut source = source_for_actor_test(SourceScope::Org, "owner");
+        source.source_type = SourceType::Salesforce.to_string();
+        let replacement = shared::models::ActionDefinition {
+            name: "run_soql_query".to_string(),
+            description: "query".to_string(),
+            input_schema: json!({"type": "object"}),
+            mode: ActionMode::Read,
+            credential_scope: Default::default(),
+            required_scopes: None,
+            source_types: vec![SourceType::Salesforce],
+            admin_only: false,
+            hidden: false,
+            actor_scoped: false,
+            origin: ActionOrigin::Native,
+        };
+        let mut username = replacement.clone();
+        username.name = "get_username".to_string();
+        let mut unrelated = replacement.clone();
+        unrelated.name = "find_records".to_string();
+        for (scenario, config) in [
+            (
+                "legacy no-sync source",
+                json!({"sync_enabled": false, "allowed_action_origins": ["mcp"]}),
+            ),
+            (
+                "new setup no-sync source",
+                json!({"sync_enabled": false, "allowed_action_origins": ["mcp"]}),
+            ),
+        ] {
+            source.config = config;
+            assert!(
+                action_is_available_for_source(&source, &replacement).unwrap(),
+                "{scenario} should expose run_soql_query"
+            );
+            assert!(
+                action_is_available_for_source(&source, &username).unwrap(),
+                "{scenario} should expose get_username"
+            );
+            assert!(
+                !action_is_available_for_source(&source, &unrelated).unwrap(),
+                "{scenario} must keep unrelated native actions hidden"
+            );
+        }
+        source.config["sync_enabled"] = json!(true);
+        assert!(!action_is_available_for_source(&source, &replacement).unwrap());
     }
 
     #[test]

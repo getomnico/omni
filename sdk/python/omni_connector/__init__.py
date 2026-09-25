@@ -8,7 +8,7 @@ from .exceptions import (
     SdkClientError,
     SyncCancelledError,
 )
-from .mcp_adapter import HttpMcpServer, McpServer, StdioMcpServer
+from .mcp_config import HttpMcpServer, McpServer, StdioMcpServer
 from .models import (
     ActionCredentialScope,
     ActionDefinition,

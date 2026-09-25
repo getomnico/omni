@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from functools import wraps
-from typing import TypeVar
+from typing import TypeVar, cast
 from urllib.parse import parse_qsl, urlparse
 
 import jwt
@@ -37,6 +37,7 @@ TOKEN_REFRESH_EARLY_SECONDS = 300
 RATE_LIMIT_MAX_RETRIES = 5
 RATE_LIMIT_BASE_DELAY_SECONDS = 10.0
 MAX_BINARY_BYTES = 25 * 1024 * 1024
+SALESFORCE_HTTP_TIMEOUT_SECONDS = 15
 
 
 class SalesforceClientError(Exception):
@@ -515,6 +516,13 @@ def _normalize_next_records_path(next_records_url: str) -> tuple[str, dict[str, 
     return relative, params
 
 
+def _normalize_next_query_path(next_records_url: str) -> tuple[str, dict[str, str]]:
+    path, params = _normalize_next_records_path(next_records_url)
+    if not (path.startswith("query/") or path.startswith("tooling/query/")):
+        raise SalesforceClientError("unexpected Salesforce query pagination URL")
+    return path, params
+
+
 class SalesforceClient:
     """Async wrapper around simple-salesforce with typed responses and auth.
 
@@ -554,10 +562,19 @@ class SalesforceClient:
         token, instance_url = await self._session_credentials()
 
         version = API_VERSION.lstrip("v")
+        session = requests.Session()
+        original_request = cast(Callable[..., requests.Response], session.request)
+
+        def request_with_timeout(method: str, url: str, **kwargs: object) -> requests.Response:
+            kwargs.setdefault("timeout", SALESFORCE_HTTP_TIMEOUT_SECONDS)
+            return original_request(method, url, **kwargs)
+
+        setattr(session, "request", request_with_timeout)
         self._sf = Salesforce(
             instance_url=instance_url,
             session_id=token,
             version=version,
+            session=session,
         )
         # simple-salesforce always builds an https base_url; honor the exact
         # instance_url (https in production, http for mocks/dev instances).
@@ -619,6 +636,7 @@ class SalesforceClient:
                 "assertion": assertion,
             },
             timeout=30,
+            allow_redirects=False,
         )
         if response.status_code != 200:
             raise AuthenticationError(
@@ -703,10 +721,30 @@ class SalesforceClient:
 
     @with_retry(max_retries=3)
     async def query_more(self, next_records_url: str) -> QueryResult:
-        """Fetch the next page of a query result."""
+        """Fetch the next page without trusting its URL authority."""
         sf = await self._ensure_session()
-        raw = await asyncio.to_thread(sf.query_more, next_records_url, identifier_is_url=True)
+        path, params = _normalize_next_query_path(next_records_url)
+        if not path.startswith("query/"):
+            raise SalesforceClientError("unexpected Salesforce query pagination URL")
+        raw = await asyncio.to_thread(sf.restful, path, params=params or None)
         return QueryResult.from_response(_require_mapping(raw, "query page"))
+
+    @with_retry(max_retries=3)
+    async def query_tooling(self, soql: str) -> QueryResult:
+        """Execute a SOQL query through Salesforce's Tooling API."""
+        sf = await self._ensure_session()
+        raw = await asyncio.to_thread(sf.restful, "tooling/query/", params={"q": soql})
+        return QueryResult.from_response(_require_mapping(raw, "tooling query"))
+
+    @with_retry(max_retries=3)
+    async def query_more_tooling(self, next_records_url: str) -> QueryResult:
+        """Fetch the next page of a Tooling API query."""
+        sf = await self._ensure_session()
+        path, params = _normalize_next_query_path(next_records_url)
+        if not path.startswith("tooling/query/"):
+            raise SalesforceClientError("unexpected Salesforce Tooling pagination URL")
+        raw = await asyncio.to_thread(sf.restful, path, params=params or None)
+        return QueryResult.from_response(_require_mapping(raw, "tooling query page"))
 
     @with_retry(max_retries=3)
     async def get_deleted(self, object_type: str, start: datetime, end: datetime) -> DeletedResult:
@@ -922,25 +960,108 @@ def _format_api_datetime(value: datetime) -> str:
     return value.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-async def fetch_organization_id(
-    auth: SalesforceAuth, timeout: float = 15.0
-) -> str:
-    """Resolve the Salesforce organization id a credential belongs to.
+@dataclass(frozen=True)
+class SalesforceUserIdentity:
+    organization_id: str
+    user_id: str
+    username: str
+    instance_url: str
 
-    Obtains a usable access token (minting one via the JWT bearer grant for
-    JWT credentials) and asks the provider's userinfo endpoint. Raises when
-    the credential cannot be used or the provider does not report an
-    organization id — OAuth credential validation is fail-closed.
-    """
+
+def _verified_salesforce_host(value: str) -> str:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.port
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or not (host.endswith(".salesforce.com") or host.endswith(".force.com"))
+    ):
+        raise SalesforceClientError("Invalid Salesforce instance URL")
+    return host
+
+
+def _verified_salesforce_login_url(value: str) -> str:
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme != "https"
+        or parsed.username
+        or parsed.password
+        or parsed.port
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+        or not (
+            host in {"login.salesforce.com", "test.salesforce.com"}
+            or host.endswith(".my.salesforce.com")
+        )
+    ):
+        raise SalesforceClientError("Invalid Salesforce login URL")
+    return f"https://{host}"
+
+
+async def _verify_instance_url(
+    instance_url: str, token: str, timeout: float
+) -> str:
+    host = _verified_salesforce_host(instance_url)
+    root_url = f"https://{host}/services/data/{API_VERSION}/"
+
+    def _fetch() -> Mapping[str, object]:
+        response = requests.get(
+            root_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired access token")
+        if response.status_code == 403:
+            raise ForbiddenError("Salesforce API access denied")
+        if response.status_code != 200:
+            raise SalesforceClientError(
+                f"Salesforce API root request failed ({response.status_code})"
+            )
+        return _require_mapping(response.json(), "API root")
+
+    api_root = await asyncio.to_thread(_fetch)
+    sobjects_url = api_root.get("sobjects")
+    if not isinstance(sobjects_url, str):
+        raise SalesforceClientError("Salesforce API root did not report its sobjects URL")
+    parsed = urlparse(sobjects_url)
+    if parsed.path != f"/services/data/{API_VERSION}/sobjects":
+        raise SalesforceClientError("Salesforce API root reported an invalid sobjects URL")
+    if parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise SalesforceClientError("Salesforce API root reported an invalid sobjects URL")
+    verified_host = _verified_salesforce_host(f"{parsed.scheme}://{parsed.netloc}")
+    return f"https://{verified_host}"
+
+
+async def fetch_user_identity(
+    auth: SalesforceAuth, timeout: float = 15.0
+) -> SalesforceUserIdentity:
+    """Resolve org, principal, and provider-verified instance for this OAuth token."""
+    login_url = _verified_salesforce_login_url(auth.login_url)
+    if auth.instance_url:
+        _verified_salesforce_host(auth.instance_url)
     client = SalesforceClient(auth)
     token, _instance_url = await client.session_credentials()
 
     def _fetch() -> Mapping[str, object]:
         response = requests.get(
-            f"{auth.login_url.rstrip('/')}/services/oauth2/userinfo",
+            f"{login_url}/services/oauth2/userinfo",
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
+            allow_redirects=False,
         )
+        if response.status_code == 401:
+            raise AuthenticationError("Invalid or expired access token")
+        if response.status_code == 403:
+            raise ForbiddenError("Salesforce userinfo access denied")
         if response.status_code != 200:
             raise SalesforceClientError(
                 f"Salesforce userinfo request failed ({response.status_code})"
@@ -949,10 +1070,47 @@ async def fetch_organization_id(
 
     userinfo = await asyncio.to_thread(_fetch)
     organization_id = userinfo.get("organization_id")
+    user_id = userinfo.get("user_id")
+    username = userinfo.get("preferred_username", userinfo.get("username"))
+    if not auth.instance_url:
+        raise SalesforceClientError("Salesforce credential did not report an instance URL")
+    instance_url = await _verify_instance_url(auth.instance_url, token, timeout)
     if not isinstance(organization_id, str) or not organization_id:
-        raise SalesforceClientError(
-            "Salesforce userinfo did not report an organization id"
+        raise SalesforceClientError("Salesforce userinfo did not report an organization id")
+    if not isinstance(user_id, str) or not user_id:
+        raise SalesforceClientError("Salesforce userinfo did not report a user id")
+    if not isinstance(username, str) or not username:
+        raise SalesforceClientError("Salesforce userinfo did not report a username")
+    return SalesforceUserIdentity(organization_id, user_id, username, instance_url)
+
+
+async def fetch_organization_id(auth: SalesforceAuth, timeout: float = 15.0) -> str:
+    """Resolve org ID only; OAuth setup credentials need not include userinfo claims."""
+    login_url = _verified_salesforce_login_url(auth.login_url)
+    if auth.instance_url:
+        _verified_salesforce_host(auth.instance_url)
+    if auth.mode == AuthMode.BEARER and auth.access_token is not None:
+        token = auth.access_token
+    else:
+        client = SalesforceClient(auth)
+        token, _instance_url = await client.session_credentials()
+
+    def _fetch() -> Mapping[str, object]:
+        response = requests.get(
+            f"{login_url}/services/oauth2/userinfo",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+            allow_redirects=False,
         )
+        if response.status_code != 200:
+            raise SalesforceClientError(
+                f"Salesforce userinfo request failed ({response.status_code})"
+            )
+        return _require_mapping(response.json(), "userinfo")
+
+    organization_id = (await asyncio.to_thread(_fetch)).get("organization_id")
+    if not isinstance(organization_id, str) or not organization_id:
+        raise SalesforceClientError("Salesforce userinfo did not report an organization id")
     return organization_id
 
 

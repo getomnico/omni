@@ -532,14 +532,15 @@ class SalesforceAuth:
             raise ValueError("Missing credentials")
         # Connector-manager may merge org setup fields (including a JWT
         # client id) into a user's OAuth credential. Prefer the user access
-        # token whenever one is present so MCP cannot silently fall back to the
-        # org JWT.
+        # token whenever one is present so native user actions cannot silently
+        # fall back to the org JWT.
         access_token = _as_str(raw.get("access_token"))
         if access_token is not None:
             return cls(
                 mode=AuthMode.BEARER,
                 access_token=access_token,
                 instance_url=_as_str(raw.get("instance_url")),
+                login_url=_as_str(raw.get("login_url")) or "https://login.salesforce.com",
             )
 
         client_id = _as_str(raw.get("client_id"))

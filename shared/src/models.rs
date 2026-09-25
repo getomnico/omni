@@ -1595,6 +1595,9 @@ pub struct ActionRequest {
     /// None = system/background execution.
     #[serde(default)]
     pub actor_email: Option<String>,
+    /// Authenticated actor ID, resolved by connector-manager.
+    #[serde(default)]
+    pub actor_user_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct ApprovedDomain {
