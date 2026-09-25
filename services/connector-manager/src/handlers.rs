@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
     ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
@@ -7,31 +8,30 @@ use crate::models::{
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use futures::stream::Stream;
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
+use shared::connector_event_queue::EventQueue;
 use shared::db::repositories::{
-    person::SOURCE_MUTATION_LOCK_NAMESPACE, ConfigurationRepository, SyncRunRepository,
+    ConfigurationRepository, SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE,
 };
 use shared::models::{
     ActionCredentialScope, ActionMode, ActionOrigin, ConnectorManifest, GlobalConfiguration,
     IntegrationType, OAuthCredentialValidationResponse, SearchOperator, ServiceCredential,
     ServiceProvider, Source, SourceScope, SourceType, SyncRun, SyncStatus, SyncType,
 };
-use shared::queue::EventQueue;
 use shared::utils;
 use shared::{
     DocumentRepository, Repository, ServiceCredentialsRepo, SourceRepository, UserRepository,
@@ -928,7 +928,11 @@ pub async fn execute_action(
         request.action,
         connector_url,
         is_mcp_action,
-        if creds.user_id.is_some() { "user" } else { "org" },
+        if creds.user_id.is_some() {
+            "user"
+        } else {
+            "org"
+        },
         creds.provider,
         creds.auth_type,
         creds.principal_email,
@@ -1044,7 +1048,11 @@ async fn mcp_client_error_to_api_error(
     credentials: Option<&ServiceCredential>,
     source: &Source,
 ) -> ApiError {
-    if let ClientError::ConnectorError { status: 412, message } = &err {
+    if let ClientError::ConnectorError {
+        status: 412,
+        message,
+    } = &err
+    {
         if let Ok(body) = serde_json::from_str::<Value>(message) {
             if body.get("error").and_then(Value::as_str) == Some("needs_user_auth") {
                 // Only a real (persisted) credential can be invalidated;
@@ -1616,9 +1624,10 @@ pub async fn read_resource(
     }
     if native_mcp
         && !native_manifest.as_ref().is_some_and(|manifest| {
-            manifest.resources.iter().any(|resource| {
-                resource_uri_matches_template(&request.uri, &resource.uri_template)
-            })
+            manifest
+                .resources
+                .iter()
+                .any(|resource| resource_uri_matches_template(&request.uri, &resource.uri_template))
         })
     {
         return Err(ApiError::NotFound(format!(
@@ -1684,7 +1693,7 @@ pub async fn read_resource(
         Err(err) => {
             return Err(
                 mcp_client_error_to_api_error(err, &cred_service, Some(&creds), &source).await,
-            )
+            );
         }
     };
 
@@ -1839,7 +1848,7 @@ pub async fn get_prompt(
         Err(err) => {
             return Err(
                 mcp_client_error_to_api_error(err, &cred_service, Some(&creds), &source).await,
-            )
+            );
         }
     };
 
@@ -1876,9 +1885,10 @@ pub async fn validate_oauth_credential(
         .await
     {
         Ok(result) => Ok(Json(result)),
-        Err(ClientError::ConnectorError { status: 400, message }) => {
-            Err(ApiError::BadRequest(message))
-        }
+        Err(ClientError::ConnectorError {
+            status: 400,
+            message,
+        }) => Err(ApiError::BadRequest(message)),
         Err(err) => Err(ApiError::Internal(err.to_string())),
     }
 }
@@ -2185,7 +2195,8 @@ pub async fn get_skill(
         // Per-user OAuth is only mandatory when the connector declares an OAuth
         // manifest; otherwise the org credential (or no credential at all, for
         // unauthenticated MCP servers) is used with the actor identity intact.
-        let requires_user_oauth = is_mcp_backed && oauth_provider_from_manifest(&manifest).is_some();
+        let requires_user_oauth =
+            is_mcp_backed && oauth_provider_from_manifest(&manifest).is_some();
 
         let cred_service = CredentialService::new(state.db_pool.clone());
         let (auth_error_credential, skill_credentials) = if requires_user_oauth {
@@ -2215,7 +2226,10 @@ pub async fn get_skill(
                     )));
                 }
             };
-            (Some(creds.clone()), McpCredentials::from_service_credential(&creds))
+            (
+                Some(creds.clone()),
+                McpCredentials::from_service_credential(&creds),
+            )
         } else {
             match cred_service
                 .get_owner_credential(&source)
@@ -2252,15 +2266,13 @@ pub async fn get_skill(
         {
             Ok(result) => result,
             Err(err) => {
-                return Err(
-                    mcp_client_error_to_api_error(
-                        err,
-                        &cred_service,
-                        auth_error_credential.as_ref(),
-                        &source,
-                    )
-                    .await,
+                return Err(mcp_client_error_to_api_error(
+                    err,
+                    &cred_service,
+                    auth_error_credential.as_ref(),
+                    &source,
                 )
+                .await);
             }
         };
         return Ok(Json(result));
@@ -2486,9 +2498,7 @@ fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> R
 /// connector-manager's credential policy: an `actor_scoped` action claims the
 /// connector derives the affected records from the acting user server-side,
 /// which only holds for user-facing writes on the org-credential path.
-fn validate_connector_manifest_action_policy(
-    manifest: &ConnectorManifest,
-) -> Result<(), String> {
+fn validate_connector_manifest_action_policy(manifest: &ConnectorManifest) -> Result<(), String> {
     for action in &manifest.actions {
         if !action.actor_scoped {
             continue;
@@ -2650,9 +2660,7 @@ pub async fn sdk_register(
                                 {
                                     Ok(Some(refreshed_manifest)) => {
                                         if let Err(error) =
-                                            validate_connector_manifest(
-                                                &refreshed_manifest,
-                                            )
+                                            validate_connector_manifest(&refreshed_manifest)
                                         {
                                             warn!(
                                                 "Recovery returned invalid connector manifest: {}",
@@ -4044,7 +4052,10 @@ mod tests {
             "rovo://issues/ABC123",
             "rovo://issue/{id}"
         ));
-        assert!(!resource_uri_matches_template("rovo://issue/", "rovo://issue/{id}"));
+        assert!(!resource_uri_matches_template(
+            "rovo://issue/",
+            "rovo://issue/{id}"
+        ));
         assert!(!resource_uri_matches_template(
             "rovo://issue/ABC/comments/1",
             "rovo://issue/{id}"

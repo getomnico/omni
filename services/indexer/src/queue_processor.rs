@@ -1,18 +1,21 @@
 use crate::AppState;
 use crate::people_extractor;
 use anyhow::{Context, Result};
+use shared::connector_event_queue::{
+    ConnectorEventClaim, ConnectorEventQueueItem, EventQueue, QueueSummary,
+};
 use shared::db::repositories::{
     DocumentRepository, GroupRepository, PersonRepository, SyncRunRepository,
 };
 use shared::embedding_queue::EmbeddingQueue;
 use shared::models::{
-    ConnectorEvent, ConnectorEventQueueItem, Document, DocumentAttributes, DocumentMetadata,
-    DocumentPermissions, EventStatus, SyncType,
+    ConnectorEvent, Document, DocumentAttributes, DocumentMetadata, DocumentPermissions,
+    EventStatus, SyncType,
 };
-use shared::queue::EventQueue;
 use shared::storage::gc::{ContentBlobGC, GCConfig};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, Semaphore};
 use tokio::time::{Duration, MissedTickBehavior, interval};
 use tracing::{debug, error, info, warn};
@@ -175,7 +178,13 @@ struct PendingMetrics {
 
 type PendingBySyncType = HashMap<SyncType, PendingMetrics>;
 
-fn summarize_pending(summary: &shared::queue::QueueSummary) -> (PendingBySyncType, i64) {
+#[derive(Debug, Default)]
+struct PersonTransitionResult {
+    processed_count: usize,
+    transition_failed: bool,
+}
+
+fn summarize_pending(summary: &QueueSummary) -> (PendingBySyncType, i64) {
     let mut by_sync_type = PendingBySyncType::new();
     let mut orphan_count = 0i64;
 
@@ -445,7 +454,7 @@ impl QueueProcessor {
             self.batch_size, self.batch_max_bytes
         );
 
-        // Recover any stale processing items from previous runs (5 minute timeout)
+        // Recover leases that were not renewed by a previous worker (5 minute timeout)
         match self.event_queue.recover_stale_processing_items(300).await {
             Ok(recovered) => {
                 if recovered > 0 {
@@ -457,7 +466,7 @@ impl QueueProcessor {
             }
         }
 
-        // Recover stale embedding queue items
+        // Recover stale embedding tasks
         match self
             .embedding_queue
             .recover_stale_processing_items(300)
@@ -482,7 +491,6 @@ impl QueueProcessor {
         let mut poll_interval = interval(self.poll_interval);
         poll_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut heartbeat_interval = interval(Duration::from_secs(300));
-        let mut retry_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut cleanup_interval = interval(Duration::from_secs(3600)); // 1 hour
         let mut recovery_interval = interval(Duration::from_secs(300)); // 5 minutes
         let mut gc_interval = interval(Duration::from_secs(3600 * 6)); // 6 hours
@@ -516,16 +524,9 @@ impl QueueProcessor {
                 _ = heartbeat_interval.tick() => {
                     if let Ok(stats) = self.event_queue.get_queue_stats().await {
                         info!(
-                            "Queue stats - Pending: {}, Processing: {}, Completed: {}, Failed: {}, Dead Letter: {}",
-                            stats.pending, stats.processing, stats.completed, stats.failed, stats.dead_letter
+                            "Connector task stats - pending: {}, running: {}, completed: {}, dead_letter: {}",
+                            stats.pending, stats.processing, stats.completed, stats.dead_letter
                         );
-                    }
-                }
-                _ = retry_interval.tick() => {
-                    if let Ok(retried) = self.event_queue.retry_failed_events().await {
-                        if retried > 0 {
-                            info!("Retried {} failed events", retried);
-                        }
                     }
                 }
                 _ = cleanup_interval.tick() => {
@@ -616,15 +617,15 @@ impl QueueProcessor {
         // Reserve one batch slot for documents/groups so a sustained Person
         // stream cannot starve the existing queue workload.
         while batches_dequeued < MAX_BATCHES_PER_CALL - 1 {
-            let events = self
+            let claim = self
                 .event_queue
-                .dequeue_person_mutations_with_max_bytes(self.batch_size, self.batch_max_bytes)
+                .claim_person_mutations(self.batch_size, self.batch_max_bytes)
                 .await?;
-            if events.is_empty() {
+            if claim.events.is_empty() {
                 break;
             }
             batches_dequeued += 1;
-            total_processed += self.process_dequeued_events(events).await?;
+            total_processed += self.process_dequeued_events(claim).await?;
         }
 
         // Sync-type-aware batching applies only to documents and groups. Person
@@ -655,15 +656,15 @@ impl QueueProcessor {
         // Process orphan document/group events first (no valid sync_run). These mainly happen
         // in tests that enqueue directly without creating sync_run rows.
         while batches_dequeued < MAX_BATCHES_PER_CALL && orphan_count > 0 {
-            let events = self
+            let claim = self
                 .event_queue
-                .dequeue_batch_orphans_with_max_bytes(self.batch_size, self.batch_max_bytes)
+                .claim_orphans(self.batch_size, self.batch_max_bytes)
                 .await?;
-            if events.is_empty() {
+            if claim.events.is_empty() {
                 break;
             }
             batches_dequeued += 1;
-            total_processed += self.process_dequeued_events(events).await?;
+            total_processed += self.process_dequeued_events(claim).await?;
         }
 
         for (sync_type, reason) in ready {
@@ -678,19 +679,15 @@ impl QueueProcessor {
 
             let remaining = MAX_BATCHES_PER_CALL - batches_dequeued;
             for _ in 0..remaining {
-                let events = self
+                let claim = self
                     .event_queue
-                    .dequeue_batch_by_sync_type_with_max_bytes(
-                        self.batch_size,
-                        sync_type,
-                        self.batch_max_bytes,
-                    )
+                    .claim_batch_by_sync_type(self.batch_size, sync_type, self.batch_max_bytes)
                     .await?;
-                if events.is_empty() {
+                if claim.events.is_empty() {
                     break;
                 }
                 batches_dequeued += 1;
-                total_processed += self.process_dequeued_events(events).await?;
+                total_processed += self.process_dequeued_events(claim).await?;
             }
         }
 
@@ -703,23 +700,96 @@ impl QueueProcessor {
         Ok(())
     }
 
-    async fn process_dequeued_events(&self, events: Vec<ConnectorEventQueueItem>) -> Result<usize> {
-        if events.is_empty() {
+    async fn process_dequeued_events(&self, claim: ConnectorEventClaim) -> Result<usize> {
+        if claim.events.is_empty() {
             return Ok(0);
         }
+        let claim_token = claim.claim_token;
+        let heartbeat_ids: HashSet<String> =
+            claim.events.iter().map(|event| event.id.clone()).collect();
+        let active_ids = Arc::new(Mutex::new(heartbeat_ids));
+        let ownership_lock = Arc::new(Mutex::new(()));
+        let active_ids_for_task = active_ids.clone();
+        let ownership_lock_for_task = ownership_lock.clone();
+        let heartbeat_queue = self.event_queue.clone();
+        let heartbeat_lost = Arc::new(AtomicBool::new(false));
+        let heartbeat_lost_for_task = heartbeat_lost.clone();
+        let heartbeat_token = claim_token.clone();
+        let heartbeat = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(60));
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let _ownership_guard = ownership_lock_for_task.lock().await;
+                let ids: Vec<String> = active_ids_for_task.lock().await.iter().cloned().collect();
+                if ids.is_empty() {
+                    break;
+                }
+                match heartbeat_queue.heartbeat_bulk(&ids, &heartbeat_token).await {
+                    Ok(renewed) if renewed.len() == ids.len() => {}
+                    Ok(renewed) => {
+                        let renewed: HashSet<String> = renewed.into_iter().collect();
+                        let missing: Vec<String> = ids
+                            .iter()
+                            .filter(|id| !renewed.contains(*id))
+                            .cloned()
+                            .collect();
+                        match heartbeat_queue.classify_unrenewed(&missing).await {
+                            Ok((terminal, lost)) => {
+                                active_ids_for_task
+                                    .lock()
+                                    .await
+                                    .retain(|id| !terminal.contains(id));
+                                if !lost.is_empty() {
+                                    heartbeat_lost_for_task.store(true, Ordering::Release);
+                                    warn!(
+                                        "Lost ownership of {} connector events during heartbeat",
+                                        lost.len()
+                                    );
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                heartbeat_lost_for_task.store(true, Ordering::Release);
+                                warn!("Failed to classify connector heartbeat results: {}", error);
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        heartbeat_lost_for_task.store(true, Ordering::Release);
+                        warn!("Connector event heartbeat failed: {}", error);
+                        break;
+                    }
+                }
+            }
+        });
 
         info!(
-            "Processing batch of {} events using batch operations",
-            events.len()
+            "Processing batch of {} leased events using batch operations",
+            claim.events.len()
         );
 
         // Person mutations can target the same canonical identity across sync
         // runs. Apply them in global queue ULID order before preserving the
         // existing per-run batching behavior for documents and groups.
-        let (person_events, other_events) = partition_person_events_in_queue_order(events);
-        let mut total_processed = self
-            .process_person_events_in_queue_order(person_events)
+        let (person_events, other_events) = partition_person_events_in_queue_order(claim.events);
+        let person_result = self
+            .process_person_events_in_queue_order(
+                person_events,
+                &claim_token,
+                &active_ids,
+                &ownership_lock,
+            )
             .await?;
+        let mut total_processed = person_result.processed_count;
+        if person_result.transition_failed {
+            heartbeat_lost.store(true, Ordering::Release);
+        }
+        if heartbeat_lost.load(Ordering::Acquire) {
+            heartbeat.abort();
+            return Ok(total_processed);
+        }
 
         // A single dequeue may contain events from multiple sync runs (e.g.
         // two simultaneous full syncs). Group non-person events by sync_run_id
@@ -733,6 +803,9 @@ impl QueueProcessor {
         }
 
         for (sync_run_id, mut run_events) in by_sync_run {
+            if heartbeat_lost.load(Ordering::Acquire) {
+                break;
+            }
             run_events.sort_by(|a, b| a.id.cmp(&b.id));
 
             let batch_start_time = std::time::Instant::now();
@@ -765,30 +838,71 @@ impl QueueProcessor {
             match result {
                 Ok(batch_result) => {
                     if !batch_result.successful_event_ids.is_empty() {
-                        if let Err(e) = self
+                        let _ownership_guard = ownership_lock.lock().await;
+                        match self
                             .event_queue
-                            .mark_events_completed_batch(batch_result.successful_event_ids.clone())
+                            .complete_bulk(&batch_result.successful_event_ids, &claim_token)
                             .await
                         {
-                            error!(
-                                "Failed to mark {} events as completed: {}",
-                                batch_result.successful_event_ids.len(),
-                                e
-                            );
+                            Ok(completed)
+                                if completed == batch_result.successful_event_ids.len() as i64 =>
+                            {
+                                active_ids
+                                    .lock()
+                                    .await
+                                    .retain(|id| !batch_result.successful_event_ids.contains(id));
+                            }
+                            Ok(completed) => {
+                                heartbeat_lost.store(true, Ordering::Release);
+                                error!(
+                                    "Connector completion lost ownership of {} events",
+                                    batch_result.successful_event_ids.len() - completed as usize
+                                );
+                            }
+                            Err(e) => {
+                                heartbeat_lost.store(true, Ordering::Release);
+                                error!(
+                                    "Failed to complete {} events: {}",
+                                    batch_result.successful_event_ids.len(),
+                                    e
+                                );
+                            }
                         }
                     }
 
                     if !batch_result.failed_events.is_empty() {
-                        if let Err(e) = self
+                        let _ownership_guard = ownership_lock.lock().await;
+                        match self
                             .event_queue
-                            .mark_events_dead_letter_batch(batch_result.failed_events.clone())
+                            .fail_bulk(&batch_result.failed_events, &claim_token)
                             .await
                         {
-                            error!(
-                                "Failed to mark {} events as failed: {}",
-                                batch_result.failed_events.len(),
-                                e
-                            );
+                            Ok(failed) if failed.len() == batch_result.failed_events.len() => {
+                                active_ids.lock().await.retain(|id| {
+                                    !batch_result
+                                        .failed_events
+                                        .iter()
+                                        .any(|(failed_id, _)| failed_id == id)
+                                });
+                            }
+                            Ok(failed) => {
+                                active_ids.lock().await.retain(|id| {
+                                    !failed.iter().any(|(failed_id, _)| failed_id == id)
+                                });
+                                heartbeat_lost.store(true, Ordering::Release);
+                                error!(
+                                    "Connector failure lost ownership of {} events",
+                                    batch_result.failed_events.len() - failed.len()
+                                );
+                            }
+                            Err(e) => {
+                                heartbeat_lost.store(true, Ordering::Release);
+                                error!(
+                                    "Failed to fail {} events: {}",
+                                    batch_result.failed_events.len(),
+                                    e
+                                );
+                            }
                         }
                     }
 
@@ -829,28 +943,50 @@ impl QueueProcessor {
                         .iter()
                         .map(|ev| (ev.id.clone(), err_msg.clone()))
                         .collect();
-                    if let Err(mark_err) =
-                        self.event_queue.mark_events_dead_letter_batch(failed).await
-                    {
-                        error!(
-                            "Failed to mark {} events as failed after batch error: {}",
-                            events_clone.len(),
-                            mark_err
-                        );
+                    let _ownership_guard = ownership_lock.lock().await;
+                    match self.event_queue.fail_bulk(&failed, &claim_token).await {
+                        Ok(failed_ids) if failed_ids.len() == failed.len() => {
+                            active_ids
+                                .lock()
+                                .await
+                                .retain(|id| !failed.iter().any(|(failed_id, _)| failed_id == id));
+                        }
+                        Ok(failed_ids) => {
+                            active_ids.lock().await.retain(|id| {
+                                !failed_ids.iter().any(|(failed_id, _)| failed_id == id)
+                            });
+                            heartbeat_lost.store(true, Ordering::Release);
+                            error!(
+                                "Batch failure lost ownership of {} events",
+                                failed.len() - failed_ids.len()
+                            );
+                        }
+                        Err(mark_err) => {
+                            heartbeat_lost.store(true, Ordering::Release);
+                            error!(
+                                "Failed to fail {} events after batch error: {}",
+                                events_clone.len(),
+                                mark_err
+                            );
+                        }
                     }
                 }
             }
         }
 
+        heartbeat.abort();
         Ok(total_processed)
     }
 
     async fn process_person_events_in_queue_order(
         &self,
         events: Vec<ConnectorEventQueueItem>,
-    ) -> Result<usize> {
+        claim_token: &str,
+        active_ids: &Arc<Mutex<HashSet<String>>>,
+        ownership_lock: &Mutex<()>,
+    ) -> Result<PersonTransitionResult> {
         if events.is_empty() {
-            return Ok(0);
+            return Ok(PersonTransitionResult::default());
         }
 
         let person_repo = PersonRepository::new(self.state.db_pool.pool());
@@ -859,13 +995,7 @@ impl QueueProcessor {
 
         for event_item in events {
             let event_id = event_item.id;
-            let event = match serde_json::from_value::<ConnectorEvent>(event_item.payload) {
-                Ok(event) => event,
-                Err(error) => {
-                    failed_events.push((event_id, error.to_string()));
-                    continue;
-                }
-            };
+            let event = event_item.event;
 
             let operation = match event {
                 ConnectorEvent::PersonSync {
@@ -893,33 +1023,72 @@ impl QueueProcessor {
         }
 
         let successful_count = successful_event_ids.len();
+        let mut result = PersonTransitionResult {
+            processed_count: successful_count,
+            ..Default::default()
+        };
         if !successful_event_ids.is_empty() {
-            if let Err(error) = self
+            let _ownership_guard = ownership_lock.lock().await;
+            match self
                 .event_queue
-                .mark_events_completed_batch(successful_event_ids)
+                .complete_bulk(&successful_event_ids, claim_token)
                 .await
             {
-                error!(
-                    "Failed to mark {} ordered person events as completed: {}",
-                    successful_count, error
-                );
+                Ok(completed) if completed == successful_count as i64 => {
+                    active_ids
+                        .lock()
+                        .await
+                        .retain(|id| !successful_event_ids.contains(id));
+                }
+                Ok(completed) => {
+                    result.transition_failed = true;
+                    error!(
+                        "Failed to complete {} of {} ordered person events",
+                        completed, successful_count
+                    );
+                }
+                Err(error) => {
+                    result.transition_failed = true;
+                    error!(
+                        "Failed to mark {} ordered person events as completed: {}",
+                        successful_count, error
+                    );
+                }
             }
         }
         if !failed_events.is_empty() {
             let failed_count = failed_events.len();
-            if let Err(error) = self
+            let _ownership_guard = ownership_lock.lock().await;
+            match self
                 .event_queue
-                .mark_events_dead_letter_batch(failed_events)
+                .fail_bulk(&failed_events, claim_token)
                 .await
             {
-                error!(
-                    "Failed to mark {} ordered person events as failed: {}",
-                    failed_count, error
-                );
+                Ok(failed_ids) => {
+                    active_ids
+                        .lock()
+                        .await
+                        .retain(|id| !failed_ids.iter().any(|(failed_id, _)| failed_id == id));
+                    if failed_ids.len() != failed_count {
+                        result.transition_failed = true;
+                        error!(
+                            "Failed to fail {} of {} ordered person events",
+                            failed_count - failed_ids.len(),
+                            failed_count
+                        );
+                    }
+                }
+                Err(error) => {
+                    result.transition_failed = true;
+                    error!(
+                        "Failed to mark {} ordered person events as failed: {}",
+                        failed_count, error
+                    );
+                }
             }
         }
 
-        Ok(successful_count)
+        Ok(result)
     }
 
     async fn group_events_by_type(
@@ -943,8 +1112,7 @@ impl QueueProcessor {
         for event_item in events {
             let event_id = event_item.id.clone();
 
-            // Parse the event payload
-            let event: ConnectorEvent = serde_json::from_value(event_item.payload.clone())?;
+            let event = event_item.event;
 
             match event {
                 ConnectorEvent::DocumentCreated {
@@ -1586,7 +1754,7 @@ impl QueueProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::queue::{QueueSummary, QueueSummaryEntry};
+    use shared::connector_event_queue::{QueueSummary, QueueSummaryEntry};
     use sqlx::types::time::OffsetDateTime;
 
     fn test_person(email: &str) -> shared::models::PersonSyncRecord {
@@ -1622,6 +1790,11 @@ mod tests {
     fn queue_item(id: &str, sync_run_id: &str, event_type: &str) -> ConnectorEventQueueItem {
         ConnectorEventQueueItem {
             id: id.into(),
+            event: ConnectorEvent::DocumentDeleted {
+                sync_run_id: sync_run_id.into(),
+                source_id: "source".into(),
+                document_id: "document".into(),
+            },
             sync_run_id: sync_run_id.into(),
             source_id: "source".into(),
             event_type: event_type.into(),
@@ -1632,6 +1805,8 @@ mod tests {
             created_at: OffsetDateTime::now_utc(),
             processed_at: None,
             error_message: None,
+            claim_token: None,
+            weight: 1,
         }
     }
 
@@ -1671,6 +1846,11 @@ mod tests {
         let mut queue_items = vec![
             ConnectorEventQueueItem {
                 id: "01J00000000000000000000002".into(),
+                event: ConnectorEvent::DocumentDeleted {
+                    sync_run_id: "run".into(),
+                    source_id: "source".into(),
+                    document_id: "document".into(),
+                },
                 sync_run_id: "run".into(),
                 source_id: "source".into(),
                 event_type: "person_deleted".into(),
@@ -1681,9 +1861,16 @@ mod tests {
                 created_at: OffsetDateTime::now_utc(),
                 processed_at: None,
                 error_message: None,
+                claim_token: None,
+                weight: 1,
             },
             ConnectorEventQueueItem {
                 id: "01J00000000000000000000001".into(),
+                event: ConnectorEvent::DocumentDeleted {
+                    sync_run_id: "run".into(),
+                    source_id: "source".into(),
+                    document_id: "document".into(),
+                },
                 sync_run_id: "run".into(),
                 source_id: "source".into(),
                 event_type: "person_sync".into(),
@@ -1694,6 +1881,8 @@ mod tests {
                 created_at: OffsetDateTime::now_utc(),
                 processed_at: None,
                 error_message: None,
+                claim_token: None,
+                weight: 1,
             },
         ];
         sort_events_by_queue_order(&mut queue_items);

@@ -187,9 +187,9 @@ async fn seed_atlassian_source(pool: &PgPool, source_type: SourceType) -> Result
     Ok(())
 }
 
-/// Count events in the connector_events_queue
+/// Count connector-event tasks
 pub async fn count_queued_events(pool: &PgPool) -> Result<i64> {
-    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM connector_events_queue")
+    let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM tasks WHERE task_type = 'connector_event'")
         .fetch_one(pool)
         .await?;
     Ok(row.0)
@@ -198,7 +198,7 @@ pub async fn count_queued_events(pool: &PgPool) -> Result<i64> {
 /// Get all queued events with their payloads
 pub async fn get_queued_events(pool: &PgPool) -> Result<Vec<serde_json::Value>> {
     let rows = sqlx::query_as::<_, (serde_json::Value,)>(
-        "SELECT payload FROM connector_events_queue ORDER BY created_at",
+        "SELECT payload FROM tasks WHERE task_type = 'connector_event' ORDER BY created_at",
     )
     .fetch_all(pool)
     .await?;
@@ -211,7 +211,7 @@ pub async fn get_queued_events_by_type(
     event_type: &str,
 ) -> Result<Vec<serde_json::Value>> {
     let rows = sqlx::query_as::<_, (serde_json::Value,)>(
-        "SELECT payload FROM connector_events_queue WHERE event_type = $1 ORDER BY created_at",
+        "SELECT payload FROM tasks WHERE task_type = 'connector_event' AND payload->>'type' = $1 ORDER BY created_at",
     )
     .bind(event_type)
     .fetch_all(pool)

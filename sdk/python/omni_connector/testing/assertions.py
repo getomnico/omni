@@ -37,15 +37,16 @@ async def count_events(
 ) -> int:
     if event_type:
         row = await pool.fetchrow(
-            "SELECT count(*) AS cnt FROM connector_events_queue "
-            "WHERE source_id = $1::char(26) AND event_type = $2",
+            "SELECT count(*) AS cnt FROM tasks "
+            "WHERE task_type = 'connector_event' AND payload->>'source_id' = $1 "
+            "AND payload->>'type' = $2",
             source_id,
             event_type,
         )
     else:
         row = await pool.fetchrow(
-            "SELECT count(*) AS cnt FROM connector_events_queue "
-            "WHERE source_id = $1::char(26)",
+            "SELECT count(*) AS cnt FROM tasks "
+            "WHERE task_type = 'connector_event' AND payload->>'source_id' = $1",
             source_id,
         )
     return row["cnt"] if row else 0
@@ -56,8 +57,17 @@ async def get_events(
     source_id: str,
 ) -> list[dict[str, Any]]:
     rows = await pool.fetch(
-        "SELECT * FROM connector_events_queue "
-        "WHERE source_id = $1::char(26) ORDER BY created_at",
+        """
+        SELECT id, payload->>'sync_run_id' AS sync_run_id,
+               payload->>'source_id' AS source_id,
+               payload->>'type' AS event_type, payload, status,
+               attempt_count AS retry_count, max_attempts AS max_retries,
+               created_at, completed_at AS processed_at,
+               last_error AS error_message
+        FROM tasks
+        WHERE task_type = 'connector_event' AND payload->>'source_id' = $1
+        ORDER BY created_at
+        """,
         source_id,
     )
     results = []

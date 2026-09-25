@@ -173,7 +173,7 @@ impl SlackConnectorTestFixture {
 
     pub async fn get_queued_events(&self, source_id: &str) -> Result<Vec<serde_json::Value>> {
         let rows = sqlx::query(
-            "SELECT payload FROM connector_events_queue WHERE source_id = $1 ORDER BY created_at",
+            "SELECT payload FROM tasks WHERE task_type = 'connector_event' AND payload->>'source_id' = $1 ORDER BY created_at",
         )
         .bind(source_id)
         .fetch_all(self.pool())

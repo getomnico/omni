@@ -107,17 +107,27 @@ export const serviceCredentials = pgTable('service_credentials', {
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 
-export const connectorEventsQueue = pgTable('connector_events_queue', {
+export const tasks = pgTable('tasks', {
     id: text('id').primaryKey(),
-    sourceId: text('source_id').notNull(),
-    eventType: text('event_type').notNull(),
+    taskType: text('task_type').notNull(),
     payload: jsonb('payload').notNull(),
+    payloadVersion: integer('payload_version').notNull().default(1),
     status: text('status').notNull().default('pending'),
-    retryCount: integer('retry_count').default(0),
-    maxRetries: integer('max_retries').default(3),
+    priority: integer('priority').notNull().default(0),
+    availableAt: timestamp('available_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    weight: bigint('weight', { mode: 'number' }).notNull().default(1),
+    concurrencyKey: text('concurrency_key'),
+    deduplicationKey: text('deduplication_key'),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    maxAttempts: integer('max_attempts').notNull().default(3),
+    lastError: text('last_error'),
+    claimToken: text('claim_token'),
+    claimedBy: text('claimed_by'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true, mode: 'date' }),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
-    processedAt: timestamp('processed_at', { withTimezone: true, mode: 'date' }),
-    errorMessage: text('error_message'),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    lastStartedAt: timestamp('last_started_at', { withTimezone: true, mode: 'date' }),
+    completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' }),
 })
 
 export const syncRuns = pgTable('sync_runs', {
@@ -450,7 +460,7 @@ export type Source = typeof sources.$inferSelect
 export type Document = typeof documents.$inferSelect
 export type Embedding = typeof embeddings.$inferSelect
 export type ServiceCredential = typeof serviceCredentials.$inferSelect
-export type ConnectorEventsQueue = typeof connectorEventsQueue.$inferSelect
+export type Task = typeof tasks.$inferSelect
 export type SyncRun = typeof syncRuns.$inferSelect
 export type ApprovedDomain = typeof approvedDomains.$inferSelect
 export type MagicLink = typeof magicLinks.$inferSelect
