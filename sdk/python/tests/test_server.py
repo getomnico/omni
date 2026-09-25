@@ -1,7 +1,8 @@
 """Tests for the FastAPI server endpoints."""
 
+from datetime import UTC
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -12,7 +13,6 @@ from omni_connector import (
     ActionResponse,
     Connector,
     Document,
-    DocumentMetadata,
     SdkSourceSyncData,
     SyncContext,
 )
@@ -147,6 +147,68 @@ class TestManifestEndpoint:
         assert "param1" in action["input_schema"]["properties"]
         assert action["input_schema"]["properties"]["param1"]["type"] == "string"
         assert "param1" in action["input_schema"]["required"]
+
+
+class TestMcpSourceRequests:
+    def test_resource_and_prompt_requests_pass_typed_source(
+        self, client, mock_connector, monkeypatch
+    ):
+        class Adapter:
+            async def read_resource(self, uri, **kwargs):
+                assert uri == "mcp://resource"
+                assert kwargs == {"headers": {"Authorization": "Bearer token"}}
+                return {"contents": []}
+
+            async def get_prompt(self, name, arguments, **kwargs):
+                assert name == "provider_prompt"
+                assert arguments == {"value": "x"}
+                assert kwargs == {"headers": {"Authorization": "Bearer token"}}
+                return {"messages": []}
+
+        adapter = Adapter()
+        monkeypatch.setattr(
+            mock_connector,
+            "mcp_adapter_for_credentials",
+            lambda credentials, source: adapter if source is not None else None,
+        )
+        monkeypatch.setattr(
+            mock_connector,
+            "_prepare_mcp_auth",
+            lambda credentials: {"headers": {"Authorization": "Bearer token"}},
+        )
+        source = {
+            "id": "source-1",
+            "name": "Test Source",
+            "source_type": "test",
+            "config": {},
+            "is_active": True,
+            "is_deleted": False,
+            "scope": "org",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "created_by": "user-1",
+        }
+
+        resource_response = client.post(
+            "/resource",
+            json={
+                "uri": "mcp://resource",
+                "source": source,
+                "credentials": {"access_token": "token"},
+            },
+        )
+        prompt_response = client.post(
+            "/prompt",
+            json={
+                "name": "provider_prompt",
+                "arguments": {"value": "x"},
+                "source": source,
+                "credentials": {"access_token": "token"},
+            },
+        )
+
+        assert resource_response.status_code == 200
+        assert prompt_response.status_code == 200
 
 
 class TestCancelEndpoint:
@@ -541,9 +603,9 @@ class TestConnectorBaseClass:
 
 class TestOauthValidateEndpoint:
     def _source_payload(self) -> dict[str, Any]:
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return {
             "id": "src-1",
             "name": "Test Source",

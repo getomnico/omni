@@ -112,6 +112,7 @@ describe("Connector Server", () => {
         resources: [],
         prompts: [],
         skills: [],
+        source_capabilities: [],
       });
     });
   });

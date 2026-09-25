@@ -1,11 +1,13 @@
 import asyncio
+import base64
+import json
 import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, status
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
@@ -18,6 +20,7 @@ from .models import (
     ActionRequest,
     CancelRequest,
     CancelResponse,
+    ManifestSourceContext,
     OAuthCredentialReadyRequest,
     OAuthCredentialValidationRequest,
     PromptRequest,
@@ -119,6 +122,34 @@ def create_app(
     connector_url = config.connector_url
     server = ConnectorServer(connector, config)
 
+    def manifest_request_context(
+        request: Request,
+    ) -> tuple[ManifestSourceContext | None, dict[str, Any] | None, bool]:
+        encoded_context = request.headers.get("x-omni-manifest-source")
+        force_refresh = _manifest_force_refresh(request)
+        if encoded_context is None:
+            return None, None, force_refresh
+        try:
+            padding = "=" * (-len(encoded_context) % 4)
+            decoded = base64.urlsafe_b64decode(encoded_context + padding)
+            source_context = ManifestSourceContext.model_validate(json.loads(decoded))
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("invalid manifest source context") from exc
+
+        authorization = request.headers.get("authorization")
+        if authorization is None or not authorization.startswith("Bearer "):
+            return source_context, None, force_refresh
+        token = authorization.removeprefix("Bearer ").strip()
+        if not token:
+            return source_context, None, force_refresh
+        return source_context, {"access_token": token}, force_refresh
+
+    def _manifest_force_refresh(request: Request) -> bool:
+        return any(
+            directive.strip().lower() == "no-cache"
+            for directive in request.headers.get("cache-control", "").split(",")
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
         nonlocal connector_url
@@ -175,9 +206,24 @@ def create_app(
         return {"status": "healthy", "service": connector.name}
 
     @app.get("/manifest")
-    async def manifest() -> dict[str, Any]:
-        m = await connector.get_manifest(connector_url=connector_url)
-        return m.model_dump()
+    async def manifest(request: Request) -> dict[str, Any]:
+        try:
+            source_context, credentials, force_refresh = manifest_request_context(request)
+            if source_context is None:
+                m = await connector.get_manifest(connector_url=connector_url)
+            else:
+                m = await connector.get_manifest(
+                    connector_url=connector_url,
+                    source_context=source_context,
+                    credentials=credentials,
+                    force_refresh=force_refresh,
+                )
+            return m.model_dump()
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={"error": str(exc)},
+            )
 
     @app.post("/oauth/validate")
     async def validate_oauth_credential(
@@ -390,13 +436,18 @@ def create_app(
         # discovered MCP action may enter the MCP branch; an MCP auth failure
         # must never fall through and execute a native action with different
         # authorization semantics.
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_source(request.source)
         native_action_names = {action.name for action in connector.actions}
         if adapter is not None and request.action not in native_action_names:
+            if not connector.mcp_action_allowed(request.action, request.source):
+                return JSONResponse(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    content={"error": "MCP action is disabled by source policy"},
+                )
             try:
-                mcp_action_names = {
-                    action.name for action in await adapter.get_action_definitions()
-                }
+                mcp_action_names = await connector.mcp_action_names_for_source(
+                    request.source
+                )
             except Exception:
                 logger.warning("Failed to identify MCP action", exc_info=True)
                 return JSONResponse(
@@ -466,7 +517,7 @@ def create_app(
 
     @app.post("/resource")
     async def read_resource(request: ResourceRequest) -> JSONResponse:
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_credentials(request.credentials, request.source)
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -492,7 +543,7 @@ def create_app(
 
     @app.post("/prompt")
     async def get_prompt(request: PromptRequest) -> JSONResponse:
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_credentials(request.credentials, request.source)
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -519,6 +570,25 @@ def create_app(
     @app.post("/skill")
     async def get_skill(request: SkillRequest) -> JSONResponse:
         logger.info("Skill requested: %s", request.skill_id)
+        source_skill = connector.mcp_skill_for_source(request.skill_id, request.source)
+        if source_skill is not None:
+            if source_skill.content is not None:
+                return JSONResponse(
+                    status_code=status.HTTP_200_OK,
+                    content=SkillResponse(
+                        skill_id=source_skill.id,
+                        title=source_skill.title,
+                        content=source_skill.content,
+                    ).model_dump(),
+                )
+            if source_skill.mcp_prompt:
+                return await _mcp_skill_response(
+                    source_skill.id,
+                    source_skill.title,
+                    source_skill.mcp_prompt,
+                    request,
+                )
+
         for skill in connector.skills:
             if skill.id != request.skill_id:
                 continue
@@ -557,7 +627,9 @@ def create_app(
         prompt_name: str,
         request: SkillRequest,
     ) -> JSONResponse:
-        adapter = connector.mcp_adapter
+        adapter = connector.mcp_adapter_for_credentials(
+            request.credentials, request.source
+        )
         if adapter is None:
             return JSONResponse(
                 status_code=status.HTTP_404_NOT_FOUND,

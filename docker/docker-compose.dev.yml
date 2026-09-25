@@ -226,6 +226,12 @@ services:
       context: ..
       dockerfile: connectors/salesforce/Dockerfile
 
+  snowflake-connector:
+    image: omni-snowflake-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/snowflake/Dockerfile
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:

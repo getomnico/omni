@@ -13,10 +13,9 @@ from .models import (
     ActionResponse,
     ConnectorManifest,
     ConnectorSkillDefinition,
+    ManifestSourceContext,
     OAuthCredentialFlow,
     OAuthCredentialReadyRequest,
-    OAuthCredentialValidationRequest,
-    OAuthCredentialValidationResponse,
     OAuthManifestConfig,
     OAuthSourceBinding,
     SearchOperator,
@@ -132,6 +131,42 @@ class Connector(ABC):
 
         return self._mcp_adapter
 
+    def mcp_server_for_source(self, source: Source | None) -> McpServer | None:
+        """Return the MCP endpoint for a selected source."""
+        return self.mcp_server
+
+    def mcp_adapter_for_source(self, source: Source | None) -> McpAdapter | None:
+        server = self.mcp_server_for_source(source)
+        if server is None:
+            return None
+        if server == self.mcp_server:
+            return self.mcp_adapter
+        from .mcp_adapter import McpAdapter
+
+        return McpAdapter(server)
+
+    def mcp_adapter_for_credentials(
+        self, credentials: dict[str, Any], source: Source | None = None
+    ) -> McpAdapter | None:
+        """Resolve an adapter for resource and prompt calls."""
+        return self.mcp_adapter_for_source(source)
+
+    async def mcp_action_names_for_source(self, source: Source | None) -> set[str]:
+        adapter = self.mcp_adapter_for_source(source)
+        if adapter is None:
+            return set()
+        return {action.name for action in await adapter.get_action_definitions()}
+
+    def mcp_skill_for_source(
+        self, skill_id: str, source: Source | None
+    ) -> ConnectorSkillDefinition | None:
+        """Resolve a source-scoped MCP skill, if this connector publishes one."""
+        return None
+
+    def mcp_action_allowed(self, action: str, source: Source | None) -> bool:
+        """Apply connector/source policy before dispatching an MCP action."""
+        return True
+
     def mcp_authentication_error(self, message: str) -> bool:
         """Return whether an MCP failure requires the user's OAuth reconnect.
 
@@ -239,8 +274,20 @@ class Connector(ABC):
             mcp_prompt=prompt_name,
         )
 
-    async def get_manifest(self, connector_url: str) -> ConnectorManifest:
-        """Return connector manifest."""
+    async def get_manifest(
+        self,
+        connector_url: str,
+        *,
+        source_context: ManifestSourceContext | None = None,
+        credentials: dict[str, Any] | None = None,
+        force_refresh: bool = False,
+    ) -> ConnectorManifest:
+        """Return the connector manifest.
+
+        Connector-manager may supply one non-secret source context and an
+        authenticated discovery token through GET /manifest headers. Legacy
+        connectors ignore both optional values.
+        """
         adapter = self.mcp_adapter
         resources = []
         prompts = []

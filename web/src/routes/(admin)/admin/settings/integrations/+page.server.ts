@@ -38,6 +38,7 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     // CRM & sales
     'hubspot',
     'salesforce',
+    'snowflake',
     // Meetings
     'fireflies',
     // HRIS

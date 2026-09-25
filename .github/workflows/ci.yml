@@ -36,6 +36,7 @@ jobs:
       darwinbox-connector: ${{ steps.filter.outputs.darwinbox-connector }}
       hubspot-connector: ${{ steps.filter.outputs.hubspot-connector }}
       salesforce-connector: ${{ steps.filter.outputs.salesforce-connector }}
+      snowflake-connector: ${{ steps.filter.outputs.snowflake-connector }}
       google-ads-connector: ${{ steps.filter.outputs.google-ads-connector }}
       imap-connector: ${{ steps.filter.outputs.imap-connector }}
       notion-connector: ${{ steps.filter.outputs.notion-connector }}
@@ -187,6 +188,13 @@ jobs:
             salesforce-connector:
               - 'connectors/salesforce/**'
               - 'sdk/python/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            snowflake-connector:
+              - 'connectors/snowflake/**'
+              - 'sdk/python/**'
+              - 'shared/**'
+              - 'services/connector-manager/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/build-connector.yml'
             microsoft-connector:
@@ -500,6 +508,15 @@ jobs:
       connector-type: python
     secrets: inherit
 
+  build-snowflake-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.snowflake-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: snowflake
+      connector-type: python
+    secrets: inherit
+
   build-google-ads-connector:
     needs: detect-changes
     if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.google-ads-connector == 'true'
@@ -652,6 +669,8 @@ jobs:
           - connector-name: hubspot
             connector-type: python
           - connector-name: salesforce
+            connector-type: python
+          - connector-name: snowflake
             connector-type: python
           - connector-name: microsoft
             connector-type: python

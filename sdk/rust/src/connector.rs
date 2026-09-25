@@ -206,6 +206,7 @@ pub trait Connector: Send + Sync + 'static {
             resources: vec![],
             prompts: vec![],
             skills: self.skills(),
+            source_capabilities: vec![],
             oauth: self
                 .oauth_config()
                 .and_then(|c| serde_json::to_value(c).ok()),

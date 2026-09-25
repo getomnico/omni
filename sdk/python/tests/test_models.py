@@ -1,15 +1,18 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from omni_connector import (
-    connector_event,
     ConnectorManifest,
     Document,
     DocumentMetadata,
     DocumentPermissions,
     EventType,
+    PromptRequest,
+    ResourceRequest,
+    SkillRequest,
     Source,
     SyncRequest,
     SyncResponse,
+    connector_event,
 )
 
 
@@ -29,7 +32,7 @@ def test_document_metadata_serialization():
 
 
 def test_document_metadata_with_datetime():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     metadata = DocumentMetadata(
         title="Test",
         created_at=now,
@@ -61,6 +64,25 @@ def test_document_permissions_defaults():
     assert data["public"] is False
     assert data["users"] == []
     assert data["groups"] == []
+
+
+def test_mcp_requests_carry_typed_source_context():
+    source = Source(
+        id="source-1",
+        name="Snowflake",
+        source_type="snowflake",
+        config={},
+        is_active=True,
+        is_deleted=False,
+        scope="org",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        created_by="user-1",
+    )
+
+    assert ResourceRequest(uri="mcp://resource", source=source).source is source
+    assert PromptRequest(name="provider_prompt", source=source).source is source
+    assert SkillRequest(skill_id="mcp:source-1:provider_prompt", source=source).source is source
 
 
 def test_source_accepts_rust_expanded_year_timestamps():

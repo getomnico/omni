@@ -252,6 +252,7 @@ export abstract class Connector<
       resources: adapter ? await adapter.getResourceDefinitions() : [],
       prompts,
       skills,
+      source_capabilities: [],
       oauth: this.oauthConfig,
     };
   }

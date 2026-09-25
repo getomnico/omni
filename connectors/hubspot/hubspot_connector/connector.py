@@ -29,6 +29,10 @@ class HubSpotConnector(Connector):
         return ["hubspot"]
 
     @property
+    def display_name(self) -> str:
+        return "HubSpot"
+
+    @property
     def description(self) -> str:
         return "Connect to HubSpot CRM contacts, companies, deals, and more"
 

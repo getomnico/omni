@@ -752,6 +752,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  snowflake-connector:
+    image: ghcr.io/getomnico/omni/omni-snowflake-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-512m}
+    container_name: omni-snowflake-connector
+    profiles:
+      - snowflake
+    expose:
+      - "${SNOWFLAKE_CONNECTOR_PORT:-4020}"
+    environment:
+      <<: *otel-config
+      PORT: ${SNOWFLAKE_CONNECTOR_PORT:-4020}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: snowflake-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   microsoft-connector:
     image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
     <<: *resources-connector

@@ -259,15 +259,30 @@ class ConnectorToolHandler:
             if not manifest or connector.get("healthy") is False:
                 continue
 
-            for action_def in manifest.get("actions", []):
-                action_source_types = action_def.get("source_types") or []
-                if action_source_types and source_type not in action_source_types:
-                    continue
-                # A connector-wide manifest can serve source instances with different
-                # allowed origins, so bind each action to a source before exposing it.
-                for source in source_by_identity.get(
-                    (integration_type, source_type), []
-                ):
+            for source in source_by_identity.get((integration_type, source_type), []):
+                source_group = next(
+                    (
+                        group
+                        for group in manifest.get("source_capabilities", [])
+                        if group.get("source_id") == source.id
+                    ),
+                    None,
+                )
+                source_actions = list(source_group.get("actions", [])) if source_group else []
+                source_action_names = {
+                    action.get("name") for action in source_actions
+                }
+                # Legacy actions remain available during migration, but a
+                # source-specific definition wins for the same source/name.
+                source_actions.extend(
+                    action
+                    for action in manifest.get("actions", [])
+                    if action.get("name") not in source_action_names
+                )
+                for action_def in source_actions:
+                    action_source_types = action_def.get("source_types") or []
+                    if action_source_types and source_type not in action_source_types:
+                        continue
                     action_origin = action_def.get("origin", "native")
                     if not isinstance(action_origin, str):
                         raise TypeError("connector action origin must be a string")

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "snowflake-connector"
+version = "1.0.0"
+description = "Snowflake metadata and managed MCP connector for Omni"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "omni-connector[mcp]",
+    "snowflake-connector-python>=3.18.0",
+    "cryptography>=43.0.0",
+]
+
+[tool.uv.sources]
+omni-connector = { path = "../../sdk/python" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+    "pytest-asyncio>=0.24.0",
+    "mypy>=1.8.0",
+    "ruff>=0.4.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["snowflake_connector"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]

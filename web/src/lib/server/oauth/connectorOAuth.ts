@@ -319,26 +319,34 @@ async function discoverOAuthManifestFromIssuer(
     if (!issuer) return null
 
     const issuerPath = issuer.pathname.replace(/\/$/, '')
-    const metadataUrl = new URL(`${issuerPath}/.well-known/openid-configuration`, issuer.origin)
-    let metadata: Record<string, unknown>
+    const metadataPaths = [
+        `${issuerPath}/.well-known/openid-configuration`,
+        `${issuerPath}/.well-known/oauth-authorization-server`,
+    ]
+    let metadata: Record<string, unknown> | null = null
     try {
-        const validatedMetadataUrl = await validateOAuthEndpoint(metadataUrl.toString())
-        if (!validatedMetadataUrl) return null
-        const response = await fetchWithPinnedRemoteMcpDns(
-            new URL(validatedMetadataUrl),
-            {
-                headers: { Accept: 'application/json' },
-                signal: AbortSignal.timeout(10_000),
-            },
-            {},
-        )
-        if (!response.ok) return null
-        const body = JSON.parse(await readLimitedResponseText(response)) as unknown
-        if (typeof body !== 'object' || body === null || Array.isArray(body)) return null
-        metadata = body as Record<string, unknown>
+        for (const metadataPath of metadataPaths) {
+            const metadataUrl = new URL(metadataPath, issuer.origin)
+            const validatedMetadataUrl = await validateOAuthEndpoint(metadataUrl.toString())
+            if (!validatedMetadataUrl) continue
+            const response = await fetchWithPinnedRemoteMcpDns(
+                new URL(validatedMetadataUrl),
+                {
+                    headers: { Accept: 'application/json' },
+                    signal: AbortSignal.timeout(10_000),
+                },
+                {},
+            )
+            if (!response.ok) continue
+            const body = JSON.parse(await readLimitedResponseText(response)) as unknown
+            if (typeof body !== 'object' || body === null || Array.isArray(body)) continue
+            metadata = body as Record<string, unknown>
+            break
+        }
     } catch {
         return null
     }
+    if (metadata === null) return null
 
     const metadataIssuer = normalizeOAuthUrl(metadata.issuer)
     if (!metadataIssuer || metadataIssuer.toString() !== issuer.toString()) return null
@@ -417,8 +425,11 @@ export async function getOAuthConfigForSource(
         const sourceConfig = (source.config ?? {}) as Record<string, unknown>
         const issuerKey = manifest.issuer_source_config_key
         if (issuerKey && Object.prototype.hasOwnProperty.call(sourceConfig, issuerKey)) {
+            // Snowflake account URLs expose OAuth endpoints but are not OIDC issuers.
             resolved =
-                (await discoverOAuthManifestFromIssuer(manifest, sourceConfig[issuerKey])) ?? null
+                source.sourceType === 'snowflake'
+                    ? await snowflakeOAuthManifestFallback(manifest, sourceConfig)
+                    : await discoverOAuthManifestFromIssuer(manifest, sourceConfig[issuerKey])
             if (!resolved) return null
         }
         return resolveSourceClientConfigProvider(resolved, source.id)
@@ -432,6 +443,20 @@ export async function getOAuthConfigForSource(
         endpointUrl: String((source.config as Record<string, unknown>)?.endpoint_url ?? ''),
         sourceType: source.sourceType,
     })) as OAuthManifestConfig | null
+}
+
+async function snowflakeOAuthManifestFallback(
+    manifest: OAuthManifestConfig,
+    sourceConfig: Record<string, unknown>,
+): Promise<OAuthManifestConfig | null> {
+    const accountUrl = await validateOAuthEndpoint(sourceConfig.account_url)
+    if (!accountUrl) return null
+    return {
+        ...manifest,
+        auth_endpoint: `${accountUrl}/oauth/authorize`,
+        token_endpoint: `${accountUrl}/oauth/token-request`,
+        issuer_source_config_key: null,
+    }
 }
 
 interface ClientCreds {

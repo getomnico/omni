@@ -75,6 +75,14 @@ class McpPromptDefinition(BaseModel):
     arguments: list[McpPromptArgument] = Field(default_factory=list)
 
 
+class McpSourceCapabilities(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    source_id: str
+    resources: list[McpResourceDefinition] = Field(default_factory=list)
+    prompts: list[McpPromptDefinition] = Field(default_factory=list)
+
+
 class McpConnectorManifest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -82,6 +90,7 @@ class McpConnectorManifest(BaseModel):
     mcp_enabled: bool = False
     resources: list[McpResourceDefinition] = Field(default_factory=list)
     prompts: list[McpPromptDefinition] = Field(default_factory=list)
+    source_capabilities: list[McpSourceCapabilities] = Field(default_factory=list)
 
 
 class McpConnectorInfo(BaseModel):
@@ -219,13 +228,43 @@ class McpCapabilityHandler:
 
             for source in matching_sources:
                 source_name = source.name or source_type
-                for resource_def in manifest.resources:
+                source_group = next(
+                    (
+                        group
+                        for group in manifest.source_capabilities
+                        if group.source_id == source.id
+                    ),
+                    None,
+                )
+                source_resources = source_group.resources if source_group is not None else []
+                source_resource_uris = {
+                    resource.uri_template for resource in source_resources
+                }
+                resource_defs = [
+                    *source_resources,
+                    *(
+                        resource
+                        for resource in manifest.resources
+                        if resource.uri_template not in source_resource_uris
+                    ),
+                ]
+                source_prompts = source_group.prompts if source_group is not None else []
+                source_prompt_names = {prompt.name for prompt in source_prompts}
+                prompt_defs = [
+                    *source_prompts,
+                    *(
+                        prompt
+                        for prompt in manifest.prompts
+                        if prompt.name not in source_prompt_names
+                    ),
+                ]
+                for resource_def in resource_defs:
                     record = self._resource_record(
                         source, source_type, source_name, resource_def
                     )
                     resources[record.id] = record
 
-                for prompt_def in manifest.prompts:
+                for prompt_def in prompt_defs:
                     record = self._prompt_record(
                         source, source_type, source_name, prompt_def
                     )

@@ -1,35 +1,37 @@
+use crate::AppState;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
-    ActionRequest, ConnectorInfo, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, ExecuteSkillRequest, McpCredentials, OAuthCredentialReadyRequest,
-    OAuthCredentialValidationRequest, PromptRequest, ResourceRequest, ScheduleInfo, SourceHealth,
-    SourceSyncOverview, SyncProgress, TriggerSyncRequest, TriggerSyncResponse, TriggerType,
+    ActionRequest, ConnectorInfo, ConnectorManifest, ExecuteActionRequest, ExecutePromptRequest,
+    ExecuteResourceRequest, ExecuteSkillRequest, ManifestSourceContext, McpCredentials,
+    OAuthCredentialReadyRequest, OAuthCredentialValidationRequest, PromptRequest, ResourceRequest,
+    ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress, TriggerSyncRequest,
+    TriggerSyncResponse, TriggerType,
 };
 use crate::sync_circuit_breaker::has_failure_streak;
 use crate::sync_manager::SyncError;
-use crate::AppState;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{
-        sse::{Event, KeepAlive, Sse},
-        IntoResponse,
-    },
     Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
-use futures::stream::Stream;
+use futures::stream::{self, Stream, StreamExt};
 use redis::AsyncCommands;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::credential_service::{CredentialService, CredentialServiceError};
 use shared::clients::docling::{DoclingClient, DoclingError};
 use shared::db::repositories::{
-    person::SOURCE_MUTATION_LOCK_NAMESPACE, ConfigurationRepository, SyncRunRepository,
+    ConfigurationRepository, SyncRunRepository, person::SOURCE_MUTATION_LOCK_NAMESPACE,
 };
 use shared::models::{
-    ActionCredentialScope, ActionMode, ActionOrigin, ConnectorManifest, GlobalConfiguration,
-    IntegrationType, OAuthCredentialValidationResponse, SearchOperator, ServiceCredential,
-    ServiceProvider, Source, SourceScope, SourceType, SyncRun, SyncStatus, SyncType,
+    ActionCredentialScope, ActionMode, ActionOrigin, ConnectorSourceCapabilities,
+    GlobalConfiguration, IntegrationType, OAuthCredentialValidationResponse, SearchOperator,
+    ServiceCredential, ServiceProvider, Source, SourceScope, SourceType, SyncRun, SyncStatus,
+    SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -690,25 +692,14 @@ pub async fn execute_action(
             })?;
         let connector_url = manifest.connector_url.clone();
 
-        let action_def = manifest
-            .actions
-            .iter()
-            .find(|a| a.name == request.action)
+        let action_def = action_definition_for_source(&manifest, &db_source, &request.action)
             .ok_or_else(|| {
                 ApiError::BadRequest(format!(
                     "Unknown action '{}' for source type {:?}",
                     request.action, source_type
                 ))
             })?;
-        if !action_def.source_types.contains(&source_type) {
-            return Err(ApiError::BadRequest(format!(
-                "Action '{}' does not support source type {:?}",
-                request.action, source_type
-            )));
-        }
-        if !action_is_available_for_source(&db_source, action_def)
-            .map_err(ApiError::BadRequest)?
-        {
+        if !action_is_available_for_source(&db_source, action_def).map_err(ApiError::BadRequest)? {
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' is unavailable for this source's allowed action-origin policy",
                 request.action
@@ -774,6 +765,10 @@ pub async fn execute_action(
             .config
             .get("read_only")
             .and_then(|v| v.as_bool())
+            // MCP tools fail closed when an older source predates the
+            // explicit policy fields. Native actions retain their legacy
+            // behavior and must declare their own policy.
+            .or_else(|| (action_def.origin == ActionOrigin::Mcp).then_some(true))
             .unwrap_or(false);
         if (manifest.read_only || source_read_only) && action_mode == ActionMode::Write {
             return Err(ApiError::BadRequest(format!(
@@ -928,7 +923,11 @@ pub async fn execute_action(
         request.action,
         connector_url,
         is_mcp_action,
-        if creds.user_id.is_some() { "user" } else { "org" },
+        if creds.user_id.is_some() {
+            "user"
+        } else {
+            "org"
+        },
         creds.provider,
         creds.auth_type,
         creds.principal_email,
@@ -1011,7 +1010,8 @@ async fn invalidate_native_mcp_catalog(
             .iter()
             .any(|action| action.origin == ActionOrigin::Mcp)
         || !manifest.resources.is_empty()
-        || !manifest.prompts.is_empty();
+        || !manifest.prompts.is_empty()
+        || !manifest.source_capabilities.is_empty();
     if !had_catalog {
         return Ok(());
     }
@@ -1021,6 +1021,7 @@ async fn invalidate_native_mcp_catalog(
         .retain(|action| action.origin != ActionOrigin::Mcp);
     manifest.resources.clear();
     manifest.prompts.clear();
+    manifest.source_capabilities.clear();
     manifest.mcp_catalog_loaded = false;
 
     let key = format!("connector:manifest:{}", manifest.connector_id);
@@ -1044,7 +1045,11 @@ async fn mcp_client_error_to_api_error(
     credentials: Option<&ServiceCredential>,
     source: &Source,
 ) -> ApiError {
-    if let ClientError::ConnectorError { status: 412, message } = &err {
+    if let ClientError::ConnectorError {
+        status: 412,
+        message,
+    } = &err
+    {
         if let Ok(body) = serde_json::from_str::<Value>(message) {
             if body.get("error").and_then(Value::as_str) == Some("needs_user_auth") {
                 // Only a real (persisted) credential can be invalidated;
@@ -1121,41 +1126,6 @@ fn merge_org_and_user_credentials(
     user_cred.credentials = merge_json_objects(&org_setup, &user_cred.credentials);
     user_cred.config = merge_json_objects(&org_cred.config, &user_cred.config);
     user_cred
-}
-
-/// Resolve which credential to use for a tool/action invocation.
-///
-/// * `admin_only` action → org row regardless of user_id. These actions
-///   (e.g. Google Admin directory ops) require the service-account credential
-///   the admin set up org-wide; per-user OAuth scopes don't cover them.
-/// * `Some(user_id)` (chat tool, user-scoped agent) → per-user row when it
-///   exists; when it doesn't, `supports_user_oauth` decides: connectors with
-///   a per-user OAuth flow surface `NeedsUserAuth` so the UI can prompt,
-///   while org-credential-only connectors (no per-user OAuth) fall back to
-///   the org row — the actor identity is still resolved downstream and the
-///   connector's own gates (participant allowlist, allowed_actions, audience)
-///   remain the row-level control. When both rows exist, org-level setup
-///   credentials/config are merged under the user's OAuth token. Personal
-///   sources satisfy this because their cred row is keyed on the owner's
-///   user_id (see migration 087).
-/// * `None` (sync, org-level agent) → org row.
-async fn resolve_credentials(
-    cred_service: &CredentialService,
-    source_id: &str,
-    user_id: Option<&str>,
-    admin_only: bool,
-    supports_user_oauth: bool,
-) -> Result<CredentialResolution, ApiError> {
-    resolve_credentials_with_policy(
-        cred_service,
-        source_id,
-        user_id,
-        admin_only,
-        supports_user_oauth,
-        false,
-        None,
-    )
-    .await
 }
 
 async fn resolve_credentials_with_policy(
@@ -1445,25 +1415,59 @@ pub async fn list_actions(
                 .await
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
         row.and_then(|(config,)| config.get("read_only").and_then(|v| v.as_bool()))
-            .unwrap_or(false)
     } else {
-        false
+        None
     };
 
     let manifests = get_registered_manifests(&state.redis_client).await;
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_active_sources()
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
     let mut all_actions = Vec::new();
 
     for manifest in manifests {
-        for source_type in &manifest.source_types {
-            for action in &manifest.actions {
-                if (manifest.read_only || source_read_only) && action.mode == ActionMode::Write {
+        let matching_sources: Vec<&Source> = sources
+            .iter()
+            .filter(|source| {
+                manifest
+                    .source_types
+                    .iter()
+                    .any(|source_type| source_type == &source.source_type)
+                    && params.get("source_id").is_none_or(|id| id == &source.id)
+            })
+            .collect();
+        for source in matching_sources {
+            let mut actions: Vec<&shared::models::ActionDefinition> = Vec::new();
+            if let Some(group) = manifest
+                .source_capabilities
+                .iter()
+                .find(|group| group.source_id == source.id)
+            {
+                actions.extend(group.actions.iter());
+            }
+            let source_action_names: std::collections::HashSet<&str> =
+                actions.iter().map(|action| action.name.as_str()).collect();
+            actions.extend(
+                manifest
+                    .actions
+                    .iter()
+                    .filter(|action| !source_action_names.contains(action.name.as_str())),
+            );
+            for action in actions {
+                let action_source_read_only =
+                    source_read_only.unwrap_or(action.origin == ActionOrigin::Mcp);
+                if (manifest.read_only || action_source_read_only)
+                    && action.mode == ActionMode::Write
+                {
                     continue;
                 }
                 if !action.source_types.is_empty()
                     && !action
                         .source_types
                         .iter()
-                        .any(|action_source_type| action_source_type.as_str() == source_type)
+                        .any(|item| item.as_str() == source.source_type)
                 {
                     continue;
                 }
@@ -1471,7 +1475,8 @@ pub async fn list_actions(
                     continue;
                 }
                 all_actions.push(json!({
-                    "source_type": source_type,
+                    "source_id": source.id,
+                    "source_type": source.source_type,
                     "name": action.name,
                     "description": action.description,
                     "input_schema": action.input_schema,
@@ -1489,16 +1494,26 @@ pub async fn list_resources(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let manifests = get_registered_manifests(&state.redis_client).await;
+    let sources = SourceRepository::new(state.db_pool.pool())
+        .find_active_sources()
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
     let mut all_resources = Vec::new();
 
     for manifest in manifests {
         if !manifest.mcp_enabled {
             continue;
         }
-        for source_type in &manifest.source_types {
-            for resource in &manifest.resources {
+        for source in sources.iter().filter(|source| {
+            manifest
+                .source_types
+                .iter()
+                .any(|source_type| source_type == &source.source_type)
+        }) {
+            for resource in resources_for_source(&manifest, source) {
                 all_resources.push(json!({
-                    "source_type": source_type,
+                    "source_id": source.id,
+                    "source_type": source.source_type,
                     "uri_template": resource.uri_template,
                     "name": resource.name,
                     "description": resource.description,
@@ -1515,16 +1530,26 @@ pub async fn list_prompts(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let manifests = get_registered_manifests(&state.redis_client).await;
+    let sources = SourceRepository::new(state.db_pool.pool())
+        .find_active_sources()
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
     let mut all_prompts = Vec::new();
 
     for manifest in manifests {
         if !manifest.mcp_enabled {
             continue;
         }
-        for source_type in &manifest.source_types {
-            for prompt in &manifest.prompts {
+        for source in sources.iter().filter(|source| {
+            manifest
+                .source_types
+                .iter()
+                .any(|source_type| source_type == &source.source_type)
+        }) {
+            for prompt in prompts_for_source(&manifest, source) {
                 all_prompts.push(json!({
-                    "source_type": source_type,
+                    "source_id": source.id,
+                    "source_type": source.source_type,
                     "name": prompt.name,
                     "description": prompt.description,
                     "arguments": prompt.arguments,
@@ -1616,9 +1641,9 @@ pub async fn read_resource(
     }
     if native_mcp
         && !native_manifest.as_ref().is_some_and(|manifest| {
-            manifest.resources.iter().any(|resource| {
-                resource_uri_matches_template(&request.uri, &resource.uri_template)
-            })
+            resources_for_source(manifest, &source)
+                .into_iter()
+                .any(|resource| resource_uri_matches_template(&request.uri, &resource.uri_template))
         })
     {
         return Err(ApiError::NotFound(format!(
@@ -1674,6 +1699,7 @@ pub async fn read_resource(
     let resource_request = ResourceRequest {
         uri: request.uri,
         credentials: McpCredentials::from_service_credential(&creds),
+        source: Some(source.clone()),
     };
 
     let result = match client
@@ -1684,7 +1710,7 @@ pub async fn read_resource(
         Err(err) => {
             return Err(
                 mcp_client_error_to_api_error(err, &cred_service, Some(&creds), &source).await,
-            )
+            );
         }
     };
 
@@ -1772,9 +1798,8 @@ pub async fn get_prompt(
     }
     if native_mcp
         && !native_manifest.as_ref().is_some_and(|manifest| {
-            manifest
-                .prompts
-                .iter()
+            prompts_for_source(manifest, &source)
+                .into_iter()
                 .any(|prompt| prompt.name == request.name)
         })
     {
@@ -1832,6 +1857,7 @@ pub async fn get_prompt(
         name: request.name,
         arguments: request.arguments,
         credentials: McpCredentials::from_service_credential(&creds),
+        source: Some(source.clone()),
     };
 
     let result = match client.get_prompt(&connector_url, &prompt_request).await {
@@ -1839,7 +1865,7 @@ pub async fn get_prompt(
         Err(err) => {
             return Err(
                 mcp_client_error_to_api_error(err, &cred_service, Some(&creds), &source).await,
-            )
+            );
         }
     };
 
@@ -1876,9 +1902,10 @@ pub async fn validate_oauth_credential(
         .await
     {
         Ok(result) => Ok(Json(result)),
-        Err(ClientError::ConnectorError { status: 400, message }) => {
-            Err(ApiError::BadRequest(message))
-        }
+        Err(ClientError::ConnectorError {
+            status: 400,
+            message,
+        }) => Err(ApiError::BadRequest(message)),
         Err(err) => Err(ApiError::Internal(err.to_string())),
     }
 }
@@ -1933,6 +1960,109 @@ pub async fn oauth_credential_ready(
                 source.source_type
             ))
         })?;
+
+    if source.source_type == "snowflake" {
+        let client = ConnectorClient::new();
+        let base_manifest = match client.get_manifest(&connector_url).await {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                warn!(source_id = %source.id, error = %error, "Snowflake OAuth credential-ready manifest pull failed");
+                return Ok(Json(json!({
+                    "status": "delivery_failed",
+                    "catalog_updated": false,
+                })));
+            }
+        };
+        let provider = match serde_json::from_value::<ServiceProvider>(Value::String(
+            request.provider.clone(),
+        )) {
+            Ok(provider) => provider,
+            Err(_) => {
+                return Ok(Json(json!({
+                    "status": "delivery_failed",
+                    "catalog_updated": false,
+                })));
+            }
+        };
+        let credential_service = CredentialService::new(state.db_pool.clone());
+        let credential = match resolve_credentials_with_policy(
+            &credential_service,
+            &source.id,
+            request.user_id.as_deref(),
+            false,
+            true,
+            true,
+            Some(provider),
+        )
+        .await?
+        {
+            CredentialResolution::Resolved(credential) => credential,
+            _ => {
+                return Ok(Json(json!({
+                    "status": "missing_credentials",
+                    "catalog_updated": false,
+                })));
+            }
+        };
+        let group = match tokio::time::timeout(
+            SNOWFLAKE_DISCOVERY_TIMEOUT,
+            client.get_manifest_for_source(
+                &connector_url,
+                &manifest_source_context(&source),
+                Some(&credential),
+                true,
+            ),
+        )
+        .await
+        {
+            Ok(Ok(source_manifest)) => source_manifest
+                .source_capabilities
+                .into_iter()
+                .find(|group| group.source_id == source.id),
+            Ok(Err(error)) => {
+                warn!(source_id = %source.id, error = %error, "Snowflake source refresh failed");
+                None
+            }
+            Err(_) => {
+                warn!(source_id = %source.id, "Snowflake source refresh timed out");
+                None
+            }
+        };
+        let Some(group) = group else {
+            return Ok(Json(json!({
+                "status": "delivery_failed",
+                "catalog_updated": false,
+            })));
+        };
+
+        let mut refreshed = get_registered_manifests(&state.redis_client)
+            .await
+            .into_iter()
+            .find(|manifest| manifest.connector_id == base_manifest.connector_id)
+            .unwrap_or(base_manifest);
+        refreshed
+            .source_capabilities
+            .retain(|existing| existing.source_id != source.id);
+        refreshed.source_capabilities.push(group);
+        refreshed.mcp_catalog_loaded = !refreshed.source_capabilities.is_empty();
+        validate_connector_manifest(&refreshed).map_err(ApiError::BadRequest)?;
+        let key = format!("connector:manifest:{}", refreshed.connector_id);
+        let manifest_json = serde_json::to_string(&refreshed)
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let mut conn = state
+            .redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        let _: () = conn
+            .set_ex(&key, manifest_json, REGISTRATION_TTL_SECONDS)
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        return Ok(Json(json!({
+            "status": "completed",
+            "catalog_updated": true,
+        })));
+    }
 
     let cred_service = CredentialService::new(state.db_pool.clone());
     let creds = match resolve_credentials_with_policy(
@@ -2102,9 +2232,33 @@ pub async fn list_skills(
                     continue;
                 }
                 for source in matching_sources {
+                    let source_skill_ids: std::collections::HashSet<&str> = manifest
+                        .source_capabilities
+                        .iter()
+                        .find(|group| group.source_id == source.id)
+                        .map(|group| group.skills.iter().map(|skill| skill.id.as_str()).collect())
+                        .unwrap_or_default();
+                    if source_skill_ids.contains(skill.id.as_str()) {
+                        continue;
+                    }
                     all_skills.push(json!({
                         "connector_id": manifest.connector_id,
                         "source_type": source_type,
+                        "source_id": source.id,
+                        "id": skill.id,
+                        "title": skill.title,
+                        "description": skill.description,
+                        "mcp_prompt": skill.mcp_prompt,
+                    }));
+                }
+            }
+        }
+        for group in &manifest.source_capabilities {
+            if let Some(source) = sources.iter().find(|source| source.id == group.source_id) {
+                for skill in &group.skills {
+                    all_skills.push(json!({
+                        "connector_id": manifest.connector_id,
+                        "source_type": source.source_type,
                         "source_id": source.id,
                         "id": skill.id,
                         "title": skill.title,
@@ -2127,11 +2281,30 @@ pub async fn get_skill(
 
     let manifests = get_registered_manifests(&state.redis_client).await;
     for manifest in manifests {
-        let Some(skill) = manifest
-            .skills
-            .iter()
-            .find(|skill| skill.id == request.skill_id)
-        else {
+        let source_skill = request.source_id.as_ref().and_then(|source_id| {
+            manifest
+                .source_capabilities
+                .iter()
+                .find(|group| group.source_id == *source_id)
+                .and_then(|group| {
+                    group
+                        .skills
+                        .iter()
+                        .find(|skill| skill.id == request.skill_id)
+                })
+        });
+        let Some(skill) = source_skill.or_else(|| {
+            manifest.skills.iter().find(|skill| {
+                skill.id == request.skill_id
+                    && !manifest.source_capabilities.iter().any(|group| {
+                        request.source_id.as_ref() == Some(&group.source_id)
+                            && group
+                                .skills
+                                .iter()
+                                .any(|source_skill| source_skill.id == skill.id)
+                    })
+            })
+        }) else {
             continue;
         };
 
@@ -2185,7 +2358,8 @@ pub async fn get_skill(
         // Per-user OAuth is only mandatory when the connector declares an OAuth
         // manifest; otherwise the org credential (or no credential at all, for
         // unauthenticated MCP servers) is used with the actor identity intact.
-        let requires_user_oauth = is_mcp_backed && oauth_provider_from_manifest(&manifest).is_some();
+        let requires_user_oauth =
+            is_mcp_backed && oauth_provider_from_manifest(&manifest).is_some();
 
         let cred_service = CredentialService::new(state.db_pool.clone());
         let (auth_error_credential, skill_credentials) = if requires_user_oauth {
@@ -2215,7 +2389,10 @@ pub async fn get_skill(
                     )));
                 }
             };
-            (Some(creds.clone()), McpCredentials::from_service_credential(&creds))
+            (
+                Some(creds.clone()),
+                McpCredentials::from_service_credential(&creds),
+            )
         } else {
             match cred_service
                 .get_owner_credential(&source)
@@ -2245,6 +2422,7 @@ pub async fn get_skill(
             skill_id: request.skill_id,
             arguments: request.arguments,
             credentials: skill_credentials,
+            source: Some(source.clone()),
         };
         let result = match client
             .get_skill(&manifest.connector_url, &skill_request)
@@ -2252,15 +2430,13 @@ pub async fn get_skill(
         {
             Ok(result) => result,
             Err(err) => {
-                return Err(
-                    mcp_client_error_to_api_error(
-                        err,
-                        &cred_service,
-                        auth_error_credential.as_ref(),
-                        &source,
-                    )
-                    .await,
+                return Err(mcp_client_error_to_api_error(
+                    err,
+                    &cred_service,
+                    auth_error_credential.as_ref(),
+                    &source,
                 )
+                .await);
             }
         };
         return Ok(Json(result));
@@ -2385,6 +2561,8 @@ impl IntoResponse for ApiError {
 // ============================================================================
 
 const REGISTRATION_TTL_SECONDS: u64 = 300;
+const SNOWFLAKE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+const SNOWFLAKE_DISCOVERY_BUDGET: Duration = Duration::from_secs(20);
 const UNSUPPORTED_TOP_LEVEL_ACTION_SCHEMA_KEYWORDS: &[&str] = &["anyOf", "oneOf", "allOf"];
 const UNSUPPORTED_ACTION_SCHEMA_KEYWORDS: &[&str] = &[
     "$ref",
@@ -2476,7 +2654,7 @@ fn validate_action_schema_keywords(
 }
 
 fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> Result<(), String> {
-    for action in &manifest.actions {
+    for action in manifest_actions(manifest) {
         validate_action_input_schema(&manifest.name, &action.name, &action.input_schema)?;
     }
     Ok(())
@@ -2486,10 +2664,8 @@ fn validate_connector_manifest_action_schemas(manifest: &ConnectorManifest) -> R
 /// connector-manager's credential policy: an `actor_scoped` action claims the
 /// connector derives the affected records from the acting user server-side,
 /// which only holds for user-facing writes on the org-credential path.
-fn validate_connector_manifest_action_policy(
-    manifest: &ConnectorManifest,
-) -> Result<(), String> {
-    for action in &manifest.actions {
+fn validate_connector_manifest_action_policy(manifest: &ConnectorManifest) -> Result<(), String> {
+    for action in manifest_actions(manifest) {
         if !action.actor_scoped {
             continue;
         }
@@ -2520,10 +2696,474 @@ fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), Strin
     validate_connector_manifest_action_policy(manifest)
 }
 
+fn manifest_actions<'a>(
+    manifest: &'a ConnectorManifest,
+) -> impl Iterator<Item = &'a shared::models::ActionDefinition> {
+    manifest.actions.iter().chain(
+        manifest
+            .source_capabilities
+            .iter()
+            .flat_map(|group| group.actions.iter()),
+    )
+}
+
+fn action_definition_for_source<'a>(
+    manifest: &'a ConnectorManifest,
+    source: &Source,
+    action_name: &str,
+) -> Option<&'a shared::models::ActionDefinition> {
+    if let Some(group) = manifest
+        .source_capabilities
+        .iter()
+        .find(|group| group.source_id == source.id)
+    {
+        if let Some(action) = group.actions.iter().find(|action| {
+            action.name == action_name
+                && (action.source_types.is_empty()
+                    || action
+                        .source_types
+                        .iter()
+                        .any(|source_type| source_type.as_str() == source.source_type))
+        }) {
+            return Some(action);
+        }
+    }
+    manifest.actions.iter().find(|action| {
+        action.name == action_name
+            && (action.source_types.is_empty()
+                || action
+                    .source_types
+                    .iter()
+                    .any(|source_type| source_type.as_str() == source.source_type))
+    })
+}
+
+fn resources_for_source<'a>(
+    manifest: &'a ConnectorManifest,
+    source: &Source,
+) -> Vec<&'a shared::models::McpResourceDefinition> {
+    let source_resources = manifest
+        .source_capabilities
+        .iter()
+        .find(|group| group.source_id == source.id)
+        .map(|group| group.resources.as_slice())
+        .unwrap_or_default();
+    let source_uris: std::collections::HashSet<&str> = source_resources
+        .iter()
+        .map(|resource| resource.uri_template.as_str())
+        .collect();
+    source_resources
+        .iter()
+        .chain(
+            manifest
+                .resources
+                .iter()
+                .filter(|resource| !source_uris.contains(resource.uri_template.as_str())),
+        )
+        .collect()
+}
+
+fn prompts_for_source<'a>(
+    manifest: &'a ConnectorManifest,
+    source: &Source,
+) -> Vec<&'a shared::models::McpPromptDefinition> {
+    let source_prompts = manifest
+        .source_capabilities
+        .iter()
+        .find(|group| group.source_id == source.id)
+        .map(|group| group.prompts.as_slice())
+        .unwrap_or_default();
+    let source_names: std::collections::HashSet<&str> = source_prompts
+        .iter()
+        .map(|prompt| prompt.name.as_str())
+        .collect();
+    source_prompts
+        .iter()
+        .chain(
+            manifest
+                .prompts
+                .iter()
+                .filter(|prompt| !source_names.contains(prompt.name.as_str())),
+        )
+        .collect()
+}
+
+fn redact_manifest_config(value: &Value) -> Value {
+    const SECRET_KEYS: &[&str] = &[
+        "secret",
+        "client_secret",
+        "private_key",
+        "private_key_passphrase",
+        "password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+    ];
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| {
+                    !SECRET_KEYS
+                        .iter()
+                        .any(|secret| key.eq_ignore_ascii_case(secret))
+                })
+                .map(|(key, value)| (key.clone(), redact_manifest_config(value)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_manifest_config).collect()),
+        other => other.clone(),
+    }
+}
+
+async fn active_manifest_sources(
+    state: &AppState,
+    manifest: &ConnectorManifest,
+) -> Result<Vec<Source>, ApiError> {
+    let source_repo = SourceRepository::new(state.db_pool.pool());
+    let sources = source_repo
+        .find_active_sources()
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    Ok(sources
+        .into_iter()
+        .filter(|source| {
+            !source.is_deleted
+                && source.integration_type == IntegrationType::Connector
+                && manifest
+                    .source_types
+                    .iter()
+                    .any(|source_type| source_type == &source.source_type)
+        })
+        .collect())
+}
+
+fn preserve_cached_mcp_catalog(
+    base: &ConnectorManifest,
+    cached: &ConnectorManifest,
+) -> ConnectorManifest {
+    let mut manifest = base.clone();
+    let native_names: std::collections::HashSet<String> = manifest
+        .actions
+        .iter()
+        .filter(|action| action.origin == ActionOrigin::Native)
+        .map(|action| action.name.clone())
+        .collect();
+    manifest.actions.extend(
+        cached
+            .actions
+            .iter()
+            .filter(|action| {
+                action.origin == ActionOrigin::Mcp && !native_names.contains(&action.name)
+            })
+            .cloned(),
+    );
+    manifest.resources = cached.resources.clone();
+    manifest.prompts = cached.prompts.clone();
+    let existing_skill_ids: std::collections::HashSet<String> = manifest
+        .skills
+        .iter()
+        .map(|skill| skill.id.clone())
+        .collect();
+    manifest.skills.extend(
+        cached
+            .skills
+            .iter()
+            .filter(|skill| !existing_skill_ids.contains(&skill.id))
+            .cloned(),
+    );
+    manifest.mcp_catalog_loaded = cached.mcp_catalog_loaded;
+    manifest
+}
+
+fn needs_native_mcp_catalog_recovery(manifest: &ConnectorManifest, is_snowflake: bool) -> bool {
+    !is_snowflake && manifest.mcp_enabled && !manifest.mcp_catalog_loaded
+}
+
+fn manifest_source_context(source: &Source) -> ManifestSourceContext {
+    let config = if source.source_type == "snowflake" {
+        let mut safe = serde_json::Map::new();
+        for key in [
+            "account_url",
+            "mcp_endpoint_url",
+            "mcp_enabled",
+            "read_only",
+            "write_tools_enabled",
+        ] {
+            if let Some(value) = source.config.get(key) {
+                safe.insert(key.to_string(), value.clone());
+            }
+        }
+        Value::Object(safe)
+    } else {
+        redact_manifest_config(&source.config)
+    };
+    ManifestSourceContext::from_source(source, config)
+}
+
+async fn discover_source_capability(
+    state: &AppState,
+    client: &ConnectorClient,
+    connector_url: &str,
+    source: &Source,
+    provider: &str,
+    provider_enum: ServiceProvider,
+    force_refresh: bool,
+) -> Option<ConnectorSourceCapabilities> {
+    let credentials_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone()).ok()?;
+    let user_id = match credentials_repo
+        .find_any_user_oauth_for_source(&source.id, provider)
+        .await
+    {
+        Ok(Some(user_id)) => user_id,
+        Ok(None) => return None,
+        Err(error) => {
+            warn!(source_id = %source.id, error = %error, "Snowflake discovery credential lookup failed");
+            return None;
+        }
+    };
+    let credential_service = CredentialService::new(state.db_pool.clone());
+    let credential = match resolve_credentials_with_policy(
+        &credential_service,
+        &source.id,
+        Some(&user_id),
+        false,
+        true,
+        true,
+        Some(provider_enum),
+    )
+    .await
+    {
+        Ok(CredentialResolution::Resolved(credential)) => credential,
+        Ok(_) => return None,
+        Err(error) => {
+            warn!(source_id = %source.id, error = %error, "Snowflake discovery credential unavailable");
+            return None;
+        }
+    };
+    let source_manifest = match client
+        .get_manifest_for_source(
+            connector_url,
+            &manifest_source_context(source),
+            Some(&credential),
+            force_refresh,
+        )
+        .await
+    {
+        Ok(source_manifest) => source_manifest,
+        Err(error) => {
+            warn!(source_id = %source.id, error = %error, "Snowflake source manifest discovery failed");
+            return None;
+        }
+    };
+    source_manifest
+        .source_capabilities
+        .into_iter()
+        .find(|group| group.source_id == source.id)
+}
+
+async fn collect_source_capabilities<'a>(
+    mut discoveries: std::pin::Pin<Box<dyn Stream<Item = ConnectorSourceCapabilities> + Send + 'a>>,
+    budget: Duration,
+) -> Vec<ConnectorSourceCapabilities> {
+    let deadline = std::time::Instant::now() + budget;
+    let mut groups = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            warn!("Snowflake source discovery budget exhausted");
+            break;
+        }
+        match tokio::time::timeout(remaining, discoveries.next()).await {
+            Ok(Some(group)) => groups.push(group),
+            Ok(None) => break,
+            Err(_) => {
+                warn!("Snowflake source discovery budget exhausted with partial results");
+                break;
+            }
+        }
+    }
+    groups
+}
+
+async fn pull_source_capabilities(
+    state: &AppState,
+    client: &ConnectorClient,
+    base: &ConnectorManifest,
+    sources: &[Source],
+) -> ConnectorManifest {
+    let is_snowflake = base
+        .source_types
+        .iter()
+        .any(|source_type| source_type == "snowflake");
+    if !is_snowflake {
+        return base.clone();
+    }
+
+    let provider = base.oauth.as_ref().and_then(|oauth| {
+        oauth
+            .get("provider")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+    });
+    let Some(provider) = provider else {
+        return base.clone();
+    };
+    let Some(provider_enum) = serde_json::from_value(Value::String(provider.clone())).ok() else {
+        return base.clone();
+    };
+
+    let mut manifest = base.clone();
+    let snowflake_sources: Vec<Source> = sources
+        .iter()
+        .filter(|source| source.source_type == "snowflake")
+        .cloned()
+        .collect();
+    let discovery_stream = stream::iter(snowflake_sources)
+        .map(|source| {
+            let provider = provider.clone();
+            async move {
+                tokio::time::timeout(
+                    SNOWFLAKE_DISCOVERY_TIMEOUT,
+                    discover_source_capability(
+                        state,
+                        client,
+                        &base.connector_url,
+                        &source,
+                        &provider,
+                        provider_enum,
+                        false,
+                    ),
+                )
+                .await
+                .ok()
+                .flatten()
+            }
+        })
+        .buffer_unordered(4)
+        .filter_map(async |group| group);
+    manifest.source_capabilities = collect_source_capabilities(
+        Box::pin(discovery_stream)
+            as std::pin::Pin<Box<dyn Stream<Item = ConnectorSourceCapabilities> + Send + '_>>,
+        SNOWFLAKE_DISCOVERY_BUDGET,
+    )
+    .await;
+    manifest.mcp_catalog_loaded = !manifest.source_capabilities.is_empty();
+    manifest
+}
+
+async fn recover_native_mcp_catalog(
+    state: &AppState,
+    client: &ConnectorClient,
+    manifest: &ConnectorManifest,
+) {
+    let Some(provider) = manifest
+        .oauth
+        .as_ref()
+        .and_then(|oauth| oauth.get("provider").and_then(Value::as_str))
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let Some(provider_enum) = serde_json::from_value(Value::String(provider.clone())).ok() else {
+        return;
+    };
+    let credentials_repo = match ServiceCredentialsRepo::new(state.db_pool.pool().clone()) {
+        Ok(repo) => repo,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery credential repository unavailable");
+            return;
+        }
+    };
+    let Some((source_id, user_id)) = credentials_repo
+        .find_any_user_oauth_for_provider(&manifest.source_types, &provider)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return;
+    };
+    let credential_service = CredentialService::new(state.db_pool.clone());
+    let credentials = match resolve_credentials_with_policy(
+        &credential_service,
+        &source_id,
+        Some(&user_id),
+        false,
+        true,
+        true,
+        Some(provider_enum),
+    )
+    .await
+    {
+        Ok(CredentialResolution::Resolved(credentials)) => credentials,
+        Ok(_) => return,
+        Err(error) => {
+            warn!(source_id = %source_id, error = %error, "MCP catalog recovery credential resolution failed");
+            return;
+        }
+    };
+    let credentials = match serde_json::to_value(McpCredentials::from_service_credential(
+        &credentials,
+    )) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            warn!(source_id = %source_id, error = %error, "MCP catalog recovery credential serialization failed");
+            return;
+        }
+    };
+    let request = OAuthCredentialReadyRequest {
+        source_id,
+        user_id: Some(user_id),
+        provider,
+        flow: "user_read".to_string(),
+        credentials,
+    };
+    let refreshed = match client
+        .oauth_credential_ready(&manifest.connector_url, &request)
+        .await
+    {
+        Ok(Some(refreshed)) => refreshed,
+        Ok(None) => return,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery credential-ready delivery failed");
+            return;
+        }
+    };
+    if let Err(error) = validate_connector_manifest(&refreshed) {
+        warn!(error = %error, "MCP catalog recovery returned invalid manifest");
+        return;
+    }
+    let manifest_json = match serde_json::to_string(&refreshed) {
+        Ok(manifest_json) => manifest_json,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery manifest serialization failed");
+            return;
+        }
+    };
+    let key = format!("connector:manifest:{}", refreshed.connector_id);
+    let mut connection = match state.redis_client.get_multiplexed_async_connection().await {
+        Ok(connection) => connection,
+        Err(error) => {
+            warn!(error = %error, "MCP catalog recovery Redis connection failed");
+            return;
+        }
+    };
+    if let Err(error) = connection
+        .set_ex::<_, _, ()>(&key, manifest_json, REGISTRATION_TTL_SECONDS)
+        .await
+    {
+        warn!(error = %error, "MCP catalog recovery manifest storage failed");
+    } else {
+        info!(connector_id = %refreshed.connector_id, "MCP catalog recovery updated connector manifest");
+    }
+}
+
 pub async fn sdk_register(
     State(state): State<AppState>,
-    Json(manifest): Json<ConnectorManifest>,
+    Json(base_manifest): Json<ConnectorManifest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
+    let mut manifest = base_manifest;
     if manifest.connector_id.is_empty() {
         return Err(ApiError::BadRequest(
             "connector_id is required for registration".to_string(),
@@ -2545,12 +3185,67 @@ pub async fn sdk_register(
         )));
     }
 
-    // A catalog-less registration is fail-closed. Do not retain or union a
-    // previous MCP catalog: removed or policy-disabled tools must disappear
-    // immediately. The authenticated credential-ready registration will
-    // replace this manifest with the freshly discovered catalog.
-    let needs_mcp_catalog_recovery = manifest.mcp_enabled && !manifest.mcp_catalog_loaded;
     let connector_id = manifest.connector_id.clone();
+    let manifest_key = format!("connector:manifest:{}", connector_id);
+    let cached_manifest = match state.redis_client.get_multiplexed_async_connection().await {
+        Ok(mut connection) => connection
+            .get::<_, Option<String>>(&manifest_key)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|manifest_json| {
+                serde_json::from_str::<ConnectorManifest>(&manifest_json).ok()
+            }),
+        Err(error) => {
+            warn!(connector_id = %connector_id, error = %error, "Cached connector manifest unavailable");
+            None
+        }
+    };
+    let is_snowflake = manifest
+        .source_types
+        .iter()
+        .any(|source_type| source_type == "snowflake");
+    let pulled_manifest = client.get_manifest(&manifest.connector_url).await;
+    if is_snowflake {
+        let pulled_manifest = match pulled_manifest {
+            Ok(pulled) => {
+                validate_connector_manifest(&pulled).map_err(ApiError::BadRequest)?;
+                pulled
+            }
+            Err(error) => {
+                warn!(connector_id = %connector_id, error = %error, "GET /manifest failed; retaining registration manifest");
+                manifest.clone()
+            }
+        };
+        let active_sources = active_manifest_sources(&state, &pulled_manifest).await?;
+        manifest =
+            pull_source_capabilities(&state, &client, &pulled_manifest, &active_sources).await;
+    } else {
+        manifest = match pulled_manifest {
+            Ok(pulled) => {
+                validate_connector_manifest(&pulled).map_err(ApiError::BadRequest)?;
+                if pulled.mcp_enabled && !pulled.mcp_catalog_loaded {
+                    cached_manifest
+                        .as_ref()
+                        .filter(|cached| cached.mcp_catalog_loaded)
+                        .map(|cached| preserve_cached_mcp_catalog(&pulled, cached))
+                        .unwrap_or(pulled)
+                } else {
+                    pulled
+                }
+            }
+            Err(error) => {
+                warn!(connector_id = %connector_id, error = %error, "GET /manifest failed; retaining registration manifest");
+                cached_manifest
+                    .as_ref()
+                    .filter(|cached| cached.mcp_catalog_loaded)
+                    .map(|cached| preserve_cached_mcp_catalog(&manifest, cached))
+                    .unwrap_or(manifest)
+            }
+        };
+    }
+    validate_connector_manifest(&manifest).map_err(ApiError::BadRequest)?;
+    let needs_mcp_catalog_recovery = needs_native_mcp_catalog_recovery(&manifest, is_snowflake);
 
     info!(
         "SDK: Registered connector '{}' (source_types: {:?}, url: {})",
@@ -2590,149 +3285,8 @@ pub async fn sdk_register(
         let _: Result<(), _> = conn.set("search:operators", json).await;
     }
 
-    // Recovery: if the connector is MCP-enabled but has no catalog loaded, try
-    // to find an existing OAuth credential for one of its source types and
-    // replay the credential-ready notification. This covers the case where the
-    // connector was unavailable when OAuth completed.
     if needs_mcp_catalog_recovery {
-        if let Some(provider) = manifest
-            .oauth
-            .as_ref()
-            .and_then(|o| o.get("provider").and_then(|v| v.as_str().map(String::from)))
-        {
-            let source_type_strs: Vec<String> = manifest
-                .source_types
-                .iter()
-                .filter_map(|t| {
-                    serde_json::to_value(t)
-                        .ok()
-                        .and_then(|v| v.as_str().map(String::from))
-                })
-                .collect();
-            let creds_repo = ServiceCredentialsRepo::new(state.db_pool.pool().clone())
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
-            if let Ok(Some((source_id, user_id))) = creds_repo
-                .find_any_user_oauth_for_provider(&source_type_strs, &provider)
-                .await
-            {
-                info!(
-                    "Recovery: found OAuth credential for {} / {} to refresh missing MCP catalog",
-                    source_id, provider
-                );
-                let recovery_cred_service = CredentialService::new(state.db_pool.clone());
-                match resolve_credentials(
-                    &recovery_cred_service,
-                    &source_id,
-                    Some(&user_id),
-                    false,
-                    true, // MCP catalog recovery replays a per-user OAuth flow
-                )
-                .await
-                {
-                    Ok(CredentialResolution::Resolved(recovery_creds)) => {
-                        match serde_json::to_value(McpCredentials::from_service_credential(
-                            &recovery_creds,
-                        )) {
-                            Ok(credentials) => {
-                                let recovery_request = OAuthCredentialReadyRequest {
-                                    source_id,
-                                    user_id: Some(user_id),
-                                    provider: provider.clone(),
-                                    flow: "user_read".to_string(),
-                                    credentials,
-                                };
-                                match client
-                                    .oauth_credential_ready(
-                                        &manifest.connector_url,
-                                        &recovery_request,
-                                    )
-                                    .await
-                                {
-                                    Ok(Some(refreshed_manifest)) => {
-                                        if let Err(error) =
-                                            validate_connector_manifest(
-                                                &refreshed_manifest,
-                                            )
-                                        {
-                                            warn!(
-                                                "Recovery returned invalid connector manifest: {}",
-                                                error
-                                            );
-                                        } else {
-                                            let refreshed_key = format!(
-                                                "connector:manifest:{}",
-                                                refreshed_manifest.connector_id
-                                            );
-                                            match serde_json::to_string(&refreshed_manifest) {
-                                                Ok(refreshed_json) => {
-                                                    let store_result: redis::RedisResult<()> = conn
-                                                        .set_ex(
-                                                            &refreshed_key,
-                                                            refreshed_json,
-                                                            REGISTRATION_TTL_SECONDS,
-                                                        )
-                                                        .await;
-                                                    if let Err(error) = store_result {
-                                                        warn!(
-                                                            "Recovery failed to store refreshed connector manifest: {}",
-                                                            error
-                                                        );
-                                                    } else {
-                                                        info!(
-                                                            "Recovery updated MCP catalog for {}",
-                                                            refreshed_manifest.connector_id
-                                                        );
-                                                    }
-                                                }
-                                                Err(error) => warn!(
-                                                    "Recovery failed to serialize refreshed connector manifest: {}",
-                                                    error
-                                                ),
-                                            }
-                                        }
-                                    }
-                                    Ok(None) => {
-                                        warn!(
-                                            "Recovery credential-ready returned no refreshed manifest"
-                                        );
-                                    }
-                                    Err(error) => {
-                                        warn!(
-                                            "Recovery credential-ready delivery failed: {}",
-                                            error
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Recovery credential-ready skipped for {}: failed to serialize credentials: {}",
-                                    source_id, e
-                                );
-                            }
-                        }
-                    }
-                    Ok(CredentialResolution::NeedsUserAuth { provider }) => {
-                        warn!(
-                            "Recovery credential-ready skipped for {}: user auth still required for provider {:?}",
-                            source_id, provider
-                        );
-                    }
-                    Ok(CredentialResolution::NoCredentials) => {
-                        warn!(
-                            "Recovery credential-ready skipped for {}: no credentials found",
-                            source_id
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Recovery credential-ready skipped for {}: credential resolution failed: {}",
-                            source_id, e
-                        );
-                    }
-                }
-            }
-        }
+        recover_native_mcp_catalog(&state, &client, &manifest).await;
     }
 
     Ok(Json(SdkStatusResponse {
@@ -4044,7 +4598,10 @@ mod tests {
             "rovo://issues/ABC123",
             "rovo://issue/{id}"
         ));
-        assert!(!resource_uri_matches_template("rovo://issue/", "rovo://issue/{id}"));
+        assert!(!resource_uri_matches_template(
+            "rovo://issue/",
+            "rovo://issue/{id}"
+        ));
         assert!(!resource_uri_matches_template(
             "rovo://issue/ABC/comments/1",
             "rovo://issue/{id}"
@@ -4084,8 +4641,240 @@ mod tests {
             resources: Vec::new(),
             prompts: Vec::new(),
             skills: Vec::new(),
+            source_capabilities: Vec::new(),
             oauth: None,
         }
+    }
+
+    fn test_source(id: &str) -> Source {
+        let now = time::OffsetDateTime::now_utc();
+        Source {
+            id: id.to_string(),
+            name: id.to_string(),
+            source_type: "snowflake".to_string(),
+            integration_type: IntegrationType::Connector,
+            config: json!({}),
+            is_active: true,
+            is_deleted: false,
+            scope: shared::models::SourceScope::Org,
+            user_filter_mode: shared::models::UserFilterMode::All,
+            user_whitelist: None,
+            user_blacklist: None,
+            connector_state: None,
+            checkpoint: None,
+            sync_interval_seconds: None,
+            created_at: now,
+            updated_at: now,
+            created_by: "test-user".to_string(),
+        }
+    }
+
+    #[test]
+    fn source_specific_action_wins_over_legacy_action() {
+        let source = test_source("source-one");
+        let legacy = shared::models::ActionDefinition {
+            name: "same".to_string(),
+            description: "legacy".to_string(),
+            input_schema: json!({"type": "object"}),
+            mode: ActionMode::Read,
+            credential_scope: Default::default(),
+            required_scopes: None,
+            source_types: Vec::new(),
+            admin_only: false,
+            hidden: false,
+            actor_scoped: false,
+            origin: ActionOrigin::Native,
+        };
+        let specific = shared::models::ActionDefinition {
+            description: "source-specific".to_string(),
+            origin: ActionOrigin::Mcp,
+            ..legacy.clone()
+        };
+        let manifest = ConnectorManifest {
+            actions: vec![legacy],
+            source_capabilities: vec![ConnectorSourceCapabilities {
+                source_id: source.id.clone(),
+                actions: vec![specific],
+                resources: Vec::new(),
+                prompts: Vec::new(),
+                skills: Vec::new(),
+            }],
+            ..manifest_with_action_schema(json!({}))
+        };
+
+        assert_eq!(
+            action_definition_for_source(&manifest, &source, "same")
+                .expect("source action")
+                .description,
+            "source-specific"
+        );
+    }
+
+    #[test]
+    fn source_resources_and_prompts_dedupe_legacy_by_identity() {
+        let source = test_source("source-one");
+        let manifest = ConnectorManifest {
+            resources: vec![
+                shared::models::McpResourceDefinition {
+                    uri_template: "snowflake://same".to_string(),
+                    name: "legacy same".to_string(),
+                    description: None,
+                    mime_type: None,
+                },
+                shared::models::McpResourceDefinition {
+                    uri_template: "snowflake://legacy".to_string(),
+                    name: "legacy only".to_string(),
+                    description: None,
+                    mime_type: None,
+                },
+            ],
+            prompts: vec![
+                shared::models::McpPromptDefinition {
+                    name: "same".to_string(),
+                    description: Some("legacy same".to_string()),
+                    arguments: Vec::new(),
+                },
+                shared::models::McpPromptDefinition {
+                    name: "legacy".to_string(),
+                    description: None,
+                    arguments: Vec::new(),
+                },
+            ],
+            source_capabilities: vec![ConnectorSourceCapabilities {
+                source_id: source.id.clone(),
+                actions: Vec::new(),
+                resources: vec![
+                    shared::models::McpResourceDefinition {
+                        uri_template: "snowflake://same".to_string(),
+                        name: "specific same".to_string(),
+                        description: None,
+                        mime_type: None,
+                    },
+                    shared::models::McpResourceDefinition {
+                        uri_template: "snowflake://specific".to_string(),
+                        name: "specific only".to_string(),
+                        description: None,
+                        mime_type: None,
+                    },
+                ],
+                prompts: vec![shared::models::McpPromptDefinition {
+                    name: "same".to_string(),
+                    description: Some("specific same".to_string()),
+                    arguments: Vec::new(),
+                }],
+                skills: Vec::new(),
+            }],
+            ..manifest_with_action_schema(json!({}))
+        };
+
+        let resources = resources_for_source(&manifest, &source);
+        assert_eq!(
+            resources
+                .iter()
+                .map(|resource| resource.uri_template.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "snowflake://same",
+                "snowflake://specific",
+                "snowflake://legacy"
+            ]
+        );
+        let prompts = prompts_for_source(&manifest, &source);
+        assert_eq!(
+            prompts
+                .iter()
+                .map(|prompt| prompt.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["same", "legacy"]
+        );
+    }
+
+    #[test]
+    fn unloaded_non_snowflake_manifest_preserves_cached_mcp_catalog() {
+        let mut cached = manifest_with_action_schema(json!({}));
+        cached.mcp_enabled = true;
+        cached.mcp_catalog_loaded = true;
+        cached.actions.push(shared::models::ActionDefinition {
+            name: "cached_tool".to_string(),
+            description: "Cached MCP tool".to_string(),
+            input_schema: json!({"type": "object"}),
+            mode: ActionMode::Read,
+            credential_scope: Default::default(),
+            required_scopes: None,
+            source_types: Vec::new(),
+            admin_only: false,
+            hidden: false,
+            actor_scoped: false,
+            origin: ActionOrigin::Mcp,
+        });
+        cached
+            .resources
+            .push(shared::models::McpResourceDefinition {
+                uri_template: "cached://resource".to_string(),
+                name: "Cached resource".to_string(),
+                description: None,
+                mime_type: None,
+            });
+        cached.prompts.push(shared::models::McpPromptDefinition {
+            name: "cached_prompt".to_string(),
+            description: None,
+            arguments: Vec::new(),
+        });
+
+        let mut unloaded = manifest_with_action_schema(json!({}));
+        unloaded.mcp_enabled = true;
+        unloaded.mcp_catalog_loaded = false;
+        assert!(needs_native_mcp_catalog_recovery(&unloaded, false));
+        assert!(!needs_native_mcp_catalog_recovery(&unloaded, true));
+        let preserved = preserve_cached_mcp_catalog(&unloaded, &cached);
+
+        assert!(preserved.mcp_catalog_loaded);
+        assert!(
+            preserved
+                .actions
+                .iter()
+                .any(|action| action.name == "cached_tool")
+        );
+        assert_eq!(preserved.resources[0].uri_template, "cached://resource");
+        assert_eq!(preserved.prompts[0].name, "cached_prompt");
+    }
+
+    #[tokio::test]
+    async fn source_discovery_budget_preserves_completed_groups() {
+        let first = ConnectorSourceCapabilities {
+            source_id: "first".to_string(),
+            actions: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+            skills: Vec::new(),
+        };
+        let second = ConnectorSourceCapabilities {
+            source_id: "second".to_string(),
+            actions: Vec::new(),
+            resources: Vec::new(),
+            prompts: Vec::new(),
+            skills: Vec::new(),
+        };
+        let discoveries = stream::iter(vec![first]).chain(stream::once(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            second
+        }));
+        let groups = collect_source_capabilities(
+            Box::pin(discoveries)
+                as std::pin::Pin<Box<dyn Stream<Item = ConnectorSourceCapabilities> + Send>>,
+            Duration::from_millis(20),
+        )
+        .await;
+
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first"]
+        );
+        assert!(SNOWFLAKE_DISCOVERY_TIMEOUT <= SNOWFLAKE_DISCOVERY_BUDGET);
+        assert!(SNOWFLAKE_DISCOVERY_BUDGET < Duration::from_secs(30));
     }
 
     #[test]
@@ -4111,16 +4900,20 @@ mod tests {
 
     #[test]
     fn source_action_origin_policy_filters_configured_origins() {
-        assert!(!source_allows_action_origin(
-            &json!({"allowed_action_origins": ["mcp"]}),
-            ActionOrigin::Native
-        )
-        .unwrap());
-        assert!(source_allows_action_origin(
-            &json!({"allowed_action_origins": ["mcp"]}),
-            ActionOrigin::Mcp
-        )
-        .unwrap());
+        assert!(
+            !source_allows_action_origin(
+                &json!({"allowed_action_origins": ["mcp"]}),
+                ActionOrigin::Native
+            )
+            .unwrap()
+        );
+        assert!(
+            source_allows_action_origin(
+                &json!({"allowed_action_origins": ["mcp"]}),
+                ActionOrigin::Mcp
+            )
+            .unwrap()
+        );
         assert!(source_allows_action_origin(&json!({}), ActionOrigin::Native).unwrap());
         assert!(source_allows_action_origin(&json!({}), ActionOrigin::Mcp).unwrap());
     }
@@ -4138,16 +4931,20 @@ mod tests {
 
     #[test]
     fn malformed_source_action_origin_policy_fails_closed() {
-        assert!(source_allows_action_origin(
-            &json!({"allowed_action_origins": ["unsupported"]}),
-            ActionOrigin::Native
-        )
-        .is_err());
-        assert!(source_allows_action_origin(
-            &json!({"allowed_action_origins": "mcp"}),
-            ActionOrigin::Mcp
-        )
-        .is_err());
+        assert!(
+            source_allows_action_origin(
+                &json!({"allowed_action_origins": ["unsupported"]}),
+                ActionOrigin::Native
+            )
+            .is_err()
+        );
+        assert!(
+            source_allows_action_origin(
+                &json!({"allowed_action_origins": "mcp"}),
+                ActionOrigin::Mcp
+            )
+            .is_err()
+        );
     }
 
     #[test]

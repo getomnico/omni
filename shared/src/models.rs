@@ -2,8 +2,8 @@ use axum::response::IntoResponse;
 use pgvector::Vector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::types::time::OffsetDateTime;
 use sqlx::FromRow;
+use sqlx::types::time::OffsetDateTime;
 use std::collections::{BTreeMap, HashMap};
 use tracing::warn;
 
@@ -207,6 +207,7 @@ pub enum SourceType {
     Darwinbox,
     Windshift,
     Salesforce,
+    Snowflake,
 }
 
 impl SourceType {
@@ -239,6 +240,7 @@ impl SourceType {
             SourceType::Darwinbox => "darwinbox",
             SourceType::Windshift => "windshift",
             SourceType::Salesforce => "salesforce",
+            SourceType::Snowflake => "snowflake",
         }
     }
 }
@@ -289,6 +291,7 @@ impl TryFrom<&str> for SourceType {
             "darwinbox" => Ok(SourceType::Darwinbox),
             "windshift" => Ok(SourceType::Windshift),
             "salesforce" => Ok(SourceType::Salesforce),
+            "snowflake" => Ok(SourceType::Snowflake),
             other => Err(format!("unknown source type: {other}")),
         }
     }
@@ -336,6 +339,7 @@ pub enum ServiceProvider {
     RemoteMcp,
     Windshift,
     Salesforce,
+    Snowflake,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]
@@ -932,9 +936,7 @@ pub struct ActionDefinition {
     pub origin: ActionOrigin,
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
-)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionOrigin {
     #[default]
@@ -998,6 +1000,9 @@ pub struct ConnectorManifest {
     pub source_types: Vec<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Deprecated compatibility catalog. New and migrated connectors should
+    /// publish actions in `source_capabilities`; a source-specific definition
+    /// wins over a legacy definition with the same name for that source.
     #[serde(default)]
     pub actions: Vec<ActionDefinition>,
     #[serde(default)]
@@ -1011,8 +1016,7 @@ pub struct ConnectorManifest {
     #[serde(default)]
     pub mcp_enabled: bool,
     /// True when the connector has MCP tools/resources/prompts available from
-    /// live discovery or an in-memory catalog cache. Connector-manager uses this to
-    /// recover missing authenticated MCP catalogs after connector restart.
+    /// live discovery or an in-memory catalog cache.
     #[serde(default)]
     pub mcp_catalog_loaded: bool,
     #[serde(default)]
@@ -1021,6 +1025,10 @@ pub struct ConnectorManifest {
     pub prompts: Vec<McpPromptDefinition>,
     #[serde(default)]
     pub skills: Vec<ConnectorSkillDefinition>,
+    /// Capabilities discovered for one exact source. Legacy top-level
+    /// capabilities remain supported during migration.
+    #[serde(default)]
+    pub source_capabilities: Vec<ConnectorSourceCapabilities>,
     /// Declarative OAuth2 config consumed by the web app's generic OAuth
     /// service. Connectors that use OAuth populate this. The typed shape
     /// lives in the connector SDK (`omni_connector_sdk::OAuthManifestConfig`);
@@ -1030,11 +1038,22 @@ pub struct ConnectorManifest {
     pub oauth: Option<JsonValue>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectorSourceCapabilities {
+    pub source_id: String,
+    #[serde(default)]
+    pub actions: Vec<ActionDefinition>,
+    #[serde(default)]
+    pub resources: Vec<McpResourceDefinition>,
+    #[serde(default)]
+    pub prompts: Vec<McpPromptDefinition>,
+    #[serde(default)]
+    pub skills: Vec<ConnectorSkillDefinition>,
+}
+
 /// Which web OAuth flow produced a credential. Passed to the connector's
 /// validation hook so it can decide whether a binding claim applies.
-#[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq,
-)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OAuthCredentialFlow {
     OrgSource,
@@ -1525,6 +1544,9 @@ pub struct ResourceRequest {
     pub uri: String,
     #[serde(default)]
     pub credentials: McpCredentials,
+    /// Exact source selected by connector-manager. Legacy connectors may ignore it.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1534,6 +1556,9 @@ pub struct PromptRequest {
     pub arguments: Option<JsonValue>,
     #[serde(default)]
     pub credentials: McpCredentials,
+    /// Exact source selected by connector-manager. Legacy connectors may ignore it.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1543,6 +1568,9 @@ pub struct SkillRequest {
     pub arguments: Option<JsonValue>,
     #[serde(default)]
     pub credentials: McpCredentials,
+    /// Trusted source selected by connector-manager for source-scoped skills.
+    #[serde(default)]
+    pub source: Option<Source>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

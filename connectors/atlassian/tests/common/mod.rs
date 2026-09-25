@@ -98,6 +98,7 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         resources: vec![],
         prompts: vec![],
         skills: vec![],
+        source_capabilities: vec![],
         oauth: None,
     };
     let manifest_json = serde_json::to_string(&manifest)?;

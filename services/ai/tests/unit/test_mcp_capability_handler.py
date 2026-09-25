@@ -235,6 +235,73 @@ async def test_explicitly_unhealthy_connector_is_not_published() -> None:
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_source_group_keeps_nonconflicting_legacy_resources_and_prompts() -> None:
+    searcher = _FakeSearcherClient()
+    manifest = _manifest()
+    manifest["source_capabilities"] = [
+        {
+            "source_id": "src-1",
+            "resources": [
+                {
+                    "uri_template": "docs://guide",
+                    "name": "Source guide",
+                },
+                {
+                    "uri_template": "docs://source-only",
+                    "name": "Source only",
+                },
+            ],
+            "prompts": [
+                {"name": "debug_error", "description": "Source debug"},
+                {"name": "source-only", "description": "Source only"},
+            ],
+        }
+    ]
+    respx.get("http://cm.test/connectors").mock(
+        return_value=Response(
+            200,
+            json=[{"source_type": "docs", "healthy": True, "manifest": manifest}],
+        )
+    )
+    handler = McpCapabilityHandler(
+        "http://cm.test",
+        searcher_client=searcher,
+        prefetched_sources=[_source("src-1")],
+    )
+
+    await handler.publish_capabilities()
+
+    resources = [
+        cap.data["uri_template"]
+        for request in searcher.upserts
+        for cap in request.capabilities
+        if cap.capability_type == "resource"
+    ]
+    prompts = [
+        cap.data["name"]
+        for request in searcher.upserts
+        for cap in request.capabilities
+        if cap.capability_type == "prompt"
+    ]
+    assert resources == ["docs://guide", "docs://source-only", "docs://tickets/{ticket_id}"]
+    assert prompts == ["debug_error", "source-only"]
+    assert next(
+        cap.data["name"]
+        for request in searcher.upserts
+        for cap in request.capabilities
+        if cap.capability_type == "resource"
+        and cap.data["uri_template"] == "docs://guide"
+    ) == "Source guide"
+    assert next(
+        cap.data["description"]
+        for request in searcher.upserts
+        for cap in request.capabilities
+        if cap.capability_type == "prompt" and cap.data["name"] == "debug_error"
+    ) == "Source debug"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_prefetched_connector_catalog_avoids_second_connectors_request() -> None:
     searcher = _FakeSearcherClient()
     handler = McpCapabilityHandler(

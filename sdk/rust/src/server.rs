@@ -7,7 +7,6 @@ use crate::models::{
     OAuthCredentialReadyRequest, PromptRequest, ResourceRequest, SkillRequest, SkillResponse,
     SyncRequest, SyncResponse, SyncStatusResponse,
 };
-use shared::models::OAuthCredentialValidationRequest;
 use anyhow::{Context, Result};
 use axum::{
     Router,
@@ -20,6 +19,7 @@ use axum::{
 use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use serde::de::DeserializeOwned;
+use shared::models::OAuthCredentialValidationRequest;
 use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
@@ -631,9 +631,9 @@ where
         .active_syncs
         .iter()
         .find(|sync| sync.sync_run_id == request.sync_run_id)
-        .map(|sync| Arc::clone(&sync.cancelled));
+        .map(|sync| (sync.key().clone(), Arc::clone(&sync.cancelled)));
 
-    let Some(cancelled) = matching_sync else {
+    let Some((slot_key, cancelled)) = matching_sync else {
         return (
             StatusCode::NOT_FOUND,
             Json(CancelResponse {
@@ -645,13 +645,12 @@ where
     cancelled.store(true, Ordering::SeqCst);
     let _ = state.connector.cancel(&request.sync_run_id).await;
 
-    // Free the slot now: cancellation is cooperative, so a task wedged in a read
-    // that never returns would hold it until the process restarts and reject
-    // every later sync for this source with 409. Callers only cancel runs they
-    // have already given up on.
+    // Cancellation makes the slot available immediately. The sync task may
+    // ignore cancellation and continue running, so waiting for its guard to
+    // drop would otherwise block a replacement sync indefinitely.
     state
         .active_syncs
-        .retain(|_, sync| sync.sync_run_id != request.sync_run_id);
+        .remove_if(&slot_key, |_, sync| sync.sync_run_id == request.sync_run_id);
 
     (
         StatusCode::OK,
@@ -710,7 +709,10 @@ where
 async fn oauth_validate<C>(
     State(state): State<Arc<ServerState<C>>>,
     Json(request): Json<OAuthCredentialValidationRequest>,
-) -> Result<Json<shared::models::OAuthCredentialValidationResponse>, (StatusCode, Json<serde_json::Value>)>
+) -> Result<
+    Json<shared::models::OAuthCredentialValidationResponse>,
+    (StatusCode, Json<serde_json::Value>),
+>
 where
     C: Connector,
 {
@@ -987,13 +989,11 @@ where
         .map_err(|e| {
             let message = format!("{:#}", e);
             error!("Prompt get failed for {}: {}", name, message);
-            if let Some(body) =
-                mcp_auth_required_credentials_response(
-                    state.connector.as_ref(),
-                    &credentials,
-                    &message,
-                )
-            {
+            if let Some(body) = mcp_auth_required_credentials_response(
+                state.connector.as_ref(),
+                &credentials,
+                &message,
+            ) {
                 return (StatusCode::PRECONDITION_FAILED, Json(body));
             }
             (
