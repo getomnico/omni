@@ -29,6 +29,7 @@ from omni_connector import (
     SyncContext,
     SyncMode,
 )
+from omni_connector.mcp_adapter import MCP_POOL_SOURCE_ID_ENV, MCP_POOL_USER_ID_ENV
 from omni_connector.models import Source
 
 from .actions import ACTION_DEFINITIONS, execute_action
@@ -329,7 +330,7 @@ class SalesforceConnector(Connector):
     @property
     def mcp_server(self) -> StdioMcpServer:
         """Use Salesforce's official stdio MCP server."""
-        return StdioMcpServer(command="omni-salesforce-mcp")
+        return StdioMcpServer(command="omni-salesforce-mcp", persistent=True)
 
     @staticmethod
     def _credential_payload(credentials: Mapping[str, object]) -> Mapping[str, object]:
@@ -514,6 +515,11 @@ class SalesforceConnector(Connector):
                 ).encode()
             ).hexdigest()
         env = {"OMNI_SALESFORCE_SOURCE_ID": source_id}
+        pool_source_id = credentials.get("_omni_source_id") or credentials.get("source_id")
+        if isinstance(pool_source_id, str) and pool_source_id:
+            env[MCP_POOL_SOURCE_ID_ENV] = pool_source_id
+        if isinstance(user_id, str) and user_id:
+            env[MCP_POOL_USER_ID_ENV] = user_id
         if auth.mode.value == "jwt":
             assert auth.client_id and auth.private_key and auth.username
             env.update(

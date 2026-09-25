@@ -1,7 +1,10 @@
 """Tests for the FastAPI server endpoints."""
 
+import asyncio
+import os
+import sys
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.responses import JSONResponse
@@ -12,9 +15,14 @@ from omni_connector import (
     ActionResponse,
     Connector,
     Document,
-    DocumentMetadata,
     SdkSourceSyncData,
+    StdioMcpServer,
     SyncContext,
+)
+from omni_connector.mcp_adapter import (
+    MCP_AUTH_STATUS_FILE_ENV,
+    MCP_POOL_SOURCE_ID_ENV,
+    MCP_POOL_USER_ID_ENV,
 )
 from omni_connector.server import create_app
 
@@ -541,9 +549,9 @@ class TestConnectorBaseClass:
 
 class TestOauthValidateEndpoint:
     def _source_payload(self) -> dict[str, Any]:
-        from datetime import datetime, timedelta, timezone
+        from datetime import UTC, datetime
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return {
             "id": "src-1",
             "name": "Test Source",
@@ -604,3 +612,148 @@ class TestOauthValidateEndpoint:
 
         assert response.status_code == 400
         assert "organization" in response.json()["error"]
+
+
+class TestPersistentMcpEndpoints:
+    """Salesforce-only persistent stdio reuse through the HTTP layer."""
+
+    @staticmethod
+    def _pooled_connector(server_command: str | None = None) -> Connector:
+        test_server = os.path.join(os.path.dirname(__file__), "test_mcp_server.py")
+        command = server_command or sys.executable
+        args = [test_server] if server_command is None else []
+
+        class PooledConnector(Connector):
+            @property
+            def name(self) -> str:
+                return "pooled-mcp"
+
+            @property
+            def version(self) -> str:
+                return "1.0.0"
+
+            @property
+            def source_types(self) -> list[str]:
+                return ["pooled"]
+
+            @property
+            def mcp_server(self) -> StdioMcpServer:
+                return StdioMcpServer(command=command, args=args, persistent=True)
+
+            def prepare_mcp_env(self, credentials: dict[str, Any]) -> dict[str, str]:
+                env = {
+                    MCP_POOL_SOURCE_ID_ENV: credentials["source_id"],
+                    MCP_POOL_USER_ID_ENV: credentials["user_id"],
+                }
+                if "marker" in credentials:
+                    env[MCP_AUTH_STATUS_FILE_ENV] = credentials["marker"]
+                return env
+
+            async def sync(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+        return PooledConnector()
+
+    @staticmethod
+    def _action_body(user_id: str) -> dict[str, Any]:
+        return {
+            "action": "greet",
+            "params": {"name": user_id},
+            "credentials": {"source_id": "source-1", "user_id": user_id},
+        }
+
+    def test_capacity_returns_503(self, monkeypatch):
+        import time
+
+        monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
+        monkeypatch.setenv("OMNI_MCP_MAX_PROCESSES", "1")
+        connector = self._pooled_connector()
+        adapter = connector.mcp_adapter
+        assert adapter is not None
+        app = create_app(connector)
+
+        with TestClient(app) as client:
+
+            async def warm_catalog() -> None:
+                await adapter.discover(
+                    env={
+                        MCP_POOL_SOURCE_ID_ENV: "source-1",
+                        MCP_POOL_USER_ID_ENV: "user-1",
+                    }
+                )
+
+            client.portal.call(warm_catalog)
+
+            release = asyncio.Event()
+
+            async def hold_in_portal():
+                async def callback(session):
+                    await release.wait()
+                    return await session.call_tool("greet", {"name": "hold"})
+
+                return await adapter._run(
+                    callback,
+                    env={
+                        MCP_POOL_SOURCE_ID_ENV: "source-1",
+                        MCP_POOL_USER_ID_ENV: "user-1",
+                    },
+                )
+
+            task = client.portal.start_task_soon(hold_in_portal)
+            processes: list[Any] = []
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                processes = list(adapter._all_processes.values())
+                if processes and processes[0].busy:
+                    break
+                time.sleep(0.01)
+            assert processes and processes[0].busy
+
+            busy_response = client.post("/action", json=self._action_body("user-2"))
+            assert busy_response.status_code == 503
+            assert busy_response.headers.get("retry-after") == "1"
+
+            async def _release() -> None:
+                release.set()
+
+            client.portal.call(_release)
+            assert task.result() is not None
+
+            ready_response = client.post("/action", json=self._action_body("user-2"))
+            assert ready_response.status_code == 200
+
+    def test_startup_auth_marker_returns_412_and_cleans_up(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CONNECTOR_MANAGER_URL", "http://localhost:9000")
+        monkeypatch.setenv("CONNECTOR_HOST_NAME", "localhost")
+        monkeypatch.setenv("PORT", "8000")
+        marker = tmp_path / "auth-status"
+        marker.write_text("needs_user_auth")
+        connector = self._pooled_connector(server_command="missing-persistent-server")
+        adapter = connector.mcp_adapter
+        assert adapter is not None
+        # Pre-seed the cached catalog so the request reaches MCP dispatch.
+        adapter._cached_actions = [
+            ActionDefinition(
+                name="greet",
+                description="Greet someone by name.",
+                input_schema={"type": "object", "properties": {}},
+                mode="read",
+                credential_scope="user",
+                origin="mcp",
+            )
+        ]
+        app = create_app(connector)
+
+        with TestClient(app) as client:
+            body = self._action_body("user-1")
+            body["credentials"]["marker"] = str(marker)
+            response = client.post("/action", json=body)
+
+            assert response.status_code == 412
+            assert response.json()["error"] == "needs_user_auth"
+            assert response.json()["oauth_start_url"] == (
+                "/api/oauth/start?source_id=source-1"
+            )
+            assert not marker.exists()

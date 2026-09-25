@@ -6,7 +6,10 @@ Supports both transports:
 - ``python test_mcp_server.py http <port>``         # Streamable HTTP
 """
 
+import os
 import sys
+import time
+from pathlib import Path
 
 import anyio
 from mcp import types
@@ -76,7 +79,13 @@ async def run_tools_only_server() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "http":
+    pid_file = os.environ.get("TEST_PID_FILE")
+    if pid_file:
+        Path(pid_file).write_text(str(os.getpid()))
+    if len(sys.argv) > 1 and sys.argv[1] == "hang":
+        # Never answers initialize; used to test hung-startup cleanup.
+        time.sleep(3600)
+    elif len(sys.argv) > 1 and sys.argv[1] == "http":
         port = int(sys.argv[2]) if len(sys.argv) > 2 else 8765
         server.settings.host = "127.0.0.1"
         server.settings.port = port

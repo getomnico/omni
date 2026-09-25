@@ -13,7 +13,12 @@ from .client import SdkClient
 from .config import SdkConfig
 from .context import SyncContext
 from .exceptions import SdkClientError
-from .mcp_adapter import MCP_AUTH_REQUIRED_MESSAGE, MCP_AUTH_STATUS_FILE_ENV
+from .mcp_adapter import (
+    MCP_AUTH_REQUIRED_MESSAGE,
+    MCP_AUTH_STATUS_FILE_ENV,
+    McpProcessCapacityError,
+    McpProcessClosedError,
+)
 from .models import (
     ActionRequest,
     CancelRequest,
@@ -163,6 +168,13 @@ def create_app(
         yield
 
         registration_task.cancel()
+        try:
+            await registration_task
+        except asyncio.CancelledError:
+            pass
+        adapter = connector.mcp_adapter
+        if adapter is not None:
+            await adapter.shutdown()
 
     app = FastAPI(
         title=f"Omni {connector.name} Connector",
@@ -411,7 +423,10 @@ def create_app(
 
             auth: dict[str, Any] = {}
             try:
-                auth = connector._prepare_mcp_auth(request.credentials)
+                credentials = dict(request.credentials)
+                if request.source is not None:
+                    credentials["_omni_source_id"] = request.source.id
+                auth = connector._prepare_mcp_auth(credentials)
                 arguments = connector.prepare_mcp_tool_arguments(
                     request.action, request.params
                 )
@@ -437,6 +452,12 @@ def create_app(
                 )
                 return JSONResponse(
                     content=response.model_dump(), status_code=status_code
+                )
+            except (McpProcessCapacityError, McpProcessClosedError) as e:
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={"error": str(e)},
+                    headers={"Retry-After": "1"},
                 )
             except Exception as e:
                 auth_response = mcp_auth_required_response(
@@ -478,6 +499,12 @@ def create_app(
             auth = connector._prepare_mcp_auth(request.credentials)
             result = await adapter.read_resource(request.uri, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
+        except (McpProcessCapacityError, McpProcessClosedError) as e:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"error": str(e)},
+                headers={"Retry-After": "1"},
+            )
         except Exception as e:
             auth_response = mcp_auth_required_response(
                 request.credentials, str(e), auth=auth
@@ -504,6 +531,12 @@ def create_app(
             auth = connector._prepare_mcp_auth(request.credentials)
             result = await adapter.get_prompt(request.name, request.arguments, **auth)
             return JSONResponse(status_code=status.HTTP_200_OK, content=result)
+        except (McpProcessCapacityError, McpProcessClosedError) as e:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"error": str(e)},
+                headers={"Retry-After": "1"},
+            )
         except Exception as e:
             auth_response = mcp_auth_required_response(
                 request.credentials, str(e), auth=auth
@@ -575,6 +608,12 @@ def create_app(
                     title=title,
                     content=content,
                 ).model_dump(),
+            )
+        except (McpProcessCapacityError, McpProcessClosedError) as e:
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"error": str(e)},
+                headers={"Retry-After": "1"},
             )
         except Exception as e:
             auth_response = mcp_auth_required_response(
