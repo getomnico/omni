@@ -18,7 +18,6 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
-use futures::future::join_all;
 use futures::stream::{self, Stream, StreamExt};
 use redis::AsyncCommands;
 use serde_json::{Value, json};
