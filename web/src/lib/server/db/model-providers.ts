@@ -1,4 +1,5 @@
-import { eq, and } from 'drizzle-orm'
+import { eq, and, sql } from 'drizzle-orm'
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import { db } from './index'
 import { modelProviders, models } from './schema'
 import type { ModelProvider, Model } from './schema'
@@ -42,6 +43,8 @@ export interface CreateModelInput {
     isDefault?: boolean
     isSecondary?: boolean
 }
+
+export type ModelRole = 'default' | 'secondary' | 'unassigned'
 
 export interface ModelSeed {
     modelId: string
@@ -188,34 +191,44 @@ export async function getModel(id: string): Promise<Model | null> {
     return model || null
 }
 
+const MODEL_ROLE_LOCK_KEY = 829174
+type ModelDatabase = PostgresJsDatabase<typeof import('./schema')>
+
 export async function createModel(input: CreateModelInput): Promise<Model> {
-    if (input.isDefault) {
-        await db
-            .update(models)
-            .set({ isDefault: false, updatedAt: new Date() })
-            .where(eq(models.isDefault, true))
-    }
+    const isDefault = input.isDefault === true
+    const isSecondary = !isDefault && input.isSecondary === true
 
-    if (input.isSecondary) {
-        await db
-            .update(models)
-            .set({ isSecondary: false, updatedAt: new Date() })
-            .where(eq(models.isSecondary, true))
-    }
+    return await db.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${MODEL_ROLE_LOCK_KEY})`)
 
-    const [model] = await db
-        .insert(models)
-        .values({
-            id: ulid(),
-            modelProviderId: input.modelProviderId,
-            modelId: input.modelId,
-            displayName: input.displayName,
-            isDefault: input.isDefault ?? false,
-            isSecondary: input.isSecondary ?? false,
-        })
-        .returning()
+        if (isDefault) {
+            await tx
+                .update(models)
+                .set({ isDefault: false, updatedAt: new Date() })
+                .where(eq(models.isDefault, true))
+        }
 
-    return model
+        if (isSecondary) {
+            await tx
+                .update(models)
+                .set({ isSecondary: false, updatedAt: new Date() })
+                .where(eq(models.isSecondary, true))
+        }
+
+        const [model] = await tx
+            .insert(models)
+            .values({
+                id: ulid(),
+                modelProviderId: input.modelProviderId,
+                modelId: input.modelId,
+                displayName: input.displayName,
+                isDefault,
+                isSecondary,
+            })
+            .returning()
+
+        return model
+    })
 }
 
 export async function deleteModel(id: string): Promise<boolean> {
@@ -228,34 +241,53 @@ export async function deleteModel(id: string): Promise<boolean> {
     return !!updated
 }
 
+export async function setModelRole(
+    id: string,
+    role: ModelRole,
+    database: ModelDatabase = db,
+): Promise<boolean> {
+    return await database.transaction(async (tx) => {
+        await tx.execute(sql`SELECT pg_advisory_xact_lock(${MODEL_ROLE_LOCK_KEY})`)
+
+        const [target] = await tx
+            .select({ id: models.id })
+            .from(models)
+            .where(and(eq(models.id, id), eq(models.isDeleted, false)))
+            .limit(1)
+        if (!target) return false
+
+        if (role === 'default') {
+            await tx
+                .update(models)
+                .set({ isDefault: false, updatedAt: new Date() })
+                .where(eq(models.isDefault, true))
+        } else if (role === 'secondary') {
+            await tx
+                .update(models)
+                .set({ isSecondary: false, updatedAt: new Date() })
+                .where(eq(models.isSecondary, true))
+        }
+
+        const [updated] = await tx
+            .update(models)
+            .set({
+                isDefault: role === 'default',
+                isSecondary: role === 'secondary',
+                updatedAt: new Date(),
+            })
+            .where(eq(models.id, id))
+            .returning({ id: models.id })
+
+        return !!updated
+    })
+}
+
 export async function setDefaultModel(id: string): Promise<boolean> {
-    await db
-        .update(models)
-        .set({ isDefault: false, updatedAt: new Date() })
-        .where(eq(models.isDefault, true))
-
-    const [updated] = await db
-        .update(models)
-        .set({ isDefault: true, updatedAt: new Date() })
-        .where(and(eq(models.id, id), eq(models.isDeleted, false)))
-        .returning()
-
-    return !!updated
+    return await setModelRole(id, 'default')
 }
 
 export async function setSecondaryModel(id: string): Promise<boolean> {
-    await db
-        .update(models)
-        .set({ isSecondary: false, updatedAt: new Date() })
-        .where(eq(models.isSecondary, true))
-
-    const [updated] = await db
-        .update(models)
-        .set({ isSecondary: true, updatedAt: new Date() })
-        .where(and(eq(models.id, id), eq(models.isDeleted, false)))
-        .returning()
-
-    return !!updated
+    return await setModelRole(id, 'secondary')
 }
 
 export async function createModelSeeds(
