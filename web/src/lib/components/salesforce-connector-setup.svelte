@@ -109,7 +109,6 @@
                     throw new Error('Client ID and Client Secret are required for no-sync setup')
                 }
                 sourceConfig.sync_enabled = false
-                sourceConfig.allowed_action_origins = ['mcp']
             }
 
             const sourceResponse = await fetch('/api/sources', {

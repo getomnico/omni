@@ -271,7 +271,7 @@
             </Alert.Root>
         {/if}
     </Card.Content>
-    <Card.Footer class="flex justify-end">
+    <Card.Footer class="flex justify-end gap-2">
         <Button
             type="button"
             variant="outline"

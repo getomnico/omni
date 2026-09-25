@@ -48,19 +48,9 @@ def connector_catalog_from_payload(payload: object) -> ConnectorCatalog:
     return catalog
 
 
-def action_is_available_for_source(
-    source: Source, action_origin: str, action_name: str
-) -> bool:
+def action_is_available_for_source(source: Source, action_origin: str) -> bool:
     allowed_origins = parse_allowed_action_origins(source.config)
-    if allowed_origins is None or action_origin in allowed_origins:
-        return True
-    return (
-        action_origin == "native"
-        and source.source_type == "salesforce"
-        and source.config.get("sync_enabled") is False
-        and "mcp" in allowed_origins
-        and action_name in {"run_soql_query", "get_username"}
-    )
+    return allowed_origins is None or action_origin in allowed_origins
 
 
 def sources_from_sync_overview_response(payload: object) -> list[Source]:
@@ -299,7 +289,7 @@ class ConnectorToolHandler:
                     action_name = action_def.get("name")
                     if not isinstance(action_name, str):
                         raise TypeError("connector action name must be a string")
-                    if not action_is_available_for_source(source, action_origin, action_name):
+                    if not action_is_available_for_source(source, action_origin):
                         continue
                     actions.append(
                         ConnectorAction(

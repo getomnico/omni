@@ -92,74 +92,40 @@ async def test_action_origins_are_filtered_per_source_and_default_allows_all():
 
 
 @pytest.mark.asyncio
-async def test_salesforce_no_sync_native_replacements_bypass_only_legacy_mcp_policy():
-    legacy_source = _source(
-        "salesforce-legacy",
+async def test_no_sync_source_action_origins_are_generic_and_consistent():
+    unrestricted = _source("no-sync-unrestricted", {"sync_enabled": False})
+    restricted = _source(
+        "no-sync-mcp-only",
         {"sync_enabled": False, "allowed_action_origins": ["mcp"]},
     )
-    newly_created_source = _source(
-        "salesforce-new",
-        {"sync_enabled": False, "allowed_action_origins": ["mcp"]},
-    )
-    synced_source = _source(
-        "salesforce-synced",
-        {"sync_enabled": True, "allowed_action_origins": ["mcp"]},
-    )
-    unrelated_source = _source(
-        "crm-no-sync",
-        {"sync_enabled": False, "allowed_action_origins": ["mcp"]},
-    )
-    legacy_source.source_type = newly_created_source.source_type = "salesforce"
-    synced_source.source_type = "salesforce"
     handler = ConnectorToolHandler(
         connector_manager_url="http://cm.test",
         user_id="user-1",
-        prefetched_sources=[
-            legacy_source,
-            newly_created_source,
-            synced_source,
-            unrelated_source,
-        ],
+        prefetched_sources=[unrestricted, restricted],
     )
     manifest = {
-        "source_type": "salesforce",
+        "source_type": "crm",
         "manifest": {
             "actions": [
                 {"name": "run_soql_query", "origin": "native", "mode": "read"},
                 {"name": "get_username", "origin": "native", "mode": "read"},
-                {"name": "find_records", "origin": "native", "mode": "read"},
-                {"name": "legacy_mcp_tool", "origin": "mcp", "mode": "read"},
-            ]
-        },
-    }
-    other_manifest = {
-        "source_type": "crm",
-        "manifest": {
-            "actions": [
-                {"name": "crm_native", "origin": "native", "mode": "read"},
-                {"name": "crm_mcp", "origin": "mcp", "mode": "read"},
+                {"name": "mcp_lookup", "origin": "mcp", "mode": "read"},
             ]
         },
     }
 
     with respx.mock:
         respx.get("http://cm.test/connectors").mock(
-            return_value=Response(200, json=[manifest, other_manifest])
+            return_value=Response(200, json=[manifest])
         )
         await handler._ensure_initialized()
 
     by_source = {
         source.id: {action.action_name for action in handler.actions.values() if action.source_id == source.id}
-        for source in (legacy_source, newly_created_source, synced_source, unrelated_source)
+        for source in (unrestricted, restricted)
     }
-    assert by_source[legacy_source.id] == {"run_soql_query", "get_username", "legacy_mcp_tool"}
-    assert by_source[newly_created_source.id] == {
-        "run_soql_query",
-        "get_username",
-        "legacy_mcp_tool",
-    }
-    assert by_source[synced_source.id] == {"legacy_mcp_tool"}
-    assert by_source[unrelated_source.id] == {"crm_mcp"}
+    assert by_source[unrestricted.id] == {"run_soql_query", "get_username", "mcp_lookup"}
+    assert by_source[restricted.id] == {"mcp_lookup"}
 
 
 @pytest.mark.asyncio
@@ -213,7 +179,7 @@ def test_malformed_action_origin_policy_fails_closed():
     source = _source("malformed", {"allowed_action_origins": ["unknown"]})
 
     with pytest.raises(ValueError, match="allowed_action_origins"):
-        action_is_available_for_source(source, "native", "lookup")
+        action_is_available_for_source(source, "native")
 
 
 @pytest.mark.parametrize("flow", ["no-credential", "expired-credential"])
