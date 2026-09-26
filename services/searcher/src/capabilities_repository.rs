@@ -1,6 +1,6 @@
 use crate::models::{CapabilitySearchResult, CapabilityUpsert};
 use shared::db::error::DatabaseError;
-use sqlx::{FromRow, PgPool, Postgres, Transaction};
+use sqlx::{FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 
 #[derive(FromRow)]
 struct CapabilityHit {
@@ -155,26 +155,37 @@ impl AgentCapabilitiesRepository {
         let allowed_ids = allowed_ids.map(|v| v.to_vec());
         let allowed_source_ids = allowed_source_ids.map(|v| v.to_vec());
 
-        let rows = sqlx::query_as::<_, CapabilityHit>(
+        let mut query_builder = QueryBuilder::<Postgres>::new(
             r#"
             SELECT id, capability_type, name, description, user_id, source_id,
                    source_type, search_text, data, pdb.score(id) as score
             FROM agent_capabilities
-            WHERE search_text ||| $1
-              AND capability_type = $2
-              AND ($3::text[] IS NULL OR id = ANY($3))
-              AND ($4::text[] IS NULL OR source_id = ANY($4))
-            ORDER BY score DESC
-            LIMIT $5
-            "#,
-        )
-        .bind(query)
-        .bind(capability_type)
-        .bind(allowed_ids)
-        .bind(allowed_source_ids)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            WHERE search_text ||| "#,
+        );
+        query_builder
+            .push_bind(query)
+            .push(" AND capability_type = ")
+            .push_bind(capability_type);
+
+        if let Some(allowed_ids) = allowed_ids {
+            query_builder
+                .push(" AND id = ANY(")
+                .push_bind(allowed_ids)
+                .push("::text[])");
+        }
+        if let Some(allowed_source_ids) = allowed_source_ids {
+            query_builder
+                .push(" AND source_id = ANY(")
+                .push_bind(allowed_source_ids)
+                .push("::text[])");
+        }
+
+        let rows = query_builder
+            .push(" ORDER BY score DESC LIMIT ")
+            .push_bind(limit)
+            .build_query_as::<CapabilityHit>()
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(rows
             .into_iter()

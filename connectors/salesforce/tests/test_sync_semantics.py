@@ -175,7 +175,7 @@ async def test_mcp_only_source_rejects_sync_before_reading_credentials() -> None
     await connector.sync({"sync_enabled": False}, {}, None, ctx)
 
     assert fake.completed == 0
-    assert fake.failures == ["Salesforce data sync is disabled for this MCP-only source"]
+    assert fake.failures == ["Salesforce data sync is disabled for this source"]
 
 
 async def _baseline_full(

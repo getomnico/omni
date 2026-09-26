@@ -16,7 +16,7 @@
 
     let { data }: PageProps = $props()
 
-    const isMcpOnly = $derived(
+    const isNoSync = $derived(
         data.source.sourceType === 'salesforce' &&
             typeof data.source.config === 'object' &&
             data.source.config !== null &&
@@ -42,7 +42,7 @@
         }
 
         window.addEventListener('beforeunload', beforeUnloadHandler)
-        void checkMcpOAuthStatus()
+        void checkUserOAuthStatus()
 
         return () => {
             if (beforeUnloadHandler) {
@@ -74,7 +74,7 @@
     let oauthDialogProvider = $state<ScopedOAuthProvider | null>(null)
     let oauthDialogLoading = $state(false)
     // null = unknown/failed check; false = no usable per-user OAuth client
-    let mcpOAuthConfigured = $state<boolean | null>(null)
+    let userOAuthConfigured = $state<boolean | null>(null)
 
     async function loadOAuthConfig(): Promise<ScopedOAuthProvider> {
         const response = await fetch('/api/connector-configs')
@@ -97,19 +97,19 @@
                 config.oauth_dynamic_client_registration === 'true')
         return {
             provider,
-            displayName: `Salesforce — ${data.source.name} MCP OAuth`,
+            displayName: `Salesforce — ${data.source.name} user OAuth`,
             configured,
             updatedAt: saved?.updatedAt ?? null,
             config,
         }
     }
 
-    async function checkMcpOAuthStatus() {
+    async function checkUserOAuthStatus() {
         oauthDialogLoading = true
         try {
-            mcpOAuthConfigured = (await loadOAuthConfig()).configured
+            userOAuthConfigured = (await loadOAuthConfig()).configured
         } catch {
-            mcpOAuthConfigured = null
+            userOAuthConfigured = null
         } finally {
             oauthDialogLoading = false
         }
@@ -119,7 +119,7 @@
         oauthDialogLoading = true
         try {
             oauthDialogProvider = await loadOAuthConfig()
-            mcpOAuthConfigured = oauthDialogProvider.configured
+            userOAuthConfigured = oauthDialogProvider.configured
             oauthDialogOpen = true
         } catch (err) {
             toast.error(err instanceof Error ? err.message : 'Failed to load Salesforce OAuth')
@@ -165,8 +165,8 @@
                         {data.source.name}
                     </Card.Title>
                     <Card.Description class="mt-1">
-                        {#if isMcpOnly}
-                            Enable Salesforce MCP actions for this organization. No Salesforce data
+                        {#if isNoSync}
+                            Enable Salesforce native read actions for this organization. No Salesforce data
                             is synced or indexed.
                         {:else}
                             Index accounts, contacts, opportunities, leads, cases, and tasks from
@@ -176,7 +176,7 @@
                 </div>
                 <div class="flex items-center gap-2">
                     <Label for="enabled" class="text-sm">
-                        {isMcpOnly ? 'Actions enabled' : 'Enabled'}
+                        {isNoSync ? 'Actions enabled' : 'Enabled'}
                     </Label>
                     <Switch
                         id="enabled"
@@ -188,7 +188,7 @@
         </Card.Header>
 
         <Card.Content>
-            {#if isMcpOnly}
+            {#if isNoSync}
                 <p class="text-muted-foreground text-sm">
                     Salesforce records are accessed live through agent actions using each user's
                     Salesforce authorization. There is no sync schedule, manual sync, sync status,
@@ -221,11 +221,11 @@
             <div>
                 <Card.Title class="flex items-center gap-2">
                     <KeyRound class="text-muted-foreground h-5 w-5" />
-                    MCP user OAuth
+                    User OAuth
                 </Card.Title>
                 <Card.Description class="mt-1">
                     External Client App credentials used when individual Omni users authorize
-                    Salesforce MCP tools. Stored for this source only; never shared with other
+                    Salesforce native actions. Stored for this source only; never shared with other
                     Salesforce orgs.
                 </Card.Description>
             </div>
@@ -253,26 +253,25 @@
                 <Badge variant="outline">Not authorized for your account</Badge>
             {/if}
         </div>
-        {#if isMcpOnly && !data.actionAuth.authorized}
+        {#if isNoSync && !data.actionAuth.authorized}
             <p class="text-muted-foreground mt-3 text-sm">
-                Authorize this admin account once after setup to verify the Salesforce org and
-                discover the MCP catalog. Other users authorize from chat when they first use an
-                action.
+                Authorize this admin account once after setup to verify and bind the Salesforce
+                organization. Other users authorize from chat when they first use an action.
             </p>
         {/if}
-        {#if mcpOAuthConfigured === false}
+        {#if userOAuthConfigured === false}
             <Alert.Root
                 class="mt-3 border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
                 <AlertTriangle class="h-4 w-4 text-amber-500 dark:text-amber-400" />
-                <Alert.Title>MCP is not available yet</Alert.Title>
+                <Alert.Title>Salesforce actions are not configured yet</Alert.Title>
                 <Alert.Description>
-                    Salesforce MCP tools won't appear in chat until an External Client App is
+                    Salesforce native actions won't appear in chat until an External Client App is
                     configured for per-user OAuth. Use the button below to set one up.
                 </Alert.Description>
             </Alert.Root>
         {/if}
     </Card.Content>
-    <Card.Footer class="flex justify-end">
+    <Card.Footer class="flex justify-end gap-2">
         <Button
             type="button"
             variant="outline"
@@ -283,16 +282,16 @@
                 <Loader2 class="mr-2 h-4 w-4 animate-spin" />
             {/if}
             {oauthDialogProvider?.configured
-                ? 'Edit MCP OAuth client'
-                : 'Configure MCP OAuth client'}
+                ? 'Edit user OAuth client'
+                : 'Configure user OAuth client'}
         </Button>
         <Button
             type="button"
             variant="outline"
             class="cursor-pointer"
-            disabled={oauthDialogLoading || mcpOAuthConfigured !== true}
+            disabled={oauthDialogLoading || userOAuthConfigured !== true}
             href={`/api/oauth/start?source_id=${data.source.id}&flow=user_read&return_to=${encodeURIComponent(`/admin/settings/integrations/salesforce/${data.source.id}`)}`}>
-            {#if mcpOAuthConfigured === false}
+            {#if userOAuthConfigured === false}
                 Configure OAuth client first
             {:else if data.actionAuth.authorized}
                 Re-authorize Salesforce
@@ -314,7 +313,7 @@
         onSaved={() => {
             oauthDialogOpen = false
             oauthDialogProvider = null
-            void checkMcpOAuthStatus()
+            void checkUserOAuthStatus()
         }}
         onCancel={closeOAuthConfig} />
 {/if}

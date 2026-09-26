@@ -17,6 +17,7 @@ from salesforce_connector.client import (
     DeletedResult,
     SalesforceClient,
     SalesforceClientError,
+    _normalize_next_query_path,
     _normalize_next_records_path,
 )
 from salesforce_connector.models import SalesforceAuth
@@ -31,6 +32,16 @@ def test_normalize_strips_the_api_prefix_exactly_once() -> None:
     path, params = _normalize_next_records_path(_VALID_NEXT_URL)
     assert path == "sobjects/Account/deleted"
     assert params == {"queryId": "2"}
+
+
+def test_query_pagination_discards_url_authority_and_restricts_resource_path() -> None:
+    path, params = _normalize_next_query_path(
+        "https://attacker.example/services/data/v62.0/query/locator?cursor=next"
+    )
+    assert path == "query/locator"
+    assert params == {"cursor": "next"}
+    with pytest.raises(SalesforceClientError):
+        _normalize_next_query_path("https://attacker.example/services/data/v62.0/sobjects/Account")
 
 
 @pytest.mark.parametrize(

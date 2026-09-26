@@ -5,7 +5,6 @@ import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, TypeVar
@@ -14,6 +13,13 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from pydantic import AnyUrl
 
+from .mcp_config import (
+    MCP_AUTH_REQUIRED_MESSAGE,
+    MCP_AUTH_STATUS_FILE_ENV,
+    McpServer,
+    StdioMcpServer,
+)
+from .mcp_config import HttpMcpServer as HttpMcpServer
 from .models import (
     ActionDefinition,
     ActionResponse,
@@ -25,33 +31,6 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
-
-MCP_AUTH_STATUS_FILE_ENV = "OMNI_MCP_AUTH_STATUS_FILE"
-MCP_AUTH_REQUIRED_MESSAGE = "MCP authentication required"
-
-
-@dataclass(frozen=True)
-class StdioMcpServer:
-    """Configuration for an MCP server reached via stdio (subprocess)."""
-
-    command: str
-    args: list[str] = field(default_factory=list)
-    env: dict[str, str] | None = None
-    cwd: str | None = None
-
-
-@dataclass(frozen=True)
-class HttpMcpServer:
-    """Configuration for a remote MCP server reached via Streamable HTTP."""
-
-    url: str
-    headers: dict[str, str] = field(default_factory=dict)
-    timeout_seconds: float = 30.0
-    sse_read_timeout_seconds: float = 300.0
-
-
-McpServer = StdioMcpServer | HttpMcpServer
-
 
 class McpAdapter:
     """Bridges an external MCP server into Omni's connector protocol.

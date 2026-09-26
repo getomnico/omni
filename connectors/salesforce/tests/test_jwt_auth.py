@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
-import os
-
 import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from salesforce_connector.client import AuthenticationError, SalesforceClient
+from salesforce_connector.client import (
+    AuthenticationError,
+    SalesforceClient,
+    fetch_organization_id,
+)
 from salesforce_connector.connector import SalesforceConnector
 from salesforce_connector.models import AuthMode, SalesforceAuth
 from tests.conftest import MockSalesforceAPI
@@ -55,6 +57,75 @@ def test_from_mapping_jwt() -> None:
     assert auth.login_url == "https://login.salesforce.com"
 
 
+@pytest.mark.asyncio
+async def test_fetch_organization_id_jwt_needs_only_org_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from salesforce_connector import client as client_module
+
+    seen: list[str] = []
+
+    def post(url: str, **kwargs: object) -> SimpleNamespace:
+        seen.append(url)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {
+                "access_token": "jwt-access-token",
+                "instance_url": "https://acme.my.salesforce.com",
+                "issued_at": 1_700_000_000_000,
+            },
+        )
+
+    def get(url: str, **kwargs: object) -> SimpleNamespace:
+        seen.append(url)
+        return SimpleNamespace(status_code=200, json=lambda: {"organization_id": "00D000000000001"})
+
+    monkeypatch.setattr(client_module.requests, "post", post)
+    monkeypatch.setattr(client_module.requests, "get", get)
+    auth = SalesforceAuth.from_mapping(
+        {
+            "client_id": "consumer-key",
+            "private_key": _private_key,
+            "username": "admin@example.com",
+            "login_url": "https://login.salesforce.com",
+        }
+    )
+
+    assert await fetch_organization_id(auth) == "00D000000000001"
+    assert seen == [
+        "https://login.salesforce.com/services/oauth2/token",
+        "https://login.salesforce.com/services/oauth2/userinfo",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_organization_id_accepts_early_bearer_payload_without_instance_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from salesforce_connector import client as client_module
+
+    requested: list[str] = []
+
+    def get(url: str, **kwargs: object) -> SimpleNamespace:
+        requested.append(url)
+        return SimpleNamespace(
+            status_code=200,
+            json=lambda: {"organization_id": "00D000000000001"},
+        )
+
+    monkeypatch.setattr(client_module.requests, "get", get)
+    auth = SalesforceAuth.from_mapping(
+        {"access_token": "setup-token", "login_url": "https://login.salesforce.com"}
+    )
+
+    assert await fetch_organization_id(auth) == "00D000000000001"
+    assert requested == ["https://login.salesforce.com/services/oauth2/userinfo"]
+
+
 def test_from_mapping_prefers_user_token_over_merged_org_jwt() -> None:
     auth = SalesforceAuth.from_mapping(
         {
@@ -76,122 +147,20 @@ def test_from_mapping_prefers_user_token_over_merged_org_jwt() -> None:
         "https://login.salesforce.com.evil.example",
     ],
 )
-def test_mcp_login_url_rejects_untrusted_origins(value: str) -> None:
+def test_salesforce_login_url_rejects_untrusted_origins(value: str) -> None:
     with pytest.raises(ValueError):
-        SalesforceConnector._mcp_login_url(value)
+        SalesforceConnector._salesforce_login_url(value)
 
 
-def test_mcp_login_url_accepts_salesforce_domains() -> None:
+def test_salesforce_login_url_accepts_salesforce_domains() -> None:
     assert (
-        SalesforceConnector._mcp_login_url("https://login.salesforce.com/")
+        SalesforceConnector._salesforce_login_url("https://login.salesforce.com/")
         == "https://login.salesforce.com"
     )
     assert (
-        SalesforceConnector._mcp_login_url("https://acme.my.salesforce.com")
+        SalesforceConnector._salesforce_login_url("https://acme.my.salesforce.com")
         == "https://acme.my.salesforce.com"
     )
-
-
-def test_mcp_env_isolates_source_and_user() -> None:
-    env = SalesforceConnector().prepare_mcp_env(
-        {
-            "source_id": "source-1",
-            "user_id": "user-1",
-            "credentials": {
-                "access_token": "user-oauth-token",
-                "instance_url": "https://acme.my.salesforce.com",
-                "organization_id": "00D000000000001",
-                "login_url": "https://test.salesforce.com",
-            },
-        }
-    )
-    assert env["OMNI_SALESFORCE_SOURCE_ID"] == "source-1:user-1"
-    assert env["SF_ACCESS_TOKEN"] == "user-oauth-token"
-    assert env["SF_ORG_ID"] == "00D000000000001"
-    assert env["SF_LOGIN_URL"] == "https://test.salesforce.com"
-
-
-@pytest.fixture
-def mcp_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setenv("OMNI_SALESFORCE_MCP_WORKSPACE", str(workspace))
-    return str(workspace)
-
-
-def test_mcp_tool_directory_confines_unmounted_paths_to_workspace(
-    mcp_workspace: str,
-) -> None:
-    connector = SalesforceConnector()
-    arguments = connector.prepare_mcp_tool_arguments(
-        "run_soql_query", {"directory": "/scratch/not-mounted", "query": "SELECT Id"}
-    )
-
-    assert arguments["directory"] == os.path.realpath(mcp_workspace)
-    assert arguments["query"] == "SELECT Id"
-
-
-def test_mcp_tool_directory_preserves_workspace_subdirectories(
-    mcp_workspace: str,
-) -> None:
-    connector = SalesforceConnector()
-    arguments = connector.prepare_mcp_tool_arguments(
-        "run_soql_query", {"directory": "exports/today"}
-    )
-    workspace = os.path.realpath(mcp_workspace)
-    assert arguments["directory"] == os.path.join(workspace, "exports", "today")
-
-
-def test_mcp_tool_directory_rejects_traversal(mcp_workspace: str) -> None:
-    connector = SalesforceConnector()
-    arguments = connector.prepare_mcp_tool_arguments(
-        "run_soql_query", {"directory": "../../etc/passwd"}
-    )
-    assert arguments["directory"] == os.path.realpath(mcp_workspace)
-
-
-def test_mcp_tool_directory_rejects_symlink_escape(mcp_workspace: str, tmp_path) -> None:
-    workspace = os.path.realpath(mcp_workspace)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    link = os.path.join(workspace, "escape")
-    os.symlink(str(outside), link)
-    arguments = SalesforceConnector().prepare_mcp_tool_arguments(
-        "run_soql_query", {"directory": "escape"}
-    )
-    assert arguments["directory"] == workspace
-    assert arguments["directory"] != str(outside)
-
-
-def test_mcp_action_classification_uses_explicit_allowlist() -> None:
-    from omni_connector import ActionDefinition
-
-    connector = SalesforceConnector()
-
-    def classify(name: str) -> str:
-        return connector._classify_mcp_action(
-            ActionDefinition(name=name, description="", mode="write", origin="mcp")
-        ).mode
-
-    # Known read-only Salesforce MCP data/core tools.
-    assert classify("run_soql_query") == "read"
-    assert classify("get_username") == "read"
-    # Known mutating tools stay writes even though their names look readable.
-    assert classify("assign_permission_set") == "write"
-    assert classify("run_apex_test") == "write"
-    # Unknown tools default to write.
-    assert classify("do_thing") == "write"
-    assert classify("query_something_else") == "write"
-    # Native actions are never reclassified.
-    native = connector._classify_mcp_action(
-        ActionDefinition(name="create_case", description="", mode="read", origin="native")
-    )
-    assert native.mode == "read"
-
-
-def test_mcp_tool_directory_rejects_malformed_values() -> None:
-    with pytest.raises(ValueError):
-        SalesforceConnector().prepare_mcp_tool_arguments("run_soql_query", {"directory": 42})
 
 
 def test_from_mapping_missing_credentials() -> None:

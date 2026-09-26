@@ -485,13 +485,6 @@ fn source_allows_action_origin(
     Ok(allowed_origins.contains(&action_origin))
 }
 
-fn action_is_available_for_source(
-    source: &Source,
-    action: &shared::models::ActionDefinition,
-) -> Result<bool, String> {
-    source_allows_action_origin(&source.config, action.origin)
-}
-
 /// System/background calls have no acting user and may access only org sources;
 /// personal sources require the source owner as the actor.
 fn source_allows_actor(source: &Source, user_id: Option<&str>) -> bool {
@@ -699,7 +692,9 @@ pub async fn execute_action(
                     request.action, source_type
                 ))
             })?;
-        if !action_is_available_for_source(&db_source, action_def).map_err(ApiError::BadRequest)? {
+        if !source_allows_action_origin(&db_source.config, action_def.origin)
+            .map_err(ApiError::BadRequest)?
+        {
             return Err(ApiError::BadRequest(format!(
                 "Action '{}' is unavailable for this source's allowed action-origin policy",
                 request.action
@@ -942,6 +937,7 @@ pub async fn execute_action(
         credentials: Some(creds),
         source,
         actor_email,
+        actor_user_id: request.user_id.clone(),
     };
 
     // Proxy the connector's full HTTP response (status, headers, body) verbatim.
@@ -973,14 +969,7 @@ pub async fn execute_action(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    if is_mcp_action
-        && status == StatusCode::PRECONDITION_FAILED
-        && serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|body| body.get("error").and_then(Value::as_str).map(str::to_owned))
-            .as_deref()
-            == Some("needs_user_auth")
-    {
+    if should_invalidate_user_credential(credential_user_id.as_deref(), status, &bytes) {
         if let Some(user_id) = credential_user_id.as_deref() {
             CredentialService::new(state.db_pool.clone())
                 .delete_user_credential(&credential_source_id, user_id)
@@ -990,6 +979,28 @@ pub async fn execute_action(
     }
 
     Ok(builder.body(axum::body::Body::from(bytes)).unwrap())
+}
+
+fn should_invalidate_user_credential(
+    credential_user_id: Option<&str>,
+    status: StatusCode,
+    body: &[u8],
+) -> bool {
+    credential_user_id.is_some() && is_needs_user_auth_response(status, body)
+}
+
+fn is_needs_user_auth_response(status: StatusCode, body: &[u8]) -> bool {
+    status == StatusCode::PRECONDITION_FAILED
+        && serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .as_deref()
+            == Some("needs_user_auth")
 }
 
 async fn invalidate_native_mcp_catalog(
@@ -4896,6 +4907,87 @@ mod tests {
                 .unwrap()
                 .contains_key("healthy")
         }));
+    }
+
+    #[test]
+    fn missing_user_credential_response_contains_salesforce_reconnect_details() {
+        let response = needs_user_auth_json(
+            "source-1",
+            "salesforce",
+            ServiceProvider::Salesforce,
+        );
+        assert_eq!(response["error"], "needs_user_auth");
+        assert_eq!(response["source_id"], "source-1");
+        assert_eq!(response["source_type"], "salesforce");
+        assert_eq!(response["provider"], "salesforce");
+        assert_eq!(
+            response["oauth_start_url"],
+            "/api/oauth/start?source_id=source-1"
+        );
+    }
+
+    #[test]
+    fn user_credential_invalidation_uses_auth_response_and_credential_scope() {
+        let needs_auth = br#"{"error":"needs_user_auth"}"#;
+        assert!(should_invalidate_user_credential(
+            Some("user-1"),
+            StatusCode::PRECONDITION_FAILED,
+            needs_auth,
+        ));
+        assert!(!should_invalidate_user_credential(
+            None,
+            StatusCode::PRECONDITION_FAILED,
+            needs_auth,
+        ));
+        assert!(!should_invalidate_user_credential(
+            Some("user-1"),
+            StatusCode::FORBIDDEN,
+            needs_auth,
+        ));
+        assert!(!should_invalidate_user_credential(
+            Some("user-1"),
+            StatusCode::PRECONDITION_FAILED,
+            br#"{"error":"Salesforce credential is not authorized for this source"}"#,
+        ));
+    }
+
+    #[test]
+    fn action_origin_policy_applies_to_sync_and_no_sync_sources() {
+        let cases = [
+            ("unrestricted no-sync", json!({"sync_enabled": false}), true, true),
+            (
+                "MCP-only no-sync",
+                json!({"sync_enabled": false, "allowed_action_origins": ["mcp"]}),
+                false,
+                true,
+            ),
+            (
+                "native-only synced",
+                json!({"sync_enabled": true, "allowed_action_origins": ["native"]}),
+                true,
+                false,
+            ),
+            (
+                "empty allowlist",
+                json!({"allowed_action_origins": []}),
+                false,
+                false,
+            ),
+            ("unrestricted synced", json!({"sync_enabled": true}), true, true),
+        ];
+
+        for (scenario, config, allows_native, allows_mcp) in cases {
+            assert_eq!(
+                source_allows_action_origin(&config, ActionOrigin::Native).unwrap(),
+                allows_native,
+                "unexpected native policy result for {scenario}"
+            );
+            assert_eq!(
+                source_allows_action_origin(&config, ActionOrigin::Mcp).unwrap(),
+                allows_mcp,
+                "unexpected MCP policy result for {scenario}"
+            );
+        }
     }
 
     #[test]

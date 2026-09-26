@@ -547,6 +547,7 @@ class ActionRequest(BaseModel):
     credentials: dict[str, Any]
     source: Source | None = None
     actor_email: str | None = None
+    actor_user_id: str | None = None
 
 
 class OAuthCredentialFlow(str, Enum):

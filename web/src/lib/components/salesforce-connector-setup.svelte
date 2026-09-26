@@ -16,7 +16,7 @@
 
     let { open = false, onSuccess, onCancel }: Props = $props()
 
-    type AuthMode = 'jwt' | 'token' | 'mcp'
+    type AuthMode = 'jwt' | 'token' | 'no-sync'
     let authMode = $state<AuthMode>('jwt')
 
     // Connected App (JWT) fields
@@ -29,7 +29,7 @@
     let instanceUrl = $state('')
     let accessToken = $state('')
 
-    // Per-user MCP OAuth fields
+    // Per-user native-action OAuth fields
     let oauthClientId = $state('')
     let oauthClientSecret = $state('')
 
@@ -106,10 +106,9 @@
                 }
             } else {
                 if (!oauthClientId.trim() || !oauthClientSecret.trim()) {
-                    throw new Error('Client ID and Client Secret are required for MCP-only setup')
+                    throw new Error('Client ID and Client Secret are required for no-sync setup')
                 }
                 sourceConfig.sync_enabled = false
-                sourceConfig.allowed_action_origins = ['mcp']
             }
 
             const sourceResponse = await fetch('/api/sources', {
@@ -120,7 +119,7 @@
                     name: 'Salesforce',
                     sourceType: 'salesforce',
                     config: sourceConfig,
-                    isActive: authMode === 'mcp',
+                    isActive: authMode === 'no-sync',
                 }),
             })
 
@@ -139,7 +138,7 @@
                 throw new Error('Salesforce source response did not include an id')
             }
 
-            if (authMode === 'mcp') {
+            if (authMode === 'no-sync') {
                 const oauthConfigResponse = await fetch('/api/connector-configs', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -159,7 +158,7 @@
                     throw new Error(body?.message || 'Failed to save Salesforce OAuth client')
                 }
 
-                toast.success('Salesforce MCP configured. Authorize to discover its tools.')
+                toast.success('Salesforce native actions configured. Authorize this org.')
                 const returnTo = encodeURIComponent(
                     `/admin/settings/integrations/salesforce/${source.id}`,
                 )
@@ -227,7 +226,7 @@
         <Dialog.Header>
             <Dialog.Title>Connect Salesforce</Dialog.Title>
             <Dialog.Description>
-                Sync Salesforce data into Omni, or connect only its MCP tools with per-user OAuth.
+                Sync Salesforce data into Omni, or enable native read actions with per-user OAuth.
             </Dialog.Description>
         </Dialog.Header>
 
@@ -248,9 +247,9 @@
                         Access Token
                     </Tabs.Trigger>
                     <Tabs.Trigger
-                        value="mcp"
+                        value="no-sync"
                         class="data-[state=active]:text-foreground data-[state=active]:after:bg-foreground text-muted-foreground h-11 cursor-pointer rounded-none px-1 data-[state=active]:font-semibold data-[state=active]:after:bottom-[-10px] data-[state=active]:after:opacity-100">
-                        MCP only
+                        Actions only
                     </Tabs.Trigger>
                 </Tabs.List>
             </div>
@@ -326,8 +325,8 @@
                         placeholder="https://yourorg.salesforce.com"
                         required />
                     <p class="text-muted-foreground text-sm">
-                        Native-action trial only; MCP requires each user to authorize Salesforce
-                        through Omni. Example: https://yourorg.salesforce.com
+                        Native actions require each user to authorize Salesforce through Omni.
+                        Example: https://yourorg.salesforce.com
                     </p>
                 </div>
 
@@ -346,26 +345,26 @@
                 </div>
             </Tabs.Content>
 
-            <Tabs.Content value="mcp" class="space-y-4 pt-1">
+            <Tabs.Content value="no-sync" class="space-y-4 pt-1">
                 <div class="rounded-md border p-3 text-sm">
                     Omni will not sync or index Salesforce records. Each user authorizes Salesforce
-                    with their own account before invoking its APIs. After saving, you will
-                    authorize once so Omni can discover the Salesforce MCP tool catalog.
+                    with their own account before using the native read actions. First authorize the
+                    source org to bind this source to the correct Salesforce organization.
                 </div>
 
                 <div class="space-y-2">
-                    <Label for="mcp-client-id">Client ID</Label>
+                    <Label for="oauth-client-id">Client ID</Label>
                     <Input
-                        id="mcp-client-id"
+                        id="oauth-client-id"
                         bind:value={oauthClientId}
                         placeholder="External Client App consumer key"
                         required />
                 </div>
 
                 <div class="space-y-2">
-                    <Label for="mcp-client-secret">Client Secret</Label>
+                    <Label for="oauth-client-secret">Client Secret</Label>
                     <Input
-                        id="mcp-client-secret"
+                        id="oauth-client-secret"
                         type="password"
                         bind:value={oauthClientSecret}
                         placeholder="External Client App consumer secret"
@@ -373,8 +372,8 @@
                 </div>
 
                 <div class="space-y-2">
-                    <Label for="mcp-login-url">Login URL</Label>
-                    <Input id="mcp-login-url" bind:value={loginUrl} required />
+                    <Label for="oauth-login-url">Login URL</Label>
+                    <Input id="oauth-login-url" bind:value={loginUrl} required />
                     <p class="text-muted-foreground text-sm">
                         Use https://login.salesforce.com for production or
                         https://test.salesforce.com for a sandbox. Add Omni's OAuth callback URL,
@@ -384,9 +383,9 @@
             </Tabs.Content>
         </Tabs.Root>
 
-        {#if authMode !== 'mcp'}
+        {#if authMode !== 'no-sync'}
             <p class="text-muted-foreground text-xs">
-                Per-user MCP actions require an External Client App; configure it after connecting
+                Per-user native actions require an External Client App; configure it after connecting
                 under Integrations &gt; OAuth Apps (scoped to this org).
             </p>
         {/if}

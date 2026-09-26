@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
-import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -17,15 +15,12 @@ from fastapi.responses import JSONResponse, Response
 from omni_connector import (
     ActionDefinition,
     Connector,
-    ConnectorManifest,
     OAuthCredentialFlow,
-    OAuthCredentialReadyRequest,
     OAuthManifestConfig,
     OAuthScopeSet,
     OAuthSourceBinding,
     PersonSyncRecord,
     SearchOperator,
-    StdioMcpServer,
     SyncContext,
     SyncMode,
 )
@@ -122,30 +117,6 @@ SYNCED_GROUP_TYPES = (
     "Role",
     "RoleAndSubordinates",
     "RoleAndSubordinatesInternal",
-)
-
-MCP_WORKSPACE_ENV = "OMNI_SALESFORCE_MCP_WORKSPACE"
-
-# Explicit allowlist of read-only Salesforce MCP tools, taken from the
-# @salesforce/mcp tool catalog. Anything not listed here is treated as a
-# write so a read-scoped credential can never reach a mutating tool through a
-# heuristic prefix guess. The connector enables the `data` toolset plus the
-# always-on `core` toolset, so `run_soql_query`, `get_username`, and
-# `list_all_orgs` are the tools it actually exposes today.
-MCP_KNOWN_READ_TOOLS = frozenset(
-    {
-        "run_soql_query",
-        "get_username",
-        "list_all_orgs",
-        "list_code_analyzer_rules",
-        "describe_code_analyzer_rule",
-        "query_code_analyzer_results",
-        "list_devops_center_projects",
-        "list_devops_center_work_items",
-        "check_devops_center_commit_status",
-        "get_mobile_lwc_offline_analysis",
-        "get_mobile_lwc_offline_guidance",
-    }
 )
 
 _RECORD_PARSERS: dict[SalesforceObjectName, Callable[[Mapping[str, object]], RecordModel]] = {
@@ -281,24 +252,9 @@ class SalesforceConnector(Connector):
     def actions(self) -> list[ActionDefinition]:
         return list(ACTION_DEFINITIONS)
 
-    async def get_manifest(self, connector_url: str) -> ConnectorManifest:
-        """Reclassify discovered MCP tools so read authorization cannot reach writes."""
-        manifest = await super().get_manifest(connector_url)
-        manifest.actions = [self._classify_mcp_action(action) for action in manifest.actions]
-        return manifest
-
-    @staticmethod
-    def _mcp_action_mode(tool_name: str) -> str:
-        return "read" if tool_name in MCP_KNOWN_READ_TOOLS else "write"
-
-    def _classify_mcp_action(self, action: ActionDefinition) -> ActionDefinition:
-        if action.origin != "mcp":
-            return action
-        return action.model_copy(update={"mode": self._mcp_action_mode(action.name)})
-
     def oauth_config(self) -> OAuthManifestConfig | None:
-        """Declare Salesforce's per-user OAuth/PKCE flow for MCP actions."""
-        login_url = self._mcp_login_url("https://login.salesforce.com")
+        """Declare Salesforce's per-user OAuth/PKCE flow for user actions."""
+        login_url = self._salesforce_login_url("https://login.salesforce.com")
         return OAuthManifestConfig(
             provider="salesforce",
             auth_endpoint=f"{login_url}/services/oauth2/authorize",
@@ -326,11 +282,6 @@ class SalesforceConnector(Connector):
             supports_org_oauth=False,
         )
 
-    @property
-    def mcp_server(self) -> StdioMcpServer:
-        """Use Salesforce's official stdio MCP server."""
-        return StdioMcpServer(command="omni-salesforce-mcp")
-
     @staticmethod
     def _credential_payload(credentials: Mapping[str, object]) -> Mapping[str, object]:
         """Accept both SDK raw credentials and action ServiceCredential envelopes."""
@@ -340,7 +291,7 @@ class SalesforceConnector(Connector):
         return credentials
 
     @staticmethod
-    def _mcp_login_url(value: object) -> str:
+    def _salesforce_login_url(value: object) -> str:
         url = value if isinstance(value, str) else "https://login.salesforce.com"
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower().rstrip(".")
@@ -359,11 +310,11 @@ class SalesforceConnector(Connector):
             or parsed.path not in {"", "/"}
             or not allowed_host
         ):
-            raise ValueError("Salesforce MCP requires an HTTPS Salesforce login URL")
+            raise ValueError("Salesforce requires an HTTPS Salesforce login URL")
         return url.rstrip("/")
 
     @classmethod
-    def _mcp_login_url_from_payload(cls, payload: Mapping[str, object]) -> str:
+    def _salesforce_login_url_from_payload(cls, payload: Mapping[str, object]) -> str:
         login_url = payload.get("login_url")
         if not isinstance(login_url, str) or not login_url.strip():
             token_uri = payload.get("token_uri")
@@ -373,7 +324,24 @@ class SalesforceConnector(Connector):
                     "/services/oauth2/token"
                 ):
                     login_url = f"{parsed.scheme}://{parsed.netloc}"
-        return cls._mcp_login_url(login_url or "https://login.salesforce.com")
+        return cls._salesforce_login_url(login_url or "https://login.salesforce.com")
+
+    @staticmethod
+    def _salesforce_instance_url(value: str) -> str:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if (
+            parsed.scheme != "https"
+            or parsed.username
+            or parsed.password
+            or parsed.port
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or not (host.endswith(".salesforce.com") or host.endswith(".force.com"))
+        ):
+            raise ValueError("Salesforce requires an HTTPS instance URL")
+        return value.rstrip("/")
 
     @staticmethod
     def _source_binding(config: Mapping[str, object]) -> dict[str, str]:
@@ -455,8 +423,8 @@ class SalesforceConnector(Connector):
             if actual_instance is None:
                 raise ValueError("Salesforce OAuth credential has no instance URL")
             try:
-                expected_url = self._mcp_salesforce_url(expected_instance)
-                actual_url = self._mcp_salesforce_url(actual_instance)
+                expected_url = self._salesforce_instance_url(expected_instance)
+                actual_url = self._salesforce_instance_url(actual_instance)
             except ValueError as exc:
                 raise ValueError("Salesforce OAuth instance does not match the source") from exc
             if urlparse(expected_url).hostname != urlparse(actual_url).hostname:
@@ -475,150 +443,6 @@ class SalesforceConnector(Connector):
                 "Salesforce credential could not be verified against its Salesforce org"
             ) from exc
 
-    def mcp_authentication_error(self, message: str) -> bool:
-        """Recognize terminal Salesforce OAuth failures for MCP responses."""
-        lowered = message.lower()
-        return any(
-            marker in lowered
-            for marker in (
-                "invalid_grant",
-                "invalid session",
-                "invalid access token",
-                "authentication failed",
-                "authentication required",
-                "oauth organization",
-                "access-token login failed",
-                "oauth token",
-                "credentials require",
-                "missing credentials",
-                "unsupported Salesforce MCP authentication",
-                "unauthorized",
-            )
-        )
-
-    def prepare_mcp_env(self, credentials: dict[str, object]) -> dict[str, str]:
-        payload = self._credential_payload(credentials)
-        auth = SalesforceAuth.from_mapping(payload)
-        source_id = credentials.get("source_id") or credentials.get("_omni_source_id")
-        user_id = credentials.get("user_id") or credentials.get("_omni_user_id")
-        if isinstance(source_id, str) and source_id and isinstance(user_id, str) and user_id:
-            source_id = f"{source_id}:{user_id}"
-        if not isinstance(source_id, str) or not source_id:
-            # This is only a fallback for direct SDK callers. Hashing the
-            # canonical credential payload avoids putting secrets in a path.
-            source_id = hashlib.sha256(
-                json.dumps(
-                    {"credentials": payload, "user_id": user_id},
-                    sort_keys=True,
-                    default=str,
-                ).encode()
-            ).hexdigest()
-        env = {"OMNI_SALESFORCE_SOURCE_ID": source_id}
-        if auth.mode.value == "jwt":
-            assert auth.client_id and auth.private_key and auth.username
-            env.update(
-                {
-                    "OMNI_SALESFORCE_AUTH_MODE": "jwt",
-                    "SF_CLIENT_ID": auth.client_id,
-                    "SF_PRIVATE_KEY": auth.private_key,
-                    "SF_USERNAME": auth.username,
-                    "SF_LOGIN_URL": self._mcp_login_url(auth.login_url),
-                }
-            )
-        else:
-            if not auth.access_token or not auth.instance_url:
-                raise ValueError("Salesforce MCP OAuth credentials require an instance URL")
-            env.update(
-                {
-                    "OMNI_SALESFORCE_AUTH_MODE": "access_token",
-                    "SF_ACCESS_TOKEN": auth.access_token,
-                    "SF_INSTANCE_URL": self._mcp_salesforce_url(auth.instance_url),
-                    "SF_LOGIN_URL": self._mcp_login_url_from_payload(payload),
-                }
-            )
-            organization_id = payload.get("organization_id")
-            if isinstance(organization_id, str) and organization_id:
-                env["SF_ORG_ID"] = organization_id
-
-        # Create the marker only after all local credential validation has
-        # succeeded; otherwise a rejected direct call could leak a temp file.
-        status_fd, status_file = tempfile.mkstemp(prefix="omni-salesforce-auth-")
-        os.close(status_fd)
-        env["OMNI_MCP_AUTH_STATUS_FILE"] = status_file
-        return env
-
-    @staticmethod
-    def _mcp_salesforce_url(value: str) -> str:
-        parsed = urlparse(value)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        allowed_host = host.endswith(".salesforce.com") or host.endswith(".force.com")
-        if (
-            parsed.scheme != "https"
-            or parsed.username
-            or parsed.password
-            or parsed.port
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in {"", "/"}
-            or not allowed_host
-        ):
-            raise ValueError("Salesforce MCP requires an HTTPS Salesforce instance URL")
-        return value.rstrip("/")
-
-    @staticmethod
-    def _mcp_workspace() -> str:
-        return os.environ.get(MCP_WORKSPACE_ENV) or os.path.join(os.getcwd(), "salesforce-mcp")
-
-    def prepare_mcp_tool_arguments(
-        self, action: str, arguments: Mapping[str, object]
-    ) -> dict[str, object]:
-        prepared = dict(arguments)
-        directory = prepared.get("directory")
-        if directory is None:
-            return prepared
-        if not isinstance(directory, str) or not directory:
-            raise ValueError(f"Salesforce MCP tool {action} requires a directory path")
-
-        workspace = os.path.realpath(self._mcp_workspace())
-        os.makedirs(workspace, mode=0o700, exist_ok=True)
-        candidate = os.path.realpath(
-            directory if os.path.isabs(directory) else os.path.join(workspace, directory)
-        )
-        # The official Salesforce MCP schema asks for a sandbox-container path
-        # that is not mounted here, and a caller-supplied path may attempt to
-        # escape via traversal or symlinks. Confine every tool to the
-        # connector-owned workspace instead of trusting the requested path.
-        if candidate != workspace and not candidate.startswith(workspace + os.sep):
-            candidate = workspace
-        os.makedirs(candidate, mode=0o700, exist_ok=True)
-        prepared["directory"] = candidate
-        return prepared
-
-    async def bootstrap_mcp(self, credentials: dict[str, object]) -> None:
-        # Sync has only the org JWT credential. MCP catalogs must be discovered
-        # with a user OAuth credential, never with the sync credential.
-        if not credentials.get("user_id") and not credentials.get("_omni_user_id"):
-            logger.info("Skipping MCP bootstrap without a user OAuth credential")
-            return
-        await super().bootstrap_mcp(credentials)
-
-    async def oauth_credential_ready(self, request: OAuthCredentialReadyRequest) -> bool:
-        if request.provider != "salesforce" or not request.user_id:
-            return False
-        credentials = dict(request.credentials)
-        credentials["_omni_source_id"] = request.source_id
-        credentials["_omni_user_id"] = request.user_id
-        adapter = self.mcp_adapter
-        if adapter is None:
-            return False
-        try:
-            auth = self._prepare_mcp_auth(credentials)
-            await adapter.discover(**auth)
-            return True
-        except Exception:
-            logger.warning("Salesforce MCP user catalog bootstrap failed", exc_info=True)
-            return False
-
     async def execute_action(
         self,
         action: str,
@@ -626,17 +450,45 @@ class SalesforceConnector(Connector):
         credentials: Mapping[str, object],
         source: Source | None = None,
         actor_email: str | None = None,
+        actor_user_id: str | None = None,
     ) -> JSONResponse | Response:
+        if action in {"run_soql_query", "get_username"}:
+            envelope_source_id = credentials.get("source_id")
+            envelope_user_id = credentials.get("user_id")
+            nested_credentials = credentials.get("credentials")
+            if (
+                source is None
+                or not actor_user_id
+                or not isinstance(envelope_source_id, str)
+                or envelope_source_id != source.id
+                or not isinstance(envelope_user_id, str)
+                or envelope_user_id != actor_user_id
+                or not isinstance(nested_credentials, Mapping)
+            ):
+                return JSONResponse(
+                    {
+                        "error": (
+                            "Salesforce query actions require the acting user's source credential"
+                        )
+                    },
+                    status_code=403,
+                )
         try:
             source_config = SalesforceSourceConfig.from_mapping(source.config if source else None)
             source_config.validate()
         except ValueError as exc:
             return JSONResponse({"status": "error", "error": str(exc)}, status_code=400)
+        source_context: dict[str, object] | None = None
+        if source is not None:
+            source_context = dict(source.config)
+            source_context["id"] = source.id
+            source_context["source_type"] = source.source_type
         return await execute_action(
             action,
             params,
             self._credential_payload(credentials),
             source_config=source_config,
+            source=source_context,
         )
 
     async def sync(
@@ -658,7 +510,7 @@ class SalesforceConnector(Connector):
             await ctx.fail(str(e))
             return
         if not config.sync_enabled:
-            await ctx.fail("Salesforce data sync is disabled for this MCP-only source")
+            await ctx.fail("Salesforce data sync is disabled for this source")
             return
 
         try:
@@ -731,9 +583,7 @@ class SalesforceConnector(Connector):
     def _with_object_state(
         checkpoint: SalesforceCheckpoint, object_name: str, state: ObjectState
     ) -> SalesforceCheckpoint:
-        return replace(
-            checkpoint, objects={**checkpoint.objects, object_name: state}
-        )
+        return replace(checkpoint, objects={**checkpoint.objects, object_name: state})
 
     @staticmethod
     async def _heartbeat(ctx: SyncContext) -> None:
@@ -881,9 +731,7 @@ class SalesforceConnector(Connector):
         fields = ("Id", parent_field, "UserOrGroupId", access_level_field, "RowCause")
         missing = [field for field in fields if not describe.can_select(field)]
         if missing:
-            reason = (
-                f"Share object {share_object} is missing fields: {', '.join(missing)}"
-            )
+            reason = f"Share object {share_object} is missing fields: {', '.join(missing)}"
             logger.warning(reason)
             await ctx.emit_error(f"{item.name.value}:*", reason)
             return None, reason
@@ -958,10 +806,7 @@ class SalesforceConnector(Connector):
         removed = tuple(
             sorted(
                 set(checkpoint.objects)
-                - {
-                    item.name.value
-                    for item in enabled_object_configs(config.enabled_objects)
-                }
+                - {item.name.value for item in enabled_object_configs(config.enabled_objects)}
             )
         )
         if removed:
@@ -993,9 +838,7 @@ class SalesforceConnector(Connector):
     ) -> SalesforceCheckpoint:
         """One-shot sync: people, shares, records, deletes."""
         mode = (
-            SyncRunMode.INCREMENTAL
-            if ctx.sync_mode == SyncMode.INCREMENTAL
-            else SyncRunMode.FULL
+            SyncRunMode.INCREMENTAL if ctx.sync_mode == SyncMode.INCREMENTAL else SyncRunMode.FULL
         )
         fallback_window_end = datetime.now(UTC)
         progress = self._resume_progress(checkpoint, ctx, mode, fallback_window_end)
@@ -1005,9 +848,7 @@ class SalesforceConnector(Connector):
         window_end = self._progress_window_end(progress, fallback_window_end)
 
         enabled_now = tuple(
-            sorted(
-                item.name.value for item in enabled_object_configs(config.enabled_objects)
-            )
+            sorted(item.name.value for item in enabled_object_configs(config.enabled_objects))
         )
 
         # The schema fingerprint is a candidate in run progress and only
@@ -1083,10 +924,7 @@ class SalesforceConnector(Connector):
             replace(
                 progress,
                 full_reconciliation=tuple(
-                    sorted(
-                        set(progress.full_reconciliation)
-                        | share_result.reconciliation_objects
-                    )
+                    sorted(set(progress.full_reconciliation) | share_result.reconciliation_objects)
                 ),
                 pending_share_snapshot=share_result.snapshot,
                 pending_changed_parents=pending_changed,
@@ -1179,9 +1017,7 @@ class SalesforceConnector(Connector):
         )
 
     @staticmethod
-    def _changed_owner_ids(
-        previous: PeopleState | None, current: PeopleState
-    ) -> frozenset[str]:
+    def _changed_owner_ids(previous: PeopleState | None, current: PeopleState) -> frozenset[str]:
         """Owners whose email/role/active permission signature changed."""
         if previous is None:
             return frozenset()
@@ -1239,8 +1075,7 @@ class SalesforceConnector(Connector):
             group_types = ", ".join(f"'{value}'" for value in SYNCED_GROUP_TYPES)
             async for page in iter_query_pages(
                 client,
-                f"SELECT {', '.join(fields)} FROM Group "
-                f"WHERE Type IN ({group_types})",
+                f"SELECT {', '.join(fields)} FROM Group WHERE Type IN ({group_types})",
             ):
                 groups.extend(GroupRecord.from_record(r) for r in page.records)
                 await self._heartbeat(ctx)
@@ -1298,9 +1133,7 @@ class SalesforceConnector(Connector):
         await self._emit_people(directory, users, snapshot, previous, ctx)
         return directory, snapshot
 
-    def _people_state(
-        self, directory: SalesforceDirectory, users: list[UserRecord]
-    ) -> PeopleState:
+    def _people_state(self, directory: SalesforceDirectory, users: list[UserRecord]) -> PeopleState:
         user_fingerprints: dict[str, str] = {}
         active_emails: set[str] = set()
         for user in users:
@@ -1417,9 +1250,7 @@ class SalesforceConnector(Connector):
                     prior = previous.grants.get(obj.config.share_object)
                     if prior is not None:
                         snapshot_grants[obj.config.share_object] = prior
-        previous_grants = (
-            previous.grants if previous is not None and not previous.oversized else {}
-        )
+        previous_grants = previous.grants if previous is not None and not previous.oversized else {}
         total_entries = sum(len(grants) for grants in snapshot_grants.values())
 
         for obj in objects:
@@ -1499,8 +1330,7 @@ class SalesforceConnector(Connector):
             reconciliation = {
                 obj.config.name.value
                 for obj in objects
-                if obj.share_plan is not None
-                and obj.config.name.value not in unresolved
+                if obj.share_plan is not None and obj.config.name.value not in unresolved
             }
             snapshot = ShareSnapshot(
                 grants={},
@@ -1614,9 +1444,7 @@ class SalesforceConnector(Connector):
         state = checkpoint.state_for(obj.config.name)
         watermark = state.watermark
         if obj.has_system_modstamp:
-            watermark = (
-                window_end - timedelta(seconds=DELTA_OVERLAP_SECONDS)
-            ).isoformat()
+            watermark = (window_end - timedelta(seconds=DELTA_OVERLAP_SECONDS)).isoformat()
         return self._with_object_state(
             checkpoint,
             obj.config.name,
@@ -1676,9 +1504,7 @@ class SalesforceConnector(Connector):
                 return checkpoint
             if delta:
                 assert window_start is not None
-                soql = delta_scan_soql(
-                    config.name, obj.fields, cursor, window_start, window_end
-                )
+                soql = delta_scan_soql(config.name, obj.fields, cursor, window_start, window_end)
             else:
                 soql = full_scan_soql(config.name, obj.fields, cursor)
             page = await client.query(soql)
@@ -1764,17 +1590,14 @@ class SalesforceConnector(Connector):
                 days=DELETION_RETENTION_DAYS - DELETION_WINDOW_MARGIN_DAYS
             )
             bounded = False
-        requested_start = (
-            base - timedelta(seconds=DELTA_OVERLAP_SECONDS) if bounded else base
-        )
+        requested_start = base - timedelta(seconds=DELTA_OVERLAP_SECONDS) if bounded else base
 
         result = await client.get_deleted(config.name, requested_start, window_end)
         earliest = result.earliest_date_available
         if (
             bounded
             and earliest is not None
-            and earliest
-            > requested_start + timedelta(seconds=DELTA_OVERLAP_SECONDS)
+            and earliest > requested_start + timedelta(seconds=DELTA_OVERLAP_SECONDS)
         ):
             # Deletions between the committed boundary and the provider's
             # retention start cannot be covered, and a full re-scan cannot
@@ -1940,10 +1763,7 @@ class SalesforceConnector(Connector):
         ctx: SyncContext,
     ) -> SalesforceCheckpoint:
         in_clause = ", ".join(f"'{record_id}'" for record_id in ids)
-        soql = (
-            f"SELECT {', '.join(obj.fields)} FROM {obj.config.name} "
-            f"WHERE Id IN ({in_clause})"
-        )
+        soql = f"SELECT {', '.join(obj.fields)} FROM {obj.config.name} WHERE Id IN ({in_clause})"
         page = await client.query(soql)
         for raw in page.records:
             record = parser(raw)

@@ -93,7 +93,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         "Discover active Case record types and optional picklist values",
         _obj({"record_type_id": _text("Optional active Case RecordType Id")}),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -101,7 +101,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         "Read a Salesforce Case using readable standard fields",
         _obj({"case_id": _text("Salesforce Case Id")}, ["case_id"]),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -122,7 +122,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id"],
         ),
         "write",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -133,7 +133,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id", "queue_id"],
         ),
         "write",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -141,7 +141,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         "List Case-capable Salesforce queues and visible Case counts",
         _obj({"limit": {"type": "integer"}, "cursor": _text("Opaque QueueSobject cursor")}),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -149,7 +149,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
         "Read standard Contact, Account, and creator context separately",
         _obj({"case_id": _text("Salesforce Case Id")}, ["case_id"]),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -163,7 +163,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             }
         ),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -179,7 +179,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["start_at", "end_at"],
         ),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -194,7 +194,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id"],
         ),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -210,7 +210,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["start_at", "end_at"],
         ),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -225,7 +225,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id"],
         ),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -239,7 +239,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id", "content_version_id"],
         ),
         "read",
-        "org",
+        "user",
         ["salesforce"],
     ),
     _definition(
@@ -255,7 +255,7 @@ CASE_ACTION_DEFINITIONS: tuple[ActionDefinition, ...] = (
             ["case_id", "body"],
         ),
         "write",
-        "org",
+        "user",
         ["salesforce"],
     ),
 )

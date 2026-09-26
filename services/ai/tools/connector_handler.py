@@ -286,6 +286,9 @@ class ConnectorToolHandler:
                     action_origin = action_def.get("origin", "native")
                     if not isinstance(action_origin, str):
                         raise TypeError("connector action origin must be a string")
+                    action_name = action_def.get("name")
+                    if not isinstance(action_name, str):
+                        raise TypeError("connector action name must be a string")
                     if not action_is_available_for_source(source, action_origin):
                         continue
                     actions.append(
@@ -293,7 +296,7 @@ class ConnectorToolHandler:
                             source_id=source.id,
                             source_type=source_type,
                             source_name=source.name or source_type,
-                            action_name=action_def["name"],
+                            action_name=action_name,
                             description=action_def.get("description", ""),
                             input_schema=action_def.get(
                                 "input_schema", {"type": "object", "properties": {}}

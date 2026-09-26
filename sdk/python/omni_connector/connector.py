@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from fastapi.responses import JSONResponse
+from starlette.responses import Response
 
 from .context import SyncContext
 from .models import (
@@ -182,7 +182,7 @@ class Connector(ABC):
         ``env=...`` (from ``prepare_mcp_env``); HTTP servers receive
         ``headers=...`` (from ``prepare_mcp_headers``).
         """
-        from .mcp_adapter import HttpMcpServer
+        from .mcp_config import HttpMcpServer
 
         server = self.mcp_server
         if isinstance(server, HttpMcpServer):
@@ -400,7 +400,7 @@ class Connector(ABC):
         credentials: dict[str, Any],
         source: Source | None = None,
         actor_email: str | None = None,
-    ) -> JSONResponse:
+    ) -> Response:
         """Execute a non-MCP action. Override in connector subclasses that
         define manifest actions outside of MCP tools."""
         return ActionResponse.not_supported(action).to_response(status_code=404)
