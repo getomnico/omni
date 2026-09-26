@@ -143,6 +143,10 @@ async def test_user_identity_uses_provider_verified_rest_host_and_rejects_unsafe
     from salesforce_connector.models import SalesforceAuth
 
     requested: list[str] = []
+    sobjects_url = (
+        "https://provider.my.salesforce.com/services/data/"
+        f"{client_module.API_VERSION}/sobjects"
+    )
 
     def get(url: str, **kwargs: object) -> SimpleNamespace:
         requested.append(url)
@@ -157,12 +161,7 @@ async def test_user_identity_uses_provider_verified_rest_host_and_rejects_unsafe
             )
         return SimpleNamespace(
             status_code=200,
-            json=lambda: {
-                "sobjects": (
-                    "https://provider.my.salesforce.com/services/data/"
-                    f"{client_module.API_VERSION}/sobjects"
-                )
-            },
+            json=lambda: {"sobjects": sobjects_url},
         )
 
     monkeypatch.setattr(client_module.requests, "get", get)
@@ -179,6 +178,11 @@ async def test_user_identity_uses_provider_verified_rest_host_and_rejects_unsafe
         "https://login.salesforce.com/services/oauth2/userinfo",
         f"https://claimed.my.salesforce.com/services/data/{client_module.API_VERSION}/",
     ]
+
+    sobjects_url = f"/services/data/{client_module.API_VERSION}/sobjects"
+    requested.clear()
+    identity = await fetch_user_identity(auth)
+    assert identity.instance_url == "https://claimed.my.salesforce.com"
 
     requested.clear()
     unsafe_auth = SalesforceAuth.from_mapping(

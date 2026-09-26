@@ -1037,6 +1037,10 @@ async def _verify_instance_url(
         raise SalesforceClientError("Salesforce API root reported an invalid sobjects URL")
     if parsed.query or parsed.fragment or parsed.username or parsed.password:
         raise SalesforceClientError("Salesforce API root reported an invalid sobjects URL")
+    # Salesforce commonly returns the API root's sobjects URL as a relative
+    # path. In that case it is necessarily on the already verified instance.
+    if not parsed.scheme and not parsed.netloc:
+        return f"https://{host}"
     verified_host = _verified_salesforce_host(f"{parsed.scheme}://{parsed.netloc}")
     return f"https://{verified_host}"
 
