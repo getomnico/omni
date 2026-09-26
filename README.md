@@ -56,6 +56,7 @@ Omni can be deployed entirely on your own infra. See our deployment guides:
 - [Docker Compose](https://docs.getomni.co/deployment/docker-compose)
 - [Omni CLI for Docker Compose upgrades and diagnostics](https://docs.getomni.co/deployment/cli)
 - [Terraform (AWS/GCP)](https://docs.getomni.co/deployment/aws-terraform)
+- [RepoCloud](https://repocloud.io/details/Omni/): one-click cloud deployment with competitive pricing
 
 ## Supported Integrations
 
