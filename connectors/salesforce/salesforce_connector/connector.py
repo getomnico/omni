@@ -265,10 +265,12 @@ class SalesforceConnector(Connector):
             token_response_fields=["instance_url"],
             userinfo_email_field="email",
             identity_scopes=["openid", "email", "profile"],
+            # Salesforce reports refresh_token in granted scopes even when
+            # offline_access was requested; use the reported name for validation.
             scopes={
                 "salesforce": OAuthScopeSet(
-                    read=["api", "offline_access"],
-                    write=["api", "offline_access"],
+                    read=["api", "refresh_token"],
+                    write=["api", "refresh_token"],
                 )
             },
             # Salesforce DCR is authenticated with an administrator-provided
