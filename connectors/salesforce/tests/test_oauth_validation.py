@@ -16,6 +16,16 @@ def test_oauth_manifest_requests_salesforce_refresh_token_scope() -> None:
     assert config is not None
     assert config.scopes["salesforce"].read == ["api", "refresh_token"]
     assert config.scopes["salesforce"].write == ["api", "refresh_token"]
+    policy = config.source_binding_policy
+    assert policy is not None
+    assert policy.allow_user_establish
+    assert policy.initial_admin_required
+    assert policy.source_config_equals is not None
+    assert policy.source_config_equals.key == "sync_enabled"
+    assert policy.source_config_equals.equals is False
+    # Salesforce now advertises statically declared native actions; there is
+    # no authenticated MCP catalog lifecycle to wait for in this setup mode.
+    assert not policy.authenticated_discovery_required
 
 
 def _source(config: dict[str, object]) -> Source:

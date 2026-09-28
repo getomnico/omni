@@ -285,8 +285,7 @@ class SalesforceConnector(Connector):
             source_binding_policy={
                 "allow_user_establish": True,
                 "initial_admin_required": True,
-                "compare_existing": True,
-                "authenticated_discovery_required": True,
+                "source_config_equals": {"key": "sync_enabled", "equals": False},
             },
         )
 

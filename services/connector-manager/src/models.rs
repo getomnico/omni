@@ -1,3 +1,4 @@
+pub use omni_connector_sdk::models::{OAuthSourceBindingPolicy, OAuthSourceConfigCondition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use shared::models::{Source, SourceType, SyncRun, SyncType};
@@ -129,6 +130,34 @@ pub struct TransientCredentials {
     pub credentials: JsonValue,
     #[serde(default)]
     pub config: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionCredentialPreflightRequest {
+    pub source_id: String,
+    pub user_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCredentialPreflightState {
+    Ready,
+    NeedsUserAuth,
+    NeedsAdditionalScopes,
+    MissingOrgCredentials,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionCredentialPreflightResponse {
+    pub state: ActionCredentialPreflightState,
+    pub source_id: String,
+    pub source_type: String,
+    pub provider: Option<String>,
+    pub oauth_start_url: Option<String>,
+    pub missing_scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -8,12 +8,10 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, TypedDict
-from urllib.parse import urlencode
 
 import httpx
 from anthropic.types import ToolParam
 
-from db.connection import get_db_pool
 from db.documents import DocumentsRepository
 from db.models import Source, filter_sources_for_user, parse_allowed_action_origins
 from tools.omni_tool_result import OAuthRequiredPayload, encode_oauth_required
@@ -40,9 +38,7 @@ def connector_catalog_from_payload(payload: object) -> ConnectorCatalog:
 
     catalog: ConnectorCatalog = []
     for item in payload:
-        if not isinstance(item, Mapping) or any(
-            not isinstance(key, str) for key in item
-        ):
+        if not isinstance(item, Mapping) or any(not isinstance(key, str) for key in item):
             raise TypeError("connector-manager /connectors response contains a non-object item")
         catalog.append(dict(item))
     return catalog
@@ -60,9 +56,7 @@ def sources_from_sync_overview_response(payload: object) -> list[Source]:
     sources: list[Source] = []
     for item in payload:
         if not isinstance(item, Mapping):
-            raise TypeError(
-                "connector-manager /sources response contains a non-object item"
-            )
+            raise TypeError("connector-manager /sources response contains a non-object item")
         source_payload = item["source"]
         if not isinstance(source_payload, Mapping):
             raise TypeError("connector-manager source overview missing source object")
@@ -133,6 +127,10 @@ class ConnectorAction:
     actor_scoped: bool = False
 
 
+class ConnectorActionUnavailable(RuntimeError):
+    """An action cannot run because Connector Manager reports missing org credentials."""
+
+
 class ConnectorToolHandler:
     """Fetches connector actions and dispatches tool calls to connector-manager."""
 
@@ -184,9 +182,7 @@ class ConnectorToolHandler:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Fetch connector info (includes manifests)
-                connectors_resp = await client.get(
-                    f"{self._connector_manager_url}/connectors"
-                )
+                connectors_resp = await client.get(f"{self._connector_manager_url}/connectors")
                 connectors_resp.raise_for_status()
                 connectors = connector_catalog_from_payload(connectors_resp.json())
 
@@ -218,9 +214,7 @@ class ConnectorToolHandler:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
             integration_type = (
-                manifest.get("integration_type", "connector")
-                if manifest
-                else "connector"
+                manifest.get("integration_type", "connector") if manifest else "connector"
             )
             if not manifest or connector.get("healthy") is False:
                 continue
@@ -252,74 +246,89 @@ class ConnectorToolHandler:
             source_type = connector.get("source_type", "")
             manifest = connector.get("manifest")
             integration_type = (
-                manifest.get("integration_type", "connector")
-                if manifest
-                else "connector"
+                manifest.get("integration_type", "connector") if manifest else "connector"
             )
             if not manifest or connector.get("healthy") is False:
                 continue
 
             for source in source_by_identity.get((integration_type, source_type), []):
-                source_group = next(
-                    (
-                        group
-                        for group in manifest.get("source_capabilities", [])
-                        if group.get("source_id") == source.id
-                    ),
-                    None,
-                )
-                source_actions = list(source_group.get("actions", [])) if source_group else []
-                source_action_names = {
-                    action.get("name") for action in source_actions
-                }
-                # Legacy actions remain available during migration, but a
-                # source-specific definition wins for the same source/name.
-                source_actions.extend(
-                    action
-                    for action in manifest.get("actions", [])
-                    if action.get("name") not in source_action_names
-                )
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        effective_resp = await client.get(
+                            f"{self._connector_manager_url}/actions",
+                            params={"source_id": source.id},
+                        )
+                        effective_resp.raise_for_status()
+                        effective_payload = effective_resp.json()
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to fetch effective actions for source {source.id}"
+                    ) from exc
+                if not isinstance(effective_payload, Mapping) or not isinstance(
+                    effective_payload.get("actions"), list
+                ):
+                    raise TypeError(
+                        "connector-manager /actions response must contain an actions list"
+                    )
+                source_actions = effective_payload["actions"]
                 for action_def in source_actions:
-                    action_source_types = action_def.get("source_types") or []
-                    if action_source_types and source_type not in action_source_types:
-                        continue
-                    action_origin = action_def.get("origin", "native")
-                    if not isinstance(action_origin, str):
-                        raise TypeError("connector action origin must be a string")
+                    if not isinstance(action_def, Mapping):
+                        raise TypeError("connector-manager /actions contains a non-object action")
+                    if (
+                        action_def.get("source_id") != source.id
+                        or action_def.get("source_type") != source_type
+                    ):
+                        raise ValueError(
+                            "connector-manager returned an action for a different source"
+                        )
+                    action_origin = action_def.get("origin")
+                    if action_origin not in {"native", "mcp"}:
+                        raise TypeError("connector-manager action origin is invalid")
                     action_name = action_def.get("name")
-                    if not isinstance(action_name, str):
-                        raise TypeError("connector action name must be a string")
-                    if not action_is_available_for_source(source, action_origin):
-                        continue
+                    description = action_def.get("description")
+                    input_schema = action_def.get("input_schema")
+                    mode = action_def.get("mode")
+                    required_scopes = action_def.get("required_scopes")
+                    admin_only = action_def.get("admin_only")
+                    hidden = action_def.get("hidden")
+                    actor_scoped = action_def.get("actor_scoped")
+                    supports_user_oauth = action_def.get("supports_user_oauth")
+                    if not isinstance(action_name, str) or not action_name:
+                        raise TypeError("connector-manager action name is invalid")
+                    if not isinstance(description, str) or not isinstance(input_schema, dict):
+                        raise TypeError("connector-manager action metadata is malformed")
+                    if mode not in {"read", "write"}:
+                        raise TypeError("connector-manager action mode is invalid")
+                    if required_scopes is not None and (
+                        not isinstance(required_scopes, list)
+                        or not all(isinstance(scope, str) for scope in required_scopes)
+                    ):
+                        raise TypeError("connector-manager action scopes are malformed")
+                    if not all(
+                        isinstance(value, bool)
+                        for value in (admin_only, hidden, actor_scoped, supports_user_oauth)
+                    ):
+                        raise TypeError("connector-manager action policy is malformed")
                     actions.append(
                         ConnectorAction(
                             source_id=source.id,
                             source_type=source_type,
                             source_name=source.name or source_type,
                             action_name=action_name,
-                            description=action_def.get("description", ""),
-                            input_schema=action_def.get(
-                                "input_schema", {"type": "object", "properties": {}}
-                            ),
-                            mode=action_def.get("mode", "write"),
-                            required_scopes=action_def.get("required_scopes"),
-                            admin_only=action_def.get("admin_only", False),
-                            hidden=action_def.get("hidden", False),
-                            actor_scoped=action_def.get("actor_scoped", False),
+                            description=description,
+                            input_schema=input_schema,
+                            mode=mode,
+                            required_scopes=required_scopes,
+                            admin_only=admin_only,
+                            hidden=hidden,
+                            actor_scoped=actor_scoped,
                             integration_type=integration_type,
                             origin=action_origin,
-                            supports_user_oauth=(
-                                bool(manifest.get("oauth"))
-                                and not action_def.get("admin_only", False)
-                                and action_def.get("credential_scope", "user")
-                                != "org"
-                            ),
+                            supports_user_oauth=supports_user_oauth,
                         )
                     )
 
-        logger.info(
-            f"Discovered {len(actions)} connector actions for user {self._user_id}"
-        )
+        logger.info(f"Discovered {len(actions)} connector actions for user {self._user_id}")
         return actions
 
     def _build_tools(self, actions: list[ConnectorAction]) -> None:
@@ -360,10 +369,7 @@ class ConnectorToolHandler:
             base_tool_name = f"{action.source_type}__{action.action_name}"
 
             # Apply action_whitelist: skip actions not in whitelist
-            if (
-                self._action_whitelist is not None
-                and base_tool_name not in self._action_whitelist
-            ):
+            if self._action_whitelist is not None and base_tool_name not in self._action_whitelist:
                 continue
 
             occurrence = base_name_counts.get(base_tool_name, 0)
@@ -452,124 +458,108 @@ class ConnectorToolHandler:
         if (
             action is None
             or action.admin_only
-            # Actions that run on the org credential (admin-only, org-scoped,
-            # or connectors without a per-user OAuth flow) never surface an
-            # OAuth prompt — skip the credential/scopes queries entirely.
-            or not action.supports_user_oauth
+            # Connector-manager owns credential scope, provider, and OAuth
+            # availability decisions for every source-bound action.
             or context.user_id is None
             or context.skip_permission_check
         ):
             return None
 
-        pool = await get_db_pool()
-        async with pool.acquire() as conn:
-            user_credential = await conn.fetchrow(
-                """
-                SELECT id, provider, config
-                FROM service_credentials
-                WHERE source_id = $1 AND user_id = $2
-                LIMIT 1
-                """,
-                action.source_id,
-                context.user_id,
-            )
-            if user_credential is not None:
-                # None = connector has not declared action-level scopes.
-                # Fall back to original behavior: credential existence is
-                # sufficient and Omni does not attempt incremental consent.
-                if action.required_scopes is None:
-                    return None
-
-                required_scopes = set(action.required_scopes)
-                config = user_credential["config"] or {}
-                if isinstance(config, str):
-                    try:
-                        config = json.loads(config)
-                    except json.JSONDecodeError:
-                        config = {}
-                if not isinstance(config, Mapping):
-                    config = {}
-                granted_scopes = set(config.get("granted_scopes") or [])
-                missing_scopes = sorted(required_scopes - granted_scopes)
-                if not missing_scopes:
-                    return None
-
-                provider = user_credential["provider"]
-                if not provider:
-                    return None
-                query = urlencode(
-                    {
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self._connector_manager_url}/actions/preflight",
+                    json={
                         "source_id": action.source_id,
-                        "flow": "user_write",
-                        "required_scopes": ",".join(missing_scopes),
-                    }
+                        "user_id": context.user_id,
+                        "action": action.action_name,
+                    },
                 )
-                return OAuthRequiredPayload(
-                    source_id=action.source_id,
-                    source_type=action.source_type,
-                    provider=provider,
-                    oauth_start_url=f"/api/oauth/start?{query}",
-                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            logger.error("Connector-manager action preflight failed: %s", exc)
+            raise RuntimeError("Connector-manager action preflight failed") from exc
 
-            source_row = await conn.fetchrow(
-                """
-                SELECT integration_type, config
-                FROM sources
-                WHERE id = $1
-                LIMIT 1
-                """,
-                action.source_id,
+        if not isinstance(payload, Mapping):
+            raise TypeError("connector-manager action preflight response must be an object")
+        if (
+            payload.get("source_id") != action.source_id
+            or payload.get("source_type") != action.source_type
+        ):
+            raise ValueError(
+                "connector-manager action preflight response does not match the requested source"
             )
-            org_credential = await conn.fetchrow(
-                """
-                SELECT provider
-                FROM service_credentials
-                WHERE source_id = $1 AND user_id IS NULL
-                LIMIT 1
-                """,
-                action.source_id,
-            )
-
-        if source_row and source_row["integration_type"] == "remote_mcp":
-            config = source_row["config"] or {}
-            if isinstance(config, str):
-                try:
-                    config = json.loads(config)
-                except json.JSONDecodeError:
-                    config = {}
-            if not isinstance(config, dict) or config.get("auth_type") != "oauth":
-                return None
-            provider = "remote_mcp"
-        else:
-            if org_credential is None:
-                return None
-            provider = org_credential["provider"]
-
-        if not provider:
+        state = payload.get("state")
+        if state == "ready":
             return None
-
+        if state == "missing_org_credentials":
+            raise ConnectorActionUnavailable(
+                f"Action '{action.action_name}' is unavailable because this source has no organization credentials"
+            )
+        if state == "unavailable":
+            missing = payload.get("missing_scopes")
+            if not isinstance(missing, list) or not all(
+                isinstance(scope, str) for scope in missing
+            ):
+                raise TypeError(
+                    "connector-manager unavailable preflight response has invalid scopes"
+                )
+            scope_detail = f" Missing required scopes: {', '.join(missing)}." if missing else ""
+            raise ConnectorActionUnavailable(
+                f"Action '{action.action_name}' is unavailable with the configured organization credential.{scope_detail}"
+            )
+        if state not in {"needs_user_auth", "needs_additional_scopes"}:
+            raise ValueError("connector-manager returned an unknown action preflight state")
+        provider = payload.get("provider")
+        oauth_start_url = payload.get("oauth_start_url")
+        if (
+            not isinstance(provider, str)
+            or not provider
+            or not isinstance(oauth_start_url, str)
+            or not oauth_start_url
+        ):
+            raise ValueError("connector-manager action preflight response is missing OAuth details")
         return OAuthRequiredPayload(
             source_id=action.source_id,
             source_type=action.source_type,
             provider=provider,
-            oauth_start_url=f"/api/oauth/start?source_id={action.source_id}",
+            oauth_start_url=oauth_start_url,
         )
 
-    async def execute(
-        self, tool_name: str, tool_input: dict, context: ToolContext
-    ) -> ToolResult:
+    async def execute(self, tool_name: str, tool_input: dict, context: ToolContext) -> ToolResult:
         action = self._actions.get(tool_name)
         if not action:
             return ToolResult(
-                content=[
-                    {"type": "text", "text": f"Unknown connector tool: {tool_name}"}
-                ],
+                content=[{"type": "text", "text": f"Unknown connector tool: {tool_name}"}],
                 is_error=True,
             )
 
         logger.info(
             f"Executing connector action: {action.action_name} on source {action.source_id}"
         )
+
+        try:
+            oauth_required = await self.check_oauth_required(tool_name, tool_input, context)
+        except ConnectorActionUnavailable as exc:
+            return ToolResult(content=[{"type": "text", "text": str(exc)}], is_error=True)
+        except Exception as exc:
+            logger.error("Connector action preflight unavailable: %s", exc)
+            return ToolResult(
+                content=[
+                    {
+                        "type": "text",
+                        "text": "Action availability could not be verified; try again.",
+                    }
+                ],
+                is_error=True,
+            )
+        if oauth_required is not None:
+            return ToolResult(
+                content=[encode_oauth_required(oauth_required)],
+                is_error=False,
+                oauth_required=oauth_required,
+            )
 
         # If this action references a document, check user permissions
         document_id = tool_input.get("document_id")
@@ -619,9 +609,20 @@ class ConnectorToolHandler:
                 # <provider>" card instead of a raw error.
                 if response.status_code == 412:
                     body = response.json()
-                    provider = body.get("provider")
-                    oauth_start_url = body.get("oauth_start_url")
-                    if not provider or not oauth_start_url:
+                    error_kind = body.get("error") if isinstance(body, Mapping) else None
+                    provider = body.get("provider") if isinstance(body, Mapping) else None
+                    oauth_start_url = (
+                        body.get("oauth_start_url") if isinstance(body, Mapping) else None
+                    )
+                    if (
+                        error_kind not in {"needs_user_auth", "needs_additional_scopes"}
+                        or body.get("source_id") != action.source_id
+                        or body.get("source_type") != action.source_type
+                        or not isinstance(provider, str)
+                        or not provider
+                        or not isinstance(oauth_start_url, str)
+                        or not oauth_start_url
+                    ):
                         logger.error(
                             f"connector-manager 412 missing provider/oauth_start_url; body={body}"
                         )
@@ -654,20 +655,13 @@ class ConnectorToolHandler:
                 content_type = response.headers.get("content-type", "")
 
                 if "application/json" not in content_type:
-                    content_disposition = response.headers.get(
-                        "content-disposition", ""
-                    )
-                    if (
-                        is_textual_content_type(content_type)
-                        and not content_disposition
-                    ):
+                    content_disposition = response.headers.get("content-disposition", "")
+                    if is_textual_content_type(content_type) and not content_disposition:
                         return await text_result_or_sandbox(
                             text=response.text,
                             sandbox_url=self._sandbox_url,
                             chat_id=context.chat_id,
-                            file_name=_action_result_file_name(
-                                action.action_name, extension="txt"
-                            ),
+                            file_name=_action_result_file_name(action.action_name, extension="txt"),
                             description="Action returned text",
                         )
                     if not self._sandbox_url:
@@ -690,9 +684,7 @@ class ConnectorToolHandler:
 
                 result = response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(
-                f"Connector action HTTP {e.response.status_code}: {e.response.text}"
-            )
+            logger.error(f"Connector action HTTP {e.response.status_code}: {e.response.text}")
             return ToolResult(
                 content=[{"type": "text", "text": f"Action failed: {e.response.text}"}],
                 is_error=True,
@@ -719,9 +711,7 @@ class ConnectorToolHandler:
 
         result_data = result.get("result", {})
         if not result_data:
-            return ToolResult(
-                content=[{"type": "text", "text": "Action completed successfully."}]
-            )
+            return ToolResult(content=[{"type": "text", "text": "Action completed successfully."}])
 
         return await text_result_or_sandbox(
             text=json.dumps(result_data, indent=2),

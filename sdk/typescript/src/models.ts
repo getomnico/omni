@@ -211,16 +211,19 @@ export const OAuthSourceBindingPolicySchema = z
   .object({
     allow_user_establish: z.boolean().default(false),
     initial_admin_required: z.boolean().default(false),
-    compare_existing: z.boolean().default(false),
     authenticated_discovery_required: z.boolean().default(false),
+    source_config_equals: z
+      .object({ key: z.string().min(1), equals: z.union([z.string(), z.boolean()]) })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((policy, ctx) => {
     if (
       !policy.allow_user_establish &&
       (policy.initial_admin_required ||
-        policy.compare_existing ||
-        policy.authenticated_discovery_required)
+        policy.authenticated_discovery_required ||
+        policy.source_config_equals !== undefined)
     ) {
       ctx.addIssue({
         code: "custom",
@@ -268,7 +271,7 @@ export const OAuthManifestConfigSchema = z.object({
   grant_types: z.array(z.string()).nullable().optional(),
   validate_endpoint_urls: z.boolean().default(false),
   supports_org_oauth: z.boolean().default(true),
-  source_binding_policy: OAuthSourceBindingPolicySchema.optional(),
+  source_binding_policy: OAuthSourceBindingPolicySchema.nullable().optional(),
 });
 export type OAuthManifestConfig = z.infer<typeof OAuthManifestConfigSchema>;
 

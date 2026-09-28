@@ -1,9 +1,11 @@
 use crate::AppState;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::models::{
-    ActionRequest, ConnectorInfo, ConnectorManifest, ExecuteActionRequest, ExecutePromptRequest,
-    ExecuteResourceRequest, ExecuteSkillRequest, ManifestSourceContext, McpCredentials,
-    OAuthCredentialReadyRequest, OAuthCredentialValidationRequest, PromptRequest, ResourceRequest,
+    ActionCredentialPreflightRequest, ActionCredentialPreflightResponse,
+    ActionCredentialPreflightState, ActionRequest, ConnectorInfo, ConnectorManifest,
+    ExecuteActionRequest, ExecutePromptRequest, ExecuteResourceRequest, ExecuteSkillRequest,
+    ManifestSourceContext, McpCredentials, OAuthCredentialReadyRequest,
+    OAuthCredentialValidationRequest, OAuthSourceBindingPolicy, PromptRequest, ResourceRequest,
     ScheduleInfo, SourceHealth, SourceSyncOverview, SyncProgress, TriggerSyncRequest,
     TriggerSyncResponse, TriggerType,
 };
@@ -822,6 +824,50 @@ pub async fn execute_action(
             }
         };
 
+        if !action_def
+            .required_scopes
+            .as_deref()
+            .unwrap_or_default()
+            .is_empty()
+        {
+            let required = action_def.required_scopes.as_deref().unwrap_or_default();
+            let granted: Vec<&str> = creds
+                .config
+                .get("granted_scopes")
+                .and_then(Value::as_array)
+                .map(|items| items.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let missing: Vec<String> = required
+                .iter()
+                .filter(|scope| !granted.contains(&scope.as_str()))
+                .map(|scope| (*scope).to_string())
+                .collect();
+            if !missing.is_empty() && creds.user_id.is_none() {
+                return Err(ApiError::BadRequest(format!(
+                    "Action '{}' is unavailable: organization credentials lack required scopes",
+                    request.action
+                )));
+            }
+            if !missing.is_empty() {
+                let query = url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("source_id", &source_id)
+                    .append_pair("flow", "user_write")
+                    .append_pair("required_scopes", &missing.join(","))
+                    .finish();
+                let provider = oauth_provider_from_manifest(manifest).ok_or_else(|| {
+                    ApiError::Internal("OAuth action has no provider".to_string())
+                })?;
+                return Err(ApiError::PreconditionFailedJson(json!({
+                    "error": "needs_additional_scopes",
+                    "source_id": source_id,
+                    "source_type": source_type.to_string(),
+                    "provider": provider,
+                    "oauth_start_url": format!("/api/oauth/start?{query}"),
+                    "missing_scopes": missing,
+                })));
+            }
+        }
+
         // Resolve Omni document ID -> source external_id (persisted mode only).
         let doc_id = params
             .get("document_id")
@@ -1413,23 +1459,209 @@ fn needs_user_auth_response(
         .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
+pub async fn action_credential_preflight(
+    State(state): State<AppState>,
+    Json(request): Json<ActionCredentialPreflightRequest>,
+) -> Result<Json<ActionCredentialPreflightResponse>, ApiError> {
+    let source = SourceRepository::new(state.db_pool.pool())
+        .find_by_id(request.source_id.clone())
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .filter(|source| source.is_active && !source.is_deleted)
+        .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", request.source_id)))?;
+    if !source_allows_actor(&source, Some(&request.user_id)) {
+        return Err(ApiError::Unauthorized(
+            "Personal source is owned by another user".to_string(),
+        ));
+    }
+    let source_type = SourceType::try_from(source.source_type.as_str())
+        .map_err(|error| ApiError::Internal(format!("Invalid source type: {error}")))?;
+    let manifests = get_registered_manifests(&state.redis_client).await;
+    let manifest = manifests
+        .iter()
+        .find(|manifest| {
+            manifest.integration_type == source.integration_type
+                && manifest
+                    .source_types
+                    .iter()
+                    .any(|item| item == &source.source_type)
+        })
+        .ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered for type: {source_type:?}"
+            ))
+        })?;
+    let action = action_definition_for_source(manifest, &source, &request.action)
+        .ok_or_else(|| ApiError::BadRequest(format!("Unknown action '{}'", request.action)))?;
+    if !source_allows_action_origin(&source.config, action.origin).map_err(ApiError::BadRequest)? {
+        return Err(ApiError::BadRequest(
+            "Action is unavailable for this source's allowed action-origin policy".to_string(),
+        ));
+    }
+    if (manifest.read_only
+        || source
+            .config
+            .get("read_only")
+            .and_then(Value::as_bool)
+            .unwrap_or(action.origin == ActionOrigin::Mcp))
+        && action.mode == ActionMode::Write
+    {
+        return Err(ApiError::BadRequest(
+            "Action is not allowed: source is read-only".to_string(),
+        ));
+    }
+    let user = UserRepository::new(state.db_pool.pool())
+        .find_by_id(request.user_id.clone())
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?
+        .ok_or_else(|| ApiError::NotFound(format!("User not found: {}", request.user_id)))?;
+    if source.integration_type == IntegrationType::RemoteMcp {
+        if source.config.get("auth_type").and_then(Value::as_str) == Some("oauth") {
+            let credential = CredentialService::new(state.db_pool.clone())
+                .get_user_credential(&source.id, &request.user_id)
+                .await
+                .map_err(|error| ApiError::Internal(error.to_string()))?;
+            if credential.is_none() {
+                let provider = serde_json::to_value(ServiceProvider::RemoteMcp)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned));
+                let oauth_start_url = provider
+                    .as_ref()
+                    .map(|_| format!("/api/oauth/start?source_id={}", source.id));
+                return Ok(Json(ActionCredentialPreflightResponse {
+                    state: ActionCredentialPreflightState::NeedsUserAuth,
+                    source_id: source.id.clone(),
+                    source_type: source.source_type.clone(),
+                    provider,
+                    oauth_start_url,
+                    missing_scopes: Vec::new(),
+                }));
+            }
+        }
+        return Ok(Json(ActionCredentialPreflightResponse {
+            state: ActionCredentialPreflightState::Ready,
+            source_id: source.id.clone(),
+            source_type: source.source_type.clone(),
+            provider: None,
+            oauth_start_url: None,
+            missing_scopes: Vec::new(),
+        }));
+    }
+    let oauth_provider = oauth_provider_from_manifest(manifest);
+    let org_action = action.admin_only || action.credential_scope == ActionCredentialScope::Org;
+    let uses_org_credential = org_action || manifest.oauth.is_none();
+    let write_needs_admin = action.mode == ActionMode::Write
+        && uses_org_credential
+        && !action.admin_only
+        && !action.actor_scoped;
+    if (action.admin_only || write_needs_admin) && user.role != shared::models::UserRole::Admin {
+        return Err(ApiError::Unauthorized(
+            "Action requires administrator privileges".to_string(),
+        ));
+    }
+    let require_user_credential = !org_action && manifest.oauth.is_some();
+    let resolution = resolve_credentials_with_policy(
+        &CredentialService::new(state.db_pool.clone()),
+        &source.id,
+        if org_action {
+            None
+        } else {
+            Some(&request.user_id)
+        },
+        action.admin_only,
+        manifest.oauth.is_some(),
+        require_user_credential,
+        oauth_provider,
+    )
+    .await?;
+
+    let response =
+        |state, provider, oauth_start_url, missing_scopes| ActionCredentialPreflightResponse {
+            state,
+            source_id: source.id.clone(),
+            source_type: source.source_type.clone(),
+            provider,
+            oauth_start_url,
+            missing_scopes,
+        };
+    match resolution {
+        CredentialResolution::NoCredentials => Ok(Json(response(
+            ActionCredentialPreflightState::MissingOrgCredentials,
+            None,
+            None,
+            Vec::new(),
+        ))),
+        CredentialResolution::NeedsUserAuth { provider } => {
+            let provider = serde_json::to_value(provider)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned));
+            let oauth_start_url = provider
+                .as_ref()
+                .map(|_| format!("/api/oauth/start?source_id={}", source.id));
+            Ok(Json(response(
+                ActionCredentialPreflightState::NeedsUserAuth,
+                provider,
+                oauth_start_url,
+                Vec::new(),
+            )))
+        }
+        CredentialResolution::Resolved(credential) => {
+            let required = action.required_scopes.as_deref().unwrap_or_default();
+            let granted: Vec<String> = credential
+                .config
+                .get("granted_scopes")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let missing: Vec<String> = required
+                .iter()
+                .filter(|scope| !granted.iter().any(|item| item == *scope))
+                .cloned()
+                .collect();
+            if !missing.is_empty() && credential.user_id.is_some() {
+                let provider = serde_json::to_value(credential.provider)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned));
+                let query = url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("source_id", &source.id)
+                    .append_pair("flow", "user_write")
+                    .append_pair("required_scopes", &missing.join(","))
+                    .finish();
+                return Ok(Json(response(
+                    ActionCredentialPreflightState::NeedsAdditionalScopes,
+                    provider,
+                    Some(format!("/api/oauth/start?{query}")),
+                    missing,
+                )));
+            }
+            if !missing.is_empty() {
+                return Ok(Json(response(
+                    ActionCredentialPreflightState::Unavailable,
+                    None,
+                    None,
+                    missing,
+                )));
+            }
+            Ok(Json(response(
+                ActionCredentialPreflightState::Ready,
+                None,
+                None,
+                Vec::new(),
+            )))
+        }
+    }
+}
+
 pub async fn list_actions(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    // If source_id is provided, check source-level read_only
-    let source_read_only = if let Some(source_id) = params.get("source_id") {
-        let row: Option<(serde_json::Value,)> =
-            sqlx::query_as("SELECT config FROM sources WHERE id = $1")
-                .bind(source_id)
-                .fetch_optional(state.db_pool.pool())
-                .await
-                .map_err(|e| ApiError::Internal(e.to_string()))?;
-        row.and_then(|(config,)| config.get("read_only").and_then(|v| v.as_bool()))
-    } else {
-        None
-    };
-
     let manifests = get_registered_manifests(&state.redis_client).await;
     let source_repo = SourceRepository::new(state.db_pool.pool());
     let sources = source_repo
@@ -1442,14 +1674,23 @@ pub async fn list_actions(
         let matching_sources: Vec<&Source> = sources
             .iter()
             .filter(|source| {
-                manifest
-                    .source_types
-                    .iter()
-                    .any(|source_type| source_type == &source.source_type)
+                manifest.integration_type == source.integration_type
+                    && manifest
+                        .source_types
+                        .iter()
+                        .any(|source_type| source_type == &source.source_type)
                     && params.get("source_id").is_none_or(|id| id == &source.id)
             })
             .collect();
         for source in matching_sources {
+            let source_read_only = source.config.get("read_only").and_then(Value::as_bool);
+            let org_credential_exists: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM service_credentials WHERE source_id = $1 AND user_id IS NULL)",
+            )
+            .bind(&source.id)
+            .fetch_one(state.db_pool.pool())
+            .await
+            .map_err(|error| ApiError::Internal(error.to_string()))?;
             let mut actions: Vec<&shared::models::ActionDefinition> = Vec::new();
             if let Some(group) = manifest
                 .source_capabilities
@@ -1482,7 +1723,17 @@ pub async fn list_actions(
                 {
                     continue;
                 }
-                if action.hidden {
+                if action.hidden
+                    || !source_allows_action_origin(&source.config, action.origin)
+                        .map_err(ApiError::BadRequest)?
+                {
+                    continue;
+                }
+                let requires_org_credential = source.integration_type != IntegrationType::RemoteMcp
+                    && (action.admin_only
+                        || action.credential_scope == ActionCredentialScope::Org
+                        || manifest.oauth.is_none());
+                if requires_org_credential && !org_credential_exists {
                     continue;
                 }
                 all_actions.push(json!({
@@ -1493,6 +1744,14 @@ pub async fn list_actions(
                     "input_schema": action.input_schema,
                     "mode": action.mode,
                     "admin_only": action.admin_only,
+                    "hidden": action.hidden,
+                    "origin": action.origin,
+                    "credential_scope": action.credential_scope,
+                    "required_scopes": action.required_scopes,
+                    "actor_scoped": action.actor_scoped,
+                    "supports_user_oauth": manifest.oauth.is_some()
+                        && !action.admin_only
+                        && action.credential_scope != ActionCredentialScope::Org,
                 }));
             }
         }
@@ -2704,7 +2963,17 @@ fn validate_connector_manifest_action_policy(manifest: &ConnectorManifest) -> Re
 
 fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), String> {
     validate_connector_manifest_action_schemas(manifest)?;
-    validate_connector_manifest_action_policy(manifest)
+    validate_connector_manifest_action_policy(manifest)?;
+    if let Some(oauth) = &manifest.oauth {
+        if let Some(policy) = oauth.get("source_binding_policy") {
+            if !policy.is_null() {
+                let policy: OAuthSourceBindingPolicy = serde_json::from_value(policy.clone())
+                    .map_err(|error| format!("Invalid OAuth source binding policy: {error}"))?;
+                policy.validate().map_err(str::to_owned)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn manifest_actions<'a>(
@@ -4896,10 +5165,16 @@ mod tests {
         let connectors = connector_infos_from_manifests(&[manifest.clone()]);
 
         assert_eq!(connectors.len(), manifest.source_types.len());
-        assert!(connectors.iter().all(|connector| connector.healthy.is_none()));
-        assert!(connectors
-            .iter()
-            .all(|connector| connector.manifest.is_some()));
+        assert!(
+            connectors
+                .iter()
+                .all(|connector| connector.healthy.is_none())
+        );
+        assert!(
+            connectors
+                .iter()
+                .all(|connector| connector.manifest.is_some())
+        );
         assert!(connectors.iter().all(|connector| {
             !serde_json::to_value(connector)
                 .unwrap()
@@ -4911,11 +5186,7 @@ mod tests {
 
     #[test]
     fn missing_user_credential_response_contains_salesforce_reconnect_details() {
-        let response = needs_user_auth_json(
-            "source-1",
-            "salesforce",
-            ServiceProvider::Salesforce,
-        );
+        let response = needs_user_auth_json("source-1", "salesforce", ServiceProvider::Salesforce);
         assert_eq!(response["error"], "needs_user_auth");
         assert_eq!(response["source_id"], "source-1");
         assert_eq!(response["source_type"], "salesforce");
@@ -4954,7 +5225,12 @@ mod tests {
     #[test]
     fn action_origin_policy_applies_to_sync_and_no_sync_sources() {
         let cases = [
-            ("unrestricted no-sync", json!({"sync_enabled": false}), true, true),
+            (
+                "unrestricted no-sync",
+                json!({"sync_enabled": false}),
+                true,
+                true,
+            ),
             (
                 "MCP-only no-sync",
                 json!({"sync_enabled": false, "allowed_action_origins": ["mcp"]}),
@@ -4973,7 +5249,12 @@ mod tests {
                 false,
                 false,
             ),
-            ("unrestricted synced", json!({"sync_enabled": true}), true, true),
+            (
+                "unrestricted synced",
+                json!({"sync_enabled": true}),
+                true,
+                true,
+            ),
         ];
 
         for (scenario, config, allows_native, allows_mcp) in cases {
@@ -5119,6 +5400,32 @@ mod tests {
         manifest.actions[0].credential_scope = ActionCredentialScope::Org;
 
         assert!(validate_connector_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn oauth_binding_policy_rejects_incoherent_manifest_metadata() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.oauth = Some(json!({
+            "source_binding_policy": {
+                "allow_user_establish": false,
+                "initial_admin_required": true
+            }
+        }));
+        assert!(validate_connector_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn oauth_binding_policy_accepts_scoped_establishment_metadata() {
+        let mut manifest = manifest_with_action_schema(json!({}));
+        manifest.oauth = Some(json!({
+            "source_binding_policy": {
+                "allow_user_establish": true,
+                "initial_admin_required": true,
+                "authenticated_discovery_required": true,
+                "source_config_equals": { "key": "sync_enabled", "equals": false }
+            }
+        }));
+        assert!(validate_connector_manifest(&manifest).is_ok());
     }
 
     #[test]

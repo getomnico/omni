@@ -11,6 +11,7 @@ import {
     getOAuthConfigForSource,
     getOAuthManifestForSourceType,
     SOURCE_BINDING_CONFIG_KEY,
+    sourceBindingPolicyApplies,
 } from '$lib/server/oauth/connectorOAuth'
 
 function oauthClientNotConfiguredMessage(provider: string): string {
@@ -79,8 +80,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
             throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
         }
         if (
-            config.source_binding_policy?.allow_user_establish &&
-            config.source_binding_policy.initial_admin_required &&
+            sourceBindingPolicyApplies(config.source_binding_policy, source.config) &&
+            config.source_binding_policy?.initial_admin_required &&
             !hasSourceBinding(source.config) &&
             locals.user.role !== 'admin'
         ) {

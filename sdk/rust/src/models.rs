@@ -104,9 +104,38 @@ pub struct OAuthSourceBindingPolicy {
     #[serde(default)]
     pub initial_admin_required: bool,
     #[serde(default)]
-    pub compare_existing: bool,
-    #[serde(default)]
     pub authenticated_discovery_required: bool,
+    #[serde(default)]
+    pub source_config_equals: Option<OAuthSourceConfigCondition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthSourceConfigCondition {
+    pub key: String,
+    pub equals: JsonValue,
+}
+
+impl OAuthSourceBindingPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.allow_user_establish
+            && (self.initial_admin_required
+                || self.authenticated_discovery_required
+                || self.source_config_equals.is_some())
+        {
+            return Err("source binding requirements require allow_user_establish");
+        }
+        if let Some(condition) = &self.source_config_equals {
+            if condition.key.is_empty()
+                || !(condition.equals.is_string() || condition.equals.is_boolean())
+            {
+                return Err(
+                    "source_config_equals requires a non-empty key and string/boolean value",
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

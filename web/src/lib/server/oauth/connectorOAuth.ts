@@ -50,6 +50,16 @@ export type OAuthSourceBinding = Record<string, string>
  * malformed bindings so a misbehaving connector cannot smuggle arbitrary
  * config through.
  */
+export function sourceBindingPolicyApplies(
+    policy: OAuthManifestConfig['source_binding_policy'],
+    sourceConfig: unknown,
+): boolean {
+    if (!policy?.allow_user_establish) return false
+    const condition = policy.source_config_equals
+    if (!condition) return true
+    return isRecord(sourceConfig) && sourceConfig[condition.key] === condition.equals
+}
+
 export function parseOAuthSourceBinding(body: unknown): OAuthSourceBinding | null {
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
         throw new Error('OAuth validation returned an invalid response')
@@ -207,8 +217,8 @@ export interface OAuthManifestConfig {
     source_binding_policy?: {
         allow_user_establish: boolean
         initial_admin_required: boolean
-        compare_existing: boolean
         authenticated_discovery_required: boolean
+        source_config_equals?: { key: string; equals: string | boolean }
     }
 }
 
@@ -1544,21 +1554,52 @@ function oauthManifestFromResponse(value: unknown): OAuthManifestConfig | null {
     const validateEndpointUrls = optionalBoolean('validate_endpoint_urls', false)
     const supportsOrgOAuth = optionalBoolean('supports_org_oauth', true)
     let sourceBindingPolicy: OAuthManifestConfig['source_binding_policy']
-    if (raw.source_binding_policy !== undefined) {
+    if (raw.source_binding_policy !== undefined && raw.source_binding_policy !== null) {
         const policy = raw.source_binding_policy
-        if (!isRecord(policy) || Object.keys(policy).some((key) => ![
-            'allow_user_establish', 'initial_admin_required', 'compare_existing',
+        if (
+            !isRecord(policy) ||
+            Object.keys(policy).some(
+                (key) =>
+                    ![
+                        'allow_user_establish',
+                        'initial_admin_required',
+                        'authenticated_discovery_required',
+                        'source_config_equals',
+                    ].includes(key),
+            )
+        )
+            return null
+        const values = [
+            'allow_user_establish',
+            'initial_admin_required',
             'authenticated_discovery_required',
-        ].includes(key))) return null
-        const values = ['allow_user_establish', 'initial_admin_required', 'compare_existing', 'authenticated_discovery_required']
-        if (values.some((key) => typeof policy[key] !== 'boolean')) return null
-        sourceBindingPolicy = {
-            allow_user_establish: policy.allow_user_establish as boolean,
-            initial_admin_required: policy.initial_admin_required as boolean,
-            compare_existing: policy.compare_existing as boolean,
-            authenticated_discovery_required: policy.authenticated_discovery_required as boolean,
+        ]
+        if (values.some((key) => policy[key] !== undefined && typeof policy[key] !== 'boolean'))
+            return null
+        let sourceConfigEquals: { key: string; equals: string | boolean } | undefined
+        if (policy.source_config_equals !== undefined) {
+            const condition = policy.source_config_equals
+            if (
+                !isRecord(condition) ||
+                Object.keys(condition).some((key) => key !== 'key' && key !== 'equals') ||
+                typeof condition.key !== 'string' ||
+                !condition.key ||
+                (typeof condition.equals !== 'string' && typeof condition.equals !== 'boolean')
+            )
+                return null
+            sourceConfigEquals = { key: condition.key, equals: condition.equals }
         }
-        if (!sourceBindingPolicy.allow_user_establish && values.slice(1).some((key) => policy[key] === true)) return null
+        sourceBindingPolicy = {
+            allow_user_establish: policy.allow_user_establish === true,
+            initial_admin_required: policy.initial_admin_required === true,
+            authenticated_discovery_required: policy.authenticated_discovery_required === true,
+            source_config_equals: sourceConfigEquals,
+        }
+        if (
+            !sourceBindingPolicy.allow_user_establish &&
+            (values.slice(1).some((key) => policy[key] === true) || sourceConfigEquals)
+        )
+            return null
     }
     if (
         registrationRequiresInitialAccessToken === null ||
