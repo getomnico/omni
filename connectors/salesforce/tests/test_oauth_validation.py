@@ -11,6 +11,13 @@ from omni_connector.models import Source
 from salesforce_connector.connector import SalesforceConnector
 
 
+def test_oauth_manifest_requests_salesforce_refresh_token_scope() -> None:
+    config = SalesforceConnector().oauth_config()
+    assert config is not None
+    assert config.scopes["salesforce"].read == ["api", "refresh_token"]
+    assert config.scopes["salesforce"].write == ["api", "refresh_token"]
+
+
 def _source(config: dict[str, object]) -> Source:
     return Source(
         id="src-1",
