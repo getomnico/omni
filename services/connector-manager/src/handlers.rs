@@ -1788,8 +1788,10 @@ pub async fn list_actions(
                     .filter(|action| !source_action_names.contains(action.name.as_str())),
             );
             for action in actions {
-                let action_source_read_only =
-                    source_read_only.unwrap_or(action.origin == ActionOrigin::Mcp);
+                let action_source_read_only = source_read_only.unwrap_or(
+                    action.origin == ActionOrigin::Mcp
+                        && source.integration_type != IntegrationType::RemoteMcp,
+                );
                 if (manifest.read_only || action_source_read_only)
                     && action.mode == ActionMode::Write
                 {

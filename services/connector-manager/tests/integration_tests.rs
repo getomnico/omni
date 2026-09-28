@@ -2503,7 +2503,6 @@ async fn test_remote_mcp_preflight_and_execution_enforce_shared_credential_role_
         .bind(json!({
             "endpoint_url": "http://127.0.0.1:9/mcp",
             "auth_type": "bearer_token",
-            "read_only": false,
         }))
         .bind(&source_id)
         .execute(pool)
@@ -2574,6 +2573,18 @@ async fn test_remote_mcp_preflight_and_execution_enforce_shared_credential_role_
         )
         .await
         .unwrap();
+
+    let actions = server.get("/actions").await;
+    actions.assert_status(StatusCode::OK);
+    let actions: serde_json::Value = actions.json();
+    assert!(
+        actions["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["source_id"] == source_id && action["name"] == "shared_write"),
+        "writable Remote MCP action should be discoverable when write tools are enabled and read_only is absent"
+    );
 
     for action in ["shared_write", "admin_read"] {
         let preflight = server
