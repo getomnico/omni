@@ -30,6 +30,7 @@ SourceMode = Literal["read", "write"]
 # Maps source_id -> list of modes allowed for that source.
 SourceFilter = dict[str, list[SourceMode]]
 ConnectorCatalog = list[dict[str, object]]
+EffectiveActionsBySource = dict[str, list[Mapping[str, object]]]
 
 
 def connector_catalog_from_payload(payload: object) -> ConnectorCatalog:
@@ -42,6 +43,21 @@ def connector_catalog_from_payload(payload: object) -> ConnectorCatalog:
             raise TypeError("connector-manager /connectors response contains a non-object item")
         catalog.append(dict(item))
     return catalog
+
+
+def effective_actions_by_source_from_payload(payload: object) -> EffectiveActionsBySource:
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("actions"), list):
+        raise TypeError("connector-manager /actions response must contain an actions list")
+
+    actions_by_source: EffectiveActionsBySource = {}
+    for action in payload["actions"]:
+        if not isinstance(action, Mapping):
+            raise TypeError("connector-manager /actions contains a non-object action")
+        source_id = action.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            raise TypeError("connector-manager action source_id is invalid")
+        actions_by_source.setdefault(source_id, []).append(action)
+    return actions_by_source
 
 
 def action_is_available_for_source(source: Source, action_origin: str) -> bool:
@@ -185,6 +201,7 @@ class ConnectorToolHandler:
                 connectors_resp = await client.get(f"{self._connector_manager_url}/connectors")
                 connectors_resp.raise_for_status()
                 connectors = connector_catalog_from_payload(connectors_resp.json())
+                self._connector_catalog = connectors
 
                 # Use pre-fetched sources if available, otherwise fetch from connector-manager
                 if self._prefetched_sources is not None:
@@ -194,7 +211,11 @@ class ConnectorToolHandler:
                         self._connector_manager_url
                     )
                 sources = filter_sources_for_user(sources, self._user_id)
-                self._connector_catalog = connectors
+                effective_actions_resp = await client.get(f"{self._connector_manager_url}/actions")
+                effective_actions_resp.raise_for_status()
+                effective_actions_by_source = effective_actions_by_source_from_payload(
+                    effective_actions_resp.json()
+                )
 
         except Exception as e:
             logger.error(f"Failed to fetch connector info: {e}")
@@ -252,25 +273,7 @@ class ConnectorToolHandler:
                 continue
 
             for source in source_by_identity.get((integration_type, source_type), []):
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        effective_resp = await client.get(
-                            f"{self._connector_manager_url}/actions",
-                            params={"source_id": source.id},
-                        )
-                        effective_resp.raise_for_status()
-                        effective_payload = effective_resp.json()
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"Failed to fetch effective actions for source {source.id}"
-                    ) from exc
-                if not isinstance(effective_payload, Mapping) or not isinstance(
-                    effective_payload.get("actions"), list
-                ):
-                    raise TypeError(
-                        "connector-manager /actions response must contain an actions list"
-                    )
-                source_actions = effective_payload["actions"]
+                source_actions = effective_actions_by_source.get(source.id, [])
                 for action_def in source_actions:
                     if not isinstance(action_def, Mapping):
                         raise TypeError("connector-manager /actions contains a non-object action")

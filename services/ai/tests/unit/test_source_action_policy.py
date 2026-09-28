@@ -72,7 +72,7 @@ async def test_action_origins_are_filtered_per_source_and_default_allows_all():
         connectors_route = mock.get("http://cm.test/connectors").mock(
             return_value=Response(200, json=[manifest])
         )
-        mock_effective_actions(mock, handler)
+        actions_route = mock_effective_actions(mock, handler)
         await handler._ensure_initialized()
 
     by_source = {
@@ -91,6 +91,7 @@ async def test_action_origins_are_filtered_per_source_and_default_allows_all():
     assert len(handler.search_operators) == 1
     assert handler.connector_catalog == [manifest]
     assert len(connectors_route.calls) == 1
+    assert len(actions_route.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -117,14 +118,16 @@ async def test_no_sync_source_action_origins_are_generic_and_consistent():
     }
 
     with respx.mock:
-        respx.get("http://cm.test/connectors").mock(
-            return_value=Response(200, json=[manifest])
-        )
+        respx.get("http://cm.test/connectors").mock(return_value=Response(200, json=[manifest]))
         mock_effective_actions(respx, handler)
         await handler._ensure_initialized()
 
     by_source = {
-        source.id: {action.action_name for action in handler.actions.values() if action.source_id == source.id}
+        source.id: {
+            action.action_name
+            for action in handler.actions.values()
+            if action.source_id == source.id
+        }
         for source in (unrestricted, restricted)
     }
     assert by_source[unrestricted.id] == {"run_soql_query", "get_username", "mcp_lookup"}
@@ -161,22 +164,28 @@ async def test_source_capabilities_are_bound_to_their_exact_source():
     }
 
     with respx.mock:
-        respx.get("http://cm.test/connectors").mock(
-            return_value=Response(200, json=[manifest])
-        )
+        respx.get("http://cm.test/connectors").mock(return_value=Response(200, json=[manifest]))
         mock_effective_actions(respx, handler)
         await handler._ensure_initialized()
 
     by_source = {
-        source_id: {action.action_name for action in handler.actions.values() if action.source_id == source_id}
+        source_id: {
+            action.action_name
+            for action in handler.actions.values()
+            if action.source_id == source_id
+        }
         for source_id in (first.id, second.id)
     }
     assert by_source[first.id] == {"legacy", "shared", "one_only"}
     assert by_source[second.id] == {"legacy", "shared"}
-    assert next(
-        action for action in handler.actions.values()
-        if action.source_id == first.id and action.action_name == "shared"
-    ).origin == "mcp"
+    assert (
+        next(
+            action
+            for action in handler.actions.values()
+            if action.source_id == first.id and action.action_name == "shared"
+        ).origin
+        == "mcp"
+    )
 
 
 def test_malformed_action_origin_policy_fails_closed():
@@ -212,9 +221,7 @@ async def test_salesforce_manager_412_becomes_reconnect_payload(flow: str):
 
     with respx.mock(assert_all_called=True) as mock:
         mock_ready_preflight(mock, "source-1", "salesforce")
-        mock.post("http://cm.test/action").mock(
-            return_value=Response(412, json=manager_response)
-        )
+        mock.post("http://cm.test/action").mock(return_value=Response(412, json=manager_response))
         result = await handler.execute(
             "salesforce__run_soql_query",
             {},
@@ -302,9 +309,7 @@ async def test_explicitly_unhealthy_connector_hides_actions_and_search_operators
         "source_type": "crm",
         "healthy": False,
         "manifest": {
-            "actions": [
-                {"name": "list_records", "origin": "native", "mode": "read"}
-            ],
+            "actions": [{"name": "list_records", "origin": "native", "mode": "read"}],
             "search_operators": [
                 {
                     "operator": "team",
@@ -316,9 +321,7 @@ async def test_explicitly_unhealthy_connector_hides_actions_and_search_operators
     }
 
     with respx.mock:
-        respx.get("http://cm.test/connectors").mock(
-            return_value=Response(200, json=[manifest])
-        )
+        respx.get("http://cm.test/connectors").mock(return_value=Response(200, json=[manifest]))
         mock_effective_actions(respx, handler)
         await handler._ensure_initialized()
 
@@ -341,17 +344,11 @@ async def test_connector_actions_and_toolsets_hide_foreign_personal_sources():
     manifest = {
         "source_type": "crm",
         "healthy": True,
-        "manifest": {
-            "actions": [
-                {"name": "list_records", "origin": "native", "mode": "read"}
-            ]
-        },
+        "manifest": {"actions": [{"name": "list_records", "origin": "native", "mode": "read"}]},
     }
 
     with respx.mock:
-        respx.get("http://cm.test/connectors").mock(
-            return_value=Response(200, json=[manifest])
-        )
+        respx.get("http://cm.test/connectors").mock(return_value=Response(200, json=[manifest]))
         mock_effective_actions(respx, handler)
         await handler._ensure_initialized()
 

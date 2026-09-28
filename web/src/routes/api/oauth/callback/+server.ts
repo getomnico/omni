@@ -376,7 +376,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             )
         }
 
-        let bindingSetup: { credentialId: string } | null = null
+        let bindingSetup: { credentialId: string; generation: Date | null } | null = null
         if (bindingPolicy?.allow_user_establish) {
             if (
                 !binding ||
@@ -419,7 +419,12 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 ) {
                     return { kind: 'conflict' as const }
                 }
-                if (bindingPolicy.authenticated_discovery_required) {
+                // This source-wide version prevents an older user's discovery from
+                // reactivating a source after a newer callback for another user.
+                const generation = bindingPolicy.authenticated_discovery_required
+                    ? new Date(Math.max(Date.now(), lockedSource.updatedAt.getTime() + 1))
+                    : null
+                if (generation) {
                     await tx
                         .update(sources)
                         .set({
@@ -432,7 +437,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                                       },
                                   }
                                 : {}),
-                            updatedAt: new Date(),
+                            updatedAt: generation,
                         })
                         .where(eq(sources.id, flow.sourceId))
                 } else if (!currentBinding) {
@@ -465,7 +470,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                     config: { granted_scopes: storedGrantedScopes },
                     expiresAt: credentialExpiryFor(existingCredentials),
                 })
-                return { kind: 'stored' as const, credentialId }
+                return { kind: 'stored' as const, credentialId, generation }
             })
             if (bindingResult.kind === 'conflict') {
                 return redirectOAuthFailure(
@@ -488,7 +493,12 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         const credentialReady = await notifyOAuthCredentialReady(flow.sourceId, user.id)
         if (bindingPolicy?.authenticated_discovery_required) {
             const activeBindingSetup = bindingSetup
-            if (!activeBindingSetup || credentialReady?.status !== 'completed') {
+            const activeGeneration = activeBindingSetup?.generation
+            if (
+                !activeBindingSetup ||
+                !activeGeneration ||
+                credentialReady?.status !== 'completed'
+            ) {
                 return redirectOAuthFailure(
                     'Authenticated capability discovery failed; retry authorization to complete setup',
                 )
@@ -499,7 +509,13 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                     .from(sources)
                     .where(eq(sources.id, flow.sourceId))
                     .for('update')
-                if (!currentSource || currentSource.isDeleted) return false
+                if (
+                    !currentSource ||
+                    currentSource.isDeleted ||
+                    currentSource.updatedAt.getTime() !== activeGeneration.getTime()
+                ) {
+                    return false
+                }
                 const [currentCredential] = await tx
                     .select({ id: serviceCredentials.id })
                     .from(serviceCredentials)
