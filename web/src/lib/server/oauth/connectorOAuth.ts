@@ -204,6 +204,12 @@ export interface OAuthManifestConfig {
     validate_endpoint_urls?: boolean
     /// Whether this connector supports OAuth credentials for org sources.
     supports_org_oauth?: boolean
+    source_binding_policy?: {
+        allow_user_establish: boolean
+        initial_admin_required: boolean
+        compare_existing: boolean
+        authenticated_discovery_required: boolean
+    }
 }
 
 /// What flow we're driving — encoded into the OAuth state so the single
@@ -1537,6 +1543,23 @@ function oauthManifestFromResponse(value: unknown): OAuthManifestConfig | null {
     const pkceRequired = optionalBoolean('pkce_required', false)
     const validateEndpointUrls = optionalBoolean('validate_endpoint_urls', false)
     const supportsOrgOAuth = optionalBoolean('supports_org_oauth', true)
+    let sourceBindingPolicy: OAuthManifestConfig['source_binding_policy']
+    if (raw.source_binding_policy !== undefined) {
+        const policy = raw.source_binding_policy
+        if (!isRecord(policy) || Object.keys(policy).some((key) => ![
+            'allow_user_establish', 'initial_admin_required', 'compare_existing',
+            'authenticated_discovery_required',
+        ].includes(key))) return null
+        const values = ['allow_user_establish', 'initial_admin_required', 'compare_existing', 'authenticated_discovery_required']
+        if (values.some((key) => typeof policy[key] !== 'boolean')) return null
+        sourceBindingPolicy = {
+            allow_user_establish: policy.allow_user_establish as boolean,
+            initial_admin_required: policy.initial_admin_required as boolean,
+            compare_existing: policy.compare_existing as boolean,
+            authenticated_discovery_required: policy.authenticated_discovery_required as boolean,
+        }
+        if (!sourceBindingPolicy.allow_user_establish && values.slice(1).some((key) => policy[key] === true)) return null
+    }
     if (
         registrationRequiresInitialAccessToken === null ||
         pkceRequired === null ||
@@ -1573,6 +1596,7 @@ function oauthManifestFromResponse(value: unknown): OAuthManifestConfig | null {
         grant_types: grantTypes,
         validate_endpoint_urls: validateEndpointUrls,
         supports_org_oauth: supportsOrgOAuth,
+        source_binding_policy: sourceBindingPolicy,
     }
 }
 

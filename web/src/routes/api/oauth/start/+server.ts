@@ -2,7 +2,6 @@ import { redirect, error } from '@sveltejs/kit'
 import type { RequestHandler } from './$types'
 import { getSourceById } from '$lib/server/db/sources'
 import { toolApprovalRepository } from '$lib/server/db/tool-approvals'
-import { SourceType } from '$lib/types'
 import {
     generateAuthUrl,
     generateAuthUrlForOrgSource,
@@ -18,16 +17,6 @@ function oauthClientNotConfiguredMessage(provider: string): string {
     return (
         `OAuth client for ${provider} is not configured. Ask an admin to set it up under ` +
         'Admin → Settings → Integrations → OAuth Apps.'
-    )
-}
-
-function isSalesforceNoSyncSource(source: { sourceType: string; config: unknown }): boolean {
-    return (
-        source.sourceType === SourceType.SALESFORCE &&
-        typeof source.config === 'object' &&
-        source.config !== null &&
-        !Array.isArray(source.config) &&
-        (source.config as Record<string, unknown>).sync_enabled === false
     )
 }
 
@@ -74,13 +63,6 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
         const source = await getSourceById(sourceId)
         if (!source || source.isDeleted) throw error(404, 'Source not found')
-        if (
-            isSalesforceNoSyncSource(source) &&
-            !hasSourceBinding(source.config) &&
-            locals.user.role !== 'admin'
-        ) {
-            throw error(403, 'An administrator must authorize and bind this Salesforce source first')
-        }
         if (source.scope === 'user') {
             if (flow === 'org_source') {
                 throw error(400, 'org_source OAuth is only valid for org-wide sources')
@@ -95,6 +77,14 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         const config = await getOAuthConfigForSource(source)
         if (!config) {
             throw error(501, `OAuth is not implemented for source_type=${source.sourceType} yet.`)
+        }
+        if (
+            config.source_binding_policy?.allow_user_establish &&
+            config.source_binding_policy.initial_admin_required &&
+            !hasSourceBinding(source.config) &&
+            locals.user.role !== 'admin'
+        ) {
+            throw error(403, 'An administrator must establish this source binding first')
         }
         if (flow === 'org_source' && config.supports_org_oauth === false) {
             throw error(400, 'This connector does not support OAuth for org sources')

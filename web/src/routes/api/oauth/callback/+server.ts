@@ -25,16 +25,6 @@ function isSafeLocalPath(value: string): boolean {
     return value.startsWith('/') && !value.startsWith('//')
 }
 
-function isSalesforceNoSyncSource(source: { sourceType: string; config: unknown }): boolean {
-    if (source.sourceType !== SourceType.SALESFORCE) return false
-    return (
-        typeof source.config === 'object' &&
-        source.config !== null &&
-        !Array.isArray(source.config) &&
-        (source.config as Record<string, unknown>).sync_enabled === false
-    )
-}
-
 function sourceBindingFromConfig(config: unknown): OAuthSourceBinding | null {
     if (typeof config !== 'object' || config === null || Array.isArray(config)) return null
     const binding = (config as Record<string, unknown>)[SOURCE_BINDING_CONFIG_KEY]
@@ -370,11 +360,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
         )
         const existingCredentials = existing ? decryptConfig(existing.credentials) : {}
         const credentials = credentialsWithRefreshFallback(existingCredentials)
-        // Most user OAuth flows do not own a source-level identity binding.
-        // No-sync Salesforce sources use the setup admin's first per-user
-        // authorization to establish this source's org; later users cannot
-        // authorize another org through the same source.
-        // through the same source and client.
+        const bindingPolicy = config.source_binding_policy
         let binding: OAuthSourceBinding | null
         try {
             binding = await validateOAuthCredentialForSource(flow.sourceId, credentials)
@@ -384,14 +370,14 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             )
         }
 
-        if (isSalesforceNoSyncSource(source)) {
+        if (bindingPolicy?.allow_user_establish) {
             if (
                 !binding ||
                 Object.entries(binding).some(
                     ([key, value]) => key.length === 0 || value.length === 0,
                 )
             ) {
-                return redirectOAuthFailure('Salesforce OAuth did not identify an organization')
+                return redirectOAuthFailure('OAuth did not return a valid source binding')
             }
             const bindingResult = await db.transaction(async (tx) => {
                 const [lockedSource] = await tx
@@ -402,11 +388,20 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
                 if (!lockedSource || lockedSource.isDeleted) return 'conflict' as const
 
                 const currentBinding = sourceBindingFromConfig(lockedSource.config)
+                const hasStoredBinding =
+                    typeof lockedSource.config === 'object' && lockedSource.config !== null &&
+                    !Array.isArray(lockedSource.config) &&
+                    Object.prototype.hasOwnProperty.call(lockedSource.config, SOURCE_BINDING_CONFIG_KEY)
+                if (hasStoredBinding && !currentBinding) return 'conflict' as const
                 if (currentBinding && !sourceBindingsEqual(currentBinding, binding)) {
                     return 'conflict' as const
                 }
-                if (!currentBinding && user.role !== 'admin') {
+                if (!currentBinding && bindingPolicy.initial_admin_required && user.role !== 'admin') {
                     return 'conflict' as const
+                }
+                if (bindingPolicy.authenticated_discovery_required) {
+                    await tx.update(sources).set({ isActive: false, updatedAt: new Date() })
+                        .where(eq(sources.id, flow.sourceId))
                 }
 
                 if (!currentBinding) {
@@ -451,7 +446,7 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             })
             if (bindingResult === 'conflict') {
                 return redirectOAuthFailure(
-                    'Salesforce OAuth does not match the organization bound to this source',
+                    'OAuth identity does not match the binding established for this source',
                 )
             }
         } else {
@@ -481,6 +476,13 @@ export const GET: RequestHandler = async ({ url, locals, fetch }) => {
             if (!approval) throw error(400, 'OAuth approval is no longer pending')
         }
         const credentialReady = await notifyOAuthCredentialReady(flow.sourceId, user.id)
+        if (bindingPolicy?.authenticated_discovery_required && credentialReady?.status !== 'completed') {
+            await db.update(sources).set({ isActive: false, updatedAt: new Date() }).where(eq(sources.id, flow.sourceId))
+            return redirectOAuthFailure('Authenticated capability discovery failed; retry authorization to complete setup')
+        }
+        if (bindingPolicy?.authenticated_discovery_required) {
+            await db.update(sources).set({ isActive: true, updatedAt: new Date() }).where(eq(sources.id, flow.sourceId))
+        }
         if (flow.returnTo && !(flow.type === 'user_write' && flow.approvalId)) {
             throw redirect(302, flow.returnTo)
         }

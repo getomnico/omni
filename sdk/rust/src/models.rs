@@ -91,6 +91,22 @@ pub struct OAuthManifestConfig {
     /// Whether this connector supports OAuth credentials for org sources.
     #[serde(default = "default_supports_org_oauth")]
     pub supports_org_oauth: bool,
+    /// Policy for provider-verified identity binding on per-user OAuth.
+    #[serde(default)]
+    pub source_binding_policy: Option<OAuthSourceBindingPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthSourceBindingPolicy {
+    #[serde(default)]
+    pub allow_user_establish: bool,
+    #[serde(default)]
+    pub initial_admin_required: bool,
+    #[serde(default)]
+    pub compare_existing: bool,
+    #[serde(default)]
+    pub authenticated_discovery_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

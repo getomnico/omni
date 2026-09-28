@@ -282,6 +282,12 @@ class SalesforceConnector(Connector):
             grant_types=["authorization_code", "refresh_token"],
             validate_endpoint_urls=True,
             supports_org_oauth=False,
+            source_binding_policy={
+                "allow_user_establish": True,
+                "initial_admin_required": True,
+                "compare_existing": True,
+                "authenticated_discovery_required": True,
+            },
         )
 
     @staticmethod
