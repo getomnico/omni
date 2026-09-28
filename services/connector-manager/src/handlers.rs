@@ -654,6 +654,64 @@ pub async fn execute_action(
                     request.action
                 )));
             }
+            let manifest = manifests
+                .iter()
+                .find(|manifest| {
+                    manifest.integration_type == IntegrationType::RemoteMcp
+                        && manifest
+                            .source_types
+                            .iter()
+                            .any(|item| item == &db_source.source_type)
+                })
+                .ok_or_else(|| {
+                    ApiError::NotFound(format!(
+                        "Remote MCP connector not registered for type: {source_type:?}"
+                    ))
+                })?;
+            let action = action_definition_for_source(manifest, &db_source, &request.action)
+                .filter(|action| !action.hidden && action.origin == ActionOrigin::Mcp)
+                .ok_or_else(|| {
+                    ApiError::BadRequest(format!("Unknown action '{}'", request.action))
+                })?;
+            if request.user_id.is_none() {
+                return Err(ApiError::BadRequest(
+                    "user_id is required for remote MCP actions".to_string(),
+                ));
+            }
+            if (manifest.read_only
+                || db_source
+                    .config
+                    .get("read_only")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false))
+                && action.mode == ActionMode::Write
+            {
+                return Err(ApiError::BadRequest(
+                    "Action is not allowed: source is read-only".to_string(),
+                ));
+            }
+            let remote_uses_org_credential = action.admin_only
+                || action.credential_scope == ActionCredentialScope::Org
+                || db_source.config.get("auth_type").and_then(Value::as_str) != Some("oauth");
+            let remote_write_needs_admin = action.mode == ActionMode::Write
+                && remote_uses_org_credential
+                && !action.admin_only
+                && !action.actor_scoped;
+            if action.admin_only || remote_write_needs_admin {
+                let user_id = request.user_id.as_ref().ok_or_else(|| {
+                    ApiError::BadRequest("user_id is required for this action".to_string())
+                })?;
+                let user = UserRepository::new(state.db_pool.pool())
+                    .find_by_id(user_id.clone())
+                    .await
+                    .map_err(|error| ApiError::Internal(error.to_string()))?
+                    .ok_or_else(|| ApiError::NotFound(format!("User not found: {user_id}")))?;
+                if user.role != shared::models::UserRole::Admin {
+                    return Err(ApiError::BadRequest(
+                        "Action requires administrator privileges".to_string(),
+                    ));
+                }
+            }
             let result = state
                 .remote_mcp_gateway
                 .execute_action(
@@ -1498,12 +1556,20 @@ pub async fn action_credential_preflight(
             "Action is unavailable for this source's allowed action-origin policy".to_string(),
         ));
     }
+    if source.integration_type == IntegrationType::RemoteMcp && action.origin != ActionOrigin::Mcp {
+        return Err(ApiError::BadRequest(
+            "Remote MCP sources can only execute MCP actions".to_string(),
+        ));
+    }
     if (manifest.read_only
         || source
             .config
             .get("read_only")
             .and_then(Value::as_bool)
-            .unwrap_or(action.origin == ActionOrigin::Mcp))
+            .unwrap_or(
+                action.origin == ActionOrigin::Mcp
+                    && source.integration_type != IntegrationType::RemoteMcp,
+            ))
         && action.mode == ActionMode::Write
     {
         return Err(ApiError::BadRequest(
@@ -1516,6 +1582,20 @@ pub async fn action_credential_preflight(
         .map_err(|error| ApiError::Internal(error.to_string()))?
         .ok_or_else(|| ApiError::NotFound(format!("User not found: {}", request.user_id)))?;
     if source.integration_type == IntegrationType::RemoteMcp {
+        let remote_uses_org_credential = action.admin_only
+            || action.credential_scope == ActionCredentialScope::Org
+            || source.config.get("auth_type").and_then(Value::as_str) != Some("oauth");
+        let remote_write_needs_admin = action.mode == ActionMode::Write
+            && remote_uses_org_credential
+            && !action.admin_only
+            && !action.actor_scoped;
+        if (action.admin_only || remote_write_needs_admin)
+            && user.role != shared::models::UserRole::Admin
+        {
+            return Err(ApiError::Unauthorized(
+                "Action requires administrator privileges".to_string(),
+            ));
+        }
         if source.config.get("auth_type").and_then(Value::as_str) == Some("oauth") {
             let credential = CredentialService::new(state.db_pool.clone())
                 .get_user_credential(&source.id, &request.user_id)
