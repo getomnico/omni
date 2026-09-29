@@ -7,8 +7,9 @@ pub use shared::models::{
     ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest,
     ConnectorManifest, McpCredentials, McpPromptDefinition, McpResourceDefinition,
     OAuthCredentialFlow, OAuthCredentialValidationRequest, OAuthCredentialValidationResponse,
-    OAuthSourceBinding, PromptRequest, ResourceRequest, SearchOperator, SkillRequest,
-    SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
+    OAuthSourceBinding, OAuthSourceBindingPolicy, OAuthSourceConfigCondition, PromptRequest,
+    ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -129,6 +130,34 @@ pub struct TransientCredentials {
     pub credentials: JsonValue,
     #[serde(default)]
     pub config: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionCredentialPreflightRequest {
+    pub source_id: String,
+    pub user_id: String,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCredentialPreflightState {
+    Ready,
+    NeedsUserAuth,
+    NeedsAdditionalScopes,
+    MissingOrgCredentials,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionCredentialPreflightResponse {
+    pub state: ActionCredentialPreflightState,
+    pub source_id: String,
+    pub source_type: String,
+    pub provider: Option<String>,
+    pub oauth_start_url: Option<String>,
+    pub missing_scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

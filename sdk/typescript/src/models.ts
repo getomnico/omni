@@ -1,19 +1,19 @@
-import { z } from 'zod';
+import { z } from "zod";
 
 export const SyncMode = {
-  FULL: 'full',
-  INCREMENTAL: 'incremental',
-  REALTIME: 'realtime',
+  FULL: "full",
+  INCREMENTAL: "incremental",
+  REALTIME: "realtime",
 } as const;
 export type SyncMode = (typeof SyncMode)[keyof typeof SyncMode];
 
 export const EventType = {
-  DOCUMENT_CREATED: 'document_created',
-  DOCUMENT_UPDATED: 'document_updated',
-  DOCUMENT_DELETED: 'document_deleted',
-  GROUP_MEMBERSHIP_SYNC: 'group_membership_sync',
-  PERSON_SYNC: 'person_sync',
-  PERSON_DELETED: 'person_deleted',
+  DOCUMENT_CREATED: "document_created",
+  DOCUMENT_UPDATED: "document_updated",
+  DOCUMENT_DELETED: "document_deleted",
+  GROUP_MEMBERSHIP_SYNC: "group_membership_sync",
+  PERSON_SYNC: "person_sync",
+  PERSON_DELETED: "person_deleted",
 } as const;
 export type EventType = (typeof EventType)[keyof typeof EventType];
 
@@ -59,20 +59,23 @@ const DocumentEventContentFields = {
   attributes: z.record(z.unknown()).optional(),
 };
 
-export const DocumentEventSchema = z.discriminatedUnion('type', [
+export const DocumentEventSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.literal('document_created'),
+    type: z.literal("document_created"),
     ...DocumentEventIdentityFields,
     ...DocumentEventContentFields,
     permissions: DocumentPermissionsSchema,
   }),
   z.object({
-    type: z.literal('document_updated'),
+    type: z.literal("document_updated"),
     ...DocumentEventIdentityFields,
     ...DocumentEventContentFields,
     permissions: DocumentPermissionsSchema.optional(),
   }),
-  z.object({ type: z.literal('document_deleted'), ...DocumentEventIdentityFields }),
+  z.object({
+    type: z.literal("document_deleted"),
+    ...DocumentEventIdentityFields,
+  }),
 ]);
 export type DocumentEvent = z.infer<typeof DocumentEventSchema>;
 
@@ -103,7 +106,7 @@ export const PersonSyncRecordSchema = z.object({
 export type PersonSyncRecord = z.infer<typeof PersonSyncRecordSchema>;
 
 export const PersonSyncEventSchema = z.object({
-  type: z.literal('person_sync'),
+  type: z.literal("person_sync"),
   sync_run_id: z.string(),
   source_id: z.string(),
   person: PersonSyncRecordSchema,
@@ -111,7 +114,7 @@ export const PersonSyncEventSchema = z.object({
 export type PersonSyncEvent = z.infer<typeof PersonSyncEventSchema>;
 
 export const PersonDeletedEventSchema = z.object({
-  type: z.literal('person_deleted'),
+  type: z.literal("person_deleted"),
   sync_run_id: z.string(),
   source_id: z.string(),
   email: z.string(),
@@ -119,7 +122,7 @@ export const PersonDeletedEventSchema = z.object({
 export type PersonDeletedEvent = z.infer<typeof PersonDeletedEventSchema>;
 
 export const GroupMembershipEventSchema = z.object({
-  type: z.literal('group_membership_sync'),
+  type: z.literal("group_membership_sync"),
   sync_run_id: z.string(),
   source_id: z.string(),
   group_email: z.string(),
@@ -139,31 +142,31 @@ export const ConnectorEventSchema = z.union([
 ]);
 export type ConnectorEvent = z.infer<typeof ConnectorEventSchema>;
 
-export const ActionCredentialScopeSchema = z.enum(['user', 'org']);
+export const ActionCredentialScopeSchema = z.enum(["user", "org"]);
 export type ActionCredentialScope = z.infer<typeof ActionCredentialScopeSchema>;
 
-export const ActionOriginSchema = z.enum(['native', 'mcp']);
+export const ActionOriginSchema = z.enum(["native", "mcp"]);
 export type ActionOrigin = z.infer<typeof ActionOriginSchema>;
 
 export const ActionDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
-  input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
-  mode: z.enum(['read', 'write']).default('write'),
-  credential_scope: ActionCredentialScopeSchema.default('user'),
+  input_schema: z.record(z.any()).default({ type: "object", properties: {} }),
+  mode: z.enum(["read", "write"]).default("write"),
+  credential_scope: ActionCredentialScopeSchema.default("user"),
   required_scopes: z.array(z.string()).optional(),
   source_types: z.array(z.string()).default([]),
   admin_only: z.boolean().default(false),
   hidden: z.boolean().default(false),
   actor_scoped: z.boolean().default(false),
-  origin: ActionOriginSchema.default('native'),
+  origin: ActionOriginSchema.default("native"),
 });
 export type ActionDefinition = z.infer<typeof ActionDefinitionSchema>;
 
 export const SearchOperatorSchema = z.object({
   operator: z.string(),
   attribute_key: z.string(),
-  value_type: z.string().default('text'),  // "person", "text", "datetime"
+  value_type: z.string().default("text"), // "person", "text", "datetime"
 });
 export type SearchOperator = z.infer<typeof SearchOperatorSchema>;
 
@@ -196,24 +199,49 @@ export const OAuthScopeSetSchema = z.object({
 export type OAuthScopeSet = z.infer<typeof OAuthScopeSetSchema>;
 
 export const OAuthTokenEndpointAuthMethodSchema = z.enum([
-  'client_secret_post',
-  'client_secret_basic',
-  'none',
+  "client_secret_post",
+  "client_secret_basic",
+  "none",
 ]);
 export type OAuthTokenEndpointAuthMethod = z.infer<
   typeof OAuthTokenEndpointAuthMethodSchema
 >;
+
+export const OAuthSourceBindingPolicySchema = z
+  .object({
+    allow_user_establish: z.boolean().default(false),
+    initial_admin_required: z.boolean().default(false),
+    authenticated_discovery_required: z.boolean().default(false),
+    source_config_equals: z
+      .object({ key: z.string().min(1), equals: z.union([z.string(), z.boolean()]) })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((policy, ctx) => {
+    if (
+      !policy.allow_user_establish &&
+      (policy.initial_admin_required ||
+        policy.authenticated_discovery_required ||
+        policy.source_config_equals !== undefined)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "source binding requirements require allow_user_establish",
+      });
+    }
+  });
 
 export const OAuthManifestConfigSchema = z.object({
   provider: z.string(),
   auth_endpoint: z.string(),
   token_endpoint: z.string(),
   userinfo_endpoint: z.string().optional(),
-  userinfo_email_field: z.string().default('email'),
+  userinfo_email_field: z.string().default("email"),
   identity_scopes: z.array(z.string()).default([]),
   scopes: z.record(OAuthScopeSetSchema).default({}),
   extra_auth_params: z.record(z.string()).default({}),
-  scope_separator: z.string().default(' '),
+  scope_separator: z.string().default(" "),
   enrich_endpoint: z.string().nullable().optional(),
   /**
    * OAuth Dynamic Client Registration endpoint. Set this for providers where
@@ -229,9 +257,8 @@ export const OAuthManifestConfigSchema = z.object({
    * `registration_endpoint` is also present.
    */
   token_response_fields: z.array(z.string()).default([]),
-  token_endpoint_auth_method: OAuthTokenEndpointAuthMethodSchema.default(
-    'client_secret_post'
-  ),
+  token_endpoint_auth_method:
+    OAuthTokenEndpointAuthMethodSchema.default("client_secret_post"),
   /**
    * Optional OAuth resource indicator (RFC 8707) sent on auth/token requests
    * for providers that bind tokens to a specific resource, such as a remote
@@ -244,6 +271,7 @@ export const OAuthManifestConfigSchema = z.object({
   grant_types: z.array(z.string()).nullable().optional(),
   validate_endpoint_urls: z.boolean().default(false),
   supports_org_oauth: z.boolean().default(true),
+  source_binding_policy: OAuthSourceBindingPolicySchema.nullable().optional(),
 });
 export type OAuthManifestConfig = z.infer<typeof OAuthManifestConfigSchema>;
 
@@ -277,7 +305,7 @@ export const ConnectorManifestSchema = z.object({
   sync_modes: z.array(z.string()),
   connector_id: z.string(),
   connector_url: z.string(),
-  integration_type: z.enum(['connector', 'remote_mcp']).default('connector'),
+  integration_type: z.enum(["connector", "remote_mcp"]).default("connector"),
   source_types: z.array(z.string()).default([]),
   description: z.string().optional(),
   // Deprecated compatibility catalog. New and migrated connectors should
@@ -318,11 +346,11 @@ export const SyncResponseSchema = z.object({
 export type SyncResponse = z.infer<typeof SyncResponseSchema>;
 
 export function createSyncResponseStarted(): SyncResponse {
-  return { status: 'started' };
+  return { status: "started" };
 }
 
 export function createSyncResponseError(message: string): SyncResponse {
-  return { status: 'error', message };
+  return { status: "error", message };
 }
 
 export const CancelRequestSchema = z.object({
@@ -365,10 +393,10 @@ export type OAuthCredentialReadyRequest = z.infer<
 >;
 
 export const OAuthCredentialFlowSchema = z.enum([
-  'org_source',
-  'connect_source',
-  'user_read',
-  'user_write',
+  "org_source",
+  "connect_source",
+  "user_read",
+  "user_write",
 ]);
 export type OAuthCredentialFlow = z.infer<typeof OAuthCredentialFlowSchema>;
 
@@ -416,23 +444,26 @@ export class ActionResponse {
 
   /** Convert this ActionResponse into a web-standard HTTP Response. */
   toResponse(statusCode?: number): Response {
-    const status = statusCode ?? (this.status === 'success' ? 200 : 400);
+    const status = statusCode ?? (this.status === "success" ? 200 : 400);
     return new Response(JSON.stringify(this), {
       status,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { "Content-Type": "application/json" },
     });
   }
 
   static success(result: Record<string, unknown>): ActionResponse {
-    return new ActionResponse({ status: 'success', result });
+    return new ActionResponse({ status: "success", result });
   }
 
   static failure(error: string): ActionResponse {
-    return new ActionResponse({ status: 'error', error });
+    return new ActionResponse({ status: "error", error });
   }
 
   static notSupported(action: string): ActionResponse {
-    return new ActionResponse({ status: 'error', error: `Action not supported: ${action}` });
+    return new ActionResponse({
+      status: "error",
+      error: `Action not supported: ${action}`,
+    });
   }
 }
 
@@ -508,7 +539,9 @@ export type ConnectorEventPayload =
   | PersonSyncEventPayload
   | PersonDeletedEventPayload;
 
-export function serializeConnectorEvent(event: ConnectorEventPayload): Record<string, unknown> {
+export function serializeConnectorEvent(
+  event: ConnectorEventPayload,
+): Record<string, unknown> {
   if (event.type === EventType.GROUP_MEMBERSHIP_SYNC) {
     return {
       type: event.type,
@@ -551,7 +584,11 @@ export function serializeConnectorEvent(event: ConnectorEventPayload): Record<st
 
   base.content_id = event.content_id;
   base.metadata = event.metadata ?? {};
-  base.permissions = event.permissions ?? { public: false, users: [], groups: [] };
+  base.permissions = event.permissions ?? {
+    public: false,
+    users: [],
+    groups: [],
+  };
   if (event.attributes) {
     base.attributes = event.attributes;
   }
@@ -560,11 +597,12 @@ export function serializeConnectorEvent(event: ConnectorEventPayload): Record<st
 }
 
 export const UserFilterMode = {
-  ALL: 'all',
-  WHITELIST: 'whitelist',
-  BLACKLIST: 'blacklist',
+  ALL: "all",
+  WHITELIST: "whitelist",
+  BLACKLIST: "blacklist",
 } as const;
-export type UserFilterMode = (typeof UserFilterMode)[keyof typeof UserFilterMode];
+export type UserFilterMode =
+  (typeof UserFilterMode)[keyof typeof UserFilterMode];
 
 /**
  * Wire shape of GET /sdk/source/:source_id/sync-config from connector-manager.
@@ -581,7 +619,11 @@ export const SdkSourceSyncDataSchema = z.object({
   checkpoint: z.record(z.unknown()).nullable().default(null),
   source_type: z.string().nullable().default(null),
   user_filter_mode: z
-    .enum([UserFilterMode.ALL, UserFilterMode.WHITELIST, UserFilterMode.BLACKLIST])
+    .enum([
+      UserFilterMode.ALL,
+      UserFilterMode.WHITELIST,
+      UserFilterMode.BLACKLIST,
+    ])
     .default(UserFilterMode.ALL),
   user_whitelist: z.array(z.string()).nullable().default(null),
   user_blacklist: z.array(z.string()).nullable().default(null),

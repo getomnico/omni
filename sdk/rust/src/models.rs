@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 pub use shared::models::{
-    ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials, PromptRequest,
-    ResourceRequest, SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
-    UserRole,
+    ActionRequest, ActionResponse, CancelRequest, CancelResponse, McpCredentials,
+    OAuthSourceBindingPolicy, OAuthSourceConfigCondition, PromptRequest, ResourceRequest,
+    SkillRequest, SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse, UserRole,
 };
 use std::collections::HashMap;
 
@@ -91,6 +91,9 @@ pub struct OAuthManifestConfig {
     /// Whether this connector supports OAuth credentials for org sources.
     #[serde(default = "default_supports_org_oauth")]
     pub supports_org_oauth: bool,
+    /// Policy for provider-verified identity binding on per-user OAuth.
+    #[serde(default)]
+    pub source_binding_policy: Option<OAuthSourceBindingPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

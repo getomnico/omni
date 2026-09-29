@@ -1614,6 +1614,7 @@ impl Connector for GoogleConnector {
             grant_types: None,
             validate_endpoint_urls: false,
             supports_org_oauth: true,
+            source_binding_policy: None,
         })
     }
 

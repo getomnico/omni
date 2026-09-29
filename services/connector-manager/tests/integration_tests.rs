@@ -1905,6 +1905,102 @@ async fn seed_user_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
     id
 }
 
+async fn seed_google_oauth_credential(
+    pool: &sqlx::PgPool,
+    source_id: &str,
+    granted_scopes: serde_json::Value,
+) -> String {
+    let repo = ServiceCredentialsRepo::new(pool.clone()).unwrap();
+    let id = shared::utils::generate_ulid();
+    repo.create(ServiceCredential {
+        id: id.clone(),
+        source_id: source_id.to_string(),
+        user_id: Some("01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string()),
+        provider: ServiceProvider::Google,
+        auth_type: AuthType::OAuth,
+        principal_email: Some("test@example.com".to_string()),
+        credentials: json!({"access_token": "user-token", "refresh_token": "refresh-token"}),
+        config: json!({"granted_scopes": granted_scopes}),
+        expires_at: None,
+        last_validated_at: None,
+        created_at: OffsetDateTime::now_utc(),
+        updated_at: OffsetDateTime::now_utc(),
+    })
+    .await
+    .unwrap();
+    id
+}
+
+async fn register_oauth_scope_manifest(fixture: &common::TestFixture) {
+    let mut redis_conn = fixture
+        .state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let manifest = ConnectorManifest {
+        name: "gmail".to_string(),
+        display_name: "gmail".to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec![SyncType::Full],
+        connector_id: "gmail".to_string(),
+        connector_url: fixture.mock_connector.base_url.clone(),
+        integration_type: IntegrationType::Connector,
+        source_types: vec![SourceType::Gmail.to_string()],
+        description: None,
+        actions: vec![
+            ActionDefinition {
+                name: "user_action".to_string(),
+                description: "User OAuth action".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                mode: ActionMode::Read,
+                credential_scope: ActionCredentialScope::User,
+                required_scopes: Some(vec![
+                    "contacts.read".to_string(),
+                    "contacts.write".to_string(),
+                ]),
+                source_types: vec![SourceType::Gmail],
+                admin_only: false,
+                hidden: false,
+                actor_scoped: false,
+                origin: ActionOrigin::Native,
+            },
+            ActionDefinition {
+                name: "org_action".to_string(),
+                description: "Org credential action".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                mode: ActionMode::Read,
+                credential_scope: ActionCredentialScope::Org,
+                required_scopes: None,
+                source_types: vec![SourceType::Gmail],
+                admin_only: false,
+                hidden: false,
+                actor_scoped: false,
+                origin: ActionOrigin::Native,
+            },
+        ],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        mcp_catalog_loaded: false,
+        prompts: vec![],
+        skills: vec![],
+        source_capabilities: vec![],
+        resources: vec![],
+        oauth: Some(json!({"provider": "google"})),
+    };
+    let _: () = redis_conn
+        .set_ex(
+            "connector:manifest:gmail",
+            serde_json::to_string(&manifest).unwrap(),
+            600,
+        )
+        .await
+        .unwrap();
+}
+
 /// Connectors with an org-only credential model (no per-user OAuth, e.g.
 /// Darwinbox) must use the org credential when a user invokes an action
 /// without a per-user row — needs_user_auth would be a dead end since no
@@ -2300,4 +2396,217 @@ async fn test_action_actor_scoped_write_allowed_for_regular_users() {
         Some("test@example.com"),
         "actor identity must reach the connector for server-side scoping"
     );
+}
+
+#[tokio::test]
+async fn test_action_listing_preflight_and_execution_share_source_scope_policy() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    register_oauth_scope_manifest(&fixture).await;
+
+    let source_with_org_credential = seed_source(pool, "gmail", true).await;
+    let source_without_org_credential = seed_source(pool, "gmail", true).await;
+    seed_org_credential(pool, &source_with_org_credential).await;
+
+    let actions_response = server.get("/actions").await;
+    actions_response.assert_status(StatusCode::OK);
+    let actions: serde_json::Value = actions_response.json();
+    let actions_for_source = |source_id: &str| {
+        actions["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|action| action["source_id"] == source_id)
+            .filter_map(|action| action["name"].as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        actions_for_source(&source_with_org_credential),
+        vec!["user_action", "org_action"]
+    );
+    assert_eq!(
+        actions_for_source(&source_without_org_credential),
+        vec!["user_action"],
+        "org-scoped action must be omitted without an org credential"
+    );
+
+    let preflight = |source_id: &str, action: &str| {
+        server.post("/actions/preflight").json(&json!({
+            "source_id": source_id,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": action,
+        }))
+    };
+    let missing_user_auth = preflight(&source_with_org_credential, "user_action").await;
+    missing_user_auth.assert_status(StatusCode::OK);
+    let missing_user_auth: serde_json::Value = missing_user_auth.json();
+    assert_eq!(missing_user_auth["state"], "needs_user_auth");
+    assert_eq!(missing_user_auth["provider"], "google");
+
+    let missing_org_credentials = preflight(&source_without_org_credential, "org_action").await;
+    missing_org_credentials.assert_status(StatusCode::OK);
+    let missing_org_credentials: serde_json::Value = missing_org_credentials.json();
+    assert_eq!(missing_org_credentials["state"], "missing_org_credentials");
+
+    seed_google_oauth_credential(pool, &source_with_org_credential, json!(["contacts.read"])).await;
+    let scope_upgrade = preflight(&source_with_org_credential, "user_action").await;
+    scope_upgrade.assert_status(StatusCode::OK);
+    let scope_upgrade: serde_json::Value = scope_upgrade.json();
+    assert_eq!(scope_upgrade["state"], "needs_additional_scopes");
+    assert_eq!(scope_upgrade["missing_scopes"], json!(["contacts.write"]));
+    assert!(
+        scope_upgrade["oauth_start_url"]
+            .as_str()
+            .unwrap()
+            .contains("required_scopes=contacts.write")
+    );
+
+    let direct_execution = server
+        .post("/action")
+        .json(&json!({
+            "source_id": source_with_org_credential,
+            "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+            "action": "user_action",
+            "params": {},
+        }))
+        .await;
+    direct_execution.assert_status(StatusCode::PRECONDITION_FAILED);
+    let direct_execution: serde_json::Value = direct_execution.json();
+    assert_eq!(direct_execution["error"], "needs_additional_scopes");
+    assert_eq!(
+        direct_execution["missing_scopes"],
+        json!(["contacts.write"])
+    );
+    assert!(fixture.mock_connector.get_action_requests().is_empty());
+
+    sqlx::query("UPDATE service_credentials SET config = $1 WHERE source_id = $2 AND user_id = $3")
+        .bind(json!({"granted_scopes": ["contacts.read", "contacts.write"]}))
+        .bind(&source_with_org_credential)
+        .bind("01JGF7V3E0Y2R1X8P5Q7W9T4N6")
+        .execute(pool)
+        .await
+        .unwrap();
+    let ready = preflight(&source_with_org_credential, "user_action").await;
+    ready.assert_status(StatusCode::OK);
+    let ready: serde_json::Value = ready.json();
+    assert_eq!(ready["state"], "ready");
+}
+
+#[tokio::test]
+async fn test_remote_mcp_preflight_and_execution_enforce_shared_credential_role_policy() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let server = test_server_no_expect(&fixture);
+    let pool = fixture.state.db_pool.pool();
+    let source_id = seed_source(pool, "gmail", true).await;
+    sqlx::query("UPDATE sources SET integration_type = 'remote_mcp', config = $1 WHERE id = $2")
+        .bind(json!({
+            "endpoint_url": "http://127.0.0.1:9/mcp",
+            "auth_type": "bearer_token",
+        }))
+        .bind(&source_id)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let manifest = ConnectorManifest {
+        name: "Remote policy test".to_string(),
+        display_name: "Remote policy test".to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec![],
+        connector_id: "remote_mcp:policy-test".to_string(),
+        connector_url: fixture.mock_connector.base_url.clone(),
+        integration_type: IntegrationType::RemoteMcp,
+        source_types: vec![SourceType::Gmail.to_string()],
+        description: None,
+        actions: vec![
+            ActionDefinition {
+                name: "shared_write".to_string(),
+                description: "Shared-credential write".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                mode: ActionMode::Write,
+                credential_scope: ActionCredentialScope::User,
+                required_scopes: None,
+                source_types: vec![SourceType::Gmail],
+                admin_only: false,
+                hidden: false,
+                actor_scoped: false,
+                origin: ActionOrigin::Mcp,
+            },
+            ActionDefinition {
+                name: "admin_read".to_string(),
+                description: "Admin-only read".to_string(),
+                input_schema: json!({"type": "object", "properties": {}}),
+                mode: ActionMode::Read,
+                credential_scope: ActionCredentialScope::User,
+                required_scopes: None,
+                source_types: vec![SourceType::Gmail],
+                admin_only: true,
+                hidden: false,
+                actor_scoped: false,
+                origin: ActionOrigin::Mcp,
+            },
+        ],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: true,
+        mcp_catalog_loaded: true,
+        prompts: vec![],
+        skills: vec![],
+        source_capabilities: vec![],
+        resources: vec![],
+        oauth: None,
+    };
+    let mut redis_conn = fixture
+        .state
+        .redis_client
+        .get_multiplexed_async_connection()
+        .await
+        .unwrap();
+    let _: () = redis_conn
+        .set_ex(
+            "connector:manifest:remote_mcp:policy-test",
+            serde_json::to_string(&manifest).unwrap(),
+            600,
+        )
+        .await
+        .unwrap();
+
+    let actions = server.get("/actions").await;
+    actions.assert_status(StatusCode::OK);
+    let actions: serde_json::Value = actions.json();
+    assert!(
+        actions["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["source_id"] == source_id && action["name"] == "shared_write"),
+        "writable Remote MCP action should be discoverable when write tools are enabled and read_only is absent"
+    );
+
+    for action in ["shared_write", "admin_read"] {
+        let preflight = server
+            .post("/actions/preflight")
+            .json(&json!({
+                "source_id": source_id,
+                "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+                "action": action,
+            }))
+            .await;
+        preflight.assert_status(StatusCode::UNAUTHORIZED);
+
+        let execution = server
+            .post("/action")
+            .json(&json!({
+                "source_id": source_id,
+                "user_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N6",
+                "action": action,
+                "params": {},
+            }))
+            .await;
+        execution.assert_status(StatusCode::BAD_REQUEST);
+    }
+    assert!(fixture.mock_connector.get_action_requests().is_empty());
 }
