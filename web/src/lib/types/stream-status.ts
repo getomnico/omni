@@ -4,4 +4,6 @@ export type StreamStatus = {
     pendingApproval: boolean
     pendingOAuth: boolean
     pendingSteering: boolean
+    iterationLimitReached: boolean
+    iterationLimitMessageId: string | null
 }

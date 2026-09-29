@@ -25,6 +25,11 @@ from db.tool_approvals import ToolApproval
 from providers import LLMProviderStreamError, ProviderError
 
 logger = logging.getLogger(__name__)
+_ITERATION_LIMIT_STATUS_TTL = 24 * 60 * 60
+
+
+def iteration_limit_key(chat_id: str) -> str:
+    return f"chat:iteration-limit:{chat_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -66,11 +71,13 @@ class EndOfStreamReason(str, Enum):
     APPROVAL_REQUIRED = "approval_required"
     OAUTH_REQUIRED = "oauth_required"
     NO_NEW_MESSAGE = "no_new_message"
+    ITERATION_LIMIT = "iteration_limit"
 
 
 class EndOfStreamEvent(TypedDict):
     reason: EndOfStreamReason
     message: NotRequired[str]
+    message_id: NotRequired[str]
 
 
 class StreamErrorEvent(TypedDict):
@@ -317,6 +324,8 @@ async def persist_and_transform(
     mid-stream.
     """
     current_assistant_message_id: str | None = None
+    last_assistant_message_id: str | None = None
+    last_persisted_message_id: str | None = None
     buffered_tool_result_events: list[str] = []
 
     async for event_str in gen:
@@ -343,6 +352,7 @@ async def persist_and_transform(
             await acknowledge_steering_message(
                 redis_client, chat_id, entry, created.id
             )
+            last_persisted_message_id = created.id
             parent_id = created.id
             yield sse_event(
                 "steering_message",
@@ -403,12 +413,15 @@ async def persist_and_transform(
                     await messages_repo.update_content_text(
                         current_assistant_message_id, message
                     )
+                    last_assistant_message_id = current_assistant_message_id
+                    last_persisted_message_id = current_assistant_message_id
                     current_assistant_message_id = None
                     continue
 
                 created = await messages_repo.create(
                     chat_id, message, parent_id=parent_id
                 )
+                last_persisted_message_id = created.id
                 parent_id = created.id
 
                 if message.get("role") == "user" and buffered_tool_result_events:
@@ -471,6 +484,37 @@ async def persist_and_transform(
                     exc_info=True,
                 )
             continue
+
+        if event_type == "end_of_stream":
+            try:
+                terminal = json.loads(event_data)
+            except json.JSONDecodeError:
+                terminal = {}
+            if terminal.get("reason") == EndOfStreamReason.ITERATION_LIMIT.value:
+                assistant_message_id = (
+                    current_assistant_message_id
+                    or last_persisted_message_id
+                    or last_assistant_message_id
+                )
+                if assistant_message_id is None:
+                    created = await messages_repo.create(
+                        chat_id,
+                        {"role": "assistant", "content": []},
+                        parent_id=parent_id,
+                    )
+                    assistant_message_id = created.id
+                    last_persisted_message_id = created.id
+                    parent_id = created.id
+                    yield f"event: message_id\ndata: {created.id}\n\n"
+                terminal["message_id"] = assistant_message_id
+                event_str = sse_event("end_of_stream", terminal)
+                if redis_client is not None:
+                    await redis_client.set(
+                        iteration_limit_key(chat_id),
+                        assistant_message_id,
+                        ex=_ITERATION_LIMIT_STATUS_TTL,
+                    )
+                current_assistant_message_id = None
 
         yield event_str
 
