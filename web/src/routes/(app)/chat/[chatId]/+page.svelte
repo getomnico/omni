@@ -55,7 +55,11 @@
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import type { ArtifactData } from '$lib/utils/artifacts'
     import { collectPanelArtifacts } from '$lib/utils/artifacts'
-    import { fetchChatStreamStatus } from '$lib/utils/stream-status'
+    import {
+        fetchChatStreamStatus,
+        isIterationLimitTerminal,
+        shouldShowEmptyStreamError,
+    } from '$lib/utils/stream-status'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { artifactPaneState } from '$lib/stores/artifact-pane.svelte'
     import ThinkingIndicator from '$lib/components/thinking-indicator.svelte'
@@ -145,6 +149,9 @@
             clearReconnectState()
             activeStreamChatId = null
             isStreaming = false
+            iterationLimitReached = false
+            iterationLimitMessageId = null
+            void refreshIterationLimitStatus(data.chat.id)
             stopInProgress = false
             error = null
             errorDetail = null
@@ -239,6 +246,8 @@
     let userInputRef: ReturnType<typeof UserInput>
 
     let isStreaming = $state(false)
+    let iterationLimitReached = $state(false)
+    let iterationLimitMessageId = $state<string | null>(null)
     let stopInProgress = $state(false)
     let error = $state<string | null>(null)
     let errorDetail = $state<string | null>(null)
@@ -274,6 +283,17 @@
     }
 
     type StreamErrorPayload = ChatStreamError
+
+    async function refreshIterationLimitStatus(chatId: string) {
+        try {
+            const status = await fetchChatStreamStatus(chatId)
+            if (data.chat.id !== chatId) return
+            iterationLimitReached = status?.iterationLimitReached === true
+            iterationLimitMessageId = status?.iterationLimitMessageId ?? null
+        } catch (err) {
+            console.warn('Failed to check iteration limit status', err)
+        }
+    }
 
     async function resumeActiveStreamIfNeeded() {
         if (isStreaming || eventSource) return
@@ -834,6 +854,8 @@
 
     function selectBranch(parentId: string | null | undefined, messageId: string) {
         branchSelections[branchSelectionKey(parentId)] = messageId
+        iterationLimitReached = false
+        iterationLimitMessageId = null
     }
 
     function switchBranch(parentId: string | null, direction: 'prev' | 'next') {
@@ -856,6 +878,8 @@
                 : Math.min(siblings.length - 1, currentIdx + 1)
 
         branchSelections[selectionKey] = siblings[newIdx].id
+        iterationLimitReached = false
+        iterationLimitMessageId = null
         activeStreamingMessageId = null
         // Clear downstream selections so we follow the default (active) path from here
         clearDownstreamSelections(siblings[newIdx].id)
@@ -911,6 +935,9 @@
             message,
             contentText: trimmedContent,
             error: null,
+            terminalReason: null,
+            continuedAt: null,
+            continuationMessageId: null,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -920,6 +947,8 @@
         // branch below the edited message, so clear their local UI state before
         // starting the replay stream for this branch.
         branchSelections[parentKey] = messageId
+        iterationLimitReached = false
+        iterationLimitMessageId = null
         clearDownstreamSelections(messageId)
         pendingApproval = null
         oauthEventByToolCallId = {}
@@ -1433,6 +1462,7 @@
     // This will trigger the streaming of AI response when the component is mounted
     // If no response is currently being streamed, nothing happens
     onMount(() => {
+        void refreshIterationLimitStatus(data.chat.id)
         artifactPaneState.bind(
             () => ({
                 artifact: activeArtifact ?? lastOpenedArtifact,
@@ -1512,6 +1542,7 @@
         >()
         let streamCompleted = false
         let messageEventsReceived = 0
+        let iterationLimitTerminal = false
         let pauseEventReceived = false
         const pendingToolResults: Array<{
             block: ToolResultBlockParam
@@ -1749,6 +1780,9 @@
                         },
                         contentText: null,
                         error: null,
+                        terminalReason: null,
+                        continuedAt: null,
+                        continuationMessageId: null,
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
@@ -1861,6 +1895,9 @@
                         message: payload.message,
                         contentText: null,
                         error: null,
+                        terminalReason: null,
+                        continuedAt: null,
+                        continuationMessageId: null,
                         messageSeqNum: payload.message_seq_num,
                         createdAt: new Date(payload.created_at),
                     }
@@ -1970,6 +2007,9 @@
                             },
                             contentText: null,
                             error: null,
+                            terminalReason: null,
+                            continuedAt: null,
+                            continuationMessageId: null,
                             messageSeqNum: nextMessageSeqNum(chatMessages),
                             createdAt: new Date(),
                         }
@@ -2073,8 +2113,17 @@
                 }
             })
 
-            eventSource.addEventListener('end_of_stream', () => {
+            eventSource.addEventListener('end_of_stream', (event) => {
                 if (!isCurrentStream()) return
+                if (event instanceof MessageEvent) {
+                    iterationLimitTerminal = isIterationLimitTerminal(event.data)
+                    iterationLimitReached = iterationLimitTerminal
+                    if (iterationLimitTerminal) {
+                        void refreshIterationLimitStatus(chatId)
+                    } else {
+                        iterationLimitMessageId = null
+                    }
+                }
                 const wasStopping = stopInProgress
                 streamCompleted = true
                 isStreaming = false
@@ -2088,7 +2137,15 @@
                 activeStreamChatId = null
                 clearReconnectState()
 
-                if (messageEventsReceived === 0 && !pauseEventReceived && !error && !wasStopping) {
+                if (
+                    shouldShowEmptyStreamError({
+                        messageEventsReceived,
+                        pauseEventReceived,
+                        hasError: error !== null,
+                        wasStopping,
+                        iterationLimitReached: iterationLimitTerminal,
+                    })
+                ) {
                     error = 'Failed to generate response. Please try again.'
                 }
                 void resumePendingSteeringAfterTerminal(chatId)
@@ -2269,6 +2326,9 @@
                         },
                         contentText: null,
                         error: null,
+                        terminalReason: null,
+                        continuedAt: null,
+                        continuationMessageId: null,
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
@@ -2291,6 +2351,34 @@
             }
         } catch (err) {
             console.error('Error submitting approval:', err, { decision, approvalId })
+        }
+    }
+
+    async function continueWorking() {
+        const terminalMessageId = iterationLimitMessageId
+        if (!iterationLimitReached || !terminalMessageId || isSending || isStreaming) return
+
+        isSending = true
+        try {
+            const response = await fetch(`/api/chat/${data.chat.id}/continue`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ terminalMessageId }),
+            })
+            if (!response.ok) {
+                const body = (await response.json().catch(() => null)) as {
+                    error?: string
+                } | null
+                throw new Error(body?.error ?? 'Unable to continue this turn')
+            }
+            iterationLimitReached = false
+            iterationLimitMessageId = null
+            await invalidate(`app:chat:${data.chat.id}`)
+            streamResponse(data.chat.id)
+        } catch (err) {
+            toast.error(err instanceof Error ? err.message : 'Unable to continue this turn')
+        } finally {
+            isSending = false
         }
     }
 
@@ -2344,7 +2432,9 @@
                     setTimeout(() => void handleSubmit(clientMessageId), 150)
                 } else {
                     void resumeActiveStreamIfNeeded()
-                    toast.info('The previous response is still in progress. Reconnecting to it now.')
+                    toast.info(
+                        'The previous response is still in progress. Reconnecting to it now.',
+                    )
                 }
             } else {
                 console.error('Failed to send message to chat session')
@@ -2353,6 +2443,8 @@
         }
 
         // Success — build optimistic message and clear composer
+        iterationLimitReached = false
+        iterationLimitMessageId = null
         const responseBody = (await response.json()) as {
             messageId: string
             status: string
@@ -2412,6 +2504,9 @@
             } as unknown as ChatMessage['message'],
             contentText: userMsg,
             error: null,
+            terminalReason: null,
+            continuedAt: null,
+            continuationMessageId: null,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -3314,6 +3409,22 @@
                     </div>
                 {/if}
             {/snippet}
+
+            {#if iterationLimitReached}
+                <div
+                    class="mx-auto mb-3 flex w-full max-w-4xl items-center justify-between gap-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm">
+                    <span
+                        >The agent reached its iteration limit before completing the request.</span>
+                    <Button
+                        type="button"
+                        size="sm"
+                        class="cursor-pointer"
+                        disabled={isSending || isStreaming || !iterationLimitMessageId}
+                        onclick={continueWorking}>
+                        Continue working
+                    </Button>
+                </div>
+            {/if}
 
             <!-- Input -->
             <div class="bg-background sticky bottom-0 flex flex-col items-center pb-4">

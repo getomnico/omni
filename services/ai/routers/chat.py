@@ -664,12 +664,27 @@ async def stream_status(
     if redis_client is None:
         raise HTTPException(status_code=500, detail="Redis client is not initialized")
 
+    active_path = await messages_repo.get_active_path(chat_id)
+    active_leaf = active_path[-1] if active_path else None
+
     return {
         "running": bool(await redis_client.exists(run_lock_key(chat_id))),
         "resumable": bool(await redis_client.exists(stream_key(chat_id))),
         "pending_approval": pending_approval,
         "pending_oauth": pending_oauth,
         "pending_steering": await steering_queue_has_pending(redis_client, chat_id),
+        "iteration_limit_reached": (
+            active_leaf is not None
+            and active_leaf.terminal_reason == "iteration_limit"
+            and active_leaf.continued_at is None
+        ),
+        "iteration_limit_message_id": (
+            active_leaf.id
+            if active_leaf is not None
+            and active_leaf.terminal_reason == "iteration_limit"
+            and active_leaf.continued_at is None
+            else None
+        ),
     }
 
 
@@ -1114,11 +1129,19 @@ class StreamChatHandler:
         # and mentions, so completed-stream reconnects do not refetch. A queued
         # steering message is also a valid reason to start a recovery run.
         last_message_role = messages[-1].get("role") if messages else None
+        last_message_is_iteration_limited = bool(
+            chat_messages
+            and chat_messages[-1].terminal_reason == "iteration_limit"
+        )
         pending_steering = (
             redis_client is not None
             and await steering_queue_has_pending(redis_client, chat_id)
         )
-        if not pending_interventions and not pending_steering and last_message_role != "user":
+        if (
+            not pending_interventions
+            and not pending_steering
+            and (last_message_role != "user" or last_message_is_iteration_limited)
+        ):
             logger.info(
                 f"Last message is not from user, no processing needed. Chat ID: {chat_id}"
             )

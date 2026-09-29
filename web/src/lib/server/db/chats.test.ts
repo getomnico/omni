@@ -37,6 +37,49 @@ beforeEach(async () => {
 })
 
 describe('ChatMessageRepository branching', () => {
+    it('continues a limited turn idempotently and only while it is the active leaf', async () => {
+        const user = await repo.create(chatId, userMsg('question'))
+        const exhausted = await repo.create(chatId, assistantMsg('partial answer'), user.id)
+        await db
+            .update(schema.chatMessages)
+            .set({ terminalReason: 'iteration_limit' })
+            .where(eq(schema.chatMessages.id, exhausted.id))
+
+        const [first, duplicate] = await Promise.all([
+            repo.continueLimitedTurn(chatId, exhausted.id),
+            repo.continueLimitedTurn(chatId, exhausted.id),
+        ])
+        expect(first?.id).toBe(duplicate?.id)
+        expect(first?.parentId).toBe(exhausted.id)
+        expect(first?.message).toEqual({
+            role: 'user',
+            content:
+                'Continue working on the previous request using the context and results so far.',
+        })
+        expect((await repo.getActivePath(chatId)).at(-1)?.id).toBe(first?.id)
+
+        const laterUser = await repo.create(chatId, userMsg('new request'), first?.id)
+        const retryAfterProgress = await repo.continueLimitedTurn(chatId, exhausted.id)
+        expect(retryAfterProgress?.id).toBe(first?.id)
+        expect((await repo.getActivePath(chatId)).at(-1)?.id).toBe(laterUser.id)
+
+        await repo.create(chatId, userMsg('different branch'), user.id)
+        expect(await repo.continueLimitedTurn(chatId, exhausted.id)).toBeNull()
+    })
+
+    it('does not continue an exhausted ancestor on another active branch', async () => {
+        const user = await repo.create(chatId, userMsg('question'))
+        const exhausted = await repo.create(chatId, assistantMsg('partial answer'), user.id)
+        await db
+            .update(schema.chatMessages)
+            .set({ terminalReason: 'iteration_limit' })
+            .where(eq(schema.chatMessages.id, exhausted.id))
+        const branch = await repo.create(chatId, userMsg('different follow-up'), user.id)
+
+        expect(await repo.continueLimitedTurn(chatId, exhausted.id)).toBeNull()
+        expect((await repo.getActivePath(chatId)).at(-1)?.id).toBe(branch.id)
+    })
+
     it('getActivePath returns empty array for chat with no messages', async () => {
         const path = await repo.getActivePath(chatId)
         expect(path).toEqual([])

@@ -664,7 +664,9 @@ class TestCancel:
             task.cancel()
 
             events = await stream_task
+            status = await client.get(f"/chat/{chat_id}/stream/status")
 
+        assert status.json()["iteration_limit_reached"] is False
         # The stream must terminate with end_of_stream (clean stop, not error)
         assert any(
             et == "end_of_stream" for et, _, _ in events
@@ -2195,6 +2197,97 @@ class TestInterruptedToolCall:
 
 class TestMultiTurn:
     """The agent loop runs through multiple LLM + tool-execution iterations."""
+
+    @pytest.mark.asyncio
+    async def test_iteration_limit_is_explicit_and_persisted(
+        self, seeded_chat, redis_client, monkeypatch
+    ):
+        from streaming import generate
+
+        monkeypatch.setattr(generate, "AGENT_MAX_ITERATIONS", 1)
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search",
+                        "input": {"query": "bounded"},
+                        "id": "toolu_limit",
+                    },
+                )
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+            terminal = json.loads(
+                next(
+                    data
+                    for event_type, data, _ in events
+                    if event_type == "end_of_stream"
+                )
+            )
+            status = await client.get(f"/chat/{chat_id}/stream/status")
+            reloaded_events = await collect_sse_events(client, chat_id)
+
+        assert terminal["reason"] == "iteration_limit"
+        assert status.json()["iteration_limit_reached"] is True
+        assert len(llm.calls) == 1
+        assert any(
+            event_type == "end_of_stream"
+            and json.loads(data)["reason"] == "no_new_message"
+            for event_type, data, _ in reloaded_events
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_response_at_limit_persists_terminal_status(
+        self, seeded_chat, redis_client, monkeypatch
+    ):
+        from streaming import generate
+
+        monkeypatch.setattr(generate, "AGENT_MAX_ITERATIONS", 1)
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM([("text", "")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+            terminal = json.loads(
+                next(
+                    data
+                    for event_type, data, _ in events
+                    if event_type == "end_of_stream"
+                )
+            )
+            status = await client.get(f"/chat/{chat_id}/stream/status")
+
+        assert terminal["reason"] == "iteration_limit"
+        assert status.json()["iteration_limit_reached"] is True
+
+    @pytest.mark.asyncio
+    async def test_normal_completion_at_limit_is_not_marked_limited(
+        self, seeded_chat, redis_client, monkeypatch
+    ):
+        from streaming import generate
+
+        monkeypatch.setattr(generate, "AGENT_MAX_ITERATIONS", 1)
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM([("text", "Done.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+            terminal = json.loads(
+                next(
+                    data
+                    for event_type, data, _ in events
+                    if event_type == "end_of_stream"
+                )
+            )
+            status = await client.get(f"/chat/{chat_id}/stream/status")
+
+        assert terminal["reason"] == "completed"
+        assert status.json()["iteration_limit_reached"] is False
 
     @pytest.mark.asyncio
     async def test_multi_turn_executes_tool_then_responds(

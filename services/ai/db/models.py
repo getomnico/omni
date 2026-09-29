@@ -604,6 +604,8 @@ class ChatMessage:
     created_at: datetime
     parent_id: str | None = None
     error: ChatMessageError | None = None
+    terminal_reason: Literal["iteration_limit"] | None = None
+    continued_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ChatMessage":
@@ -621,6 +623,8 @@ class ChatMessage:
             created_at=row["created_at"],
             parent_id=row.get("parent_id"),
             error=error,
+            terminal_reason=row.get("terminal_reason"),
+            continued_at=row.get("continued_at"),
         )
 
     def to_dict(self) -> dict:
