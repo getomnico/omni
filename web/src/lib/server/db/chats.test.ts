@@ -4,7 +4,12 @@ import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.js'
 import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 import { startTestDb, stopTestDb, createTestUser, createTestChat } from './test-setup'
-import { ChatMessageRepository, ChatRepository, highlightPartsFromHeadline } from './chats'
+import {
+    ChatMessageRepository,
+    ChatRepository,
+    continuationMessageId,
+    highlightPartsFromHeadline,
+} from './chats'
 import * as schema from './schema'
 
 let db: PostgresJsDatabase<typeof schema>
@@ -40,14 +45,11 @@ describe('ChatMessageRepository branching', () => {
     it('continues a limited turn idempotently and only while it is the active leaf', async () => {
         const user = await repo.create(chatId, userMsg('question'))
         const exhausted = await repo.create(chatId, assistantMsg('partial answer'), user.id)
-        await db
-            .update(schema.chatMessages)
-            .set({ terminalReason: 'iteration_limit' })
-            .where(eq(schema.chatMessages.id, exhausted.id))
+        const continuationId = continuationMessageId(exhausted.id)
 
         const [first, duplicate] = await Promise.all([
-            repo.continueLimitedTurn(chatId, exhausted.id),
-            repo.continueLimitedTurn(chatId, exhausted.id),
+            repo.continueLimitedTurn(chatId, exhausted.id, continuationId),
+            repo.continueLimitedTurn(chatId, exhausted.id, continuationId),
         ])
         expect(first?.id).toBe(duplicate?.id)
         expect(first?.parentId).toBe(exhausted.id)
@@ -59,24 +61,30 @@ describe('ChatMessageRepository branching', () => {
         expect((await repo.getActivePath(chatId)).at(-1)?.id).toBe(first?.id)
 
         const laterUser = await repo.create(chatId, userMsg('new request'), first?.id)
-        const retryAfterProgress = await repo.continueLimitedTurn(chatId, exhausted.id)
+        const retryAfterProgress = await repo.continueLimitedTurn(
+            chatId,
+            exhausted.id,
+            continuationId,
+        )
         expect(retryAfterProgress?.id).toBe(first?.id)
         expect((await repo.getActivePath(chatId)).at(-1)?.id).toBe(laterUser.id)
 
         await repo.create(chatId, userMsg('different branch'), user.id)
-        expect(await repo.continueLimitedTurn(chatId, exhausted.id)).toBeNull()
+        expect(await repo.continueLimitedTurn(chatId, exhausted.id, continuationId)).toBeNull()
     })
 
     it('does not continue an exhausted ancestor on another active branch', async () => {
         const user = await repo.create(chatId, userMsg('question'))
         const exhausted = await repo.create(chatId, assistantMsg('partial answer'), user.id)
-        await db
-            .update(schema.chatMessages)
-            .set({ terminalReason: 'iteration_limit' })
-            .where(eq(schema.chatMessages.id, exhausted.id))
         const branch = await repo.create(chatId, userMsg('different follow-up'), user.id)
 
-        expect(await repo.continueLimitedTurn(chatId, exhausted.id)).toBeNull()
+        expect(
+            await repo.continueLimitedTurn(
+                chatId,
+                exhausted.id,
+                continuationMessageId(exhausted.id),
+            ),
+        ).toBeNull()
         expect((await repo.getActivePath(chatId)).at(-1)?.id).toBe(branch.id)
     })
 

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { eq, desc, and, sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { MessageParam } from '@anthropic-ai/sdk/resources'
@@ -6,6 +7,20 @@ import { chats, chatMessages } from './schema'
 import type { Chat, ChatMessage } from './schema'
 import * as schema from './schema'
 import { ulid } from 'ulid'
+
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
+export function continuationMessageId(terminalMessageId: string): string {
+    let value = BigInt(
+        `0x${createHash('sha256').update(`chat-continuation:${terminalMessageId}`).digest('hex').slice(0, 32)}`,
+    )
+    let id = ''
+    for (let index = 0; index < 26; index++) {
+        id = ULID_ALPHABET[Number(value & 31n)] + id
+        value >>= 5n
+    }
+    return id
+}
 
 const DEFAULT_CHAT_SEARCH_LIMIT = 20
 const DEFAULT_CHAT_SEARCH_MESSAGE_CANDIDATE_LIMIT = 50
@@ -355,92 +370,46 @@ export class ChatMessageRepository {
 
     async continueLimitedTurn(
         chatId: string,
-        assistantMessageId: string,
+        terminalMessageId: string,
+        continuationId: string,
     ): Promise<ChatMessage | null> {
-        const continuationMessageId = ulid()
         const continuationText =
             'Continue working on the previous request using the context and results so far.'
 
         return this.db.transaction(async (tx) => {
-            const [claimedTurn] = await tx
-                .update(chatMessages)
-                .set({
-                    continuedAt: new Date(),
-                    continuationMessageId,
+            const chatRows = await tx
+                .select({
+                    id: chatMessages.id,
+                    parentId: chatMessages.parentId,
+                    messageSeqNum: chatMessages.messageSeqNum,
                 })
-                .where(
-                    sql`
-                    ${chatMessages.id} = ${assistantMessageId}
-                    AND ${chatMessages.chatId} = ${chatId}
-                    AND ${chatMessages.terminalReason} = 'iteration_limit'
-                    AND ${chatMessages.continuedAt} IS NULL
-                    AND ${chatMessages.continuationMessageId} IS NULL
-                    AND ${chatMessages.id} = (
-                        SELECT leaf.id FROM chat_messages leaf
-                        WHERE leaf.chat_id = ${chatId}
-                          AND NOT EXISTS (
-                              SELECT 1 FROM chat_messages child
-                              WHERE child.chat_id = leaf.chat_id
-                                AND child.parent_id = leaf.id
-                          )
-                        ORDER BY leaf.message_seq_num DESC
-                        LIMIT 1
-                    )
-                `,
-                )
-                .returning({ id: chatMessages.id })
-
-            if (!claimedTurn) {
-                const [existingTurn] = await tx
-                    .select({ continuationMessageId: chatMessages.continuationMessageId })
-                    .from(chatMessages)
-                    .where(
-                        and(
-                            eq(chatMessages.id, assistantMessageId),
-                            eq(chatMessages.chatId, chatId),
-                            eq(chatMessages.terminalReason, 'iteration_limit'),
-                        ),
-                    )
-                    .limit(1)
-                if (!existingTurn?.continuationMessageId) return null
-
-                const chatRows = await tx
-                    .select({
-                        id: chatMessages.id,
-                        parentId: chatMessages.parentId,
-                        messageSeqNum: chatMessages.messageSeqNum,
-                    })
-                    .from(chatMessages)
-                    .where(eq(chatMessages.chatId, chatId))
-                const parentIds = new Set(
-                    chatRows.flatMap((row) => (row.parentId ? [row.parentId] : [])),
-                )
-                const activeLeaf = chatRows
-                    .filter((row) => !parentIds.has(row.id))
-                    .sort((left, right) => right.messageSeqNum - left.messageSeqNum)[0]
-                const activePathIds = new Set<string>()
-                let cursor: (typeof chatRows)[number] | undefined = activeLeaf
-                while (cursor) {
-                    activePathIds.add(cursor.id)
-                    const parentId: string | null = cursor.parentId
-                    cursor = parentId
-                        ? (chatRows.find((row) => row.id === parentId) ?? undefined)
-                        : undefined
-                }
-                if (!activePathIds.has(existingTurn.continuationMessageId)) return null
-
-                const [existingMessage] = await tx
-                    .select()
-                    .from(chatMessages)
-                    .where(
-                        and(
-                            eq(chatMessages.id, existingTurn.continuationMessageId),
-                            eq(chatMessages.chatId, chatId),
-                        ),
-                    )
-                    .limit(1)
-                return existingMessage ?? null
+                .from(chatMessages)
+                .where(eq(chatMessages.chatId, chatId))
+            const parentIds = new Set(
+                chatRows.flatMap((row) => (row.parentId ? [row.parentId] : [])),
+            )
+            const activeLeaf = chatRows
+                .filter((row) => !parentIds.has(row.id))
+                .sort((left, right) => right.messageSeqNum - left.messageSeqNum)[0]
+            const activePathIds = new Set<string>()
+            let cursor: (typeof chatRows)[number] | undefined = activeLeaf
+            while (cursor) {
+                activePathIds.add(cursor.id)
+                const parentId: string | null = cursor.parentId
+                cursor = parentId
+                    ? (chatRows.find((row) => row.id === parentId) ?? undefined)
+                    : undefined
             }
+
+            const [existingMessage] = await tx
+                .select()
+                .from(chatMessages)
+                .where(and(eq(chatMessages.id, continuationId), eq(chatMessages.chatId, chatId)))
+                .limit(1)
+            if (existingMessage) {
+                return activePathIds.has(existingMessage.id) ? existingMessage : null
+            }
+            if (activeLeaf?.id !== terminalMessageId) return null
 
             const nextSeqNum = await tx
                 .select({ maxSeq: sql<number>`coalesce(max(${chatMessages.messageSeqNum}), 0)` })
@@ -449,15 +418,23 @@ export class ChatMessageRepository {
             const [message] = await tx
                 .insert(chatMessages)
                 .values({
-                    id: continuationMessageId,
+                    id: continuationId,
                     chatId,
-                    parentId: assistantMessageId,
+                    parentId: terminalMessageId,
                     messageSeqNum: (nextSeqNum[0]?.maxSeq ?? 0) + 1,
                     message: { role: 'user', content: continuationText },
                     contentText: continuationText,
                 })
+                .onConflictDoNothing({ target: chatMessages.id })
                 .returning()
-            return message ?? null
+            if (message) return message
+
+            const [concurrentMessage] = await tx
+                .select()
+                .from(chatMessages)
+                .where(and(eq(chatMessages.id, continuationId), eq(chatMessages.chatId, chatId)))
+                .limit(1)
+            return concurrentMessage ?? null
         })
     }
 
@@ -511,7 +488,7 @@ export class ChatMessageRepository {
     async getActivePath(chatId: string): Promise<ChatMessage[]> {
         const rows = await this.db.execute<ChatMessage>(sql`
             WITH RECURSIVE walk_up AS (
-                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.error, cm.terminal_reason, cm.continued_at, cm.continuation_message_id, cm.created_at
+                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.error, cm.created_at
                 FROM (
                     SELECT *
                     FROM chat_messages
@@ -526,7 +503,7 @@ export class ChatMessageRepository {
 
                 UNION ALL
 
-                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.error, cm.terminal_reason, cm.continued_at, cm.continuation_message_id, cm.created_at
+                SELECT cm.id, cm.chat_id, cm.parent_id, cm.message_seq_num, cm.message, cm.content_text, cm.error, cm.created_at
                 FROM chat_messages cm
                 JOIN walk_up wu ON cm.id = wu.parent_id
             )
@@ -537,9 +514,6 @@ export class ChatMessageRepository {
                    message,
                    content_text AS "contentText",
                    error,
-                   terminal_reason AS "terminalReason",
-                   continued_at AS "continuedAt",
-                   continuation_message_id AS "continuationMessageId",
                    created_at AS "createdAt"
             FROM walk_up
             ORDER BY message_seq_num

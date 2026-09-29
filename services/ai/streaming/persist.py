@@ -25,6 +25,11 @@ from db.tool_approvals import ToolApproval
 from providers import LLMProviderStreamError, ProviderError
 
 logger = logging.getLogger(__name__)
+_ITERATION_LIMIT_STATUS_TTL = 24 * 60 * 60
+
+
+def iteration_limit_key(chat_id: str) -> str:
+    return f"chat:iteration-limit:{chat_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +77,7 @@ class EndOfStreamReason(str, Enum):
 class EndOfStreamEvent(TypedDict):
     reason: EndOfStreamReason
     message: NotRequired[str]
+    message_id: NotRequired[str]
 
 
 class StreamErrorEvent(TypedDict):
@@ -500,9 +506,14 @@ async def persist_and_transform(
                     last_persisted_message_id = created.id
                     parent_id = created.id
                     yield f"event: message_id\ndata: {created.id}\n\n"
-                await messages_repo.update_terminal_reason(
-                    assistant_message_id, EndOfStreamReason.ITERATION_LIMIT.value
-                )
+                terminal["message_id"] = assistant_message_id
+                event_str = sse_event("end_of_stream", terminal)
+                if redis_client is not None:
+                    await redis_client.set(
+                        iteration_limit_key(chat_id),
+                        assistant_message_id,
+                        ex=_ITERATION_LIMIT_STATUS_TTL,
+                    )
                 current_assistant_message_id = None
 
         yield event_str

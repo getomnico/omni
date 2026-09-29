@@ -236,9 +236,6 @@ export const chatMessages = pgTable('chat_messages', {
     contentText: text('content_text'),
     // Error payload for a failed assistant turn; null when the turn succeeded.
     error: jsonb('error').$type<ChatStreamError | null>(),
-    terminalReason: text('terminal_reason').$type<'iteration_limit' | null>(),
-    continuedAt: timestamp('continued_at', { withTimezone: true, mode: 'date' }),
-    continuationMessageId: text('continuation_message_id'),
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 })
 

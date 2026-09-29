@@ -86,17 +86,6 @@ class MessagesRepository:
                 message_id,
             )
 
-    async def update_terminal_reason(self, message_id: str, reason: str) -> None:
-        if reason != "iteration_limit":
-            raise ValueError(f"Unsupported chat terminal reason: {reason}")
-        pool = await self._get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE chat_messages SET terminal_reason = $1 WHERE id = $2",
-                reason,
-                message_id,
-            )
-
     async def update_error(
         self, message_id: str, error: Optional[ChatMessageError] = None
     ) -> None:
@@ -309,15 +298,13 @@ class MessagesRepository:
             ),
             walk_up AS (
                 SELECT seed.id, seed.chat_id, seed.message_seq_num, seed.message,
-                       seed.parent_id, seed.error, seed.terminal_reason,
-                       seed.continued_at, seed.created_at
+                       seed.parent_id, seed.error, seed.created_at
                 FROM seed
 
                 UNION ALL
 
                 SELECT parent.id, parent.chat_id, parent.message_seq_num, parent.message,
-                       parent.parent_id, parent.error, parent.terminal_reason,
-                       parent.continued_at, parent.created_at
+                       parent.parent_id, parent.error, parent.created_at
                 FROM chat_messages parent
                 JOIN walk_up child ON parent.id = child.parent_id
                 WHERE parent.chat_id = $1

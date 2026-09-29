@@ -88,6 +88,7 @@ from streaming.generate import (
 from streaming.persist import (
     EndOfStreamReason,
     end_of_stream,
+    iteration_limit_key,
     persist_and_transform,
 )
 from streaming.run import (
@@ -666,6 +667,14 @@ async def stream_status(
 
     active_path = await messages_repo.get_active_path(chat_id)
     active_leaf = active_path[-1] if active_path else None
+    limit_message_id = await redis_client.get(iteration_limit_key(chat_id))
+    if isinstance(limit_message_id, bytes):
+        limit_message_id = limit_message_id.decode()
+    iteration_limit_reached = (
+        active_leaf is not None
+        and isinstance(limit_message_id, str)
+        and active_leaf.id == limit_message_id
+    )
 
     return {
         "running": bool(await redis_client.exists(run_lock_key(chat_id))),
@@ -673,17 +682,9 @@ async def stream_status(
         "pending_approval": pending_approval,
         "pending_oauth": pending_oauth,
         "pending_steering": await steering_queue_has_pending(redis_client, chat_id),
-        "iteration_limit_reached": (
-            active_leaf is not None
-            and active_leaf.terminal_reason == "iteration_limit"
-            and active_leaf.continued_at is None
-        ),
+        "iteration_limit_reached": iteration_limit_reached,
         "iteration_limit_message_id": (
-            active_leaf.id
-            if active_leaf is not None
-            and active_leaf.terminal_reason == "iteration_limit"
-            and active_leaf.continued_at is None
-            else None
+            active_leaf.id if iteration_limit_reached and active_leaf is not None else None
         ),
     }
 
@@ -1129,9 +1130,19 @@ class StreamChatHandler:
         # and mentions, so completed-stream reconnects do not refetch. A queued
         # steering message is also a valid reason to start a recovery run.
         last_message_role = messages[-1].get("role") if messages else None
+        # A user-role tool-result tail can also be an interrupted run, so only
+        # suppress it when Redis identifies this exact leaf as limit-exhausted.
+        limit_message_id = (
+            await redis_client.get(iteration_limit_key(chat_id))
+            if redis_client is not None
+            else None
+        )
+        if isinstance(limit_message_id, bytes):
+            limit_message_id = limit_message_id.decode()
         last_message_is_iteration_limited = bool(
             chat_messages
-            and chat_messages[-1].terminal_reason == "iteration_limit"
+            and isinstance(limit_message_id, str)
+            and chat_messages[-1].id == limit_message_id
         )
         pending_steering = (
             redis_client is not None
@@ -1140,7 +1151,10 @@ class StreamChatHandler:
         if (
             not pending_interventions
             and not pending_steering
-            and (last_message_role != "user" or last_message_is_iteration_limited)
+            and (
+                last_message_role != "user"
+                or last_message_is_iteration_limited
+            )
         ):
             logger.info(
                 f"Last message is not from user, no processing needed. Chat ID: {chat_id}"

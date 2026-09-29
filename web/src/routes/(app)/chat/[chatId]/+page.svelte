@@ -935,9 +935,6 @@
             message,
             contentText: trimmedContent,
             error: null,
-            terminalReason: null,
-            continuedAt: null,
-            continuationMessageId: null,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
@@ -1780,9 +1777,6 @@
                         },
                         contentText: null,
                         error: null,
-                        terminalReason: null,
-                        continuedAt: null,
-                        continuationMessageId: null,
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
@@ -1895,9 +1889,6 @@
                         message: payload.message,
                         contentText: null,
                         error: null,
-                        terminalReason: null,
-                        continuedAt: null,
-                        continuationMessageId: null,
                         messageSeqNum: payload.message_seq_num,
                         createdAt: new Date(payload.created_at),
                     }
@@ -2007,9 +1998,6 @@
                             },
                             contentText: null,
                             error: null,
-                            terminalReason: null,
-                            continuedAt: null,
-                            continuationMessageId: null,
                             messageSeqNum: nextMessageSeqNum(chatMessages),
                             createdAt: new Date(),
                         }
@@ -2326,9 +2314,6 @@
                         },
                         contentText: null,
                         error: null,
-                        terminalReason: null,
-                        continuedAt: null,
-                        continuationMessageId: null,
                         messageSeqNum: nextMessageSeqNum(chatMessages),
                         createdAt: new Date(),
                     }
@@ -2504,9 +2489,6 @@
             } as unknown as ChatMessage['message'],
             contentText: userMsg,
             error: null,
-            terminalReason: null,
-            continuedAt: null,
-            continuationMessageId: null,
             messageSeqNum: nextMessageSeqNum(chatMessages),
             createdAt: new Date(),
         }
