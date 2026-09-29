@@ -1,4 +1,3 @@
-pub use omni_connector_sdk::models::{OAuthSourceBindingPolicy, OAuthSourceConfigCondition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use shared::models::{Source, SourceType, SyncRun, SyncType};
@@ -8,8 +7,9 @@ pub use shared::models::{
     ActionDefinition, ActionOrigin, ActionRequest, ActionResponse, CancelRequest,
     ConnectorManifest, McpCredentials, McpPromptDefinition, McpResourceDefinition,
     OAuthCredentialFlow, OAuthCredentialValidationRequest, OAuthCredentialValidationResponse,
-    OAuthSourceBinding, PromptRequest, ResourceRequest, SearchOperator, SkillRequest,
-    SkillResponse, SyncRequest, SyncResponse, SyncStatusResponse,
+    OAuthSourceBinding, OAuthSourceBindingPolicy, OAuthSourceConfigCondition, PromptRequest,
+    ResourceRequest, SearchOperator, SkillRequest, SkillResponse, SyncRequest, SyncResponse,
+    SyncStatusResponse,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

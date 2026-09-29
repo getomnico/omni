@@ -19,7 +19,6 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
 
 COPY Cargo.toml Cargo.lock ./
 COPY shared/ shared/
-COPY sdk/rust/ sdk/rust/
 COPY services/connector-manager/ services/connector-manager/
 
 # Build binary based on build mode

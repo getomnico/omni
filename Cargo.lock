@@ -4476,7 +4476,6 @@ dependencies = [
  "dashmap 6.2.1",
  "dotenvy",
  "futures",
- "omni-connector-sdk",
  "omni-indexer",
  "redis",
  "reqwest 0.12.28",
