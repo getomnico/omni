@@ -208,6 +208,7 @@ pub enum SourceType {
     Windshift,
     Salesforce,
     Snowflake,
+    Zendesk,
 }
 
 impl SourceType {
@@ -241,6 +242,7 @@ impl SourceType {
             SourceType::Windshift => "windshift",
             SourceType::Salesforce => "salesforce",
             SourceType::Snowflake => "snowflake",
+            SourceType::Zendesk => "zendesk",
         }
     }
 }
@@ -292,6 +294,7 @@ impl TryFrom<&str> for SourceType {
             "windshift" => Ok(SourceType::Windshift),
             "salesforce" => Ok(SourceType::Salesforce),
             "snowflake" => Ok(SourceType::Snowflake),
+            "zendesk" => Ok(SourceType::Zendesk),
             other => Err(format!("unknown source type: {other}")),
         }
     }
@@ -340,6 +343,7 @@ pub enum ServiceProvider {
     Windshift,
     Salesforce,
     Snowflake,
+    Zendesk,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq)]

@@ -353,6 +353,7 @@ fn resolve_source_alias(alias: &str) -> Option<SourceType> {
         "darwinbox" => Some(SourceType::Darwinbox),
         "salesforce" | "sf" => Some(SourceType::Salesforce),
         "snowflake" | "sfdata" => Some(SourceType::Snowflake),
+        "zendesk" => Some(SourceType::Zendesk),
         _ => None,
     }
 }

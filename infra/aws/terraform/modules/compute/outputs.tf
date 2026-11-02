@@ -93,6 +93,11 @@ output "darwinbox_connector_service_name" {
   value       = try(aws_ecs_service.darwinbox_connector[0].name, null)
 }
 
+output "zendesk_connector_service_name" {
+  description = "Zendesk connector service name"
+  value       = try(aws_ecs_service.zendesk_connector[0].name, null)
+}
+
 output "microsoft_connector_service_name" {
   description = "Microsoft connector service name"
   value       = try(aws_ecs_service.microsoft_connector[0].name, null)

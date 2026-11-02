@@ -788,6 +788,49 @@ resource "aws_ecs_task_definition" "darwinbox_connector" {
   })
 }
 
+resource "aws_ecs_task_definition" "zendesk_connector" {
+  count = contains(var.enabled_connectors, "zendesk") ? 1 : 0
+
+  family                   = "omni-${var.customer_name}-zendesk-connector"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = var.task_cpu
+  memory                   = var.task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "omni-zendesk-connector"
+    image     = "ghcr.io/${var.github_org}/omni/omni-zendesk-connector:latest"
+    essential = true
+
+    portMappings = [{
+      containerPort = 4021
+      protocol      = "tcp"
+    }]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = var.log_group_name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "zendesk-connector"
+      }
+    }
+
+    environment = concat(local.connector_base_environment, [
+      { name = "PORT", value = "4021" },
+      { name = "CONNECTOR_HOST_NAME", value = "zendesk-connector" }
+    ])
+
+    secrets = []
+  }])
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-zendesk-connector"
+  })
+}
+
 resource "aws_ecs_task_definition" "fireflies_connector" {
   count = contains(var.enabled_connectors, "fireflies") ? 1 : 0
 

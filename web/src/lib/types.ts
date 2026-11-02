@@ -35,6 +35,7 @@ export enum SourceType {
     WINDSHIFT = 'windshift',
     SALESFORCE = 'salesforce',
     SNOWFLAKE = 'snowflake',
+    ZENDESK = 'zendesk',
 }
 
 export enum ServiceProvider {
@@ -57,6 +58,7 @@ export enum ServiceProvider {
     WINDSHIFT = 'windshift',
     SALESFORCE = 'salesforce',
     SNOWFLAKE = 'snowflake',
+    ZENDESK = 'zendesk',
 }
 
 export enum AuthType {
@@ -142,6 +144,12 @@ export interface ImapSourceConfig {
 export interface PaperlessNgxSourceConfig {
     base_url: string
     sync_enabled: boolean
+}
+
+export interface ZendeskSourceConfig {
+    subdomain: string
+    sync_tickets: boolean
+    sync_help_center: boolean
 }
 
 export interface NextcloudSourceConfig {
@@ -237,6 +245,7 @@ export const DEFAULT_SYNC_INTERVAL_SECONDS: Record<SourceType, number> = {
     [SourceType.WINDSHIFT]: 1800,
     [SourceType.SALESFORCE]: 3600,
     [SourceType.SNOWFLAKE]: 21600,
+    [SourceType.ZENDESK]: 1800,
 }
 
 export const EMBEDDING_PROVIDER_TYPES = ['local', 'jina', 'openai', 'cohere', 'bedrock'] as const

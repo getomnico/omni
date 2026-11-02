@@ -232,6 +232,14 @@ services:
       context: ..
       dockerfile: connectors/snowflake/Dockerfile
 
+  zendesk-connector:
+    image: omni-zendesk-connector:dev
+    build:
+      context: ..
+      dockerfile: connectors/zendesk/Dockerfile
+    environment:
+      RUST_LOG: debug
+
   microsoft-connector:
     image: omni-microsoft-connector:dev
     build:

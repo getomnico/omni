@@ -1,0 +1,35 @@
+[package]
+name = "omni-zendesk-connector"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "omni_zendesk_connector"
+path = "src/lib.rs"
+
+[[bin]]
+name = "omni-zendesk-connector"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+omni-connector-sdk = { path = "../../sdk/rust" }
+axum = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+time = { workspace = true }
+
+[dev-dependencies]
+shared = { path = "../../shared" }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
+redis = { workspace = true, features = ["tokio-comp", "connection-manager"] }
+omni-connector-manager = { path = "../../services/connector-manager" }
+wiremock = "0.6"

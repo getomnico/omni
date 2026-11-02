@@ -10,6 +10,7 @@ import type {
     NextcloudSourceConfig,
     PaperlessNgxSourceConfig,
     WebSourceConfig,
+    ZendeskSourceConfig,
 } from '$lib/types'
 
 export type UserFilterMode = 'all' | 'whitelist' | 'blacklist'
@@ -37,6 +38,7 @@ export async function updateSourceById(
             | FilesystemSourceConfig
             | ImapSourceConfig
             | NextcloudSourceConfig
+            | ZendeskSourceConfig
             | PaperlessNgxSourceConfig
             | Record<string, unknown>
         userFilterMode?: UserFilterMode

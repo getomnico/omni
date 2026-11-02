@@ -18,6 +18,7 @@ import firefliesIcon from '$lib/images/icons/fireflies.svg'
 import hubspotIcon from '$lib/images/icons/hubspot.svg'
 import salesforceIcon from '$lib/images/icons/salesforce.svg'
 import snowflakeIcon from '$lib/images/icons/snowflake.svg'
+import zendeskIcon from '$lib/images/icons/zendesk.svg'
 import microsoftIcon from '$lib/images/icons/microsoft.svg'
 import oneDriveIcon from '$lib/images/icons/onedrive.svg'
 import outlookIcon from '$lib/images/icons/outlook.svg'
@@ -65,6 +66,7 @@ const SOURCE_TYPE_ICONS: Record<string, string> = {
     [SourceType.HUBSPOT]: hubspotIcon,
     [SourceType.SALESFORCE]: salesforceIcon,
     [SourceType.SNOWFLAKE]: snowflakeIcon,
+    [SourceType.ZENDESK]: zendeskIcon,
     [SourceType.ONE_DRIVE]: oneDriveIcon,
     [SourceType.OUTLOOK]: outlookIcon,
     [SourceType.OUTLOOK_CALENDAR]: outlookIcon,
@@ -250,6 +252,7 @@ export function getSourceDisplayName(sourceType: SourceType) {
         [SourceType.DARWINBOX]: 'Darwinbox',
         [SourceType.WINDSHIFT]: 'Windshift',
         [SourceType.SNOWFLAKE]: 'Snowflake',
+        [SourceType.ZENDESK]: 'Zendesk',
     }
 
     return sourceDisplayNames[sourceType]

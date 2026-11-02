@@ -37,6 +37,7 @@ jobs:
       hubspot-connector: ${{ steps.filter.outputs.hubspot-connector }}
       salesforce-connector: ${{ steps.filter.outputs.salesforce-connector }}
       snowflake-connector: ${{ steps.filter.outputs.snowflake-connector }}
+      zendesk-connector: ${{ steps.filter.outputs.zendesk-connector }}
       google-ads-connector: ${{ steps.filter.outputs.google-ads-connector }}
       imap-connector: ${{ steps.filter.outputs.imap-connector }}
       notion-connector: ${{ steps.filter.outputs.notion-connector }}
@@ -153,6 +154,14 @@ jobs:
               - '.github/workflows/build-connector.yml'
             darwinbox-connector:
               - 'connectors/darwinbox/**'
+              - 'sdk/rust/**'
+              - 'shared/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/build-connector.yml'
+            zendesk-connector:
+              - 'connectors/zendesk/**'
               - 'sdk/rust/**'
               - 'shared/**'
               - 'Cargo.toml'
@@ -451,6 +460,15 @@ jobs:
       connector-type: rust
     secrets: inherit
 
+  build-zendesk-connector:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.zendesk-connector == 'true'
+    uses: ./.github/workflows/build-connector.yml
+    with:
+      connector-name: zendesk
+      connector-type: rust
+    secrets: inherit
+
   build-imap-connector:
     needs: detect-changes
     if: needs.detect-changes.outputs.is-tag != 'true' && needs.detect-changes.outputs.imap-connector == 'true'
@@ -657,6 +675,8 @@ jobs:
           - connector-name: fireflies
             connector-type: rust
           - connector-name: darwinbox
+            connector-type: rust
+          - connector-name: zendesk
             connector-type: rust
           - connector-name: imap
             connector-type: rust

@@ -22,6 +22,7 @@
     import hubspotLogo from '$lib/images/icons/hubspot.svg'
     import salesforceLogo from '$lib/images/icons/salesforce.svg'
     import snowflakeLogo from '$lib/images/icons/snowflake.svg'
+    import zendeskLogo from '$lib/images/icons/zendesk.svg'
     import firefliesLogo from '$lib/images/icons/fireflies.svg'
     import microsoftLogo from '$lib/images/icons/microsoft.svg'
     import clickupLogo from '$lib/images/icons/clickup.svg'
@@ -65,6 +66,7 @@
     import LinearConnectorSetup from '$lib/components/linear-connector-setup.svelte'
     import GithubConnectorSetup from '$lib/components/github-connector-setup.svelte'
     import PaperlessConnectorSetup from '$lib/components/paperless-connector-setup.svelte'
+    import ZendeskConnectorSetup from '$lib/components/zendesk-connector-setup.svelte'
     import NextcloudConnectorSetup from '$lib/components/nextcloud-connector-setup.svelte'
     import DarwinboxConnectorSetup from '$lib/components/darwinbox-connector-setup.svelte'
     import WindshiftServerSetup from '$lib/components/windshift-server-setup.svelte'
@@ -223,6 +225,7 @@
         hubspot: hubspotLogo,
         salesforce: salesforceLogo,
         snowflake: snowflakeLogo,
+        zendesk: zendeskLogo,
         fireflies: firefliesLogo,
         microsoft: microsoftLogo,
         clickup: clickupLogo,
@@ -858,6 +861,11 @@
 
 <NextcloudConnectorSetup
     open={activeSetup === 'nextcloud'}
+    onSuccess={handleSetupSuccess}
+    onCancel={closeSetup} />
+
+<ZendeskConnectorSetup
+    open={activeSetup === 'zendesk'}
     onSuccess={handleSetupSuccess}
     onCancel={closeSetup} />
 

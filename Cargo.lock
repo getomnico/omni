@@ -4824,6 +4824,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-zendesk-connector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "dotenvy",
+ "omni-connector-manager",
+ "omni-connector-sdk",
+ "redis",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "shared",
+ "sqlx",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "wiremock",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

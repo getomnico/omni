@@ -399,6 +399,33 @@ resource "aws_ecs_service" "darwinbox_connector" {
   })
 }
 
+# Zendesk Connector Service
+resource "aws_ecs_service" "zendesk_connector" {
+  count = contains(var.enabled_connectors, "zendesk") ? 1 : 0
+
+  name            = "omni-${var.customer_name}-zendesk-connector"
+  cluster         = var.cluster_arn
+  task_definition = aws_ecs_task_definition.zendesk_connector[0].arn
+  launch_type     = "FARGATE"
+  desired_count   = var.desired_count
+
+  enable_execute_command = true
+
+  network_configuration {
+    security_groups  = [var.security_group_id]
+    subnets          = var.subnet_ids
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.zendesk_connector[0].arn
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "omni-${var.customer_name}-zendesk-connector"
+  })
+}
+
 # Fireflies Connector Service
 resource "aws_ecs_service" "fireflies_connector" {
   count = contains(var.enabled_connectors, "fireflies") ? 1 : 0

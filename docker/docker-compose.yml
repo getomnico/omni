@@ -775,6 +775,29 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  zendesk-connector:
+    image: ghcr.io/getomnico/omni/omni-zendesk-connector:${OMNI_VERSION:-latest}
+    <<: *resources-connector
+    cpus: ${OMNI_CONNECTOR_CPUS:-0.2}
+    mem_limit: ${OMNI_CONNECTOR_MEMORY:-384m}
+    container_name: omni-zendesk-connector
+    profiles:
+      - zendesk
+    expose:
+      - "${ZENDESK_CONNECTOR_PORT:-4021}"
+    environment:
+      <<: *otel-config
+      PORT: ${ZENDESK_CONNECTOR_PORT:-4021}
+      CONNECTOR_MANAGER_URL: ${CONNECTOR_MANAGER_URL}
+      CONNECTOR_HOST_NAME: zendesk-connector
+    networks:
+      - omni-network
+    depends_on:
+      connector-manager:
+        condition: service_started
+    restart: unless-stopped
+    logging: *default-logging
+
   microsoft-connector:
     image: ghcr.io/getomnico/omni/omni-microsoft-connector:${OMNI_VERSION:-latest}
     <<: *resources-connector

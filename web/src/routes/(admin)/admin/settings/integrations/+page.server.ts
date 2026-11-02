@@ -39,6 +39,8 @@ const CONNECTOR_DISPLAY_ORDER: string[] = [
     'hubspot',
     'salesforce',
     'snowflake',
+    // Customer support
+    'zendesk',
     // Meetings
     'fireflies',
     // HRIS
