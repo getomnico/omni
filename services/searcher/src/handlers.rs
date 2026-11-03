@@ -236,6 +236,11 @@ pub async fn ai_answer(
     .await
     .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    search_engine
+        .validate_request_identity(&mut request)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
     // Generate cache key for AI answer
     let cache_key = search_engine.generate_ai_cache_key(&request);
 

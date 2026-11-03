@@ -88,8 +88,8 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
             ? body.mode
             : 'hybrid',
         include_facets: typeof body.include_facets === 'boolean' ? body.include_facets : undefined,
-        // 'admin' scope: omit user_email → searcher skips permission filter → all docs
-        // 'user'/'public' scope (or cookie auth): real user identity → user's permitted docs
+        // Admin access is set by the server only after API-key scope validation.
+        admin_access: locals.apiKeyScope === 'admin',
         user_email: locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
         user_id: locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
         user_configuration: locals.apiKeyScope === 'admin' ? undefined : locals.user.configuration,

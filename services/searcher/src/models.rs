@@ -38,6 +38,8 @@ pub struct SearchRequest {
     pub include_facets: Option<bool>,
     pub user_email: Option<String>,
     pub user_id: Option<String>,
+    #[serde(default)]
+    pub admin_access: bool,
     #[serde(default, deserialize_with = "deserialize_user_configuration")]
     pub user_configuration: UserConfiguration,
     pub is_generated_query: Option<bool>,

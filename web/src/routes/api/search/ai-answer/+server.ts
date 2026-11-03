@@ -4,6 +4,10 @@ import type { RequestHandler } from './$types.js'
 import type { SearchRequest } from '$lib/types/search.js'
 
 export const POST: RequestHandler = async ({ request, fetch, locals }) => {
+    if (!locals.user) {
+        throw error(401, 'Unauthorized')
+    }
+
     // Check if AI answers are enabled
     if (env.AI_ANSWER_ENABLED === 'false') {
         throw error(503, 'AI answers are currently disabled')
@@ -35,9 +39,9 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
                 limit: searchRequest.limit || 20,
                 offset: searchRequest.offset || 0,
                 mode: 'hybrid', // Always use hybrid for AI answers
-                user_email: locals.user?.email,
-                user_id: locals.user?.id,
-                user_configuration: locals.user?.configuration,
+                user_email: locals.user.email,
+                user_id: locals.user.id,
+                user_configuration: locals.user.configuration,
             }),
         })
 

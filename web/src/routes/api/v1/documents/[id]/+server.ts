@@ -21,11 +21,10 @@ export const GET: RequestHandler = async ({ params, url, fetch, locals }) => {
 
     const queryData: Record<string, unknown> = {
         query: 'content',
+        admin_access: locals.apiKeyScope === 'admin',
         document_id: documentId,
-        user_email:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
-        user_id:
-            locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
+        user_email: locals.apiKeyScope === 'admin' ? undefined : locals.user.email,
+        user_id: locals.apiKeyScope === 'admin' ? undefined : locals.user.id,
         limit: 1,
     }
 
