@@ -28,6 +28,7 @@ async def test_full_sync_creates_all_documents(
     assert (
         row["status"] == "completed"
     ), f"Sync ended with status={row['status']}, error={row.get('error_message')}"
+    assert mock_github_api.api_versions == {"2022-11-28"}
 
     n_events = await count_events(harness.db_pool, source_id, "document_created")
     assert n_events >= 4, f"Expected >=4 document_created events, got {n_events}"

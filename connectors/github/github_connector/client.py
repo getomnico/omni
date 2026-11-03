@@ -1,9 +1,10 @@
 """GitHub API client wrapper using githubkit."""
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
+import httpx
 from githubkit import GitHub, TokenAuthStrategy
 from githubkit.exception import RequestError, RequestFailed
 from githubkit.versions.latest.models import (
@@ -17,7 +18,7 @@ from githubkit.versions.latest.models import (
     Repository,
 )
 
-from .config import DISCUSSIONS_QUERY, ITEMS_PER_PAGE, MAX_COMMENT_COUNT
+from .config import DISCUSSIONS_QUERY, GHES_API_VERSION, ITEMS_PER_PAGE, MAX_COMMENT_COUNT
 
 GitHubRepo = Repository | MinimalRepository | FullRepository
 
@@ -36,14 +37,28 @@ class AuthenticationError(GitHubError):
     pass
 
 
+def _api_version_hook(version: str) -> Callable[[httpx.Request], Awaitable[None]]:
+    async def set_api_version(request: httpx.Request) -> None:
+        request.headers["X-GitHub-Api-Version"] = version
+
+    return set_api_version
+
+
 class GitHubClient:
     """Thin wrapper around githubkit exposing the operations we need."""
 
-    def __init__(self, token: str, base_url: str | None = None):
-        kwargs: dict[str, Any] = {"auth": TokenAuthStrategy(token)}
+    def __init__(
+        self, token: str, base_url: str | None = None, api_version: str | None = None
+    ):
         if base_url:
-            kwargs["base_url"] = base_url
-        self._github = GitHub(**kwargs)
+            # githubkit always sends the newest API version, which GHES rejects unless it ships it.
+            self._github = GitHub(
+                TokenAuthStrategy(token),
+                base_url=base_url,
+                async_event_hooks={"request": [_api_version_hook(api_version or GHES_API_VERSION)]},
+            )
+        else:
+            self._github = GitHub(TokenAuthStrategy(token))
 
     async def validate_token(self) -> str:
         """Validate the token by fetching the authenticated user. Returns username."""

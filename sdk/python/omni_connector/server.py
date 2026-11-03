@@ -358,9 +358,11 @@ def create_app(
 
         # Bootstrap MCP subprocess with credentials (populates tool cache for
         # manifest). Include the source id as an internal, non-secret hint so
-        # stdio connectors can isolate CLI state per source.
+        # stdio connectors can isolate CLI state per source. The source config is
+        # likewise a non-secret hint so connectors can target the source's host.
         mcp_credentials = dict(credentials)
         mcp_credentials["_omni_source_id"] = source_id
+        mcp_credentials["_omni_source_config"] = source_config
         await connector.bootstrap_mcp(mcp_credentials)
 
         ctx = SyncContext(

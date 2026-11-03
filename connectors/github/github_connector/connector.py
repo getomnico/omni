@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from omni_connector import (
@@ -10,6 +11,7 @@ from omni_connector import (
     OAuthManifestConfig,
     OAuthScopeSet,
     SearchOperator,
+    Source,
     StdioMcpServer,
     SyncContext,
 )
@@ -80,6 +82,19 @@ class GitHubConnector(Connector):
             args=["stdio", "--toolsets", "all"],
         )
 
+    def mcp_server_for_source(self, source: Source | None) -> StdioMcpServer:
+        if source is None:
+            return self.mcp_server
+        host = GitHubSourceConfig(**source.config).host
+        if host is None:
+            return self.mcp_server
+        return replace(self.mcp_server, env={"GITHUB_HOST": host})
+
+    async def mcp_action_names_for_source(self, source: Source | None) -> set[str]:
+        # The catalog is bootstrapped once at sync time with the source's host, and a fresh
+        # per-source adapter has no cache, so reuse the default adapter's names.
+        return await super().mcp_action_names_for_source(None)
+
     def oauth_config(self) -> OAuthManifestConfig | None:
         return OAuthManifestConfig(
             provider="github",
@@ -100,7 +115,13 @@ class GitHubConnector(Connector):
     def prepare_mcp_env(self, credentials: dict[str, Any]) -> dict[str, str]:
         raw_creds = credentials.get("credentials", credentials)
         creds = GitHubCredentials(**raw_creds)
-        return {"GITHUB_PERSONAL_ACCESS_TOKEN": creds.effective_token}
+        env = {"GITHUB_PERSONAL_ACCESS_TOKEN": creds.effective_token}
+        source_config = credentials.get("_omni_source_config")
+        if source_config:
+            host = GitHubSourceConfig(**source_config).host
+            if host is not None:
+                env["GITHUB_HOST"] = host
+        return env
 
     async def sync(
         self,
@@ -116,7 +137,11 @@ class GitHubConnector(Connector):
             return
 
         config = GitHubSourceConfig(**source_config)
-        client = GitHubClient(token=creds.effective_token, base_url=config.api_url)
+        client = GitHubClient(
+            token=creds.effective_token,
+            base_url=config.api_url,
+            api_version=config.api_version,
+        )
 
         try:
             username = await client.validate_token()

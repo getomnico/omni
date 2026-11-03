@@ -4,6 +4,8 @@ MAX_COMMENT_COUNT = 100
 MAX_CONTENT_LENGTH = 100_000
 ITEMS_PER_PAGE = 100
 CHECKPOINT_INTERVAL = 50
+# The only REST API version every supported GHES release accepts.
+GHES_API_VERSION = "2022-11-28"
 
 DISCUSSIONS_QUERY = """
 query($owner: String!, $name: String!, $cursor: String) {

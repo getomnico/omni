@@ -22,6 +22,17 @@
     let readOnly = $state(false)
     let isSubmitting = $state(false)
 
+    let tokenSettingsUrl = $derived.by(() => {
+        try {
+            const url = new URL(apiUrl.trim())
+            return url.hostname === 'api.github.com'
+                ? 'https://github.com/settings/tokens'
+                : `${url.origin}/settings/tokens`
+        } catch {
+            return 'https://github.com/settings/tokens'
+        }
+    })
+
     async function handleSubmit() {
         isSubmitting = true
         try {
@@ -29,11 +40,16 @@
                 throw new Error('Personal access token is required')
             }
 
+            const trimmedApiUrl = apiUrl.trim()
+            if (trimmedApiUrl && !/^https?:\/\//i.test(trimmedApiUrl)) {
+                throw new Error('API URL must start with https://')
+            }
+
             const config: GitHubSourceConfig = {
                 include_discussions: includeDiscussions,
                 include_forks: includeForks,
                 read_only: readOnly,
-                ...(apiUrl.trim() ? { api_url: apiUrl.trim() } : {}),
+                ...(trimmedApiUrl ? { api_url: trimmedApiUrl } : {}),
             }
 
             const sourceResponse = await fetch('/api/sources', {
@@ -119,10 +135,8 @@
                     required />
                 <p class="text-muted-foreground text-sm">
                     Create a token at
-                    <a
-                        href="https://github.com/settings/tokens"
-                        target="_blank"
-                        class="text-blue-600 hover:underline"
+                    <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- external URL -->
+                    <a href={tokenSettingsUrl} target="_blank" class="text-blue-600 hover:underline"
                         >GitHub Settings &rarr; Developer settings &rarr; Personal access tokens</a
                     >. Requires <code>repo</code> and <code>read:org</code> scopes.
                 </p>
@@ -135,7 +149,8 @@
                     bind:value={apiUrl}
                     placeholder="https://api.github.com" />
                 <p class="text-muted-foreground text-sm">
-                    Only needed for GitHub Enterprise. Leave blank for github.com.
+                    Leave blank for github.com. For GitHub Enterprise Server use
+                    https://&lt;host&gt;/api/v3.
                 </p>
             </div>
 

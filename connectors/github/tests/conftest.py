@@ -20,7 +20,7 @@ import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 from omni_connector.testing import OmniTestHarness, SeedHelper
 
@@ -342,6 +342,7 @@ class MockGitHubAPI:
         self.collaborators: dict[str, list[dict[str, Any]]] = {}
         self.user_emails: dict[str, str | None] = {}
         self.should_fail_auth: bool = False
+        self.api_versions: set[str | None] = set()
         self.authenticated_user: str = "testbot"
 
     def reset(self) -> None:
@@ -355,6 +356,7 @@ class MockGitHubAPI:
         self.collaborators.clear()
         self.user_emails.clear()
         self.should_fail_auth = False
+        self.api_versions.clear()
 
     def add_repo(
         self,
@@ -459,6 +461,7 @@ class MockGitHubAPI:
         mock = self
 
         async def get_user(request: Request) -> JSONResponse:
+            mock.api_versions.add(request.headers.get("x-github-api-version"))
             if mock.should_fail_auth:
                 return JSONResponse({"message": "Bad credentials"}, status_code=401)
             return JSONResponse(_user_payload(mock.authenticated_user))
@@ -586,7 +589,7 @@ class MockGitHubAPI:
                 }
             )
 
-        routes = [
+        rest_routes = [
             Route("/user", get_user),
             Route("/users/{username}/repos", list_repos_for_user),
             Route("/users/{username}", get_user_by_username),
@@ -602,7 +605,10 @@ class MockGitHubAPI:
             Route(
                 "/repos/{owner}/{repo}/pulls/{number}/comments", list_pr_review_comments
             ),
-            Route("/graphql", graphql, methods=["POST"]),
+        ]
+        routes = [
+            Mount("/api/v3", routes=rest_routes),
+            Route("/api/graphql", graphql, methods=["POST"]),
         ]
         return Starlette(routes=routes)
 
@@ -666,6 +672,8 @@ def connector_server(connector_port: int) -> str:
     import os
 
     os.environ.setdefault("CONNECTOR_MANAGER_URL", "http://localhost:0")
+    os.environ.setdefault("CONNECTOR_HOST_NAME", "host.docker.internal")
+    os.environ.setdefault("PORT", str(connector_port))
 
     from github_connector import GitHubConnector
     from omni_connector.server import create_app
