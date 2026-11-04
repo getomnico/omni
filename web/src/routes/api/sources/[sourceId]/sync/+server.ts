@@ -29,7 +29,11 @@ function getSyncModeLabel(mode: SyncMode) {
     return mode === 'full' ? 'Full sync' : 'Incremental sync'
 }
 
-export const POST: RequestHandler = async ({ params, request, fetch }) => {
+export const POST: RequestHandler = async ({ params, request, fetch, locals }) => {
+    if (!locals.user) {
+        throw error(401, 'Unauthorized')
+    }
+
     const { sourceId } = params
 
     if (!sourceId) {
@@ -40,6 +44,12 @@ export const POST: RequestHandler = async ({ params, request, fetch }) => {
         const source = await sourcesRepository.getById(sourceId)
         if (!source || source.isDeleted) {
             throw error(404, 'Source not found')
+        }
+        if (
+            locals.user.role !== 'admin' &&
+            (source.scope !== 'user' || source.createdBy !== locals.user.id)
+        ) {
+            throw error(403, 'Admin access required')
         }
         if (!supportsDataSync(source.integrationType)) {
             throw error(400, 'Source does not support data sync')

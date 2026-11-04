@@ -111,6 +111,52 @@ impl SearchEngine {
         doc
     }
 
+    pub async fn validate_request_identity(&self, request: &mut SearchRequest) -> Result<()> {
+        request.user_email = request
+            .user_email
+            .take()
+            .filter(|value| !value.trim().is_empty());
+        request.user_id = request
+            .user_id
+            .take()
+            .filter(|value| !value.trim().is_empty());
+
+        if request.admin_access {
+            return Ok(());
+        }
+
+        let user_repo = UserRepository::new(self.db_pool.pool());
+        match (&request.user_id, &request.user_email) {
+            (Some(user_id), Some(email)) => {
+                let user = user_repo
+                    .find_by_id(user_id.clone())
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Search user was not found"))?;
+                if !user.email.eq_ignore_ascii_case(email) {
+                    return Err(anyhow::anyhow!("Search user identity does not match"));
+                }
+            }
+            (Some(user_id), None) => {
+                let user = user_repo
+                    .find_by_id(user_id.clone())
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Search user was not found"))?;
+                request.user_email = Some(user.email);
+            }
+            (None, Some(email)) => {
+                let user = user_repo
+                    .find_by_email(email)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("Search user was not found"))?;
+                request.user_id = Some(user.id);
+                request.user_email = Some(user.email);
+            }
+            (None, None) => return Err(anyhow::anyhow!("Search user identity is required")),
+        }
+
+        Ok(())
+    }
+
     pub async fn search(&self, request: SearchRequest) -> Result<SearchResponse> {
         let start_time = Instant::now();
 
@@ -122,42 +168,12 @@ impl SearchEngine {
 
         let mut request = request;
         request.document_id = request.document_id.filter(|s| !s.trim().is_empty());
-        request.user_email = request.user_email.filter(|s| !s.trim().is_empty());
-        request.user_id = request.user_id.filter(|s| !s.trim().is_empty());
-
-        // In case the request contains only user_id, populate user_email for permission filtering
-        let user_repo = UserRepository::new(self.db_pool.pool());
-        let mut request = match (&request.user_id, &request.user_email) {
-            (Some(user_id), None) => {
-                info!(
-                    "Search request has user_id but no email, fetching email from DB for user ID: {}",
-                    user_id
-                );
-                let res = user_repo.find_by_id(user_id.clone()).await;
-                info!("Fetched user: {:?}", res);
-                if let Ok(Some(user)) = res {
-                    info!(
-                        "Fetched user email: {} for user ID: {}",
-                        user.email, user_id
-                    );
-                    let mut new_request = request.clone();
-                    new_request.user_email = Some(user.email);
-                    new_request
-                } else {
-                    info!("Failed to fetch user email for user ID: {}", user_id);
-                    request
-                }
-            }
-            _ => request,
-        };
+        self.validate_request_identity(&mut request).await?;
 
         // Resolve user's group memberships for permission filtering
         let user_groups = if let Some(email) = request.user_email() {
             let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
+            group_repo.find_groups_for_user(email.as_str()).await?
         } else {
             vec![]
         };
@@ -841,10 +857,7 @@ impl SearchEngine {
     ) -> Result<Vec<SearchResult>> {
         let user_groups = if let Some(email) = request.user_email() {
             let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
+            group_repo.find_groups_for_user(email.as_str()).await?
         } else {
             vec![]
         };
@@ -1316,13 +1329,12 @@ impl SearchEngine {
     /// Generate RAG context from search request using chunk-based approach with expanded context
     pub async fn get_rag_context(&self, request: &SearchRequest) -> Result<Vec<SearchResult>> {
         info!("Generating RAG context for query: '{}'", request.query);
+        let mut request = request.clone();
+        self.validate_request_identity(&mut request).await?;
 
         let user_groups = if let Some(email) = request.user_email() {
             let group_repo = GroupRepository::new(self.db_pool.pool());
-            group_repo
-                .find_groups_for_user(email.as_str())
-                .await
-                .unwrap_or_default()
+            group_repo.find_groups_for_user(email.as_str()).await?
         } else {
             vec![]
         };
@@ -1336,7 +1348,7 @@ impl SearchEngine {
         let (fts_results, _fts_total_count) = self
             .fulltext_search(
                 &search_repo,
-                request,
+                &request,
                 &source_ids,
                 &user_groups,
                 tantivy_query.as_deref(),
@@ -1347,7 +1359,7 @@ impl SearchEngine {
 
         // Get semantic search results enhanced with expanded context for RAG
         let semantic_results = self
-            .get_enhanced_semantic_results_for_rag(request, &user_groups)
+            .get_enhanced_semantic_results_for_rag(&request, &user_groups)
             .await?;
 
         // Combine semantic and fulltext context

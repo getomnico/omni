@@ -1529,6 +1529,46 @@ async fn test_recency_boosting() -> Result<()> {
 }
 
 #[tokio::test]
+async fn test_search_requires_resolvable_identity_unless_admin_is_explicit() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+
+    for body in [
+        json!({"query": "restricted"}),
+        json!({"query": "restricted", "user_email": "   "}),
+        json!({"query": "restricted", "user_id": "missing-user-id"}),
+        json!({"query": "restricted", "user_email": "missing@example.com"}),
+    ] {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/search")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))?;
+        let response = fixture.app.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/search")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({"query": "restricted", "admin_access": true}).to_string(),
+        ))?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/search/ai-answer")
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"query": "restricted"}).to_string()))?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_invalid_search_mode() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;
 

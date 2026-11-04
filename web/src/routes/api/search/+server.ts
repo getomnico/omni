@@ -4,6 +4,10 @@ import type { RequestHandler } from './$types.js'
 import type { SearchRequest } from '$lib/types/search.js'
 
 export const POST: RequestHandler = async ({ request, fetch, locals }) => {
+    if (!locals.user) {
+        return json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
     const logger = locals.logger.child('search-api')
     let searchRequest: SearchRequest
 
@@ -26,9 +30,9 @@ export const POST: RequestHandler = async ({ request, fetch, locals }) => {
         limit: searchRequest.limit || 20,
         offset: searchRequest.offset || 0,
         mode: searchRequest.mode || 'fulltext',
-        user_email: locals.user?.email,
-        user_id: locals.user?.id,
-        user_configuration: locals.user?.configuration,
+        user_email: locals.user.email,
+        user_id: locals.user.id,
+        user_configuration: locals.user.configuration,
     }
 
     logger.debug('Sending search request to searcher service', {
