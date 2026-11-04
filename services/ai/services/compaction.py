@@ -9,7 +9,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from anthropic.types import ContentBlockParam, MessageParam, ToolParam
 
@@ -575,15 +575,15 @@ Summary:"""
         return result.summary
 
     def make_summary_message(self, summary: str) -> MessageParam:
-        return MessageParam(
-            role="user",
-            content=(
+        return {
+            "role": "user",
+            "content": (
                 "[CONVERSATION SUMMARY - The following summarizes the earlier "
                 "part of our conversation]\n\n"
                 f"{summary}\n\n"
                 "[END SUMMARY - Recent messages follow]"
             ),
-        )
+        }
 
     async def prepare_chat_conversation(
         self,
@@ -620,7 +620,7 @@ Summary:"""
             if previous_anchor_index is not None:
                 has_prior_summary = True
                 provider_messages = [
-                    MessageParam(**latest_compaction.summary_message)
+                    cast(MessageParam, dict(latest_compaction.summary_message))
                 ] + messages[previous_anchor_index + 1 :]
 
         if not self.needs_compaction(
@@ -723,7 +723,7 @@ Summary:"""
         if latest_compaction is not None and previous_anchor_index is not None:
             has_prior_summary = True
             provider_messages = [
-                MessageParam(**latest_compaction.summary_message)
+                cast(MessageParam, dict(latest_compaction.summary_message))
             ] + coalesce_messages(log_rows[previous_anchor_index + 1 :])
         else:
             provider_messages = coalesce_messages(log_rows)

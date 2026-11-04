@@ -910,11 +910,11 @@ class StreamChatHandler:
             )
 
             messages: list[MessageParam] = [
-                MessageParam(**msg.message) for msg in chat_messages
+                cast(MessageParam, dict(msg.message)) for msg in chat_messages
             ]
             needs_start = not messages or messages[-1].get("role") != "user"
             if auto_start and needs_start:
-                messages.append(MessageParam(role="user", content="Go."))
+                messages.append({"role": "user", "content": "Go."})
 
         else:
             # ---- Regular chat setup ----
@@ -938,7 +938,7 @@ class StreamChatHandler:
                     status_code=404, detail="No messages found for chat"
                 )
 
-            messages = [MessageParam(**msg.message) for msg in chat_messages]
+            messages = [cast(MessageParam, dict(msg.message)) for msg in chat_messages]
 
             loaded_toolsets = set()
 

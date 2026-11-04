@@ -6,6 +6,8 @@ for capability search lives in services/searcher/tests/integration_tests.rs.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlockParam
 
@@ -44,9 +46,9 @@ async def test_chat_resume_restores_loaded_tool_from_successful_tool_call():
     )
 
     messages = [
-        MessageParam(
-            role="assistant",
-            content=[
+        cast(MessageParam, {
+            "role": "assistant",
+            "content": [
                 ToolUseBlockParam(
                     type="tool_use",
                     id="toolu_1",
@@ -54,10 +56,10 @@ async def test_chat_resume_restores_loaded_tool_from_successful_tool_call():
                     input={"tool_name": "gmail__send_email"},
                 )
             ],
-        ),
-        MessageParam(
-            role="user",
-            content=[
+        }),
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 ToolResultBlockParam(
                     type="tool_result",
                     tool_use_id="toolu_1",
@@ -70,7 +72,7 @@ async def test_chat_resume_restores_loaded_tool_from_successful_tool_call():
                     is_error=False,
                 )
             ],
-        ),
+        }),
     ]
 
     loaded = _loaded_tools_from_history(messages, connector_handler)
@@ -88,9 +90,9 @@ async def test_chat_resume_restores_unique_exact_tool_search_match():
     )
 
     messages = [
-        MessageParam(
-            role="assistant",
-            content=[
+        cast(MessageParam, {
+            "role": "assistant",
+            "content": [
                 ToolUseBlockParam(
                     type="tool_use",
                     id="toolu_1",
@@ -98,10 +100,10 @@ async def test_chat_resume_restores_unique_exact_tool_search_match():
                     input={"query": "add_comment"},
                 )
             ],
-        ),
-        MessageParam(
-            role="user",
-            content=[
+        }),
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 ToolResultBlockParam(
                     type="tool_result",
                     tool_use_id="toolu_1",
@@ -117,7 +119,7 @@ async def test_chat_resume_restores_unique_exact_tool_search_match():
                     is_error=False,
                 )
             ],
-        ),
+        }),
     ]
 
     loaded = _loaded_tools_from_history(messages, connector_handler)
@@ -134,9 +136,9 @@ async def test_chat_resume_restores_tools_from_exact_source_search():
         ]
     )
     messages = [
-        MessageParam(
-            role="assistant",
-            content=[
+        cast(MessageParam, {
+            "role": "assistant",
+            "content": [
                 ToolUseBlockParam(
                     type="tool_use",
                     id="toolu_1",
@@ -144,10 +146,10 @@ async def test_chat_resume_restores_tools_from_exact_source_search():
                     input={"query": "windshift"},
                 )
             ],
-        ),
-        MessageParam(
-            role="user",
-            content=[
+        }),
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 ToolResultBlockParam(
                     type="tool_result",
                     tool_use_id="toolu_1",
@@ -155,7 +157,7 @@ async def test_chat_resume_restores_tools_from_exact_source_search():
                     is_error=False,
                 )
             ],
-        ),
+        }),
     ]
 
     loaded = _loaded_tools_from_history(messages, connector_handler)
@@ -174,9 +176,9 @@ async def test_chat_resume_restores_loaded_tool_set_from_tool_call():
     )
 
     messages = [
-        MessageParam(
-            role="assistant",
-            content=[
+        cast(MessageParam, {
+            "role": "assistant",
+            "content": [
                 ToolUseBlockParam(
                     type="tool_use",
                     id="toolu_1",
@@ -184,10 +186,10 @@ async def test_chat_resume_restores_loaded_tool_set_from_tool_call():
                     input={"source_type": "gmail"},
                 )
             ],
-        ),
-        MessageParam(
-            role="user",
-            content=[
+        }),
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 ToolResultBlockParam(
                     type="tool_result",
                     tool_use_id="toolu_1",
@@ -195,7 +197,7 @@ async def test_chat_resume_restores_loaded_tool_set_from_tool_call():
                     is_error=False,
                 )
             ],
-        ),
+        }),
     ]
 
     loaded = _loaded_tools_from_history(messages, connector_handler)

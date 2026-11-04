@@ -395,7 +395,7 @@ def _synthetic_interrupted_results(
                 is_error=True,
             )
         )
-    return MessageParam(role="user", content=results)
+    return {"role": "user", "content": results}
 
 
 def _is_tool_result_only_user_message(message: AgentRunLogMessage) -> bool:
@@ -415,7 +415,7 @@ def _conversation_from_log_messages(
     def flush_tool_results() -> None:
         nonlocal pending_tool_results
         if pending_tool_results:
-            conversation.append(MessageParam(role="user", content=pending_tool_results))
+            conversation.append({"role": "user", "content": pending_tool_results})
             pending_tool_results = []
 
     for message in messages:
@@ -438,7 +438,7 @@ async def _load_or_initialize_conversation(
     logs = await run_repo.list_run_logs(run.id)
     messages = [log.message for log in logs]
     if not messages:
-        initial = MessageParam(role="user", content="Execute your scheduled task now.")
+        initial: MessageParam = {"role": "user", "content": "Execute your scheduled task now."}
         await run_repo.append_run_log_messages(run.id, claim_token, [initial])
         messages.append(initial)
         return messages
@@ -800,7 +800,7 @@ async def _run_agent_loop(
                     )
                 )
 
-        assistant_message = MessageParam(role="assistant", content=content_blocks)
+        assistant_message: MessageParam = {"role": "assistant", "content": content_blocks}
         await _append_log_message(
             run, run_repo, claim_token, log_messages, assistant_message
         )
@@ -808,7 +808,7 @@ async def _run_agent_loop(
 
         # If there were parse errors, feed them back to the LLM and continue the loop
         if parse_errors:
-            error_message = MessageParam(role="user", content=parse_errors)
+            error_message: MessageParam = {"role": "user", "content": parse_errors}
             await _append_log_message(
                 run, run_repo, claim_token, log_messages, error_message
             )
@@ -834,7 +834,7 @@ async def _run_agent_loop(
                 content=result.content,
                 is_error=result.is_error,
             )
-            tool_result_message = MessageParam(role="user", content=[tool_result])
+            tool_result_message: MessageParam = {"role": "user", "content": [tool_result]}
             await _append_log_message(
                 run, run_repo, claim_token, log_messages, tool_result_message
             )
@@ -843,13 +843,13 @@ async def _run_agent_loop(
 
     # Generate summary using one final LLM turn
     logger.info("Agent %s run %s: generating summary", agent.id, run.id)
-    summary_prompt_message = MessageParam(
-        role="user",
-        content=(
+    summary_prompt_message: MessageParam = {
+        "role": "user",
+        "content": (
             "Provide a brief summary (2-3 sentences) of what you just did and the outcomes. "
             "Be factual and concise."
         ),
-    )
+    }
     await _append_log_message(
         run, run_repo, claim_token, log_messages, summary_prompt_message
     )
@@ -895,15 +895,15 @@ async def _run_agent_loop(
         and summary
     ):
         try:
-            turn = [
-                MessageParam(
-                    role="user",
-                    content=f"Agent task: {agent.instructions}",
-                ),
-                MessageParam(
-                    role="assistant",
-                    content=f"Agent run summary: {summary}",
-                ),
+            turn: list[MessageParam] = [
+                {
+                    "role": "user",
+                    "content": f"Agent task: {agent.instructions}",
+                },
+                {
+                    "role": "assistant",
+                    "content": f"Agent run summary: {summary}",
+                },
             ]
             asyncio.create_task(
                 memory_provider.add(messages=turn, key=memory_namespace)

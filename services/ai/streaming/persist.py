@@ -247,7 +247,7 @@ def partial_assistant_message(
 
     if not persisted_blocks:
         return None
-    return MessageParam(role="assistant", content=persisted_blocks)
+    return {"role": "assistant", "content": persisted_blocks}
 
 
 def parse_tool_call_inputs(

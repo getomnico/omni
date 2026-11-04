@@ -306,9 +306,9 @@ def coalesce_adjacent_tool_result_messages(
                 and all(block["type"] == "tool_result" for block in previous_blocks)
             )
             if previous_is_tool_result_message:
-                coalesced[-1] = MessageParam(
-                    role="user", content=[*previous_blocks, *blocks]
-                )
+                coalesced[-1] = {
+                    "role": "user", "content": [*previous_blocks, *blocks]
+                }
                 continue
         coalesced.append(message)
     return coalesced
@@ -381,7 +381,7 @@ def strip_synthetic_interrupted_results(
         elif message.get("role") == "user":
             # A user message emptied by stripping is dropped entirely.
             if kept:
-                stripped.append(MessageParam(role="user", content=kept))
+                stripped.append({"role": "user", "content": kept})
         else:
             stripped.append(message)
     return stripped
@@ -439,7 +439,7 @@ def repair_interrupted_tool_calls(
                 repair_count += len(missing_results)
                 continue
 
-        repaired.append(MessageParam(role="user", content=missing_results))
+        repaired.append({"role": "user", "content": missing_results})
         repair_count += len(missing_results)
 
     return repaired, repair_count
@@ -474,7 +474,7 @@ def _copy_provider_extras(src: object, dst: dict, keys: tuple[str, ...]) -> None
 
 async def active_path_tool_call_ids(messages_repo, chat_id: str) -> set[str]:
     active_path = await messages_repo.get_active_path(chat_id)
-    messages = [MessageParam(**message.message) for message in active_path]
+    messages = [cast(MessageParam, dict(message.message)) for message in active_path]
     return {tool_use["id"] for tool_use in unanswered_tool_calls(messages)}
 
 
@@ -862,13 +862,13 @@ async def stream_generator(
                 conversation_messages, blocked_ids
             )
             conversation_messages.append(
-                MessageParam(role="user", content=superseded_results)
+                {"role": "user", "content": superseded_results}
             )
             for result in superseded_results:
                 yield sse_event("message", result)
             yield sse_event(
                 "save_message",
-                MessageParam(role="user", content=superseded_results),
+                {"role": "user", "content": superseded_results},
             )
             for approval in [*blocked_approvals, blocked_oauth] if blocked_oauth else blocked_approvals:
                 if approval is not None:
@@ -1249,9 +1249,9 @@ async def stream_generator(
                             model_iteration,
                         )
                         conversation_messages.append(
-                            MessageParam(
-                                role="user", content=_EMPTY_RESPONSE_RECOVERY_PROMPT
-                            )
+                            {
+                                "role": "user", "content": _EMPTY_RESPONSE_RECOVERY_PROMPT
+                            }
                         )
                         continue
 
@@ -1267,9 +1267,9 @@ async def stream_generator(
                     error["tool_use_id"]: error for error in parse_errors
                 }
 
-                assistant_message = MessageParam(
-                    role="assistant", content=content_blocks
-                )
+                assistant_message = {
+                    "role": "assistant", "content": content_blocks
+                }
                 conversation_messages.append(assistant_message)
                 yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                 content_blocks_finalized = True
@@ -1480,7 +1480,7 @@ async def stream_generator(
                     conversation_messages,
                     {result["tool_use_id"] for result in tool_results},
                 )
-                tool_result_message = MessageParam(role="user", content=tool_results)
+                tool_result_message: MessageParam = {"role": "user", "content": tool_results}
                 conversation_messages.append(tool_result_message)
                 for tool_result in tool_results:
                     yield sse_event("message", tool_result)
@@ -1518,9 +1518,9 @@ async def stream_generator(
                     and tool_call["id"] not in answered_ids
                 ]
                 if superseded_results:
-                    superseded_message = MessageParam(
-                        role="user", content=superseded_results
-                    )
+                    superseded_message: MessageParam = {
+                        "role": "user", "content": superseded_results
+                    }
                     conversation_messages.append(superseded_message)
                     for result in superseded_results:
                         yield sse_event("message", result)
@@ -1588,9 +1588,9 @@ async def stream_generator(
                         if isinstance(b, dict) and b.get("type") == "text"
                     )
                     if assistant_content:
-                        turn = [
-                            MessageParam(role="user", content=last_user_content),
-                            MessageParam(role="assistant", content=assistant_content),
+                        turn: list[MessageParam] = [
+                            {"role": "user", "content": last_user_content},
+                            {"role": "assistant", "content": assistant_content},
                         ]
                         asyncio.create_task(
                             memory_provider.add(messages=turn, key=memory_write_key)

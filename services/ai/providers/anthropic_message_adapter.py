@@ -71,10 +71,12 @@ def build_messages_for_anthropic_api(
 ) -> list[MessageParam]:
     """Convert Omni's internal message blocks to Anthropic's request shape."""
     return [
-        MessageParam(
-            role=msg["role"],
-            content=_build_content_for_api(cast(AnthropicMessageContent, msg["content"])),
-        )
+        {
+            "role": msg["role"],
+            "content": _build_content_for_api(
+                cast(AnthropicMessageContent, msg["content"])
+            ),
+        }
         for msg in messages
     ]
 

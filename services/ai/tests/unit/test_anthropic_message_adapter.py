@@ -1,4 +1,16 @@
-from providers.anthropic_message_adapter import extract_text_document
+from providers.anthropic_message_adapter import (
+    build_messages_for_anthropic_api,
+    extract_text_document,
+)
+
+
+def test_build_messages_for_anthropic_api_returns_message_dicts():
+    messages = build_messages_for_anthropic_api(
+        [{"role": "user", "content": "hello"}]
+    )
+
+    assert messages == [{"role": "user", "content": "hello"}]
+    assert isinstance(messages[0], dict)
 
 
 def test_extract_text_document_delimits_and_escapes_title():
