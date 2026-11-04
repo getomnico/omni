@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -305,15 +305,15 @@ async def _create_running_agent_run(
 
 
 def _long_message(role: str, label: str) -> MessageParam:
-    return MessageParam(role=role, content=f"{label} " + (f"{label}-payload " * 45))
+    return cast(MessageParam, {"role": role, "content": f"{label} " + (f"{label}-payload " * 45)})
 
 
 def _rows_to_messages(rows: Sequence[Any]) -> list[MessageParam]:
-    return [MessageParam(**row.message) for row in rows]
+    return [cast(MessageParam, dict(row.message)) for row in rows]
 
 
 def _coalesce_log_rows(rows: list[AgentRunLog]) -> list[MessageParam]:
-    return [MessageParam(**row.message) for row in rows]
+    return [cast(MessageParam, dict(row.message)) for row in rows]
 
 
 async def _append_linear_chat_messages(
@@ -570,17 +570,17 @@ async def test_chat_compaction_does_not_split_tool_use_tool_result_pair(db_pool)
         _long_message("user", "tool-user-02"),
         _long_message("assistant", "tool-assistant-02"),
         _long_message("user", "tool-user-03"),
-        MessageParam(
-            role="assistant",
-            content=[
+        cast(MessageParam, {
+            "role": "assistant",
+            "content": [
                 {"type": "text", "text": "I will call the tool."},
                 {"type": "tool_use", "id": "tool-1", "name": "search", "input": {"query": "omni"}},
             ],
-        ),
-        MessageParam(
-            role="user",
-            content=[{"type": "tool_result", "tool_use_id": "tool-1", "content": "tool result payload"}],
-        ),
+        }),
+        cast(MessageParam, {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "tool result payload"}],
+        }),
         _long_message("assistant", "tool-followup"),
         _long_message("user", "tool-user-04"),
         _long_message("assistant", "tool-assistant-04"),
@@ -773,9 +773,9 @@ async def test_chat_compaction_includes_expanded_mention_text(db_pool):
     rows = []
 
     # First user message with post-expand_mentions shape
-    mention_msg = MessageParam(
-        role="user",
-        content=[
+    mention_msg = cast(MessageParam, {
+        "role": "user",
+        "content": [
             {"type": "text", "text": '[Mentioned document: "Q3 Report"]\n[_ref:doc_123]'},
             {
                 "type": "document",
@@ -787,7 +787,7 @@ async def test_chat_compaction_includes_expanded_mention_text(db_pool):
                 "title": "Q3 Report",
             },
         ],
-    )
+    })
     row = await messages_repo.create(chat_id, mention_msg, parent_id=parent_id)
     rows.append(row)
     parent_id = row.id

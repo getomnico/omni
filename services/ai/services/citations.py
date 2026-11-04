@@ -290,7 +290,7 @@ class CitationProcessor:
                 new_content.append(new_block)
 
             if has_changes:
-                transformed.append(MessageParam(role=msg["role"], content=new_content))
+                transformed.append({"role": msg["role"], "content": new_content})
             else:
                 transformed.append(msg)
 

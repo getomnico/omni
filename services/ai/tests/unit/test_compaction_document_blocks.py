@@ -1,3 +1,4 @@
+from typing import cast
 from unittest.mock import MagicMock
 
 from anthropic.types import MessageParam
@@ -21,17 +22,17 @@ def test_estimate_tokens_counts_top_level_and_tool_result_documents() -> None:
     top_level = "top-level document content"
     tool_result = "tool-result document content"
     messages = [
-        MessageParam(role="user", content=[_text_document(top_level)]),  # type: ignore[list-item]
-        MessageParam(
-            role="user",
-            content=[
+        cast(MessageParam, {"role": "user", "content": [_text_document(top_level)]}),  # type: ignore[list-item]
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 {
                     "type": "tool_result",
                     "tool_use_id": "tool-1",
                     "content": [_text_document(tool_result)],
                 }
             ],
-        ),
+        }),
     ]
 
     assert _compactor().estimate_tokens(messages) == (len(top_level) + len(tool_result)) // 4
@@ -39,13 +40,13 @@ def test_estimate_tokens_counts_top_level_and_tool_result_documents() -> None:
 
 def test_summary_format_includes_text_document_content() -> None:
     messages = [
-        MessageParam(
-            role="user",
-            content=[
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 {"type": "text", "text": "Mentioned document"},
                 _text_document("The retained document context."),
             ],  # type: ignore[list-item]
-        )
+        })
     ]
 
     formatted = _compactor()._format_messages_for_summary(messages)
@@ -56,16 +57,16 @@ def test_summary_format_includes_text_document_content() -> None:
 
 def test_summary_format_includes_tool_result_document_content() -> None:
     messages = [
-        MessageParam(
-            role="user",
-            content=[
+        cast(MessageParam, {
+            "role": "user",
+            "content": [
                 {
                     "type": "tool_result",
                     "tool_use_id": "tool-1",
                     "content": [_text_document("Context returned by read_document.")],
                 }
             ],
-        )
+        })
     ]
 
     formatted = _compactor()._format_messages_for_summary(messages)
@@ -75,7 +76,7 @@ def test_summary_format_includes_tool_result_document_content() -> None:
 
 def test_malformed_text_document_data_is_ignored_safely() -> None:
     messages = [
-        MessageParam(role="user", content=[_text_document(123)]),  # type: ignore[list-item]
+        cast(MessageParam, {"role": "user", "content": [_text_document(123)]}),  # type: ignore[list-item]
     ]
 
     compactor = _compactor()

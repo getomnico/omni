@@ -135,15 +135,15 @@ async def seed_agent_memory(
     await provider.delete_all(key=namespace)
 
     messages: list[MessageParam] = [
-        MessageParam(role="user", content=f"Agent task: {body.instructions}"),
-        MessageParam(
-            role="assistant",
-            content=(
+        {"role": "user", "content": f"Agent task: {body.instructions}"},
+        {
+            "role": "assistant",
+            "content": (
                 f"I am the '{body.name}' agent. "
                 f"My task: {body.instructions}. "
                 f"Schedule: {body.schedule_type} {body.schedule_value}."
             ),
-        ),
+        },
     ]
     await provider.add(messages=messages, key=namespace)
     logger.info(f"Seeded agent memory namespace: {namespace}")

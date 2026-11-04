@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -203,12 +204,12 @@ async def test_run_logs_are_fenced_and_ordered(db_pool, _patch_db_pool):
     claim = await repo.claim_next_run(10, timedelta(minutes=5), _policy())
     assert claim is not None
 
-    tool_use = MessageParam(
-        role="assistant",
-        content=[
+    tool_use = cast(MessageParam, {
+        "role": "assistant",
+        "content": [
             ToolUseBlockParam(type="tool_use", id="toolu_1", name="search", input={})
         ],
-    )
+    })
     assert await repo.append_run_log_messages(claim.run.id, "0" * 26, [tool_use]) == []
     rows = await repo.append_run_log_messages(
         claim.run.id, claim.claim_token, [tool_use]
@@ -288,10 +289,10 @@ async def test_executor_recovers_interrupted_tool_call_from_run_logs(
     claim = await run_repo.claim_next_run(10, timedelta(minutes=5), _policy())
     assert claim is not None
 
-    initial = MessageParam(role="user", content="Execute your scheduled task now.")
-    interrupted_tool_use = MessageParam(
-        role="assistant",
-        content=[
+    initial = cast(MessageParam, {"role": "user", "content": "Execute your scheduled task now."})
+    interrupted_tool_use = cast(MessageParam, {
+        "role": "assistant",
+        "content": [
             ToolUseBlockParam(
                 type="tool_use",
                 id="toolu_interrupted",
@@ -299,7 +300,7 @@ async def test_executor_recovers_interrupted_tool_call_from_run_logs(
                 input={"query": "quarterly report"},
             )
         ],
-    )
+    })
     await run_repo.append_run_log_messages(
         claim.run.id, claim.claim_token, [initial, interrupted_tool_use]
     )

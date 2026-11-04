@@ -107,13 +107,13 @@ class TestExpandMentionsRealStorage:
         )
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[
+            cast(MessageParam, {
+                "role": "user",
+                "content": [
                     _mention_block(doc_id, "Q3 Report"),
                     {"type": "text", "text": "What were the key results?"},
                 ],
-            )
+            })
         ]
 
         result = await expand_mentions(
@@ -155,7 +155,7 @@ class TestExpandMentionsRealStorage:
         recorder = RecordingDocumentHandler(inner)
 
         messages: list[MessageParam] = [
-            MessageParam(role="user", content=[_mention_block(doc_id, "Secret")])
+            cast(MessageParam, {"role": "user", "content": [_mention_block(doc_id, "Secret")]})
         ]
 
         await expand_mentions(
@@ -193,7 +193,7 @@ class TestExpandMentionsRealStorage:
         recorder = RecordingDocumentHandler(inner)
 
         messages: list[MessageParam] = [
-            MessageParam(role="user", content=[_mention_block(doc_id, "Doc")])
+            cast(MessageParam, {"role": "user", "content": [_mention_block(doc_id, "Doc")]})
         ]
 
         await expand_mentions(
@@ -234,14 +234,14 @@ class TestExpandMentionsRealStorage:
         recorder = RecordingDocumentHandler(inner)
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[
+            cast(MessageParam, {
+                "role": "user",
+                "content": [
                     _mention_block(doc_id, "First Title"),
                     {"type": "text", "text": " and "},
                     _mention_block(doc_id, "Second Title"),
                 ],
-            )
+            })
         ]
 
         result = await expand_mentions(
@@ -292,7 +292,7 @@ class TestExpandMentionsPermissions:
         )
 
         messages: list[MessageParam] = [
-            MessageParam(role="user", content=[_mention_block(doc_id, "Doc")])
+            cast(MessageParam, {"role": "user", "content": [_mention_block(doc_id, "Doc")]})
         ]
 
         result = await expand_mentions(
@@ -332,13 +332,13 @@ class TestExpandMentionsPermissions:
         )
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[
+            cast(MessageParam, {
+                "role": "user",
+                "content": [
                     _mention_block(doc_id, "Confidential Doc"),
                     {"type": "text", "text": "Read this?"},
                 ],
-            )
+            })
         ]
 
         result = await expand_mentions(
@@ -380,7 +380,7 @@ class TestExpandMentionsPermissions:
         )
 
         messages: list[MessageParam] = [
-            MessageParam(role="user", content=[_mention_block(doc_id, "Secret")])
+            cast(MessageParam, {"role": "user", "content": [_mention_block(doc_id, "Secret")]})
         ]
 
         result = await expand_mentions(
@@ -409,10 +409,10 @@ class TestExpandMentionsEdgeCases:
         fake_doc_id = str(ULID())
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[_mention_block(fake_doc_id, "Missing Doc")],
-            )
+            cast(MessageParam, {
+                "role": "user",
+                "content": [_mention_block(fake_doc_id, "Missing Doc")],
+            })
         ]
 
         result = await expand_mentions(
@@ -435,7 +435,7 @@ class TestExpandMentionsEdgeCases:
         )
 
         messages: list[MessageParam] = [
-            MessageParam(role="user", content="Just a plain text message.")
+            cast(MessageParam, {"role": "user", "content": "Just a plain text message."})
         ]
 
         result = await expand_mentions(
@@ -471,11 +471,11 @@ class TestExpandMentionsEdgeCases:
 
         mention = _mention_block(doc_id, "Test")
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[mention, {"type": "text", "text": "Read?"}],
-            ),
-            MessageParam(role="assistant", content=[mention]),
+            cast(MessageParam, {
+                "role": "user",
+                "content": [mention, {"type": "text", "text": "Read?"}],
+            }),
+            cast(MessageParam, {"role": "assistant", "content": [mention]}),
         ]
 
         result = await expand_mentions(
@@ -527,10 +527,10 @@ class TestExpandMentionsEdgeCases:
         bad_doc = _mention_block(str(ULID()), "Bad Doc")
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[bad_doc, {"type": "text", "text": " "}, good_doc],
-            )
+            cast(MessageParam, {
+                "role": "user",
+                "content": [bad_doc, {"type": "text", "text": " "}, good_doc],
+            })
         ]
 
         result = await expand_mentions(
@@ -578,9 +578,9 @@ class TestExpandMentionsEdgeCases:
         }
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="user",
-                content=[
+            cast(MessageParam, {
+                "role": "user",
+                "content": [
                     wrong_type_block,
                     {"type": "text", "text": " "},
                     missing_id_block,
@@ -589,7 +589,7 @@ class TestExpandMentionsEdgeCases:
                     {"type": "text", "text": " "},
                     nonstring_id_block,
                 ],
-            )
+            })
         ]
 
         result = await expand_mentions(
@@ -629,10 +629,10 @@ class TestExpandMentionsEdgeCases:
         }
 
         messages: list[MessageParam] = [
-            MessageParam(
-                role="assistant",
-                content=[wrong_type_block, {"type": "text", "text": " "}, valid_form_block],
-            )
+            cast(MessageParam, {
+                "role": "assistant",
+                "content": [wrong_type_block, {"type": "text", "text": " "}, valid_form_block],
+            })
         ]
 
         result = await expand_mentions(
