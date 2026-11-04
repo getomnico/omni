@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { eq, desc, and, sql } from 'drizzle-orm'
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js'
 import type { MessageParam } from '@anthropic-ai/sdk/resources'
@@ -6,6 +7,20 @@ import { chats, chatMessages } from './schema'
 import type { Chat, ChatMessage } from './schema'
 import * as schema from './schema'
 import { ulid } from 'ulid'
+
+const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
+export function continuationMessageId(terminalMessageId: string): string {
+    let value = BigInt(
+        `0x${createHash('sha256').update(`chat-continuation:${terminalMessageId}`).digest('hex').slice(0, 32)}`,
+    )
+    let id = ''
+    for (let index = 0; index < 26; index++) {
+        id = ULID_ALPHABET[Number(value & 31n)] + id
+        value >>= 5n
+    }
+    return id
+}
 
 const DEFAULT_CHAT_SEARCH_LIMIT = 20
 const DEFAULT_CHAT_SEARCH_MESSAGE_CANDIDATE_LIMIT = 50
@@ -351,6 +366,76 @@ export class ChatMessageRepository {
         const existingMessage = await this.getByIdInChat(chatId, messageId)
         if (existingMessage) return existingMessage
         throw new Error(`Message id ${messageId} is already used by another chat`)
+    }
+
+    async continueLimitedTurn(
+        chatId: string,
+        terminalMessageId: string,
+        continuationId: string,
+    ): Promise<ChatMessage | null> {
+        const continuationText =
+            'Continue working on the previous request using the context and results so far.'
+
+        return this.db.transaction(async (tx) => {
+            const chatRows = await tx
+                .select({
+                    id: chatMessages.id,
+                    parentId: chatMessages.parentId,
+                    messageSeqNum: chatMessages.messageSeqNum,
+                })
+                .from(chatMessages)
+                .where(eq(chatMessages.chatId, chatId))
+            const parentIds = new Set(
+                chatRows.flatMap((row) => (row.parentId ? [row.parentId] : [])),
+            )
+            const activeLeaf = chatRows
+                .filter((row) => !parentIds.has(row.id))
+                .sort((left, right) => right.messageSeqNum - left.messageSeqNum)[0]
+            const activePathIds = new Set<string>()
+            let cursor: (typeof chatRows)[number] | undefined = activeLeaf
+            while (cursor) {
+                activePathIds.add(cursor.id)
+                const parentId: string | null = cursor.parentId
+                cursor = parentId
+                    ? (chatRows.find((row) => row.id === parentId) ?? undefined)
+                    : undefined
+            }
+
+            const [existingMessage] = await tx
+                .select()
+                .from(chatMessages)
+                .where(and(eq(chatMessages.id, continuationId), eq(chatMessages.chatId, chatId)))
+                .limit(1)
+            if (existingMessage) {
+                return activePathIds.has(existingMessage.id) ? existingMessage : null
+            }
+            if (activeLeaf?.id !== terminalMessageId) return null
+
+            const nextSeqNum = await tx
+                .select({ maxSeq: sql<number>`coalesce(max(${chatMessages.messageSeqNum}), 0)` })
+                .from(chatMessages)
+                .where(eq(chatMessages.chatId, chatId))
+            const [message] = await tx
+                .insert(chatMessages)
+                .values({
+                    id: continuationId,
+                    chatId,
+                    parentId: terminalMessageId,
+                    messageSeqNum: (nextSeqNum[0]?.maxSeq ?? 0) + 1,
+                    message: { role: 'user', content: continuationText },
+                    contentText: continuationText,
+                })
+                .onConflictDoNothing({ target: chatMessages.id })
+                .returning()
+            if (message) return message
+
+            const [concurrentMessage] = await tx
+                .select()
+                .from(chatMessages)
+                .where(and(eq(chatMessages.id, continuationId), eq(chatMessages.chatId, chatId)))
+                .limit(1)
+            return concurrentMessage ?? null
+        })
     }
 
     async update(

@@ -974,6 +974,7 @@ async def stream_generator(
         # ----- Main agent loop -------------------------------------------------
         model_iteration = 0
         empty_response_retries = 0
+        hit_iteration_limit = False
         while turn_iterations < AGENT_MAX_ITERATIONS:
             if await is_run_cancelled(redis_client, chat_id):
                 logger.info(f"Run cancelled, stopping stream for chat {chat_id}")
@@ -1558,6 +1559,8 @@ async def stream_generator(
             if queued_entries:
                 async for steering_event in inject_steering(queued_entries):
                     yield steering_event
+        else:
+            hit_iteration_limit = True
 
         # ----- Memory write (fire-and-forget) ----------------------------------
         if (
@@ -1598,7 +1601,13 @@ async def stream_generator(
             except Exception as e:
                 logger.warning(f"Memory write setup failed for chat {chat_id}: {e}")
 
-        yield end_of_stream(EndOfStreamReason.COMPLETED, message="Stream ended")
+        if hit_iteration_limit:
+            yield end_of_stream(
+                EndOfStreamReason.ITERATION_LIMIT,
+                message="The agent reached its iteration limit. Continue working to start another bounded run.",
+            )
+        else:
+            yield end_of_stream(EndOfStreamReason.COMPLETED, message="Stream ended")
 
     except asyncio.CancelledError:
         logger.info(f"Stream cancelled for chat {chat_id}")
