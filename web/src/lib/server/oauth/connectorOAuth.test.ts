@@ -10,6 +10,7 @@ import {
     parseOAuthSourceBinding,
     revokeDynamicallyRegisteredClient,
     scopesForExistingSourceUserFlow,
+    sourceBindingPolicyApplies,
     tokenEndpointAuthMethodForConfig,
     windshiftInternalOrigin,
     type OAuthManifestConfig,
@@ -79,6 +80,25 @@ describe('windshiftInternalOrigin', () => {
         expect(
             windshiftInternalOrigin({ ...windshiftManifest, internal_base_url: 'not a url' }),
         ).toBeNull()
+    })
+})
+
+describe('OAuth source-binding policy', () => {
+    const policy = {
+        allow_user_establish: true,
+        initial_admin_required: true,
+        authenticated_discovery_required: true,
+        source_config_equals: { key: 'sync_enabled', equals: false },
+    }
+
+    it('applies only to source config matching the declarative condition', () => {
+        expect(sourceBindingPolicyApplies(policy, { sync_enabled: false })).toBe(true)
+        expect(sourceBindingPolicyApplies(policy, { sync_enabled: true })).toBe(false)
+        expect(sourceBindingPolicyApplies(policy, {})).toBe(false)
+    })
+
+    it('defaults manifests without policy to existing behavior', () => {
+        expect(sourceBindingPolicyApplies(undefined, { sync_enabled: false })).toBe(false)
     })
 })
 

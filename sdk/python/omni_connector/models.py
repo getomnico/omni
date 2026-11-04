@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Annotated, Any, Literal, Self
 
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Discriminator, Field, Tag, field_validator
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_validator, model_validator
 
 
 class SyncMode(str, Enum):
@@ -305,6 +305,32 @@ class OAuthScopeSet(BaseModel):
     write: list[str] = Field(default_factory=list)
 
 
+class OAuthSourceConfigCondition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1)
+    equals: str | bool
+
+
+class OAuthSourceBindingPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    allow_user_establish: bool = False
+    initial_admin_required: bool = False
+    authenticated_discovery_required: bool = False
+    source_config_equals: OAuthSourceConfigCondition | None = None
+
+    @model_validator(mode="after")
+    def validate_policy(self) -> Self:
+        if not self.allow_user_establish and (
+            self.initial_admin_required
+            or self.authenticated_discovery_required
+            or self.source_config_equals is not None
+        ):
+            raise ValueError("source binding requirements require allow_user_establish")
+        return self
+
+
 class OAuthManifestConfig(BaseModel):
     """Mirrors `shared::models::OAuthManifestConfig` (Rust). Pure data: a connector
     declares this in its manifest and the web app's generic OAuth2 client uses it
@@ -388,6 +414,7 @@ class OAuthManifestConfig(BaseModel):
         default=True,
         description="Whether this connector supports OAuth credentials for org sources.",
     )
+    source_binding_policy: OAuthSourceBindingPolicy | None = None
 
 
 class ConnectorSourceCapabilities(BaseModel):

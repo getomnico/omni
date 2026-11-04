@@ -7,6 +7,7 @@ import respx
 from httpx import Response
 
 from db.models import Source
+from tests.unit.manager_action_mocks import mock_effective_actions
 from tools.connector_handler import (
     ConnectorToolHandler,
     fetch_active_sources_from_connector_manager,
@@ -73,6 +74,7 @@ async def test_actions_match_source_by_integration_type_and_source_type() -> Non
         ],
     )
 
+    mock_effective_actions(respx, handler)
     await handler._ensure_initialized()
 
     assert len(handler.actions) == 2
@@ -144,6 +146,7 @@ async def test_actions_fetch_active_sources_endpoint_including_remote_mcp_rows()
         user_id="user-1",
     )
 
+    mock_effective_actions(respx, handler, {"src-remote": "docs"})
     await handler._ensure_initialized()
 
     assert active_sources.called

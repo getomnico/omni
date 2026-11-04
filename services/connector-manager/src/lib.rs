@@ -64,6 +64,10 @@ pub fn create_app(state: AppState) -> Router {
         )
         .route("/action", post(handlers::execute_action))
         .route("/actions", get(handlers::list_actions))
+        .route(
+            "/actions/preflight",
+            post(handlers::action_credential_preflight),
+        )
         .route("/resource", post(handlers::read_resource))
         .route("/resources", get(handlers::list_resources))
         .route("/prompt", post(handlers::get_prompt))

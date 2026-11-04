@@ -85,6 +85,7 @@ impl AtlassianConnector {
             ]),
             validate_endpoint_urls: false,
             supports_org_oauth: true,
+            source_binding_policy: None,
         }
     }
 
