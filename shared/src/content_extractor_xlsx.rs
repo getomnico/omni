@@ -64,7 +64,7 @@ fn read_xlsx_sheet_entries(
     if sheets.is_empty() {
         let mut worksheet_paths: Vec<String> = (0..archive.len())
             .filter_map(|i| {
-                let name = archive.by_index(i).ok()?.name().to_string();
+                let name = archive.by_index(i).ok()?.name().ok()?.to_string();
                 if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
                     Some(name)
                 } else {

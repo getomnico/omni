@@ -5,8 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rmcp::ServiceExt;
 use rmcp::model::{
-    CallToolRequestParams, GetPromptRequestParams, PaginatedRequestParams, PromptMessageContent,
-    RawContent, ReadResourceRequestParams, ResourceContents,
+    CallToolRequestParams, ContentBlock, GetPromptRequestParams, PaginatedRequestParams,
+    ReadResourceRequestParams, ResourceContents,
 };
 use rmcp::service::RunningService;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -332,10 +332,10 @@ impl McpAdapter {
             Ok(call_result) => {
                 let mut text_parts = Vec::new();
                 for block in &call_result.content {
-                    match &block.raw {
-                        RawContent::Text(t) => text_parts.push(t.text.clone()),
-                        RawContent::Image(img) => {
-                            text_parts.push(format!("[binary: {}]", img.mime_type));
+                    match block {
+                        ContentBlock::Text(text) => text_parts.push(text.text.clone()),
+                        ContentBlock::Image(image) => {
+                            text_parts.push(format!("[binary: {}]", image.mime_type));
                         }
                         _ => {}
                     }
@@ -391,6 +391,7 @@ impl McpAdapter {
                         entry.insert("mime_type".into(), JsonValue::String(mt));
                     }
                 }
+                _ => {}
             }
             items.push(JsonValue::Object(entry));
         }
@@ -416,10 +417,10 @@ impl McpAdapter {
         for msg in result.messages {
             let role = format!("{:?}", msg.role).to_lowercase();
             let content = match msg.content {
-                PromptMessageContent::Text { text } => {
-                    serde_json::json!({ "type": "text", "text": text })
+                ContentBlock::Text(text) => {
+                    serde_json::json!({ "type": "text", "text": text.text })
                 }
-                PromptMessageContent::Image { image } => {
+                ContentBlock::Image(image) => {
                     serde_json::json!({
                         "type": "image",
                         "mime_type": image.mime_type,
@@ -568,9 +569,9 @@ async fn fetch_resources(client: &RmcpClient) -> Result<Vec<McpResourceDefinitio
     for tmpl in templates.resource_templates {
         definitions.push(McpResourceDefinition {
             uri_template: tmpl.uri_template.clone(),
-            name: tmpl.raw.name.clone(),
-            description: tmpl.raw.description.clone(),
-            mime_type: tmpl.raw.mime_type.clone(),
+            name: tmpl.name.clone(),
+            description: tmpl.description.clone(),
+            mime_type: tmpl.mime_type.clone(),
         });
     }
 
@@ -579,10 +580,10 @@ async fn fetch_resources(client: &RmcpClient) -> Result<Vec<McpResourceDefinitio
         .await?;
     for res in resources.resources {
         definitions.push(McpResourceDefinition {
-            uri_template: res.raw.uri.clone(),
-            name: res.raw.name.clone(),
-            description: res.raw.description.clone(),
-            mime_type: res.raw.mime_type.clone(),
+            uri_template: res.uri.clone(),
+            name: res.name.clone(),
+            description: res.description.clone(),
+            mime_type: res.mime_type.clone(),
         });
     }
 
