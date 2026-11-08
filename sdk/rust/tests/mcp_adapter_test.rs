@@ -2,8 +2,17 @@ use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
+use axum::{
+    Router,
+    http::{HeaderMap, StatusCode, header::LOCATION},
+    routing::post,
+};
 use omni_connector_sdk::ActionMode;
 use omni_connector_sdk::mcp_adapter::{HttpMcpServer, McpAdapter, McpServer, StdioMcpServer};
 
@@ -268,6 +277,81 @@ async fn http_caches_after_discover() {
         .expect("discover");
     let actions = adapter.get_action_definitions(None, None).await.unwrap();
     assert_eq!(actions.len(), 2);
+}
+
+#[tokio::test]
+async fn http_does_not_leak_custom_credentials_to_redirect_targets() {
+    for status in [
+        StatusCode::TEMPORARY_REDIRECT,
+        StatusCode::PERMANENT_REDIRECT,
+    ] {
+        let target_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_url = format!("http://{}/capture", target_listener.local_addr().unwrap());
+        let target_requests = Arc::new(AtomicUsize::new(0));
+        let captured_requests = target_requests.clone();
+        let target = tokio::spawn(async move {
+            axum::serve(
+                target_listener,
+                Router::new().route(
+                    "/capture",
+                    post(move || {
+                        let captured_requests = captured_requests.clone();
+                        async move {
+                            captured_requests.fetch_add(1, Ordering::SeqCst);
+                            StatusCode::BAD_REQUEST
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+
+        let source_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source_url = format!("http://{}/mcp", source_listener.local_addr().unwrap());
+        let authenticated_requests = Arc::new(AtomicUsize::new(0));
+        let source_requests = authenticated_requests.clone();
+        let source = tokio::spawn(async move {
+            axum::serve(
+                source_listener,
+                Router::new().route(
+                    "/mcp",
+                    post(move |headers: HeaderMap| {
+                        let source_requests = source_requests.clone();
+                        let target_url = target_url.clone();
+                        async move {
+                            if headers
+                                .get("x-api-key")
+                                .is_some_and(|value| value == "secret")
+                            {
+                                source_requests.fetch_add(1, Ordering::SeqCst);
+                            }
+                            (status, [(LOCATION, target_url)])
+                        }
+                    }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut server = HttpMcpServer::new(source_url);
+        server
+            .headers
+            .insert("x-api-key".to_string(), "secret".to_string());
+        let adapter = McpAdapter::new(McpServer::Http(server));
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), adapter.discover(None, None)).await;
+        source.abort();
+        target.abort();
+        assert!(result.expect("redirect rejection must not hang").is_err());
+        assert!(authenticated_requests.load(Ordering::SeqCst) > 0);
+        assert_eq!(
+            target_requests.load(Ordering::SeqCst),
+            0,
+            "followed {status} redirect"
+        );
+    }
 }
 
 #[tokio::test]
