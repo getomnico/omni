@@ -28,7 +28,7 @@
         "@lucide/svelte": "^0.561.0",
         "@playwright/test": "^1.55.1",
         "@sveltejs/adapter-node": "^5.5.4",
-        "@sveltejs/kit": "^2.70.1",
+        "@sveltejs/kit": "^2.70.4",
         "@sveltejs/vite-plugin-svelte": "^5.0.0",
         "@tailwindcss/forms": "^0.5.9",
         "@tailwindcss/typography": "^0.5.15",
@@ -58,8 +58,8 @@
         "typescript": "^5.0.0",
         "typescript-eslint": "^8.20.0",
         "vaul-svelte": "^1.0.0-next.7",
-        "vite": "^6.4.3",
-        "vitest": "^4.1.10"
+        "vite": "^6.4.4",
+        "vitest": "^4.1.12"
     },
     "dependencies": {
         "@anthropic-ai/sdk": "^0.64.0",
@@ -67,16 +67,16 @@
         "@fontsource-variable/inter": "^5.2.8",
         "@node-rs/argon2": "^2.0.2",
         "@opentelemetry/api": "^1.9.1",
-        "@opentelemetry/auto-instrumentations-node": "^0.78.0",
-        "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
-        "@opentelemetry/sdk-node": "^0.220.0",
+        "@opentelemetry/auto-instrumentations-node": "^0.79.0",
+        "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+        "@opentelemetry/sdk-node": "^0.221.0",
         "@oslojs/crypto": "^1.0.1",
         "@oslojs/encoding": "^1.1.0",
         "@paralleldrive/cuid2": "^2.2.2",
         "drizzle-orm": "^0.45.2",
         "mammoth": "^1.12.2",
         "marked": "^16.0.0",
-        "nodemailer": "^9.0.3",
+        "nodemailer": "^10.1.4",
         "pino": "^9.9.2",
         "pino-pretty": "^13.1.1",
         "postgres": "^3.4.5",
@@ -84,14 +84,17 @@
         "redis": "^5.5.6",
         "resend": "^4.0.0",
         "ulid": "^3.0.1",
-        "zod": "^3.23.8"
+        "zod": "^4.6.6"
     },
     "overrides": {
-        "@grpc/grpc-js": "^1.14.4",
+        "@grpc/grpc-js": "^1.14.5",
         "protobufjs": "^7.6.3",
         "js-yaml": "^4.3.0",
         "esbuild": "0.25.12",
         "cookie": "0.7.2",
-        "brace-expansion": "^5.0.8"
+        "brace-expansion@^2.0.1": "^2.1.4",
+        "brace-expansion@^2.0.2": "^2.1.4",
+        "brace-expansion@^5.0.8": "^5.0.12",
+        "postcss-selector-parser@6.0.10": "^6.1.5"
     }
 }
