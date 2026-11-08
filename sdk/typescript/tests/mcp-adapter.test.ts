@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer as createNetServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { McpAdapter, type HttpMcpServer, type StdioMcpServer } from '../src/mcp-adapter.js';
@@ -217,6 +218,48 @@ describe('McpAdapter (Streamable HTTP)', () => {
       'X-Per-Call': 'yes',
     });
     expect(actions).toHaveLength(3);
+  });
+});
+
+describe('McpAdapter redirect security', () => {
+  it('does not forward custom credentials or JSON-RPC bodies across origins', async () => {
+    let targetRequests = 0;
+    let redirectRequests = 0;
+    const target = createHttpServer((_req, res) => {
+      targetRequests += 1;
+      res.writeHead(500).end();
+    });
+    const redirector = createHttpServer((_req, res) => {
+      redirectRequests += 1;
+      const address = target.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Expected a listening TCP target');
+      }
+      res.writeHead(307, { Location: `http://127.0.0.1:${address.port}/mcp` }).end();
+    });
+    try {
+      await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+      await new Promise<void>((resolve) => redirector.listen(0, '127.0.0.1', resolve));
+      const address = redirector.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('Expected a listening TCP redirector');
+      }
+      const adapter = new McpAdapter({
+        transport: 'http',
+        url: `http://127.0.0.1:${address.port}/mcp`,
+      });
+      await expect(adapter.discover(undefined, { 'X-API-Key': 'test-secret' }))
+        .rejects.toThrow();
+      expect(redirectRequests).toBeGreaterThan(0);
+      expect(targetRequests).toBe(0);
+    } finally {
+      await Promise.all([target, redirector].map((server) =>
+        new Promise<void>((resolve, reject) => server.close((error) => {
+          if (error) reject(error);
+          else resolve();
+        }))
+      ));
+    }
   });
 });
 
