@@ -27,7 +27,7 @@ export const DocumentMetadataSchema = z.object({
   content_type: z.string().optional(),
   url: z.string().optional(),
   path: z.string().optional(),
-  extra: z.record(z.unknown()).optional(),
+  extra: z.record(z.string(), z.unknown()).optional(),
 });
 export type DocumentMetadata = z.infer<typeof DocumentMetadataSchema>;
 
@@ -44,7 +44,7 @@ export const DocumentSchema = z.object({
   content_id: z.string(),
   metadata: DocumentMetadataSchema.optional(),
   permissions: DocumentPermissionsSchema.optional(),
-  attributes: z.record(z.unknown()).optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
 });
 export type Document = z.infer<typeof DocumentSchema>;
 
@@ -56,7 +56,7 @@ const DocumentEventIdentityFields = {
 const DocumentEventContentFields = {
   content_id: z.string(),
   metadata: DocumentMetadataSchema,
-  attributes: z.record(z.unknown()).optional(),
+  attributes: z.record(z.string(), z.unknown()).optional(),
 };
 
 export const DocumentEventSchema = z.discriminatedUnion('type', [
@@ -148,7 +148,7 @@ export type ActionOrigin = z.infer<typeof ActionOriginSchema>;
 export const ActionDefinitionSchema = z.object({
   name: z.string(),
   description: z.string(),
-  input_schema: z.record(z.any()).default({ type: 'object', properties: {} }),
+  input_schema: z.record(z.string(), z.unknown()).default({ type: 'object', properties: {} }),
   mode: z.enum(['read', 'write']).default('write'),
   credential_scope: ActionCredentialScopeSchema.default('user'),
   required_scopes: z.array(z.string()).optional(),
@@ -211,8 +211,8 @@ export const OAuthManifestConfigSchema = z.object({
   userinfo_endpoint: z.string().optional(),
   userinfo_email_field: z.string().default('email'),
   identity_scopes: z.array(z.string()).default([]),
-  scopes: z.record(OAuthScopeSetSchema).default({}),
-  extra_auth_params: z.record(z.string()).default({}),
+  scopes: z.record(z.string(), OAuthScopeSetSchema).default({}),
+  extra_auth_params: z.record(z.string(), z.string()).default({}),
   scope_separator: z.string().default(' '),
   enrich_endpoint: z.string().nullable().optional(),
   /**
@@ -285,8 +285,8 @@ export const ConnectorManifestSchema = z.object({
   // over a legacy definition with the same name for that source.
   actions: z.array(ActionDefinitionSchema).default([]),
   search_operators: z.array(SearchOperatorSchema).default([]),
-  extra_schema: z.record(z.unknown()).optional(),
-  attributes_schema: z.record(z.unknown()).optional(),
+  extra_schema: z.record(z.string(), z.unknown()).optional(),
+  attributes_schema: z.record(z.string(), z.unknown()).optional(),
   read_only: z.boolean().default(false),
   mcp_enabled: z.boolean().default(false),
   mcp_catalog_loaded: z.boolean().default(false),
@@ -302,7 +302,7 @@ export const SyncRequestSchema = z.object({
   sync_run_id: z.string(),
   source_id: z.string(),
   sync_mode: z.string(),
-  checkpoint: z.record(z.unknown()).nullable().default(null),
+  checkpoint: z.record(z.string(), z.unknown()).nullable().default(null),
   is_resume: z.boolean().default(false),
   // Manager's running tally at dispatch time. Zero on a fresh sync;
   // non-zero on resume so the connector can keep counting from there.
@@ -339,15 +339,15 @@ export const SourceSchema = z.object({
   id: z.string(),
   name: z.string(),
   source_type: z.string(),
-  config: z.record(z.unknown()),
+  config: z.record(z.string(), z.unknown()),
   is_active: z.boolean().optional(),
 });
 export type Source = z.infer<typeof SourceSchema>;
 
 export const ActionRequestSchema = z.object({
   action: z.string(),
-  params: z.record(z.unknown()),
-  credentials: z.record(z.unknown()).optional(),
+  params: z.record(z.string(), z.unknown()),
+  credentials: z.record(z.string(), z.unknown()).optional(),
   source: SourceSchema.optional(),
   actor_email: z.string().optional(),
 });
@@ -358,7 +358,7 @@ export const OAuthCredentialReadyRequestSchema = z.object({
   user_id: z.string().nullable().optional(),
   provider: z.string(),
   flow: z.string(),
-  credentials: z.record(z.unknown()).default({}),
+  credentials: z.record(z.string(), z.unknown()).default({}),
 });
 export type OAuthCredentialReadyRequest = z.infer<
   typeof OAuthCredentialReadyRequestSchema
@@ -372,15 +372,15 @@ export const OAuthCredentialFlowSchema = z.enum([
 ]);
 export type OAuthCredentialFlow = z.infer<typeof OAuthCredentialFlowSchema>;
 
-export const OAuthSourceBindingSchema = z.record(z.string());
+export const OAuthSourceBindingSchema = z.record(z.string(), z.string());
 export type OAuthSourceBinding = z.infer<typeof OAuthSourceBindingSchema>;
 
 export const OAuthCredentialValidationRequestSchema = z.object({
   source_id: z.string(),
   provider: z.string(),
-  credentials: z.record(z.unknown()).default({}),
+  credentials: z.record(z.string(), z.unknown()).default({}),
   flow: OAuthCredentialFlowSchema,
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   source: SourceSchema.nullable().optional(),
 });
 export type OAuthCredentialValidationRequest = z.infer<
@@ -396,7 +396,7 @@ export type OAuthCredentialValidationResponse = z.infer<
 
 export const ActionResponseSchema = z.object({
   status: z.string(),
-  result: z.record(z.unknown()).optional(),
+  result: z.record(z.string(), z.unknown()).optional(),
   error: z.string().optional(),
 });
 export class ActionResponse {
@@ -438,15 +438,15 @@ export class ActionResponse {
 
 export const ResourceRequestSchema = z.object({
   uri: z.string(),
-  credentials: z.record(z.unknown()).default({}),
+  credentials: z.record(z.string(), z.unknown()).default({}),
   source: SourceSchema.nullable().optional(),
 });
 export type ResourceRequest = z.infer<typeof ResourceRequestSchema>;
 
 export const PromptRequestSchema = z.object({
   name: z.string(),
-  arguments: z.record(z.unknown()).optional(),
-  credentials: z.record(z.unknown()).default({}),
+  arguments: z.record(z.string(), z.unknown()).optional(),
+  credentials: z.record(z.string(), z.unknown()).default({}),
   source: SourceSchema.nullable().optional(),
 });
 export type PromptRequest = z.infer<typeof PromptRequestSchema>;
@@ -575,10 +575,10 @@ export type UserFilterMode = (typeof UserFilterMode)[keyof typeof UserFilterMode
  * tolerate older payload shapes — connector-manager always sets it today.
  */
 export const SdkSourceSyncDataSchema = z.object({
-  config: z.record(z.unknown()).default({}),
-  credentials: z.record(z.unknown()).default({}),
-  connector_state: z.record(z.unknown()).nullable().default(null),
-  checkpoint: z.record(z.unknown()).nullable().default(null),
+  config: z.record(z.string(), z.unknown()).default({}),
+  credentials: z.record(z.string(), z.unknown()).default({}),
+  connector_state: z.record(z.string(), z.unknown()).nullable().default(null),
+  checkpoint: z.record(z.string(), z.unknown()).nullable().default(null),
   source_type: z.string().nullable().default(null),
   user_filter_mode: z
     .enum([UserFilterMode.ALL, UserFilterMode.WHITELIST, UserFilterMode.BLACKLIST])

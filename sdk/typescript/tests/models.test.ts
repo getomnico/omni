@@ -6,6 +6,8 @@ import {
   ActionDefinitionSchema,
   ConnectorManifestSchema,
   SyncRequestSchema,
+  OAuthManifestConfigSchema,
+  OAuthSourceBindingSchema,
   EventType,
   serializeConnectorEvent,
   ActionResponse,
@@ -27,6 +29,11 @@ describe('DocumentMetadataSchema', () => {
       expect(result.data.title).toBe('Test Document');
       expect(result.data.author).toBe('test@example.com');
     }
+  });
+
+  it('preserves arbitrary JSON record values', () => {
+    const extra = { label: 'example', count: 2, nested: { enabled: true }, missing: null };
+    expect(DocumentMetadataSchema.parse({ extra }).extra).toEqual(extra);
   });
 
   it('allows empty metadata', () => {
@@ -106,6 +113,17 @@ describe('ActionDefinitionSchema', () => {
     mode: 'read' as const,
   };
 
+  it('preserves nested JSON Schema definitions', () => {
+    const input_schema = {
+      type: 'object',
+      properties: { enabled: { type: 'boolean', default: false } },
+      required: ['enabled'],
+      additionalProperties: false,
+    };
+    expect(ActionDefinitionSchema.parse({ ...action, input_schema }).input_schema)
+      .toEqual(input_schema);
+  });
+
   it('keeps omitted required scopes undeclared', () => {
     const result = ActionDefinitionSchema.parse(action);
 
@@ -141,6 +159,26 @@ describe('ConnectorManifestSchema', () => {
       expect(result.data.display_name).toBe('My Connector');
       expect(result.data.sync_modes).toEqual(['full', 'incremental']);
     }
+  });
+});
+
+describe('OAuth record schemas', () => {
+  it('validates arbitrary provider scopes and applies nested defaults', () => {
+    const config = OAuthManifestConfigSchema.parse({
+      provider: 'example',
+      auth_endpoint: 'https://example.com/authorize',
+      token_endpoint: 'https://example.com/token',
+      scopes: { example: { read: ['items:read'] } },
+      extra_auth_params: { audience: 'items' },
+    });
+    expect(config.scopes).toEqual({ example: { read: ['items:read'], write: [] } });
+    expect(config.extra_auth_params).toEqual({ audience: 'items' });
+  });
+
+  it('rejects non-string binding values', () => {
+    expect(OAuthSourceBindingSchema.parse({ organization_id: 'org-1' }))
+      .toEqual({ organization_id: 'org-1' });
+    expect(OAuthSourceBindingSchema.safeParse({ organization_id: 42 }).success).toBe(false);
   });
 });
 
