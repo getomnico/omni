@@ -10,8 +10,8 @@ license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "omni-connector[mcp]",
-    "snowflake-connector-python>=3.18.0",
-    "cryptography>=43.0.0",
+    "snowflake-connector-python>=4.8.1,<5",
+    "cryptography>=50.0.0",
 ]
 
 [tool.uv.sources]

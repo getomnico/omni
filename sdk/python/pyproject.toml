@@ -48,7 +48,7 @@ examples = [
     "feedparser>=6.0.0",
 ]
 mcp = [
-    "mcp>=1.28.1,<2",
+    "mcp>=1.30.0,<2",
 ]
 
 [project.urls]
