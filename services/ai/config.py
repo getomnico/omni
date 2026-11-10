@@ -76,7 +76,7 @@ ENABLE_CONVERSATION_COMPACTION = (
     get_optional_env("ENABLE_CONVERSATION_COMPACTION", "true").lower() == "true"
 )
 # Agent configuration
-AGENT_MAX_ITERATIONS = int(get_optional_env("AGENT_MAX_ITERATIONS", "15"))
+AGENT_MAX_ITERATIONS = int(get_optional_env("AGENT_MAX_ITERATIONS", "100"))
 CONNECTOR_MANAGER_URL = get_required_env("CONNECTOR_MANAGER_URL")
 SANDBOX_URL: str | None = os.getenv("SANDBOX_URL") or None
 MEMORY_ENABLED = get_optional_env("MEMORY_ENABLED", "false").lower() == "true"

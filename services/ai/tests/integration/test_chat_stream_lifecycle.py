@@ -664,7 +664,9 @@ class TestCancel:
             task.cancel()
 
             events = await stream_task
+            status = await client.get(f"/chat/{chat_id}/stream/status")
 
+        assert status.json()["iteration_limit_reached"] is False
         # The stream must terminate with end_of_stream (clean stop, not error)
         assert any(
             et == "end_of_stream" for et, _, _ in events
@@ -2195,6 +2197,154 @@ class TestInterruptedToolCall:
 
 class TestMultiTurn:
     """The agent loop runs through multiple LLM + tool-execution iterations."""
+
+    @pytest.mark.asyncio
+    async def test_iteration_limit_is_explicit_with_redis_marker(
+        self, seeded_chat, redis_client, monkeypatch
+    ):
+        from streaming import generate
+
+        monkeypatch.setattr(generate, "AGENT_MAX_ITERATIONS", 1)
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM(
+            [
+                (
+                    "tool_call",
+                    {
+                        "name": "search",
+                        "input": {"query": "bounded"},
+                        "id": "toolu_limit",
+                    },
+                )
+            ],
+            model_id,
+        )
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+            terminal = json.loads(
+                next(
+                    data
+                    for event_type, data, _ in events
+                    if event_type == "end_of_stream"
+                )
+            )
+            status = await client.get(f"/chat/{chat_id}/stream/status")
+            reloaded_events = await collect_sse_events(client, chat_id)
+            active_leaf = (await MessagesRepository().get_active_path(chat_id))[-1]
+            await MessagesRepository().create(
+                chat_id,
+                {"role": "user", "content": "A new request"},
+                parent_id=active_leaf.id,
+            )
+            updated_status = await client.get(f"/chat/{chat_id}/stream/status")
+
+        assert terminal["reason"] == "iteration_limit"
+        assert status.json()["iteration_limit_reached"] is True
+        assert len(llm.calls) == 1
+        assert any(
+            event_type == "end_of_stream"
+            and json.loads(data)["reason"] == "no_new_message"
+            for event_type, data, _ in reloaded_events
+        )
+        assert updated_status.json()["iteration_limit_reached"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_response_at_limit_sets_redis_marker(
+        self, seeded_chat, redis_client, monkeypatch
+    ):
+        from streaming import generate
+
+        monkeypatch.setattr(generate, "AGENT_MAX_ITERATIONS", 1)
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM([("text", "")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+            terminal = json.loads(
+                next(
+                    data
+                    for event_type, data, _ in events
+                    if event_type == "end_of_stream"
+                )
+            )
+            status = await client.get(f"/chat/{chat_id}/stream/status")
+
+        assert terminal["reason"] == "iteration_limit"
+        assert status.json()["iteration_limit_reached"] is True
+
+    @pytest.mark.asyncio
+    async def test_normal_completion_at_limit_is_not_marked_limited(
+        self, seeded_chat, redis_client, monkeypatch
+    ):
+        from streaming import generate
+
+        monkeypatch.setattr(generate, "AGENT_MAX_ITERATIONS", 1)
+        chat_id, _user_id, model_id = seeded_chat
+        llm = GatedRecordingLLM([("text", "Done.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+            terminal = json.loads(
+                next(
+                    data
+                    for event_type, data, _ in events
+                    if event_type == "end_of_stream"
+                )
+            )
+            status = await client.get(f"/chat/{chat_id}/stream/status")
+
+        assert terminal["reason"] == "completed"
+        assert status.json()["iteration_limit_reached"] is False
+
+    @pytest.mark.asyncio
+    async def test_interrupted_tool_result_without_limit_marker_can_resume(
+        self, seeded_chat, redis_client
+    ):
+        chat_id, _user_id, model_id = seeded_chat
+        messages_repo = MessagesRepository()
+        user_message = (await messages_repo.get_active_path(chat_id))[-1]
+        assistant_message = await messages_repo.create(
+            chat_id,
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_interrupted_recovery",
+                        "name": "search",
+                        "input": {"query": "recover"},
+                    }
+                ],
+            },
+            parent_id=user_message.id,
+        )
+        await messages_repo.create(
+            chat_id,
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_interrupted_recovery",
+                        "content": "The prior tool execution was interrupted.",
+                        "is_error": True,
+                    }
+                ],
+            },
+            parent_id=assistant_message.id,
+        )
+
+        llm = GatedRecordingLLM([("text", "Recovered response.")], model_id)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id)
+
+        terminal = json.loads(
+            next(data for event_type, data, _ in events if event_type == "end_of_stream")
+        )
+        assert terminal["reason"] == "completed"
+        assert len(llm.calls) == 1
 
     @pytest.mark.asyncio
     async def test_multi_turn_executes_tool_then_responds(

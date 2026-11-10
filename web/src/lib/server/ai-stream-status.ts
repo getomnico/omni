@@ -13,6 +13,8 @@ export async function getChatStreamStatus(chatId: string): Promise<StreamStatus>
         pending_approval?: boolean
         pending_oauth?: boolean
         pending_steering?: boolean
+        iteration_limit_reached?: boolean
+        iteration_limit_message_id?: string | null
     }
     const running = status.running === true
     const resumable = status.resumable === true
@@ -26,5 +28,10 @@ export async function getChatStreamStatus(chatId: string): Promise<StreamStatus>
         pendingApproval,
         pendingOAuth,
         pendingSteering,
+        iterationLimitReached: status.iteration_limit_reached === true,
+        iterationLimitMessageId:
+            typeof status.iteration_limit_message_id === 'string'
+                ? status.iteration_limit_message_id
+                : null,
     }
 }
