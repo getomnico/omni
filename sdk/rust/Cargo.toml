@@ -17,7 +17,7 @@ http = "1"
 mime = "0.3"
 dashmap = { workspace = true }
 reqwest = { workspace = true }
-rmcp = { version = "1.5", features = [
+rmcp = { version = "~2.1.0", features = [
     "client",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",

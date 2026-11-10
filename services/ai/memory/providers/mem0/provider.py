@@ -19,6 +19,7 @@ from typing import Any
 from anthropic.types import MessageParam
 from asyncpg import Pool
 from fastapi.concurrency import run_in_threadpool
+from mem0.memory.main import _build_session_scope
 
 from config import (
     DATABASE_HOST,
@@ -203,7 +204,7 @@ class Mem0Provider:
             with sqlite3.connect(self._mem.db.db_path) as conn:
                 conn.execute(
                     "DELETE FROM messages WHERE session_scope = ?",
-                    (f"user_id={key}",),
+                    (_build_session_scope({"user_id": key}),),
                 )
         except Exception as e:
             logger.warning(f"Memory ring-buffer clear failed for {key}: {e}")

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use calamine::{Reader, open_workbook_auto_from_rs};
-use docx_rs::read_docx;
 use mail_parser::MessageParser;
+use office_oxide::docx::DocxDocument;
 use quick_xml::Reader as XmlReader;
 use quick_xml::events::Event;
 use std::io::Cursor;
@@ -96,7 +96,7 @@ fn extract_non_spreadsheet_content(data: &[u8], effective_mime: &str) -> Result<
             extract_pptx_text(data)
         }
 
-        // Legacy Word — cannot be parsed with docx_rs (different binary format)
+        // Legacy Word uses a different binary format.
         "application/msword" => {
             debug!("Legacy .doc format is not supported, skipping");
             Ok(String::new())
@@ -217,23 +217,9 @@ fn extract_pdf_text(data: &[u8]) -> Result<String> {
 fn extract_docx_text(data: &[u8]) -> Result<String> {
     let data_owned = data.to_vec();
     let result = std::panic::catch_unwind(move || {
-        let docx = read_docx(&data_owned).context("Failed to read DOCX")?;
-        let mut text = String::new();
-
-        for child in &docx.document.children {
-            match child {
-                docx_rs::DocumentChild::Paragraph(paragraph) => {
-                    extract_paragraph_text(paragraph, &mut text);
-                    text.push('\n');
-                }
-                docx_rs::DocumentChild::Table(table) => {
-                    extract_table_text(table, &mut text);
-                }
-                _ => {}
-            }
-        }
-
-        Ok(text.trim().to_string())
+        let docx =
+            DocxDocument::from_reader(Cursor::new(data_owned)).context("Failed to read DOCX")?;
+        Ok(docx.plain_text().trim().to_string())
     });
 
     match result {
@@ -244,38 +230,6 @@ fn extract_docx_text(data: &[u8]) -> Result<String> {
             Err(anyhow!("DOCX extraction panicked due to malformed content"))
         }
     }
-}
-
-fn extract_paragraph_text(paragraph: &docx_rs::Paragraph, text: &mut String) {
-    for para_child in &paragraph.children {
-        if let docx_rs::ParagraphChild::Run(run) = para_child {
-            for run_child in &run.children {
-                if let docx_rs::RunChild::Text(t) = run_child {
-                    text.push_str(&t.text);
-                }
-            }
-        }
-    }
-}
-
-fn extract_table_text(table: &docx_rs::Table, text: &mut String) {
-    for row in &table.rows {
-        let docx_rs::TableChild::TableRow(row) = row;
-        let mut cells: Vec<String> = Vec::new();
-        for cell in &row.cells {
-            let docx_rs::TableRowChild::TableCell(cell) = cell;
-            let mut cell_text = String::new();
-            for child in &cell.children {
-                if let docx_rs::TableCellContent::Paragraph(p) = child {
-                    extract_paragraph_text(p, &mut cell_text);
-                }
-            }
-            cells.push(cell_text);
-        }
-        text.push_str(&cells.join("\t"));
-        text.push('\n');
-    }
-    text.push('\n');
 }
 
 fn extract_excel_text(data: &[u8]) -> Result<String> {
@@ -423,7 +377,7 @@ fn extract_pptx_text(data: &[u8]) -> Result<String> {
     // Collect and sort slide names by numeric suffix for correct order
     let mut slide_names: Vec<String> = (0..archive.len())
         .filter_map(|i| {
-            let name = archive.by_index(i).ok()?.name().to_string();
+            let name = archive.by_index(i).ok()?.name().ok()?.to_string();
             if name.starts_with("ppt/slides/slide") && name.ends_with(".xml") {
                 Some(name)
             } else {
@@ -686,13 +640,32 @@ mod tests {
         assert!(!stripped.contains("color:red"));
     }
 
+    fn docx_fixture(body: &str) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in [
+            (
+                "[Content_Types].xml",
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.to_string(),
+            ),
+            (
+                "_rels/.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.to_string(),
+            ),
+            (
+                "word/document.xml",
+                format!(r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>{body}</w:body></w:document>"#),
+            ),
+        ] {
+            archive.start_file(name, options).unwrap();
+            archive.write_all(contents.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
+    }
+
     #[test]
     fn test_extract_docx() {
-        let docx = docx_rs::Docx::new().add_paragraph(
-            docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Hello from DOCX")),
-        );
-        let mut buf = Vec::new();
-        docx.build().pack(std::io::Cursor::new(&mut buf)).unwrap();
+        let buf = docx_fixture("<w:p><w:r><w:t>Hello from DOCX</w:t></w:r></w:p>");
 
         let result = extract_content(
             &buf,
@@ -709,36 +682,17 @@ mod tests {
 
     #[test]
     fn test_extract_docx_with_table() {
-        let table = docx_rs::Table::new(vec![
-            docx_rs::TableRow::new(vec![
-                docx_rs::TableCell::new().add_paragraph(
-                    docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Name")),
-                ),
-                docx_rs::TableCell::new().add_paragraph(
-                    docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Age")),
-                ),
-            ]),
-            docx_rs::TableRow::new(vec![
-                docx_rs::TableCell::new().add_paragraph(
-                    docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Alice")),
-                ),
-                docx_rs::TableCell::new().add_paragraph(
-                    docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("30")),
-                ),
-            ]),
-        ]);
-
-        let docx = docx_rs::Docx::new()
-            .add_paragraph(
-                docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Before table")),
-            )
-            .add_table(table)
-            .add_paragraph(
-                docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("After table")),
-            );
-
-        let mut buf = Vec::new();
-        docx.build().pack(std::io::Cursor::new(&mut buf)).unwrap();
+        let buf = docx_fixture(concat!(
+            "<w:p><w:r><w:t>Before table</w:t></w:r></w:p>",
+            "<w:tbl><w:tr>",
+            "<w:tc><w:p><w:r><w:t>Name</w:t></w:r></w:p></w:tc>",
+            "<w:tc><w:p><w:r><w:t>Age</w:t></w:r></w:p></w:tc>",
+            "</w:tr><w:tr>",
+            "<w:tc><w:p><w:r><w:t>Alice</w:t></w:r></w:p></w:tc>",
+            "<w:tc><w:p><w:r><w:t>30</w:t></w:r></w:p></w:tc>",
+            "</w:tr></w:tbl>",
+            "<w:p><w:r><w:t>After table</w:t></w:r></w:p>",
+        ));
 
         let result = extract_content(
             &buf,
@@ -757,6 +711,29 @@ mod tests {
             result.contains("After table"),
             "Missing paragraph after table"
         );
+    }
+
+    #[test]
+    fn test_extract_docx_preserves_runs_entities_and_paragraphs() {
+        let buf = docx_fixture(concat!(
+            "<w:p><w:r><w:t xml:space=\"preserve\">Hello </w:t></w:r>",
+            "<w:r><w:t>world &amp; friends</w:t></w:r></w:p>",
+            "<w:p><w:r><w:t>Next paragraph</w:t></w:r></w:p>",
+        ));
+        let result =
+            extract_content(&buf, "application/octet-stream", Some("example.docx")).unwrap();
+        assert_eq!(result, "Hello world & friends\nNext paragraph");
+    }
+
+    #[test]
+    fn test_extract_docx_rejects_invalid_packages() {
+        let empty_zip = zip::ZipWriter::new(Cursor::new(Vec::new()))
+            .finish()
+            .unwrap()
+            .into_inner();
+        for data in [b"not a ZIP archive".as_slice(), empty_zip.as_slice()] {
+            assert!(extract_content(data, "application/octet-stream", Some("bad.docx")).is_err());
+        }
     }
 
     #[test]

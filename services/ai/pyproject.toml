@@ -18,15 +18,15 @@ dependencies = [
     "anthropic>=0.68.0",
     "boto3>=1.40.0",
     "openai>=1.82.0",
-    "transformers>=4.52.0",
+    "transformers>=5.10.4",
     "asyncpg>=0.30.0",
     "python-ulid>=3.1.0",
-    "opentelemetry-api>=1.29.0",
-    "opentelemetry-sdk>=1.29.0",
-    "opentelemetry-exporter-otlp>=1.29.0",
-    "opentelemetry-instrumentation-fastapi>=0.50b0",
-    "opentelemetry-instrumentation-httpx>=0.50b0",
-    "mem0ai>=2.0.0",
+    "opentelemetry-api>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+    "opentelemetry-exporter-otlp>=1.45.1",
+    "opentelemetry-instrumentation-fastapi>=0.66b2",
+    "opentelemetry-instrumentation-httpx>=0.66b2",
+    "mem0ai>=2.0.18",
     "pgvector>=0.4.2",
     "psycopg[binary,pool]>=3.2",
     "redis>=5.0.0",
@@ -37,6 +37,20 @@ dependencies = [
     "aiosmtplib>=3.0.0",
     "croniter>=2.0.0",
     "python-multipart>=0.0.31",
+]
+
+[tool.uv]
+constraint-dependencies = [
+    "anyio>=4.14.2",
+    "certifi>=2026.10.18",
+    "cryptography>=50.0.0",
+    "filelock>=4.2.1",
+    "fsspec>=2026.6.0",
+    "h2>=4.4.1",
+    "hpack>=4.2.0",
+    "pyasn1>=0.6.5",
+    "pyjwt>=2.15.0",
+    "urllib3>=2.8.0",
 ]
 
 [tool.pytest.ini_options]

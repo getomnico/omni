@@ -5,20 +5,26 @@ Unit tests for the chunking functions.
 import re
 
 import pytest
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+from transformers import PreTrainedTokenizerFast
+
 from processing import Chunker
+
+
+@pytest.fixture
+def tokenizer() -> PreTrainedTokenizerFast:
+    backend = Tokenizer(
+        WordLevel({"[UNK]": 0, ".": 1, "!": 2, "?": 3}, unk_token="[UNK]")
+    )
+    backend.pre_tokenizer = Whitespace()
+    return PreTrainedTokenizerFast(tokenizer_object=backend, unk_token="[UNK]")
 
 
 @pytest.mark.unit
 class TestChunkerSentenceMode:
     """Test cases for the Chunker class in sentence mode."""
-
-    @pytest.fixture
-    def tokenizer(self):
-        """Load the tokenizer for testing."""
-        return AutoTokenizer.from_pretrained(
-            "jinaai/jina-embeddings-v3", trust_remote_code=True
-        )
 
     @pytest.fixture
     def chunker(self):
@@ -102,9 +108,9 @@ class TestChunkerSentenceMode:
         for chunk in chunks:
             stripped = chunk.strip()
             assert (
-                stripped.endswith(("."))
-                or stripped.endswith(("!"))
-                or stripped.endswith(("?"))
+                stripped.endswith(".")
+                or stripped.endswith("!")
+                or stripped.endswith("?")
             )
 
     def test_long_single_sentence(self, tokenizer, chunker):
@@ -136,13 +142,6 @@ class TestChunkerSentenceMode:
 @pytest.mark.unit
 class TestChunkerFixedMode:
     """Test cases for the Chunker class in fixed token mode."""
-
-    @pytest.fixture
-    def tokenizer(self):
-        """Load the tokenizer for testing."""
-        return AutoTokenizer.from_pretrained(
-            "jinaai/jina-embeddings-v3", trust_remote_code=True
-        )
 
     @pytest.fixture
     def chunker(self):
