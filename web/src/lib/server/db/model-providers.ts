@@ -14,6 +14,7 @@ export const MODEL_PROVIDER_TYPES = [
     'gemini',
     'azure_foundry',
     'vertex_ai',
+    'claude_cli',
 ] as const
 export type ModelProviderType = (typeof MODEL_PROVIDER_TYPES)[number]
 
@@ -84,6 +85,11 @@ export const PREDEFINED_MODELS: Record<
         { modelId: 'claude-sonnet-5', displayName: 'Claude Sonnet 5' },
         { modelId: 'gemini-3.6-flash', displayName: 'Gemini 3.6 Flash' },
         { modelId: 'gemini-3.5-flash', displayName: 'Gemini 3.5 Flash' },
+    ],
+    claude_cli: [
+        { modelId: 'opus', displayName: 'Claude Opus (latest)' },
+        { modelId: 'sonnet', displayName: 'Claude Sonnet (latest)' },
+        { modelId: 'haiku', displayName: 'Claude Haiku (latest)' },
     ],
 }
 

@@ -12,6 +12,7 @@ from providers import LLMProvider, ProviderError, ProviderType, create_llm_provi
 from providers.anthropic import AnthropicProvider
 from providers.azure_foundry import AzureFoundryProvider
 from providers.bedrock import BedrockProvider
+from providers.claude_cli import ClaudeCliProvider
 from providers.gemini import GeminiProvider
 from providers.openai import OpenAIProvider
 from providers.openai_compatible import OpenAICompatibleProvider
@@ -216,6 +217,14 @@ async def _list_gemini_models(
     ]
 
 
+# Claude Code CLI model aliases; each resolves to the latest model of its family.
+_CLAUDE_CLI_MODELS = [
+    ("opus", "Claude Opus (latest)"),
+    ("sonnet", "Claude Sonnet (latest)"),
+    ("haiku", "Claude Haiku (latest)"),
+]
+
+
 async def _list_bedrock_models(
     req: TestModelRequest,
     limit: int = DISCOVERED_MODELS_LIMIT,
@@ -271,6 +280,11 @@ async def _list_provider_models(
         return await _list_openai_sdk_models(provider._delegate.client, limit=limit)
     if provider_type == ProviderType.VERTEX_AI and isinstance(provider, VertexAIProvider):
         return await _list_gemini_models(provider, limit)
+    if provider_type == ProviderType.CLAUDE_CLI:
+        return [
+            AvailableModel(model_id=mid, display_name=dname)
+            for mid, dname in _CLAUDE_CLI_MODELS[:limit]
+        ]
     return []
 
 
@@ -347,6 +361,10 @@ async def test_model_provider(
 
     start = time.monotonic()
     try:
+        # The CLI has no model-listing call that proves its credentials work,
+        # so run a minimal completion instead.
+        if isinstance(provider, ClaudeCliProvider):
+            await asyncio.wait_for(provider.verify_connection(), timeout=60)
         models = await asyncio.wait_for(
             _list_provider_models(provider_type, provider, req, limit=1),
             timeout=15,
@@ -369,7 +387,7 @@ async def test_model_provider(
     except TimeoutError:
         return TestModelResponse(
             ok=False,
-            error="Test timed out after 15s",
+            error="Test connection timed out",
             provider=provider.provider_type,
             model=provider.model_name,
         )

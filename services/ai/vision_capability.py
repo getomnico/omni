@@ -52,6 +52,7 @@ _VISION_FAMILY_PROVIDER_TYPES = frozenset(
         "gemini",
         "bedrock",
         "vertex_ai",
+        "claude_cli",
     }
 )
 

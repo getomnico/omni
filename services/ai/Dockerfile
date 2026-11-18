@@ -39,6 +39,17 @@ ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
+# Optional Claude Code CLI for the claude_cli model provider.
+ARG INSTALL_CLAUDE_CLI=false
+ARG CLAUDE_CLI_VERSION=stable
+ENV DISABLE_AUTOUPDATER=1
+RUN if [ "$INSTALL_CLAUDE_CLI" = "true" ]; then \
+        curl -fsSL https://claude.ai/install.sh | bash -s "$CLAUDE_CLI_VERSION" \
+        && cp -L /root/.local/bin/claude /usr/local/bin/claude \
+        && rm -rf /root/.local/bin/claude /root/.local/share/claude \
+        && claude --version; \
+    fi
+
 WORKDIR /app
 
 # Copy site-packages from builder
