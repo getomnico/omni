@@ -81,6 +81,8 @@ services:
     build:
       context: ../services/ai
       dockerfile: Dockerfile
+      args:
+        INSTALL_CLAUDE_CLI: ${INSTALL_CLAUDE_CLI:-false}
     ports:
       - "${AI_SERVICE_PORT}:${AI_SERVICE_PORT}"
     environment:

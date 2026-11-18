@@ -146,6 +146,7 @@ from .openai import OpenAIProvider
 from .gemini import GeminiProvider
 from .azure_foundry import AzureFoundryProvider
 from .vertex_ai import VertexAIProvider
+from .claude_cli import DEFAULT_CLI_MODEL, ClaudeCliProvider
 
 
 def create_llm_provider(provider_type: ProviderType | str, **kwargs) -> LLMProvider:
@@ -209,6 +210,15 @@ def create_llm_provider(provider_type: ProviderType | str, **kwargs) -> LLMProvi
             model=kwargs.get("model", "gemini-2.5-flash"),
         )
 
+    if pt is ProviderType.CLAUDE_CLI:
+        from config import CLAUDE_CLI_PATH
+
+        return ClaudeCliProvider(
+            model=kwargs.get("model") or DEFAULT_CLI_MODEL,
+            auth_token=kwargs.get("api_key"),
+            cli_path=CLAUDE_CLI_PATH,
+        )
+
     raise ValueError(f"Unhandled provider type: {pt!r}")
 
 
@@ -229,5 +239,6 @@ __all__ = [
     "GeminiProvider",
     "AzureFoundryProvider",
     "VertexAIProvider",
+    "ClaudeCliProvider",
     "create_llm_provider",
 ]

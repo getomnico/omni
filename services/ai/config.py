@@ -61,6 +61,7 @@ DEFAULT_MAX_TOKENS = int(get_optional_env("DEFAULT_MAX_TOKENS", "8192"))
 
 # AWS configuration (used by online Bedrock embedding/LLM providers)
 AWS_REGION = get_optional_env("AWS_REGION", "")  # Optional, auto-detected in ECS
+CLAUDE_CLI_PATH = get_optional_env("CLAUDE_CLI_PATH", "claude")
 
 # Conversation compaction
 MAX_CONVERSATION_INPUT_TOKENS = int(

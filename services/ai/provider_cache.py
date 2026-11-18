@@ -272,6 +272,15 @@ def _build_provider_from_record(record: ModelRecord) -> LLMProvider | None:
                 model=model_id,
             )
 
+        elif provider_type == "claude_cli":
+            from config import CLAUDE_CLI_PATH
+            from providers.claude_cli import ClaudeCliProvider
+            return ClaudeCliProvider(
+                model=model_id,
+                auth_token=config.get("apiKey"),
+                cli_path=CLAUDE_CLI_PATH,
+            )
+
         else:
             raise ValueError(f"Unknown provider type: {provider_type}")
 

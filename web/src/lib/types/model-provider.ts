@@ -9,6 +9,7 @@ export type ProviderType =
     | 'vertex_ai'
     | 'azure_foundry'
     | 'openai_compatible'
+    | 'claude_cli'
 
 export interface TestModelRequest {
     api_key?: string | null

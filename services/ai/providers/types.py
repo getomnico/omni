@@ -17,6 +17,7 @@ class ProviderType(StrEnum):
     GEMINI = "gemini"
     AZURE_FOUNDRY = "azure_foundry"
     VERTEX_AI = "vertex_ai"
+    CLAUDE_CLI = "claude_cli"
 
 
 class ProviderError(Exception):

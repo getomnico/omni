@@ -45,6 +45,7 @@
         | 'gemini'
         | 'azure_foundry'
         | 'vertex_ai'
+        | 'claude_cli'
     type ModelRole = 'default' | 'secondary' | 'unassigned'
 
     interface ProviderFormState {
@@ -107,6 +108,11 @@
             description: 'Claude and Gemini models via Google Cloud Vertex AI',
             icon: googleIcon,
         },
+        claude_cli: {
+            label: 'Claude Code CLI',
+            description: 'Claude models via the Claude Code CLI (claude -p)',
+            icon: anthropicIcon,
+        },
     }
 
     const providerTypes: ProviderType[] = [
@@ -116,6 +122,7 @@
         'azure_foundry',
         'bedrock',
         'vertex_ai',
+        'claude_cli',
         'openai_compatible',
     ]
     const multiInstanceTypes: ProviderType[] = ['openai_compatible']
@@ -339,10 +346,12 @@
         type === 'anthropic' ||
         type === 'openai' ||
         type === 'gemini' ||
-        type === 'openai_compatible'
+        type === 'openai_compatible' ||
+        type === 'claude_cli'
     const showApiUrl = (type: ProviderType) =>
         type === 'openai_compatible' || type === 'azure_foundry'
-    const apiKeyOptional = (type: ProviderType) => type === 'openai_compatible'
+    const apiKeyOptional = (type: ProviderType) =>
+        type === 'openai_compatible' || type === 'claude_cli'
     const showRegion = (type: ProviderType) => type === 'bedrock' || type === 'vertex_ai'
     const showProjectId = (type: ProviderType) => type === 'vertex_ai'
 </script>
@@ -602,7 +611,8 @@
             {#if showApiKey(formState.providerType)}
                 <div class="space-y-2">
                     <Label for="provider-api-key"
-                        >API Key {apiKeyOptional(formState.providerType)
+                        >{formState.providerType === 'claude_cli' ? 'Auth Token' : 'API Key'}
+                        {apiKeyOptional(formState.providerType)
                             ? '(optional)'
                             : editingHasApiKey && editMode
                               ? ''
@@ -617,7 +627,9 @@
                             ? 'Leave empty to keep current key'
                             : formState.providerType === 'anthropic'
                               ? 'sk-ant-...'
-                              : 'sk-...'}
+                              : formState.providerType === 'claude_cli'
+                                ? 'sk-ant-oat... or sk-ant-api...'
+                                : 'sk-...'}
                         required={!editMode && !apiKeyOptional(formState.providerType)} />
                 </div>
             {/if}
@@ -704,6 +716,15 @@
                     ><Info class="h-4 w-4" /><Alert.Description
                         >Authentication uses Application Default Credentials (ADC). Ensure the
                         service account has Vertex AI permissions.</Alert.Description
+                    ></Alert.Root
+                >{/if}
+            {#if formState.providerType === 'claude_cli'}<Alert.Root
+                    ><Info class="h-4 w-4" /><Alert.Description
+                        >Requires the <code class="font-mono text-xs">claude</code> CLI in the
+                        omni-ai container (build with
+                        <code class="font-mono text-xs">INSTALL_CLAUDE_CLI=true</code>). Use a token
+                        from <code class="font-mono text-xs">claude setup-token</code> or an Anthropic
+                        API key; leave empty to use the container's existing login.</Alert.Description
                     ></Alert.Root
                 >{/if}
             {#if formState.providerType === 'bedrock'}<Alert.Root

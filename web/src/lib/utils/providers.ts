@@ -6,6 +6,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
     gemini: 'Gemini',
     azure_foundry: 'Azure AI',
     vertex_ai: 'Vertex AI',
+    claude_cli: 'Claude Code CLI',
 }
 
 export function formatProviderName(provider: string): string {

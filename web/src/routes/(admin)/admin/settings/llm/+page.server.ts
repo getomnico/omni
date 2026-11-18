@@ -503,6 +503,8 @@ function buildTestRequest(
                 api_key: config.apiKey ?? null,
                 model: modelId,
             }
+        case 'claude_cli':
+            return { api_key: config.apiKey ?? null, model: modelId }
     }
 }
 
