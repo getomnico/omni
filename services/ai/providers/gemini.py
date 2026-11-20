@@ -11,6 +11,7 @@ through ``model_dump()`` and into the persisted message JSON. On replay,
 ``_convert_messages_to_gemini`` reads it back and re-attaches it to the Gemini ``Part``.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -317,6 +318,7 @@ class GeminiProvider(LLMProvider):
         model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Gemini, yielding Anthropic-compatible MessageStreamEvents."""
+        stream = None
         try:
             active_model = model or self.model
             contents = _convert_messages_to_gemini(
@@ -357,20 +359,61 @@ class GeminiProvider(LLMProvider):
             text_started = False
             current_text_index = 0
             last_usage_metadata = None
+            stop_reason = "end_turn"
+            terminal_signal_received = False
+            terminal_deadline: float | None = None
 
-            async for chunk in await self.client.aio.models.generate_content_stream(
+            stream = await self.client.aio.models.generate_content_stream(
                 model=active_model,
                 contents=contents,
                 config=config,
-            ):
-                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+            )
+            iterator = stream.__aiter__()
+            while True:
+                try:
+                    if terminal_signal_received:
+                        if terminal_deadline is None:
+                            break
+                        remaining = terminal_deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            break
+                        chunk = await asyncio.wait_for(
+                            iterator.__anext__(), timeout=remaining
+                        )
+                    else:
+                        chunk = await iterator.__anext__()
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    if terminal_signal_received:
+                        break
+                    raise
+                chunk_has_usage = bool(
+                    getattr(chunk, "usage_metadata", None)
+                )
+                if chunk_has_usage:
                     last_usage_metadata = chunk.usage_metadata
+                    if terminal_signal_received:
+                        break
 
                 if not chunk.candidates:
                     continue
 
                 candidate = chunk.candidates[0]
+                finish_reason = getattr(candidate, "finish_reason", None)
+                if finish_reason is not None:
+                    finish_reason_name = getattr(
+                        finish_reason, "name", str(finish_reason)
+                    )
+                    if finish_reason_name.upper() == "MAX_TOKENS":
+                        stop_reason = "max_tokens"
                 if not candidate.content or not candidate.content.parts:
+                    if finish_reason is not None:
+                        if not terminal_signal_received:
+                            terminal_deadline = asyncio.get_running_loop().time() + 0.25
+                        terminal_signal_received = True
+                        if chunk_has_usage:
+                            break
                     continue
 
                 for part in candidate.content.parts:
@@ -454,6 +497,13 @@ class GeminiProvider(LLMProvider):
                             index=block_index,
                         )
 
+                if finish_reason is not None:
+                    if not terminal_signal_received:
+                        terminal_deadline = asyncio.get_running_loop().time() + 0.25
+                    terminal_signal_received = True
+                    if chunk_has_usage:
+                        break
+
             if text_started:
                 yield RawContentBlockStopEvent(
                     type="content_block_stop",
@@ -472,7 +522,7 @@ class GeminiProvider(LLMProvider):
                 )
                 yield RawMessageDeltaEvent(
                     type="message_delta",
-                    delta=Delta(stop_reason="end_turn"),
+                    delta=Delta(stop_reason=stop_reason),
                     usage=MessageDeltaUsage(
                         # prompt_token_count is the TOTAL prompt size and
                         # includes the cached portion; report only the
@@ -481,6 +531,16 @@ class GeminiProvider(LLMProvider):
                         input_tokens=max(prompt_tokens - cached_tokens, 0),
                         output_tokens=output_tokens,
                         cache_read_input_tokens=cached_tokens,
+                    ),
+                )
+            else:
+                yield RawMessageDeltaEvent(
+                    type="message_delta",
+                    delta=Delta(stop_reason=stop_reason),
+                    usage=MessageDeltaUsage(
+                        input_tokens=0,
+                        output_tokens=0,
+                        cache_read_input_tokens=0,
                     ),
                 )
 
@@ -495,6 +555,10 @@ class GeminiProvider(LLMProvider):
                 status_code=_gemini_status_code(e),
                 cause=e,
             ) from e
+        finally:
+            close_stream = getattr(stream, "aclose", None)
+            if close_stream is not None:
+                await close_stream()
 
     async def generate_response(
         self,

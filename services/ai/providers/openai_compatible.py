@@ -6,6 +6,7 @@ Uses the OpenAI SDK with a custom base_url, giving us full tool/function-calling
 support without provider-specific glue.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -516,6 +517,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     provider_type: ClassVar[ProviderType] = ProviderType.OPENAI_COMPATIBLE
     PERSISTED_BLOCK_EXTRAS = ASSISTANT_MESSAGE_PASSTHROUGH_KEYS
+    _FINAL_USAGE_TIMEOUT_SECONDS = 0.25
 
     def __init__(
         self, base_url: str, api_key: str | None = None, model: str = "default"
@@ -615,6 +617,7 @@ class OpenAICompatibleProvider(LLMProvider):
         model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response, yielding Anthropic-compatible MessageStreamEvents."""
+        stream = None
         try:
             active_model = model or self.model
             openai_messages = _convert_messages_to_openai(
@@ -668,15 +671,41 @@ class OpenAICompatibleProvider(LLMProvider):
 
             stream_input_tokens = 0
             stream_output_tokens = 0
+            stop_reason = "end_turn"
+            terminal_signal_received = False
+            terminal_deadline: float | None = None
             reasoning_content_parts: list[str] = []
 
             chunk: ChatCompletionChunk
-            async for chunk in stream:
+            iterator = stream.__aiter__()
+            while True:
+                try:
+                    if terminal_signal_received:
+                        if terminal_deadline is None:
+                            break
+                        remaining = terminal_deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            break
+                        chunk = await asyncio.wait_for(
+                            iterator.__anext__(), timeout=remaining
+                        )
+                    else:
+                        chunk = await iterator.__anext__()
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    if terminal_signal_received:
+                        break
+                    raise
                 # Usage-only chunk (no choices) arrives at end of stream
                 if chunk.usage:
                     stream_input_tokens = chunk.usage.prompt_tokens or 0
                     stream_output_tokens = chunk.usage.completion_tokens or 0
 
+                if terminal_signal_received:
+                    if chunk.usage is not None:
+                        break
+                    continue
                 if not chunk.choices:
                     continue
 
@@ -755,9 +784,19 @@ class OpenAICompatibleProvider(LLMProvider):
                             )
 
                 # Handle finish_reason
-                if chunk.choices[0].finish_reason is not None:
-                    # Continue through the provider's final usage-only chunk.
-                    continue
+                finish_reason = chunk.choices[0].finish_reason
+                if finish_reason is not None:
+                    terminal_signal_received = True
+                    terminal_deadline = (
+                        asyncio.get_running_loop().time()
+                        + self._FINAL_USAGE_TIMEOUT_SECONDS
+                    )
+                    if finish_reason == "length":
+                        stop_reason = "max_tokens"
+                    elif finish_reason == "tool_calls":
+                        stop_reason = "tool_use"
+                    if chunk.usage is not None:
+                        break
 
             # Close any open blocks
             if text_started:
@@ -790,15 +829,14 @@ class OpenAICompatibleProvider(LLMProvider):
                     index=reasoning_block_index,
                 )
 
-            if stream_input_tokens or stream_output_tokens:
-                yield RawMessageDeltaEvent(
-                    type="message_delta",
-                    delta=Delta(stop_reason="end_turn"),
-                    usage=MessageDeltaUsage(
-                        input_tokens=stream_input_tokens,
-                        output_tokens=stream_output_tokens,
-                    ),
-                )
+            yield RawMessageDeltaEvent(
+                type="message_delta",
+                delta=Delta(stop_reason=stop_reason),
+                usage=MessageDeltaUsage(
+                    input_tokens=stream_input_tokens,
+                    output_tokens=stream_output_tokens,
+                ),
+            )
 
             yield RawMessageStopEvent(type="message_stop")
 
@@ -815,6 +853,10 @@ class OpenAICompatibleProvider(LLMProvider):
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
             ) from e
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if close_stream is not None:
+                await close_stream()
 
     async def generate_response(
         self,

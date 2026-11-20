@@ -101,6 +101,7 @@ class AnthropicProvider(LLMProvider):
         output_config: dict[str, Any] | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from Anthropic Claude API."""
+        stream = None
         try:
             active_model = model or self.model
             # Use provided messages or create from prompt
@@ -190,6 +191,10 @@ class AnthropicProvider(LLMProvider):
                 cause=e,
                 is_context_overflow=_anthropic_context_overflow(e),
             ) from e
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if close_stream is not None:
+                await close_stream()
 
     async def generate_response(
         self,
