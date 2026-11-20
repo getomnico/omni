@@ -27,6 +27,16 @@ from providers import LLMProviderStreamError, ProviderError
 logger = logging.getLogger(__name__)
 
 
+class OutputLimitError(Exception):
+    message = (
+        "The response reached the model’s output limit and was cut short. "
+        "Ask it to continue or request a shorter answer."
+    )
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
+
+
 # ---------------------------------------------------------------------------
 # SSE event string helpers
 # ---------------------------------------------------------------------------
@@ -109,6 +119,8 @@ class ApprovalRequiredEvent(ApprovalRequiredEventItem):
 
 
 def _chat_error_message(exc: Exception) -> str:
+    if isinstance(exc, OutputLimitError):
+        return exc.message
     if isinstance(exc, ProviderError) and exc.message:
         return f"Failed to generate response: {exc.message}"
     if isinstance(exc, LLMProviderStreamError) and exc.message:

@@ -107,6 +107,7 @@ class OpenAIProvider(LLMProvider):
         model: str | None = None,
     ) -> AsyncIterator[MessageStreamEvent]:
         """Stream response from OpenAI Responses API, yielding Anthropic-compatible MessageStreamEvents."""
+        stream = None
         try:
             active_model = model or self.model
             input_items = self._convert_messages(
@@ -140,6 +141,7 @@ class OpenAIProvider(LLMProvider):
             text_started = False
             current_text_index = 0
             tool_call_indices: dict[str, int] = {}  # item_id -> content block index
+            active_tool_blocks: set[int] = set()
             next_block_index = 0
 
             async for event in stream:
@@ -194,6 +196,7 @@ class OpenAIProvider(LLMProvider):
                             block_index = next_block_index
                             next_block_index += 1
                             tool_call_indices[item.id] = block_index
+                            active_tool_blocks.add(block_index)
                             yield RawContentBlockStartEvent(
                                 type="content_block_start",
                                 index=block_index,
@@ -231,14 +234,55 @@ class OpenAIProvider(LLMProvider):
                 elif event_type == "response.output_item.done":
                     item = event.item
                     if item.type == "function_call" and item.id in tool_call_indices:
-                        yield RawContentBlockStopEvent(
-                            type="content_block_stop",
-                            index=tool_call_indices[item.id],
-                        )
+                        block_index = tool_call_indices[item.id]
+                        if block_index in active_tool_blocks:
+                            yield RawContentBlockStopEvent(
+                                type="content_block_stop",
+                                index=block_index,
+                            )
+                            active_tool_blocks.remove(block_index)
 
                 # Handle completion — extract usage
                 elif event_type == "response.completed":
                     resp_usage = getattr(event.response, "usage", None)
+                    input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
+                    output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
+                    details = getattr(resp_usage, "input_tokens_details", None)
+                    cached_tokens = (
+                        (getattr(details, "cached_tokens", 0) or 0) if details else 0
+                    )
+                    yield RawMessageDeltaEvent(
+                        type="message_delta",
+                        delta=Delta(stop_reason="end_turn"),
+                        usage=MessageDeltaUsage(
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cache_read_input_tokens=cached_tokens,
+                        ),
+                    )
+                    break
+
+                # Handle incomplete response (max_output_tokens exhausted mid-stream)
+                elif event_type == "response.incomplete":
+                    if text_started:
+                        yield RawContentBlockStopEvent(
+                            type="content_block_stop", index=current_text_index
+                        )
+                        text_started = False
+                    for block_index in active_tool_blocks:
+                        yield RawContentBlockStopEvent(
+                            type="content_block_stop", index=block_index
+                        )
+                    active_tool_blocks.clear()
+                    resp_usage = getattr(event.response, "usage", None)
+                    incomplete_details = getattr(
+                        event.response, "incomplete_details", None
+                    )
+                    stop_reason = (
+                        "max_tokens"
+                        if getattr(incomplete_details, "reason", None) == "max_output_tokens"
+                        else "end_turn"
+                    )
                     if resp_usage:
                         input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
                         output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
@@ -250,34 +294,21 @@ class OpenAIProvider(LLMProvider):
                         )
                         yield RawMessageDeltaEvent(
                             type="message_delta",
-                            delta=Delta(stop_reason="end_turn"),
+                            delta=Delta(stop_reason=stop_reason),
                             usage=MessageDeltaUsage(
                                 input_tokens=input_tokens,
                                 output_tokens=output_tokens,
                                 cache_read_input_tokens=cached_tokens,
                             ),
                         )
-                    break
-
-                # Handle incomplete response (max_output_tokens exhausted mid-stream)
-                elif event_type == "response.incomplete":
-                    resp_usage = getattr(event.response, "usage", None)
-                    if resp_usage:
-                        input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
-                        output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
-                        details = getattr(resp_usage, "input_tokens_details", None)
-                        cached_tokens = (
-                            (getattr(details, "cached_tokens", 0) or 0)
-                            if details
-                            else 0
-                        )
+                    else:
                         yield RawMessageDeltaEvent(
                             type="message_delta",
-                            delta=Delta(stop_reason="max_tokens"),
+                            delta=Delta(stop_reason=stop_reason),
                             usage=MessageDeltaUsage(
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens,
-                                cache_read_input_tokens=cached_tokens,
+                                input_tokens=0,
+                                output_tokens=0,
+                                cache_read_input_tokens=0,
                             ),
                         )
                     break
@@ -311,6 +342,10 @@ class OpenAIProvider(LLMProvider):
                 cause=e,
                 is_context_overflow=_openai_context_overflow(e),
             ) from e
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if close_stream is not None:
+                await close_stream()
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert Anthropic-style messages to OpenAI Responses API input items."""
