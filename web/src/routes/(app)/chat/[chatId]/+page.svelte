@@ -10,6 +10,7 @@
         TextDelta,
         CitationsDelta,
         InputJSONDelta,
+        TextCitationParam,
     } from '@anthropic-ai/sdk/resources/messages'
     import {
         Copy,
@@ -70,6 +71,11 @@
         sourceIdentityFromCitation,
         type NormalizedCitation,
     } from '$lib/utils/citations'
+    import {
+        buildCitationDocumentIndex,
+        resolveCitationDocumentId,
+    } from '$lib/utils/citation-documents'
+    import CitationDocumentDialog from '$lib/components/citation-document-dialog.svelte'
     import { afterNavigate, invalidate, invalidateAll } from '$app/navigation'
     import { ulid } from 'ulid'
     import { page } from '$app/state'
@@ -625,6 +631,11 @@
         })
     })
     let drawerOpenByKey = $state<Record<string, boolean>>({})
+    let citationPreview = $state<{
+        citation: NormalizedCitation
+        documentId: string | null
+    } | null>(null)
+    let citationPreviewOpen = $state(false)
 
     async function copyMessageToClipboard(message: ProcessedMessage) {
         const content = message.content
@@ -735,8 +746,10 @@
         return res
     }
 
-    function collectSources(message: ProcessedMessage): NormalizedCitation[] {
-        const citations: NormalizedCitation[] = []
+    type CitedSource = { citation: TextCitationParam; normalized: NormalizedCitation }
+
+    function collectSources(message: ProcessedMessage): CitedSource[] {
+        const sources: CitedSource[] = []
         const sourceSet = new Set<string>()
         for (const block of message.content) {
             if (block.type === 'text' && block.citations) {
@@ -744,12 +757,25 @@
                     const sourceId = sourceIdentityFromCitation(citation)
                     if (!sourceSet.has(sourceId)) {
                         sourceSet.add(sourceId)
-                        citations.push(normalizeCitation(citation))
+                        sources.push({ citation, normalized: normalizeCitation(citation) })
                     }
                 }
             }
         }
-        return citations
+        return sources
+    }
+
+    // Resolved on click rather than reactively so streaming updates don't rebuild
+    // the index on every delta.
+    function openCitationPreview(citation: TextCitationParam) {
+        const index = buildCitationDocumentIndex(
+            getDisplayPath(chatMessages).map((message) => message.message),
+        )
+        citationPreview = {
+            citation: normalizeCitation(citation),
+            documentId: resolveCitationDocumentId(index, citation),
+        }
+        citationPreviewOpen = true
     }
 
     // Groups messages by parentId, sorted by seq num within each group
@@ -2344,7 +2370,9 @@
                     setTimeout(() => void handleSubmit(clientMessageId), 150)
                 } else {
                     void resumeActiveStreamIfNeeded()
-                    toast.info('The previous response is still in progress. Reconnecting to it now.')
+                    toast.info(
+                        'The previous response is still in progress. Reconnecting to it now.',
+                    )
                 }
             } else {
                 console.error('Failed to send message to chat session')
@@ -2770,7 +2798,44 @@
     </div>
 {/snippet}
 
-{#snippet sourcesDrawer(citations: NormalizedCitation[], drawerKey: string)}
+{#snippet citedSourceSummary(citation: NormalizedCitation)}
+    <div class="flex items-center gap-2">
+        {#if citation.isImap}
+            <Mail class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+        {:else if citation.iconHint && getIconFromSearchResult(citation.iconHint)}
+            <img
+                src={getIconFromSearchResult(citation.iconHint)}
+                alt=""
+                class="!m-0 h-4 w-4 flex-shrink-0" />
+        {:else if citation.sourceName === 'Web'}
+            <Globe class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+        {:else}
+            <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
+        {/if}
+        <div class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <p
+                data-testid="drawer-source-title"
+                class="text-muted-foreground text-sm font-semibold">
+                {citation.title}
+            </p>
+            <p class="text-muted-foreground/60 text-xs">
+                {citation.sourceName}
+            </p>
+            {#if citation.isImap}
+                <ImapCitationSource source={citation.iconHint ?? undefined} />
+            {:else if citation.locationLabel}
+                <p class="text-muted-foreground/70 text-xs">
+                    {citation.locationLabel}
+                </p>
+            {/if}
+        </div>
+        {#if citation.href}
+            <ExternalLink class="text-muted-foreground h-3 w-3 flex-shrink-0" />
+        {/if}
+    </div>
+{/snippet}
+
+{#snippet sourcesDrawer(sources: CitedSource[], drawerKey: string)}
     <Drawer.Root
         open={drawerOpenByKey[drawerKey] ?? false}
         direction="right"
@@ -2786,7 +2851,7 @@
                     variant="outline"
                     class="cursor-pointer gap-1.5 text-xs">
                     <BookOpen class="h-3.5 w-3.5" />
-                    {citations.length} source{citations.length > 1 ? 's' : ''}
+                    {sources.length} source{sources.length > 1 ? 's' : ''}
                 </Button>
             {/snippet}
         </Drawer.Trigger>
@@ -2805,51 +2870,31 @@
             </Drawer.Header>
             <div class="min-h-0 flex-1 overflow-y-auto px-3 pt-3 pb-5">
                 <div class="flex flex-col gap-2">
-                    {#each citations as citation (citation.sourceId)}
-                        <svelte:element
-                            this={citation.href ? 'a' : 'div'}
-                            href={citation.href ?? undefined}
-                            data-testid="drawer-source"
-                            class="hover:bg-muted/40 rounded-lg p-2 px-2.5 text-xs font-normal no-underline transition-colors"
-                            target={citation.href ? '_blank' : undefined}
-                            rel={citation.href ? 'noopener noreferrer' : undefined}>
-                            <div class="flex items-center gap-2">
-                                {#if citation.isImap}
-                                    <Mail class="text-muted-foreground h-4 w-4 flex-shrink-0" />
-                                {:else if citation.iconHint && getIconFromSearchResult(citation.iconHint)}
-                                    <img
-                                        src={getIconFromSearchResult(citation.iconHint)}
-                                        alt=""
-                                        class="!m-0 h-4 w-4 flex-shrink-0" />
-                                {:else if citation.sourceName === 'Web'}
-                                    <Globe class="text-muted-foreground h-4 w-4 flex-shrink-0" />
-                                {:else}
-                                    <FileText class="text-muted-foreground h-4 w-4 flex-shrink-0" />
-                                {/if}
-                                <div class="flex min-w-0 flex-1 flex-col gap-0.5">
-                                    <p
-                                        data-testid="drawer-source-title"
-                                        class="text-muted-foreground text-sm font-semibold">
-                                        {citation.title}
-                                    </p>
-                                    <p class="text-muted-foreground/60 text-xs">
-                                        {citation.sourceName}
-                                    </p>
-                                    {#if citation.isImap}
-                                        <ImapCitationSource
-                                            source={citation.iconHint ?? undefined} />
-                                    {:else if citation.locationLabel}
-                                        <p class="text-muted-foreground/70 text-xs">
-                                            {citation.locationLabel}
-                                        </p>
-                                    {/if}
-                                </div>
-                                {#if citation.href}
-                                    <ExternalLink
-                                        class="text-muted-foreground h-3 w-3 flex-shrink-0" />
-                                {/if}
-                            </div>
-                        </svelte:element>
+                    {#each sources as source (source.normalized.sourceId)}
+                        {#if source.normalized.href}
+                            <!-- eslint-disable svelte/no-navigation-without-resolve -- external URL -->
+                            <a
+                                href={source.normalized.href}
+                                data-testid="drawer-source"
+                                class="hover:bg-muted/40 rounded-lg p-2 px-2.5 text-xs font-normal no-underline transition-colors"
+                                target="_blank"
+                                rel="noopener noreferrer">
+                                {@render citedSourceSummary(source.normalized)}
+                            </a>
+                            <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                        {:else}
+                            <button
+                                type="button"
+                                data-testid="drawer-source"
+                                class="hover:bg-muted/40 w-full cursor-pointer rounded-lg p-2 px-2.5 text-left text-xs font-normal transition-colors"
+                                onclick={() => {
+                                    // A modal drawer and dialog would compete for focus.
+                                    drawerOpenByKey = { ...drawerOpenByKey, [drawerKey]: false }
+                                    openCitationPreview(source.citation)
+                                }}>
+                                {@render citedSourceSummary(source.normalized)}
+                            </button>
+                        {/if}
                     {/each}
                 </div>
             </div>
@@ -2983,7 +3028,8 @@
                                     panelArtifacts.length > 0
                                         ? panelArtifacts[panelArtifacts.length - 1].key
                                         : null}
-                                    onOpenArtifact={toggleArtifactPane} />
+                                    onOpenArtifact={toggleArtifactPane}
+                                    onCitationActivate={openCitationPreview} />
                             </div>
                             {#if message.error}
                                 <div class="flex px-2">
@@ -3151,10 +3197,10 @@
                                 </Card.Root>
                             {/if}
                             {#if !isStreaming}
-                                {@const citations = collectSources(message)}
-                                {#if citations.length > 0}
+                                {@const sources = collectSources(message)}
+                                {#if sources.length > 0}
                                     <div class="flex items-center gap-2">
-                                        {@render sourcesDrawer(citations, message.renderKey)}
+                                        {@render sourcesDrawer(sources, message.renderKey)}
                                     </div>
                                 {/if}
                             {/if}
@@ -3371,3 +3417,9 @@
         </div>
     </div>
 </div>
+
+<CitationDocumentDialog
+    bind:open={citationPreviewOpen}
+    citation={citationPreview?.citation ?? null}
+    documentId={citationPreview?.documentId ?? null}
+    userConfiguration={data.user.configuration} />

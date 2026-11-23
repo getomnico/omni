@@ -24,6 +24,9 @@ from anthropic.types.tool_result_block_param import (
 
 class OmniSearchResultBlockParam(SearchResultBlockParam, total=False):
     source_type: str
+    # Lets the chat UI resolve a citation back to the indexed document, even after
+    # the stream redacts the result content that carries the [_ref:ULID] marker.
+    document_id: str
 
 
 type OmniContentBlockParam = ContentBlockParam | OmniSearchResultBlockParam

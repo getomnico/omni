@@ -12,9 +12,11 @@
         content: string
         citations?: TextCitationParam[]
         isStreaming?: boolean
+        /** Called when a citation without an external link is clicked. */
+        onCitationActivate?: (citation: TextCitationParam) => void
     }
 
-    let { content, citations, isStreaming = false }: Props = $props()
+    let { content, citations, isStreaming = false, onCitationActivate }: Props = $props()
     let staticContainerRef: HTMLElement | undefined = $state()
     let streamingContainerRef: HTMLElement | undefined = $state()
     let hasStreamed = $state(false)
@@ -51,6 +53,7 @@
 
     function citationCardProps(citation?: TextCitationParam) {
         const normalized = citation ? normalizeCitation(citation) : undefined
+        const activate = onCitationActivate
         return {
             href: normalized?.href ?? null,
             title: normalized?.title ?? '',
@@ -58,6 +61,8 @@
             iconHint: normalized?.iconHint ?? null,
             sourceName: normalized?.sourceName ?? 'Files',
             locationLabel: normalized?.locationLabel ?? null,
+            onActivate:
+                citation && normalized?.href === null && activate ? () => activate(citation) : null,
         }
     }
 
