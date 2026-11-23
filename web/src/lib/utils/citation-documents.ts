@@ -6,6 +6,7 @@ import type {
     TextCitationParam,
     ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/messages'
+import type { OmniMentionBlock } from '$lib/types/message'
 
 const READ_DOCUMENT_TOOL_NAME = 'read_document'
 const REF_PREFIX = '_ref:'
@@ -74,6 +75,21 @@ function isDocumentBlock(item: ToolResultContentItem): item is DocumentBlockPara
     return item.type === 'document'
 }
 
+// Mentions are stored unexpanded; the AI service expands each into a document
+// block titled after the mentioned document before calling the model.
+function asMentionBlock(block: ContentBlockParam): OmniMentionBlock | null {
+    if (block.type !== 'document') return null
+    const source: unknown = block.source
+    if (typeof source !== 'object' || source === null) return null
+    if (!('type' in source) || source.type !== 'omni_mention') return null
+    if (!('document_id' in source) || typeof source.document_id !== 'string') return null
+    if (!('title' in source) || typeof source.title !== 'string') return null
+    return {
+        type: 'document',
+        source: { type: 'omni_mention', document_id: source.document_id, title: source.title },
+    }
+}
+
 function contentBlocks(message: MessageParam): ContentBlockParam[] {
     return typeof message.content === 'string' ? [] : message.content
 }
@@ -82,8 +98,8 @@ function contentBlocks(message: MessageParam): ContentBlockParam[] {
  * Builds the citation-to-document index from the raw messages of a chat path.
  *
  * Citations only carry presentation fields (title/source), so they are matched
- * against the tool results that produced them: search results by source + title,
- * read_document results by document title.
+ * against the blocks that produced them: search results by source + title,
+ * read_document results and mentioned documents by document title.
  */
 export function buildCitationDocumentIndex(messages: MessageParam[]): CitationDocumentIndex {
     const readDocumentIdsByToolUseId = new Map<string, string>()
@@ -98,6 +114,11 @@ export function buildCitationDocumentIndex(messages: MessageParam[]): CitationDo
     const index = new Map<string, string | null>()
     for (const message of messages) {
         for (const block of contentBlocks(message)) {
+            const mention = asMentionBlock(block)
+            if (mention) {
+                addEntry(index, documentKey(mention.source.title), mention.source.document_id)
+                continue
+            }
             if (block.type !== 'tool_result' || !Array.isArray(block.content)) continue
             const readDocumentId = readDocumentIdsByToolUseId.get(block.tool_use_id) ?? null
 

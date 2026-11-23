@@ -30,7 +30,7 @@
     async function loadPreview(id: string, signal: AbortSignal): Promise<LoadState> {
         const response = await fetch(`/api/documents/${encodeURIComponent(id)}`, { signal })
         if (response.status === 404) {
-            return { kind: 'failed', message: 'The stored document is no longer available.' }
+            return { kind: 'failed', message: 'The stored document could not be found.' }
         }
         if (!response.ok) {
             return { kind: 'failed', message: 'The stored document could not be loaded.' }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { MessageParam, TextCitationParam } from '@anthropic-ai/sdk/resources/messages'
+import type {
+    ContentBlockParam,
+    MessageParam,
+    TextCitationParam,
+} from '@anthropic-ai/sdk/resources/messages'
 import { buildCitationDocumentIndex, resolveCitationDocumentId } from './citation-documents'
 
 const IMAP_SOURCE = 'imap:Work / INBOX / 2026-01-15 / Quarterly numbers'
@@ -169,6 +173,51 @@ describe('resolveCitationDocumentId', () => {
                 ],
             },
             readDocumentResult('toolu_other', 'Quarterly numbers'),
+        ])
+
+        expect(resolveCitationDocumentId(index, documentCitation('Quarterly numbers'))).toBeNull()
+    })
+
+    it('resolves citations of mentioned documents', () => {
+        const index = buildCitationDocumentIndex([
+            {
+                role: 'user',
+                content: [
+                    { type: 'text', text: 'Summarize this mail' },
+                    {
+                        type: 'document',
+                        source: {
+                            type: 'omni_mention',
+                            document_id: 'DOC_MENTION',
+                            title: 'Quarterly numbers',
+                        },
+                    } as unknown as ContentBlockParam,
+                ],
+            },
+        ])
+
+        expect(resolveCitationDocumentId(index, documentCitation('Quarterly numbers'))).toBe(
+            'DOC_MENTION',
+        )
+    })
+
+    it('refuses to guess when a mention and a read_document result share a title', () => {
+        const index = buildCitationDocumentIndex([
+            {
+                role: 'user',
+                content: [
+                    {
+                        type: 'document',
+                        source: {
+                            type: 'omni_mention',
+                            document_id: 'DOC_MENTION',
+                            title: 'Quarterly numbers',
+                        },
+                    } as unknown as ContentBlockParam,
+                ],
+            },
+            readDocumentCall('toolu_read', 'DOC_READ'),
+            readDocumentResult('toolu_read', 'Quarterly numbers'),
         ])
 
         expect(resolveCitationDocumentId(index, documentCitation('Quarterly numbers'))).toBeNull()

@@ -2370,9 +2370,7 @@
                     setTimeout(() => void handleSubmit(clientMessageId), 150)
                 } else {
                     void resumeActiveStreamIfNeeded()
-                    toast.info(
-                        'The previous response is still in progress. Reconnecting to it now.',
-                    )
+                    toast.info('The previous response is still in progress. Reconnecting to it now.')
                 }
             } else {
                 console.error('Failed to send message to chat session')
