@@ -22,6 +22,7 @@
     import serperIcon from '$lib/images/icons/serper.png'
     import braveIcon from '$lib/images/icons/brave.png'
     import firecrawlIcon from '$lib/images/icons/firecrawl.png'
+    import globeIcon from '$lib/images/icons/globe.svg'
 
     let { data }: { data: PageData } = $props()
 
@@ -62,6 +63,10 @@
         brave: {
             description: 'Independent web index with broad coverage through Brave Search API.',
             icon: braveIcon,
+        },
+        keenable: {
+            description: 'Web search from Keenable's own index. Queries are logged on its default data policy.',
+            icon: globeIcon,
         },
     }
 

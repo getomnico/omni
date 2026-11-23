@@ -4,6 +4,7 @@ from .base import WebFetchProvider, WebSearchProvider
 from .brave import BraveSearchProvider
 from .exa import ExaFetchProvider, ExaSearchProvider
 from .firecrawl import FirecrawlFetchProvider
+from .keenable import KeenableSearchProvider
 from .serper import SerperSearchProvider
 
 
@@ -23,6 +24,11 @@ def create_web_search_provider(provider_type: str, **kwargs) -> WebSearchProvide
         if not api_key:
             raise ValueError("api_key is required for Brave search provider")
         return BraveSearchProvider(api_key=api_key, base_url=kwargs.get("base_url"))
+    if provider_type == "keenable":
+        api_key = kwargs.get("api_key")
+        if not api_key:
+            raise ValueError("api_key is required for Keenable search provider")
+        return KeenableSearchProvider(api_key=api_key, base_url=kwargs.get("base_url"))
     raise ValueError(f"Unknown web search provider type: {provider_type}")
 
 
