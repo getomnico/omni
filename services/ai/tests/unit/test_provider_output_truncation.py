@@ -7,11 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from providers.anthropic import AnthropicProvider
 from providers.bedrock import BedrockProvider
 from providers.gemini import GeminiProvider
 from providers.openai import OpenAIProvider
-from providers.openai_compatible import OpenAICompatibleProvider, REASONING_CONTENT_KEY
-from providers.anthropic import AnthropicProvider
+from providers.openai_compatible import REASONING_CONTENT_KEY, OpenAICompatibleProvider
 from providers.types import ProviderError
 from services.usage import UsageContext, UsagePurpose, UsageTracker
 
@@ -65,6 +65,23 @@ async def test_openai_incomplete_emits_reason_without_usage(reason, expected):
     assert output[-2].usage.output_tokens == 0
     assert output[-1].type == "message_stop"
     assert sum(event.type == "content_block_stop" for event in output) == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_completed_without_optional_cache_usage_does_not_invent_zero():
+    response = SimpleNamespace(
+        id="response-1",
+        model="test-model",
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+    )
+    events = [SimpleNamespace(type="response.completed", response=response)]
+
+    output = [event async for event in _openai_provider(events).stream_response("hi")]
+
+    delta = next(event for event in output if event.type == "message_delta")
+    assert delta.usage.input_tokens == 12
+    assert delta.usage.output_tokens == 4
+    assert delta.usage.cache_read_input_tokens is None
 
 
 @pytest.mark.asyncio
@@ -157,6 +174,44 @@ async def test_openai_compatible_length_emits_max_tokens_and_preserves_usage_and
     )
     assert tool_block.name == "search"
     assert sum(event.type == "content_block_stop" for event in output) == 3
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_normal_finish_waits_for_delayed_usage():
+    class DelayedUsageStream:
+        def __aiter__(self):
+            async def iterate():
+                yield SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content=None, tool_calls=None),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=None,
+                )
+                await asyncio.sleep(0.3)
+                yield SimpleNamespace(
+                    choices=[],
+                    usage=SimpleNamespace(prompt_tokens=12, completion_tokens=8),
+                )
+
+            return iterate()
+
+    stream = DelayedUsageStream()
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.model = "test-model"
+    provider.model_name = "test-model"
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=stream)))
+    )
+
+    output = [event async for event in provider.stream_response("hi")]
+
+    delta = next(event for event in output if event.type == "message_delta")
+    assert delta.delta.stop_reason == "end_turn"
+    assert delta.usage.input_tokens == 12
+    assert delta.usage.output_tokens == 8
 
 
 @pytest.mark.asyncio
@@ -276,6 +331,7 @@ async def test_gemini_normal_finish_accepts_delayed_final_usage():
         cached_content_token_count=1,
         candidates_token_count=9,
     )
+
     class DelayedUsageStream:
         def __aiter__(self):
             async def iterate():
@@ -392,6 +448,137 @@ async def test_bedrock_amazon_message_stop_normalizes_token_limit_and_usage():
     assert delta.usage.output_tokens == 9
     assert output[-1].type == "message_stop"
     assert len(output) == 3
+
+
+@pytest.mark.asyncio
+async def test_bedrock_normal_finish_waits_for_delayed_usage():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    provider.model_id = "amazon.nova-lite-v1:0"
+    provider.model_family = "amazon"
+
+    class Client:
+        def converse_stream(self, **kwargs):
+            def events():
+                yield {"messageStart": {"role": "assistant"}}
+                yield {"messageStop": {"stopReason": "end_turn"}}
+                threading.Event().wait(0.3)
+                yield {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 9}}}
+
+            return {"stream": events()}
+
+    provider.client = Client()
+    output = [event async for event in provider.stream_response("hi")]
+
+    delta = next(event for event in output if event.type == "message_delta")
+    assert delta.delta.stop_reason == "end_turn"
+    assert delta.usage.input_tokens == 5
+    assert delta.usage.output_tokens == 9
+
+
+@pytest.mark.asyncio
+async def test_bedrock_normal_finish_stops_reading_after_final_usage():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    provider.model_id = "amazon.nova-lite-v1:0"
+    provider.model_family = "amazon"
+
+    class BlockingEventStream:
+        def __init__(self):
+            self.release_reader = threading.Event()
+            self.metadata_received = threading.Event()
+
+        def __iter__(self):
+            def generate():
+                yield {"messageStart": {"role": "assistant"}}
+                yield {"messageStop": {"stopReason": "end_turn"}}
+                self.metadata_received.set()
+                yield {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 9}}}
+                self.release_reader.wait()
+
+            return generate()
+
+        def close(self):
+            pass
+
+    event_stream = BlockingEventStream()
+
+    class Client:
+        def converse_stream(self, **kwargs):
+            return {"stream": event_stream}
+
+    provider.client = Client()
+    task = asyncio.create_task(_collect(provider.stream_response("hi")))
+    metadata_received = False
+    completed_promptly = False
+    try:
+        metadata_received = await asyncio.to_thread(event_stream.metadata_received.wait, 0.8)
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.4)
+            completed_promptly = True
+        except TimeoutError:
+            pass
+    finally:
+        event_stream.release_reader.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert metadata_received
+    assert completed_promptly
+
+
+@pytest.mark.asyncio
+async def test_bedrock_normal_finish_ends_after_final_usage_without_waiting_for_eof():
+    provider = BedrockProvider.__new__(BedrockProvider)
+    provider.model_id = "amazon.nova-lite-v1:0"
+    provider.model_family = "amazon"
+
+    class BlockingAfterUsageStream:
+        def __init__(self):
+            self.metadata_delivered = threading.Event()
+            self.reader_blocked = threading.Event()
+            self.release_reader = threading.Event()
+            self.closed = threading.Event()
+
+        def __iter__(self):
+            def generate():
+                yield {"messageStart": {"role": "assistant"}}
+                yield {"messageStop": {"stopReason": "end_turn"}}
+                self.metadata_delivered.set()
+                yield {"metadata": {"usage": {"inputTokens": 5, "outputTokens": 9}}}
+                self.reader_blocked.set()
+                self.release_reader.wait()
+
+            return generate()
+
+        def close(self):
+            self.closed.set()
+
+    event_stream = BlockingAfterUsageStream()
+
+    class Client:
+        def converse_stream(self, **kwargs):
+            return {"stream": event_stream}
+
+    provider.client = Client()
+    task = asyncio.create_task(_collect(provider.stream_response("hi")))
+    completed_promptly = False
+    try:
+        metadata_delivered = await asyncio.to_thread(
+            event_stream.metadata_delivered.wait, 0.5
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.5)
+            completed_promptly = True
+        except TimeoutError:
+            pass
+    finally:
+        event_stream.release_reader.set()
+        output = await asyncio.wait_for(task, timeout=1.0)
+
+    assert metadata_delivered
+    assert completed_promptly
+    delta = next(event for event in output if event.type == "message_delta")
+    assert delta.usage.input_tokens == 5
+    assert delta.usage.output_tokens == 9
+    assert event_stream.closed.is_set()
 
 
 @pytest.mark.asyncio

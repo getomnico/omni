@@ -6,34 +6,35 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, ClassVar, cast
 
 import boto3
-from anthropic import APIStatusError, AsyncAnthropicBedrock as AnthropicBedrock
+from anthropic import APIStatusError
+from anthropic import AsyncAnthropicBedrock as AnthropicBedrock
 from anthropic.types import (
-    MessageParam,
-    Message,
-    MessageDeltaUsage,
-    Usage,
-    RawMessageStartEvent,
-    RawMessageDeltaEvent,
-    RawContentBlockStartEvent,
-    RawContentBlockDeltaEvent,
-    RawContentBlockStopEvent,
-    RawMessageStopEvent,
+    CitationCharLocation,
+    CitationContentBlockLocation,
+    CitationPageLocation,
+    CitationsDelta,
     ContentBlockDeltaEvent,
     ContentBlockStartEvent,
     ContentBlockStopEvent,
+    InputJSONDelta,
+    Message,
     MessageDeltaEvent,
-    ToolUseBlock,
+    MessageDeltaUsage,
+    MessageParam,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
+    RawMessageStopEvent,
     TextBlock,
     TextDelta,
-    InputJSONDelta,
-    CitationsDelta,
-    CitationCharLocation,
-    CitationPageLocation,
-    CitationContentBlockLocation,
+    ToolUseBlock,
+    Usage,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
@@ -43,6 +44,11 @@ from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import (
     build_messages_for_anthropic_api,
     extract_text_document,
+)
+from .stream_utils import (
+    FINAL_USAGE_DRAIN_SECONDS,
+    bounded_cleanup,
+    bounded_task,
 )
 from .types import ProviderError, ProviderType
 
@@ -513,7 +519,7 @@ class BedrockProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         """Stream response from AWS Bedrock models."""
         stream = None
         event_stream = None
@@ -678,12 +684,11 @@ class BedrockProvider(LLMProvider):
                             raise
                         close_event_stream = getattr(event_stream, "close", None)
                         if close_event_stream is not None:
-                            await asyncio.to_thread(close_event_stream)
-                            event_stream_closed = True
-                        try:
-                            await asyncio.shield(pending_read_task)
-                        except Exception:
-                            pass
+                            await bounded_cleanup(asyncio.to_thread(close_event_stream))
+                        event_stream_closed = True
+                        # Cancelling a to_thread task cannot stop its worker thread. Do not
+                        # hold up response finalization for a reader that close did not unblock.
+                        await bounded_task(pending_read_task)
                         pending_read_task = None
                         break
                     pending_read_task = None
@@ -699,7 +704,7 @@ class BedrockProvider(LLMProvider):
                             "inputTokens": usage_data.get("inputTokens", 0),
                             "outputTokens": usage_data.get("outputTokens", 0),
                         }
-                        if terminal_deadline is not None:
+                        if stop_reason is not None:
                             break
                         continue
                     if terminal_deadline is not None and "messageStop" not in chunk:
@@ -715,7 +720,11 @@ class BedrockProvider(LLMProvider):
                             if native_reason in ("tool_use", "ToolUse")
                             else "end_turn"
                         )
-                        terminal_deadline = asyncio.get_running_loop().time() + 0.25
+                        if stop_reason == "max_tokens":
+                            terminal_deadline = (
+                                asyncio.get_running_loop().time()
+                                + FINAL_USAGE_DRAIN_SECONDS
+                            )
                         continue
                     event = self._convert_response_to_anthropic_events(chunk)
                     if event:
@@ -755,18 +764,15 @@ class BedrockProvider(LLMProvider):
         finally:
             close_stream = getattr(stream, "close", None)
             if close_stream is not None:
-                await close_stream()
+                await bounded_cleanup(close_stream())
             close_event_stream = getattr(event_stream, "close", None)
             if close_event_stream is not None and not event_stream_closed:
-                await asyncio.to_thread(close_event_stream)
+                await bounded_cleanup(asyncio.to_thread(close_event_stream))
             if pending_read_task is not None:
-                try:
-                    await asyncio.shield(pending_read_task)
-                except Exception:
-                    pass
+                await bounded_task(pending_read_task)
             close_iterator = getattr(iterator, "close", None)
             if close_iterator is not None:
-                await asyncio.to_thread(close_iterator)
+                await bounded_cleanup(asyncio.to_thread(close_iterator))
 
     async def generate_response(
         self,

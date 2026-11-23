@@ -4,11 +4,12 @@ Anthropic Claude Provider.
 
 import json
 import logging
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, Iterable
 from typing import Any, ClassVar, cast
 
-from anthropic import APIStatusError, AsyncAnthropic, AsyncStream, MessageStreamEvent
+from anthropic import APIStatusError, AsyncAnthropic, AsyncStream
 from anthropic.types import MessageParam, ToolParam
+from anthropic.types.message_stream_event import MessageStreamEvent
 
 from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import build_messages_for_anthropic_api
@@ -99,7 +100,7 @@ class AnthropicProvider(LLMProvider):
         model: str | None = None,
         thinking: dict[str, Any] | None = None,
         output_config: dict[str, Any] | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         """Stream response from Anthropic Claude API."""
         stream = None
         try:

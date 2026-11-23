@@ -16,7 +16,6 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from providers import TokenUsage
 from providers.azure_foundry import AzureFoundryProvider
 from providers.openai import OpenAIProvider
 from services.usage import UsageContext, UsagePurpose, UsageTracker
@@ -110,6 +109,28 @@ async def test_wrap_stream_preserves_upstream_exception():
         await anext(UsageTracker(repo=AsyncMock(), ctx=_ctx()).wrap_stream(upstream()))
 
     assert raised.value is error
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_preserves_iteration_error_when_close_also_fails(caplog):
+    iteration_error = RuntimeError("provider failed")
+
+    class BrokenStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise iteration_error
+
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    with pytest.raises(RuntimeError) as raised:
+        await anext(UsageTracker(repo=AsyncMock(), ctx=_ctx()).wrap_stream(BrokenStream()))
+
+    assert raised.value is iteration_error
+    assert "Failed to close async stream after iteration failed" in caplog.text
 
 
 @pytest.mark.unit

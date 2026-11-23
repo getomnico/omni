@@ -5,7 +5,7 @@ non-Anthropic providers via the CitationProcessor class.
 """
 
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 from typing import cast
 
@@ -34,6 +34,7 @@ from anthropic.types import (
 )
 
 from streaming.processor import StreamProcessor
+from utils.async_iterators import ClosableAsyncIterator, close_async_iterator
 
 # Matches [citation:1], [citation:9, 3, 4], [citation:1,2], etc.
 _CITATION_PATTERN = re.compile(r"\[citation:([\d,\s]+)\]")
@@ -411,8 +412,16 @@ class CitationStreamProcessor(StreamProcessor):
 
     async def process(
         self,
-        stream: AsyncIterator[MessageStreamEvent],
-    ) -> AsyncIterator[MessageStreamEvent]:
+        stream: ClosableAsyncIterator[MessageStreamEvent],
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
+        async with close_async_iterator(stream) as input_stream:
+            async with close_async_iterator(self._process_events(input_stream)) as processed_stream:
+                async for event in processed_stream:
+                    yield event
+
+    async def _process_events(
+        self, stream: AsyncIterator[MessageStreamEvent]
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         async for event in stream:
             if event.type == "content_block_start":
                 output_index = self._next_output_index

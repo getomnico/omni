@@ -6,27 +6,27 @@ Uses the OpenAI Responses API (client.responses.create).
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
-from openai import APIStatusError, AsyncOpenAI
 from anthropic.types import (
+    InputJSONDelta,
     Message,
     MessageDeltaUsage,
-    Usage,
-    RawMessageStartEvent,
-    RawMessageDeltaEvent,
-    RawContentBlockStartEvent,
     RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
     RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
     RawMessageStopEvent,
-    ToolUseBlock,
     TextBlock,
     TextDelta,
-    InputJSONDelta,
+    ToolUseBlock,
+    Usage,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
+from openai import APIStatusError, AsyncOpenAI
 
 from . import LLMProvider, TokenUsage
 from .anthropic_message_adapter import extract_text_document
@@ -105,7 +105,7 @@ class OpenAIProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         """Stream response from OpenAI Responses API, yielding Anthropic-compatible MessageStreamEvents."""
         stream = None
         try:
@@ -245,11 +245,17 @@ class OpenAIProvider(LLMProvider):
                 # Handle completion — extract usage
                 elif event_type == "response.completed":
                     resp_usage = getattr(event.response, "usage", None)
-                    input_tokens = getattr(resp_usage, "input_tokens", 0) or 0
+                    input_tokens = (
+                        getattr(resp_usage, "input_tokens", 0) or 0
+                        if resp_usage is not None
+                        else None
+                    )
                     output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
                     details = getattr(resp_usage, "input_tokens_details", None)
                     cached_tokens = (
-                        (getattr(details, "cached_tokens", 0) or 0) if details else 0
+                        getattr(details, "cached_tokens", None)
+                        if details is not None
+                        else None
                     )
                     yield RawMessageDeltaEvent(
                         type="message_delta",
@@ -257,7 +263,9 @@ class OpenAIProvider(LLMProvider):
                         usage=MessageDeltaUsage(
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
-                            cache_read_input_tokens=cached_tokens,
+                            cache_read_input_tokens=(
+                                cached_tokens if resp_usage is not None else None
+                            ),
                         ),
                     )
                     break
@@ -288,9 +296,9 @@ class OpenAIProvider(LLMProvider):
                         output_tokens = getattr(resp_usage, "output_tokens", 0) or 0
                         details = getattr(resp_usage, "input_tokens_details", None)
                         cached_tokens = (
-                            (getattr(details, "cached_tokens", 0) or 0)
-                            if details
-                            else 0
+                            getattr(details, "cached_tokens", None)
+                            if details is not None
+                            else None
                         )
                         yield RawMessageDeltaEvent(
                             type="message_delta",
@@ -306,9 +314,9 @@ class OpenAIProvider(LLMProvider):
                             type="message_delta",
                             delta=Delta(stop_reason=stop_reason),
                             usage=MessageDeltaUsage(
-                                input_tokens=0,
+                                input_tokens=None,
                                 output_tokens=0,
-                                cache_read_input_tokens=0,
+                                cache_read_input_tokens=None,
                             ),
                         )
                     break

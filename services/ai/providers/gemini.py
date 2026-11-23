@@ -16,32 +16,37 @@ import base64
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
-from google import genai
-from google.genai import types
-from google.genai.errors import APIError
 from anthropic.types import (
+    InputJSONDelta,
     Message,
     MessageDeltaUsage,
-    Usage,
-    RawMessageStartEvent,
-    RawMessageDeltaEvent,
-    RawContentBlockStartEvent,
     RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
     RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
     RawMessageStopEvent,
-    ToolUseBlock,
     TextBlock,
     TextDelta,
-    InputJSONDelta,
+    ToolUseBlock,
+    Usage,
 )
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
 from . import ContextWindowInfo, LLMProvider, TokenUsage
 from .anthropic_message_adapter import extract_text_document
+from .stream_utils import (
+    FINAL_USAGE_DRAIN_SECONDS,
+    bounded_cleanup,
+    next_stream_item,
+)
 from .types import ProviderError, ProviderType
 
 
@@ -316,7 +321,7 @@ class GeminiProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         """Stream response from Gemini, yielding Anthropic-compatible MessageStreamEvents."""
         stream = None
         try:
@@ -371,21 +376,11 @@ class GeminiProvider(LLMProvider):
             iterator = stream.__aiter__()
             while True:
                 try:
-                    if terminal_signal_received:
-                        if terminal_deadline is None:
-                            break
-                        remaining = terminal_deadline - asyncio.get_running_loop().time()
-                        if remaining <= 0:
-                            break
-                        chunk = await asyncio.wait_for(
-                            iterator.__anext__(), timeout=remaining
-                        )
-                    else:
-                        chunk = await iterator.__anext__()
+                    chunk = await next_stream_item(iterator, deadline=terminal_deadline)
                 except StopAsyncIteration:
                     break
                 except TimeoutError:
-                    if terminal_signal_received:
+                    if terminal_deadline is not None:
                         break
                     raise
                 chunk_has_usage = bool(
@@ -395,6 +390,9 @@ class GeminiProvider(LLMProvider):
                     last_usage_metadata = chunk.usage_metadata
                     if terminal_signal_received:
                         break
+
+                if terminal_signal_received:
+                    continue
 
                 if not chunk.candidates:
                     continue
@@ -409,8 +407,11 @@ class GeminiProvider(LLMProvider):
                         stop_reason = "max_tokens"
                 if not candidate.content or not candidate.content.parts:
                     if finish_reason is not None:
-                        if not terminal_signal_received:
-                            terminal_deadline = asyncio.get_running_loop().time() + 0.25
+                        if not terminal_signal_received and stop_reason == "max_tokens":
+                            terminal_deadline = (
+                                asyncio.get_running_loop().time()
+                                + FINAL_USAGE_DRAIN_SECONDS
+                            )
                         terminal_signal_received = True
                         if chunk_has_usage:
                             break
@@ -498,8 +499,11 @@ class GeminiProvider(LLMProvider):
                         )
 
                 if finish_reason is not None:
-                    if not terminal_signal_received:
-                        terminal_deadline = asyncio.get_running_loop().time() + 0.25
+                    if not terminal_signal_received and stop_reason == "max_tokens":
+                        terminal_deadline = (
+                            asyncio.get_running_loop().time()
+                            + FINAL_USAGE_DRAIN_SECONDS
+                        )
                     terminal_signal_received = True
                     if chunk_has_usage:
                         break
@@ -558,7 +562,7 @@ class GeminiProvider(LLMProvider):
         finally:
             close_stream = getattr(stream, "aclose", None)
             if close_stream is not None:
-                await close_stream()
+                await bounded_cleanup(close_stream())
 
     async def generate_response(
         self,

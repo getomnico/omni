@@ -110,6 +110,7 @@ include = [
     "db*",
     "models*",
     "logger*",
+    "utils*",
     "agents*",
     "email_service*",
     "web_providers*",

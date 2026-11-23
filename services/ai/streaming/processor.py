@@ -5,9 +5,10 @@ LLM events into another async stream, enabling natural chaining.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
 
 from anthropic.types.message_stream_event import MessageStreamEvent
+
+from utils.async_iterators import ClosableAsyncIterator
 
 
 class StreamProcessor(ABC):
@@ -19,8 +20,8 @@ class StreamProcessor(ABC):
 
     @abstractmethod
     def process(
-        self, stream: AsyncIterator[MessageStreamEvent]
-    ) -> AsyncIterator[MessageStreamEvent]:
+        self, stream: ClosableAsyncIterator[MessageStreamEvent]
+    ) -> ClosableAsyncIterator[MessageStreamEvent]:
         """Consume the input stream and yield transformed events.
 
         Implementations should iterate over `stream`, and yield zero or more

@@ -88,7 +88,7 @@ class MessagesRepository:
 
     async def update_error(
         self, message_id: str, error: Optional[ChatMessageError] = None
-    ) -> None:
+    ) -> ChatMessage:
         """Set the `error` column for a chat_messages row.
 
         Used to mark an assistant turn as failed when no partial content was
@@ -97,18 +97,25 @@ class MessagesRepository:
         pool = await self._get_pool()
         serialized = _sanitize_jsonb_value(error)
         async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE chat_messages SET error = $1 WHERE id = $2",
+            row = await conn.fetchrow(
+                """
+                UPDATE chat_messages SET error = $1 WHERE id = $2
+                RETURNING id, chat_id, message_seq_num, message, parent_id,
+                          content_text, error, created_at
+                """,
                 json.dumps(serialized) if serialized is not None else None,
                 message_id,
             )
+        if row is None:
+            raise ValueError(f"Message {message_id} does not exist")
+        return ChatMessage.from_row(dict(row))
 
     async def finalize_error(
         self,
         message_id: str,
         message: Dict[str, Any],
         error: ChatMessageError,
-    ) -> None:
+    ) -> ChatMessage:
         """Finalize an assistant row as a failed turn in one atomic UPDATE.
 
         Writes `message` (partial content), the derived BM25 `content_text`,
@@ -120,17 +127,22 @@ class MessagesRepository:
         content_text = _extract_content_text(message)
         serialized_error = _sanitize_jsonb_value(error)
         async with pool.acquire() as conn:
-            await conn.execute(
+            row = await conn.fetchrow(
                 """
                 UPDATE chat_messages
                 SET message = $1, content_text = $2, error = $3
                 WHERE id = $4
+                RETURNING id, chat_id, message_seq_num, message, parent_id,
+                          content_text, error, created_at
                 """,
                 json.dumps(message),
                 content_text,
                 json.dumps(serialized_error),
                 message_id,
             )
+        if row is None:
+            raise ValueError(f"Message {message_id} does not exist")
+        return ChatMessage.from_row(dict(row))
 
     async def create(
         self,
@@ -229,7 +241,7 @@ class MessagesRepository:
             row = await conn.fetchrow(
                 """
                 SELECT id, chat_id, message_seq_num, message, parent_id,
-                       error, created_at
+                       content_text, error, created_at
                 FROM chat_messages
                 WHERE chat_id = $1 AND id = $2
                 """,

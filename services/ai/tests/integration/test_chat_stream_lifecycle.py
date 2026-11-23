@@ -1503,6 +1503,7 @@ class TestStreamErrorPersistence:
         assert finalized["parent_id"] == failed.parent_id
         assert finalized["message_seq_num"] == failed.message_seq_num
         assert finalized["message"] == failed.message
+        assert finalized["content_text"] == "Partial answer"
         assert finalized["error"] == failed.error
         assert finalized["created_at"] == failed.created_at.isoformat()
         text = " ".join(

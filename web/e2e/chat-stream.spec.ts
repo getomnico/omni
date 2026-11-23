@@ -864,6 +864,148 @@ test('output-limit stream errors retain partial text and reconcile persisted too
     }
 })
 
+test('finalized assistant errors without message_start upsert the persisted bubble', async ({
+    page,
+}) => {
+    let seeded: SeededChat | null = null
+    const finalizedAssistantId = ulid()
+    const expectedError = 'The provider failed before starting a response.'
+    const fallbackError = 'The stream failed before a message could be persisted.'
+    let lastPostedUserMessageId: string | null = null
+    let streamRequests = 0
+    let postStreamMessageGets = 0
+
+    try {
+        seeded = await seedChat()
+        await authenticate(page, seeded)
+
+        await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
+            if (route.request().method() !== 'POST') {
+                if (streamRequests > 0) {
+                    postStreamMessageGets += 1
+                    return route.fulfill({ status: 503, body: 'Unexpected chat reload' })
+                }
+                return route.fallback()
+            }
+
+            const requestBody = route.request().postDataJSON() as {
+                content: string
+                parentId?: string
+            }
+            const messageId = ulid()
+            const sql = postgres(dbConfig)
+            await sql.begin(async (tx) => {
+                const [sequence] = await tx<{ next_seq: number }[]>`
+                    SELECT COALESCE(MAX(message_seq_num), 0)::int + 1 AS next_seq
+                    FROM chat_messages
+                    WHERE chat_id = ${seeded!.chatId}
+                `
+                await tx`
+                    INSERT INTO chat_messages (
+                        id, chat_id, parent_id, message_seq_num, message, content_text
+                    ) VALUES (
+                        ${messageId},
+                        ${seeded!.chatId},
+                        ${requestBody.parentId ?? seeded!.userMessageId},
+                        ${sequence.next_seq},
+                        ${tx.json({ role: 'user', content: requestBody.content })},
+                        ${requestBody.content}
+                    )
+                `
+            })
+            await sql.end()
+            lastPostedUserMessageId = messageId
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ messageId }),
+            })
+        })
+        await page.route(`**/api/chat/${seeded.chatId}/stream`, async (route) => {
+            streamRequests += 1
+            if (streamRequests > 1) {
+                await route.fulfill({
+                    status: 200,
+                    headers: { 'content-type': 'text/event-stream' },
+                    body: `event: stream_error\ndata: ${JSON.stringify({ message: fallbackError })}\n\n`,
+                })
+                return
+            }
+
+            const sql = postgres(dbConfig)
+            let messageSeqNum = 0
+            await sql.begin(async (tx) => {
+                const [sequence] = await tx<{ next_seq: number }[]>`
+                    SELECT COALESCE(MAX(message_seq_num), 0)::int + 1 AS next_seq
+                    FROM chat_messages
+                    WHERE chat_id = ${seeded!.chatId}
+                `
+                messageSeqNum = sequence.next_seq
+                await tx`
+                    INSERT INTO chat_messages (
+                        id, chat_id, parent_id, message_seq_num, message, content_text, error
+                    ) VALUES (
+                        ${finalizedAssistantId},
+                        ${seeded!.chatId},
+                        ${lastPostedUserMessageId},
+                        ${sequence.next_seq},
+                        ${tx.json({
+                            role: 'assistant',
+                            content: [{ type: 'text', text: 'Persisted answer before failure.' }],
+                        })},
+                        'Persisted answer before failure.',
+                        ${tx.json({ message: expectedError })}
+                    )
+                `
+            })
+            await sql.end()
+
+            const finalizedEvent = `event: message_finalized\ndata: ${JSON.stringify({
+                id: finalizedAssistantId,
+                chat_id: seeded!.chatId,
+                parent_id: lastPostedUserMessageId,
+                message_seq_num: messageSeqNum,
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Persisted answer before failure.' }],
+                },
+                content_text: 'Persisted answer before failure.',
+                error: { message: expectedError },
+                created_at: '2026-01-01T00:00:00+00:00',
+            })}\n\n`
+            const streamErrorEvent = `event: stream_error\ndata: ${JSON.stringify({ message: expectedError })}\n\n`
+            await route.fulfill({
+                status: 200,
+                headers: { 'content-type': 'text/event-stream' },
+                body: finalizedEvent + streamErrorEvent,
+            })
+        })
+
+        await page.goto(`/chat/${seeded.chatId}`)
+        await page.getByRole('main').getByRole('textbox').fill('Start a response')
+        await page.keyboard.press('Enter')
+
+        const finalizedBubble = page.getByTestId(`chat-message-${finalizedAssistantId}`)
+        await expect(finalizedBubble.getByText('Persisted answer before failure.')).toBeVisible()
+        await expect(finalizedBubble.getByText(expectedError)).toBeVisible()
+        await expect(page.getByRole('main').getByRole('textbox')).toBeEnabled()
+        expect(postStreamMessageGets).toBe(0)
+
+        await page.reload()
+        const reloadedBubble = page.getByTestId(`chat-message-${finalizedAssistantId}`)
+        await expect(reloadedBubble.getByText('Persisted answer before failure.')).toBeVisible()
+        await expect(reloadedBubble.getByText(expectedError)).toBeVisible()
+
+        await page.getByRole('main').getByRole('textbox').fill('Try again')
+        await page.keyboard.press('Enter')
+        await expect(page.getByText(fallbackError)).toBeVisible()
+        await expect(page.getByRole('main').getByRole('textbox')).toBeEnabled()
+        expect(postStreamMessageGets).toBe(0)
+    } finally {
+        await cleanupChat(seeded)
+    }
+})
+
 test('streaming write-file calls remain visible while they are running', async ({ page }) => {
     let seeded: SeededChat | null = null
     const fixtureName = `write-file-${ulid()}.sse`

@@ -152,8 +152,6 @@ export const GET: RequestHandler = async ({ params, locals }) => {
         parent_id: msg.parentId,
         message_seq_num: msg.messageSeqNum,
         message: msg.message,
-        content_text: msg.contentText,
-        error: msg.error,
         created_at: msg.createdAt,
     }))
     return json(messages, { status: 200 })
