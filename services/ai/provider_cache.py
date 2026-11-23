@@ -262,6 +262,7 @@ def _build_provider_from_record(record: ModelRecord) -> LLMProvider | None:
             return AzureFoundryProvider(
                 endpoint_url=config.get("apiUrl", ""),
                 model=model_id,
+                api_key=config.get("apiKey"),
             )
 
         elif provider_type == "vertex_ai":
