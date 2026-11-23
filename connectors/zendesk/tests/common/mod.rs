@@ -9,7 +9,7 @@ use omni_connector_manager::{
 use omni_connector_sdk::{SdkClient, SyncContext};
 use serde_json::{Value as JsonValue, json};
 use shared::db::repositories::SyncRunRepository;
-use shared::models::{SourceType, SyncRun, SyncStatus, SyncType};
+use shared::models::{SyncRun, SyncStatus, SyncType};
 use shared::storage::ObjectStorage;
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -118,7 +118,7 @@ impl Fixture {
         )
         .bind(&source_id)
         .bind("Zendesk")
-        .bind(SourceType::Zendesk)
+        .bind("zendesk")
         .bind(true)
         .bind(&user_id)
         .bind(json!({"subdomain": "example"}))
@@ -154,7 +154,7 @@ impl Fixture {
             self.sdk_client.clone(),
             sync_run_id.to_string(),
             source_id.to_string(),
-            SourceType::Zendesk,
+            "zendesk",
             sync_type,
             is_resume,
             cancelled,

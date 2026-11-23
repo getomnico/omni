@@ -1,7 +1,6 @@
 use anyhow::Result;
 use dotenvy::dotenv;
 use omni_connector_sdk::SdkClient;
-use omni_connector_sdk::SourceType;
 use omni_connector_sdk::telemetry::{self, TelemetryConfig};
 use omni_connector_sdk::{ServerConfig, serve_with_extra_routes};
 use std::sync::Arc;
@@ -84,7 +83,7 @@ async fn webhook_renewal_loop(sync_manager: Arc<SyncManager>, interval_seconds: 
         interval.tick().await;
         info!("Running webhook renewal check");
 
-        let source_types = [SourceType::GoogleDrive];
+        let source_types = ["google_drive"];
 
         for source_type in &source_types {
             let type_str = serde_json::to_value(source_type)

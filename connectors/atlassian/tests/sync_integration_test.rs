@@ -20,7 +20,7 @@ use omni_atlassian_connector::models::{
 use omni_atlassian_connector::{
     AtlassianCredentials, ConfluenceProcessor, JiraProcessor, SyncManager,
 };
-use omni_connector_sdk::{SourceType, SyncContext, SyncType};
+use omni_connector_sdk::{SyncContext, SyncType};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -39,7 +39,7 @@ fn test_credentials() -> AtlassianCredentials {
 fn make_sync_context(
     fixture: &common::TestFixture,
     sync_run_id: &str,
-    source_type: SourceType,
+    source_type: String,
     sync_mode: SyncType,
 ) -> SyncContext {
     SyncContext::new(
@@ -179,7 +179,7 @@ fn make_jira_issue(key: &str, summary: &str, project_key: &str) -> JiraIssue {
 
 #[tokio::test]
 async fn test_confluence_full_sync_creates_events() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     // Set up mock: 2 spaces, each with 2 pages
     *fixture.mock_api.spaces.lock().unwrap() = vec![
@@ -207,7 +207,7 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
     let ctx = make_sync_context(
         &fixture,
         &sync_run_id,
-        SourceType::Confluence,
+        "confluence".to_string(),
         SyncType::Full,
     );
 
@@ -239,7 +239,7 @@ async fn test_confluence_full_sync_creates_events() -> Result<()> {
 
 #[tokio::test]
 async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     // Set up mock: CQL search returns 1 modified page
     *fixture.mock_api.cql_pages.lock().unwrap() =
@@ -254,7 +254,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
     let ctx = make_sync_context(
         &fixture,
         &sync_run_id,
-        SourceType::Confluence,
+        "confluence".to_string(),
         SyncType::Incremental,
     );
 
@@ -286,7 +286,7 @@ async fn test_confluence_incremental_sync_uses_cql() -> Result<()> {
 
 #[tokio::test]
 async fn test_confluence_full_sync_ignores_saved_page_versions() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     // Set up mock: 1 space with 2 pages
     *fixture.mock_api.spaces.lock().unwrap() =
@@ -309,7 +309,7 @@ async fn test_confluence_full_sync_ignores_saved_page_versions() -> Result<()> {
     let ctx = make_sync_context(
         &fixture,
         &sync_run_id,
-        SourceType::Confluence,
+        "confluence".to_string(),
         SyncType::Full,
     );
 
@@ -338,7 +338,7 @@ async fn test_confluence_full_sync_ignores_saved_page_versions() -> Result<()> {
     let ctx2 = make_sync_context(
         &fixture,
         &sync_run_id2,
-        SourceType::Confluence,
+        "confluence".to_string(),
         SyncType::Full,
     );
 
@@ -359,7 +359,7 @@ async fn test_confluence_full_sync_ignores_saved_page_versions() -> Result<()> {
 
 #[tokio::test]
 async fn test_confluence_incremental_version_dedup_skips_unchanged() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     let mut saved_page_versions = HashMap::new();
     saved_page_versions.insert("100:1001".to_string(), 1);
@@ -383,7 +383,7 @@ async fn test_confluence_incremental_version_dedup_skips_unchanged() -> Result<(
     let ctx = make_sync_context(
         &fixture,
         &sync_run_id,
-        SourceType::Confluence,
+        "confluence".to_string(),
         SyncType::Incremental,
     );
 
@@ -410,7 +410,7 @@ async fn test_confluence_incremental_version_dedup_skips_unchanged() -> Result<(
 
 #[tokio::test]
 async fn test_jira_full_sync_creates_events() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Jira).await?;
+    let fixture = setup_test_fixture("jira".to_string()).await?;
 
     // Set up mock: 1 project with 3 issues
     *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
@@ -434,7 +434,7 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
         .sdk_client
         .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
-    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+    let ctx = make_sync_context(&fixture, &sync_run_id, "jira".to_string(), SyncType::Full);
 
     let creds = test_credentials();
     let count = processor
@@ -474,7 +474,7 @@ async fn test_jira_full_sync_creates_events() -> Result<()> {
 
 #[tokio::test]
 async fn test_webhook_delete_jira_issue() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Jira).await?;
+    let fixture = setup_test_fixture("jira".to_string()).await?;
 
     let sync_manager =
         SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
@@ -505,7 +505,7 @@ async fn test_webhook_delete_jira_issue() -> Result<()> {
 
 #[tokio::test]
 async fn test_webhook_delete_confluence_page() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     let sync_manager =
         SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
@@ -537,7 +537,7 @@ async fn test_webhook_delete_confluence_page() -> Result<()> {
 
 #[tokio::test]
 async fn test_webhook_create_triggers_notify() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Jira).await?;
+    let fixture = setup_test_fixture("jira".to_string()).await?;
 
     let sync_manager =
         SyncManager::with_client(fixture.mock_api.clone(), fixture.sdk_client.clone(), None);
@@ -577,7 +577,7 @@ async fn test_webhook_create_triggers_notify() -> Result<()> {
 
 #[tokio::test]
 async fn test_webhook_registration_after_sync() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     *fixture.mock_api.webhook_register_result.lock().unwrap() = Some(42);
 
@@ -610,7 +610,7 @@ async fn test_webhook_registration_after_sync() -> Result<()> {
 
 #[tokio::test]
 async fn test_webhook_reregistration_on_missing() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     // Save connector state with existing webhook_id
     fixture
@@ -659,7 +659,7 @@ async fn test_webhook_reregistration_on_missing() -> Result<()> {
 
 #[tokio::test]
 async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Confluence).await?;
+    let fixture = setup_test_fixture("confluence".to_string()).await?;
 
     *fixture.mock_api.spaces.lock().unwrap() =
         vec![make_confluence_space("100", "DEV", "Development")];
@@ -728,7 +728,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
     let ctx = make_sync_context(
         &fixture,
         &sync_run_id,
-        SourceType::Confluence,
+        "confluence".to_string(),
         SyncType::Full,
     );
 
@@ -773,7 +773,7 @@ async fn test_confluence_sync_fetches_and_caches_space_permissions() -> Result<(
 
 #[tokio::test]
 async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Jira).await?;
+    let fixture = setup_test_fixture("jira".to_string()).await?;
 
     *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
         "key": "PROJ",
@@ -836,7 +836,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
         .sdk_client
         .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
-    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+    let ctx = make_sync_context(&fixture, &sync_run_id, "jira".to_string(), SyncType::Full);
 
     let creds = test_credentials();
     let count = processor
@@ -884,7 +884,7 @@ async fn test_jira_sync_fetches_and_caches_project_permissions() -> Result<()> {
 
 #[tokio::test]
 async fn test_jira_sync_skips_group_actors_without_group_id() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Jira).await?;
+    let fixture = setup_test_fixture("jira".to_string()).await?;
 
     *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
         "key": "PROJ",
@@ -941,7 +941,7 @@ async fn test_jira_sync_skips_group_actors_without_group_id() -> Result<()> {
         .sdk_client
         .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
-    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+    let ctx = make_sync_context(&fixture, &sync_run_id, "jira".to_string(), SyncType::Full);
 
     let creds = test_credentials();
     let count = processor
@@ -971,7 +971,7 @@ async fn test_jira_sync_skips_group_actors_without_group_id() -> Result<()> {
 
 #[tokio::test]
 async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
-    let fixture = setup_test_fixture(SourceType::Jira).await?;
+    let fixture = setup_test_fixture("jira".to_string()).await?;
 
     *fixture.mock_api.jira_projects.lock().unwrap() = vec![serde_json::json!({
         "key": "PROJ",
@@ -1027,7 +1027,7 @@ async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
         .sdk_client
         .create_sync_run(SOURCE_ID, SyncType::Full)
         .await?;
-    let ctx = make_sync_context(&fixture, &sync_run_id, SourceType::Jira, SyncType::Full);
+    let ctx = make_sync_context(&fixture, &sync_run_id, "jira".to_string(), SyncType::Full);
 
     let creds = test_credentials();
     processor
@@ -1048,7 +1048,7 @@ async fn test_jira_sync_emits_group_membership_events() -> Result<()> {
             &creds,
             SOURCE_ID,
             &sync_run_id,
-            SourceType::Jira,
+            "jira".to_string(),
             encountered,
             &empty_group_dir,
             &resolver,

@@ -2,8 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, Connector, SearchOperator, ServiceCredential, Source, SourceType,
-    SyncContext, SyncRequestValidationError, SyncType,
+    ActionDefinition, Connector, SearchOperator, ServiceCredential, Source, SyncContext, SyncRequestValidationError, SyncType,
 };
 use serde_json::Value as JsonValue;
 use std::result::Result as StdResult;
@@ -51,8 +50,8 @@ impl Connector for DarwinboxConnector {
         Some("Index Darwinbox employee directory data and expose HR workflow actions".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Darwinbox]
+    fn source_types(&self) -> Vec<String> {
+        vec!["darwinbox".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

@@ -15,7 +15,7 @@ use serde_json::Value as JsonValue;
 use shared::models::{
     ActionDefinition, ConnectorManifest, ConnectorSkillDefinition, IntegrationType,
     OAuthCredentialValidationRequest, OAuthCredentialValidationResponse, SearchOperator,
-    ServiceCredential, Source, SourceType, SyncType,
+    ServiceCredential, Source, SyncType,
 };
 
 #[derive(Debug, Clone)]
@@ -40,7 +40,7 @@ pub trait Connector: Send + Sync + 'static {
 
     fn name(&self) -> &'static str;
     fn version(&self) -> &'static str;
-    fn source_types(&self) -> Vec<SourceType>;
+    fn source_types(&self) -> Vec<String>;
 
     fn display_name(&self) -> String {
         self.name().to_string()

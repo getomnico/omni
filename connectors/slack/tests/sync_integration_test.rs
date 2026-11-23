@@ -9,7 +9,7 @@ use mock_slack::{
 use omni_connector_sdk::SyncContext;
 use omni_slack_connector::models::{SlackConnectorState, SlackMessage};
 use omni_slack_connector::sync::SyncManager;
-use shared::models::{SourceType, SyncType};
+use shared::models::{SyncType};
 use sqlx::Row;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -46,7 +46,7 @@ async fn drive_sync(
         fixture.sdk_client.clone(),
         sync_run_id.to_string(),
         source_id.to_string(),
-        SourceType::Slack,
+        "slack",
         sync_mode,
         Arc::new(AtomicBool::new(false)),
     );

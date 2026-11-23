@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    Connector, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
+    Connector, SdkClient, ServiceCredential, Source, SyncContext, SyncType,
 };
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -42,8 +42,8 @@ impl Connector for WebConnector {
         env!("CARGO_PKG_VERSION")
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Web]
+    fn source_types(&self) -> Vec<String> {
+        vec!["web".to_string()]
     }
 
     fn display_name(&self) -> String {

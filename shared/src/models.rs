@@ -91,14 +91,14 @@ pub struct Source {
 }
 
 impl Source {
-    pub fn native_source_type(&self) -> Result<SourceType, String> {
+    pub fn native_source_type(&self) -> Result<String, String> {
         if self.integration_type != IntegrationType::Connector {
             return Err(format!(
                 "source {} has integration_type {:?}, not connector",
                 self.id, self.integration_type
             ));
         }
-        SourceType::try_from(self.source_type.as_str())
+        Ok(self.source_type.clone())
     }
 
     pub fn get_user_whitelist(&self) -> Vec<String> {
@@ -174,130 +174,6 @@ pub struct Embedding {
     pub dimensions: i16,
     #[serde(with = "time::serde::iso8601")]
     pub created_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
-#[sqlx(type_name = "varchar", rename_all = "snake_case")]
-#[serde(rename_all = "snake_case")]
-pub enum SourceType {
-    GoogleDrive,
-    Gmail,
-    GoogleChat,
-    Confluence,
-    Jira,
-    Slack,
-    Github,
-    LocalFiles,
-    FileSystem,
-    Web,
-    Notion,
-    Hubspot,
-    OneDrive,
-    SharePoint,
-    Outlook,
-    OutlookCalendar,
-    MsTeams,
-    Fireflies,
-    Imap,
-    Clickup,
-    Linear,
-    PaperlessNgx,
-    Nextcloud,
-    GoogleAds,
-    Darwinbox,
-    Windshift,
-    Salesforce,
-    Snowflake,
-    Zendesk,
-}
-
-impl SourceType {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SourceType::GoogleDrive => "google_drive",
-            SourceType::Gmail => "gmail",
-            SourceType::GoogleChat => "google_chat",
-            SourceType::Confluence => "confluence",
-            SourceType::Jira => "jira",
-            SourceType::Slack => "slack",
-            SourceType::Github => "github",
-            SourceType::LocalFiles => "local_files",
-            SourceType::FileSystem => "file_system",
-            SourceType::Web => "web",
-            SourceType::Notion => "notion",
-            SourceType::Hubspot => "hubspot",
-            SourceType::OneDrive => "one_drive",
-            SourceType::SharePoint => "share_point",
-            SourceType::Outlook => "outlook",
-            SourceType::OutlookCalendar => "outlook_calendar",
-            SourceType::MsTeams => "ms_teams",
-            SourceType::Fireflies => "fireflies",
-            SourceType::Imap => "imap",
-            SourceType::Clickup => "clickup",
-            SourceType::Linear => "linear",
-            SourceType::PaperlessNgx => "paperless_ngx",
-            SourceType::Nextcloud => "nextcloud",
-            SourceType::GoogleAds => "google_ads",
-            SourceType::Darwinbox => "darwinbox",
-            SourceType::Windshift => "windshift",
-            SourceType::Salesforce => "salesforce",
-            SourceType::Snowflake => "snowflake",
-            SourceType::Zendesk => "zendesk",
-        }
-    }
-}
-
-impl std::fmt::Display for SourceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for SourceType {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        SourceType::try_from(value)
-    }
-}
-
-impl TryFrom<&str> for SourceType {
-    type Error = String;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "google_drive" => Ok(SourceType::GoogleDrive),
-            "gmail" => Ok(SourceType::Gmail),
-            "google_chat" => Ok(SourceType::GoogleChat),
-            "confluence" => Ok(SourceType::Confluence),
-            "jira" => Ok(SourceType::Jira),
-            "slack" => Ok(SourceType::Slack),
-            "github" => Ok(SourceType::Github),
-            "local_files" => Ok(SourceType::LocalFiles),
-            "file_system" => Ok(SourceType::FileSystem),
-            "web" => Ok(SourceType::Web),
-            "notion" => Ok(SourceType::Notion),
-            "hubspot" => Ok(SourceType::Hubspot),
-            "one_drive" => Ok(SourceType::OneDrive),
-            "share_point" => Ok(SourceType::SharePoint),
-            "outlook" => Ok(SourceType::Outlook),
-            "outlook_calendar" => Ok(SourceType::OutlookCalendar),
-            "ms_teams" => Ok(SourceType::MsTeams),
-            "fireflies" => Ok(SourceType::Fireflies),
-            "imap" => Ok(SourceType::Imap),
-            "clickup" => Ok(SourceType::Clickup),
-            "linear" => Ok(SourceType::Linear),
-            "paperless_ngx" => Ok(SourceType::PaperlessNgx),
-            "nextcloud" => Ok(SourceType::Nextcloud),
-            "google_ads" => Ok(SourceType::GoogleAds),
-            "darwinbox" => Ok(SourceType::Darwinbox),
-            "windshift" => Ok(SourceType::Windshift),
-            "salesforce" => Ok(SourceType::Salesforce),
-            "snowflake" => Ok(SourceType::Snowflake),
-            "zendesk" => Ok(SourceType::Zendesk),
-            other => Err(format!("unknown source type: {other}")),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type, PartialEq, Eq, Hash)]
@@ -910,7 +786,7 @@ pub struct ActionDefinition {
     /// Restrict this action to a subset of the connector's `source_types`.
     /// Empty = applies to all source_types the connector supports.
     #[serde(default)]
-    pub source_types: Vec<SourceType>,
+    pub source_types: Vec<String>,
     /// Hide this action from non-admin users in LLM tool exposure (e.g.
     /// admin-directory ops that require a service-account credential).
     /// Also consulted at dispatch time to resolve credentials (see
@@ -983,7 +859,7 @@ pub struct ConnectorSkillDefinition {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default)]
-    pub source_types: Vec<SourceType>,
+    pub source_types: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1669,7 +1545,7 @@ mod tests {
         Source {
             id: "src-1".to_string(),
             name: "Test".to_string(),
-            source_type: SourceType::Web.to_string(),
+            source_type: "web".to_string(),
             integration_type: IntegrationType::Connector,
             config: json!({}),
             is_active: true,

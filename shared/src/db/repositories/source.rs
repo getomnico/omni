@@ -129,7 +129,7 @@ impl SourceRepository {
 
     pub async fn find_active_by_types(
         &self,
-        source_types: Vec<crate::models::SourceType>,
+        source_types: Vec<String>,
     ) -> Result<Vec<Source>, DatabaseError> {
         let mut query_builder = sqlx::QueryBuilder::new(
             r#"

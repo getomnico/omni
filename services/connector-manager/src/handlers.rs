@@ -30,7 +30,7 @@ use shared::db::repositories::{
 use shared::models::{
     ActionCredentialScope, ActionMode, ActionOrigin, ConnectorSourceCapabilities,
     GlobalConfiguration, IntegrationType, OAuthCredentialValidationResponse, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceScope, SourceType, SyncRun, SyncStatus,
+    ServiceCredential, ServiceProvider, Source, SourceScope, SyncRun, SyncStatus,
     SyncType,
 };
 use shared::queue::EventQueue;
@@ -498,7 +498,7 @@ pub async fn execute_action(
     Json(request): Json<ExecuteActionRequest>,
 ) -> Result<axum::response::Response, ApiError> {
     let is_transient = request.transient_credentials.is_some();
-    let source_type: SourceType;
+    let source_type: String;
     let source: Option<Source>;
     let creds: shared::models::ServiceCredential;
     let mut params = request.params.clone();
@@ -634,8 +634,7 @@ pub async fn execute_action(
             ));
         }
 
-        source_type = SourceType::try_from(db_source.source_type.as_str())
-            .map_err(|e| ApiError::Internal(format!("Invalid source type: {}", e)))?;
+        source_type = db_source.source_type.clone();
 
         if db_source.integration_type == IntegrationType::RemoteMcp {
             if !db_source.is_active || db_source.is_deleted {
@@ -2350,8 +2349,7 @@ pub async fn get_skill(
                 "Personal source is owned by another user".to_string(),
             ));
         }
-        let source_type_for_skill = SourceType::try_from(source.source_type.as_str())
-            .map_err(|e| ApiError::Internal(e.to_string()))?;
+        let source_type_for_skill = source.source_type.clone();
         if !skill.source_types.is_empty() && !skill.source_types.contains(&source_type_for_skill) {
             return Err(ApiError::NotFound(format!(
                 "Skill '{}' is not available for source type {:?}",
@@ -4330,12 +4328,13 @@ pub async fn sdk_get_source_sync_config(
         .map(|c| c.credentials)
         .unwrap_or_else(|| serde_json::json!({}));
 
-    let source_type = SourceType::try_from(source.source_type.as_str()).map_err(|e| {
-        ApiError::BadRequest(format!(
-            "Source {} cannot be served to a native connector SDK: {}",
-            source.id, e
-        ))
-    })?;
+    if source.integration_type != IntegrationType::Connector {
+        return Err(ApiError::BadRequest(format!(
+            "Source {} cannot be served to a native connector SDK",
+            source.id
+        )));
+    }
+    let source_type = source.source_type.clone();
 
     Ok(Json(SdkSourceSyncConfigResponse {
         config: source.config,
@@ -4577,7 +4576,7 @@ mod tests {
         Source {
             id: "source-1".to_string(),
             name: "Source".to_string(),
-            source_type: SourceType::GoogleDrive.to_string(),
+            source_type: "google_drive".to_string(),
             integration_type: IntegrationType::Connector,
             config: json!({}),
             is_active: true,
@@ -4628,7 +4627,7 @@ mod tests {
             connector_id: "test-connector".to_string(),
             connector_url: "http://test-connector:4000".to_string(),
             integration_type: shared::models::IntegrationType::Connector,
-            source_types: vec![SourceType::Notion.to_string()],
+            source_types: vec!["notion".to_string()],
             description: None,
             actions: vec![shared::models::ActionDefinition {
                 name: "export_data_source_csv".to_string(),

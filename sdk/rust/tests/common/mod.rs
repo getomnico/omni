@@ -28,7 +28,7 @@ use axum::{
 };
 use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::{
-    models::ActionResponse, Connector, ServiceCredential, Source, SourceType, SyncContext,
+    models::ActionResponse, Connector, ServiceCredential, Source, SyncContext,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -259,8 +259,8 @@ impl Connector for TestConnector {
         "0.0.0"
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Web]
+    fn source_types(&self) -> Vec<String> {
+        vec!["web".to_string()]
     }
 
     fn requires_credentials(&self) -> bool {

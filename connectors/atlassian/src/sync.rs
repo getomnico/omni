@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use omni_connector_sdk::ServiceProvider;
 use omni_connector_sdk::{
-    ConnectorEvent, SdkClient, ServiceCredential, Source, SourceType, SyncContext, SyncType,
+    ConnectorEvent, SdkClient, ServiceCredential, Source, SyncContext, SyncType,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -101,16 +101,15 @@ impl SyncManager {
             return Err(anyhow!("Source is not active: {}", source_id));
         }
 
-        let source_type = SourceType::try_from(source.source_type.as_str())
-            .map_err(|e| anyhow!("Invalid source type for Atlassian connector: {}", e))?;
-        if source_type != SourceType::Confluence && source_type != SourceType::Jira {
+        let source_type = source.source_type.clone();
+        if source_type != "confluence" && source_type != "jira" {
             return Err(anyhow!(
                 "Invalid source type for Atlassian connector: {:?}",
                 source_type
             ));
         }
 
-        let project_filters: Option<Vec<String>> = if source_type == SourceType::Jira {
+        let project_filters: Option<Vec<String>> = if source_type == "jira" {
             serde_json::from_value::<JiraSourceConfig>(source.config.clone())
                 .ok()
                 .and_then(|c| c.project_filters)
@@ -119,7 +118,7 @@ impl SyncManager {
             None
         };
 
-        let space_filters: Option<Vec<String>> = if source_type == SourceType::Confluence {
+        let space_filters: Option<Vec<String>> = if source_type == "confluence" {
             serde_json::from_value::<ConfluenceSourceConfig>(source.config.clone())
                 .ok()
                 .and_then(|c| c.space_filters)
@@ -134,13 +133,13 @@ impl SyncManager {
 
         debug!("Validating Atlassian credentials...");
         let mut credentials = self
-            .get_or_validate_credentials(&domain, &sa_token, Some(&source_type))
+            .get_or_validate_credentials(&domain, &sa_token, Some(source_type.as_str()))
             .await?;
         if let (Some(org), Some(key)) = (org_id, org_admin_api_key) {
             credentials = credentials.with_org_admin(org, key);
         }
         self.auth_manager
-            .ensure_valid_credentials(&mut credentials, Some(&source_type))
+            .ensure_valid_credentials(&mut credentials, Some(source_type.as_str()))
             .await?;
         debug!(
             "Successfully validated Atlassian credentials (org_admin configured: {}).",
@@ -190,8 +189,8 @@ impl SyncManager {
         // events at end-of-sync.
         let sync_sdk_client = ctx.sdk_client().clone();
 
-        let (total_processed, new_page_versions, encountered_groups) = match source_type {
-            SourceType::Confluence => {
+        let (total_processed, new_page_versions, encountered_groups) = match source_type.as_str() {
+            "confluence" => {
                 let page_versions = if sync_mode == SyncType::Full {
                     HashMap::new()
                 } else {
@@ -231,7 +230,7 @@ impl SyncManager {
                 let groups = processor.drain_encountered_groups();
                 (count, processor.drain_page_versions(), groups)
             }
-            SourceType::Jira => {
+            "jira" => {
                 let processor = JiraProcessor::with_resolver(
                     self.client.clone(),
                     sync_sdk_client.clone(),
@@ -326,7 +325,7 @@ impl SyncManager {
         creds: &AtlassianCredentials,
         source_id: &str,
         sync_run_id: &str,
-        source_type: SourceType,
+        source_type: String,
         encountered_groups: HashMap<String, Option<String>>,
         group_directory: &HashMap<String, OrgGroupInfo>,
         user_resolver: &UserResolver,
@@ -354,13 +353,13 @@ impl SyncManager {
                     info.name.clone().or(encountered_name),
                 ),
                 None => {
-                    let fetched = match source_type {
-                        SourceType::Confluence => {
+                    let fetched = match source_type.as_str() {
+                        "confluence" => {
                             self.client
                                 .get_confluence_group_members(creds, &group_id)
                                 .await
                         }
-                        SourceType::Jira => {
+                        "jira" => {
                             self.client.get_jira_group_members(creds, &group_id).await
                         }
                         _ => unreachable!(),
@@ -477,7 +476,7 @@ impl SyncManager {
         &self,
         domain: &str,
         sa_token: &str,
-        source_type: Option<&SourceType>,
+        source_type: Option<&str>,
     ) -> Result<AtlassianCredentials> {
         self.auth_manager
             .validate_credentials(domain, sa_token, source_type)

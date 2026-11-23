@@ -24,7 +24,7 @@ use omni_connector_sdk::{
     ActionCredentialScope, ActionDefinition, ActionResponse, AuthType, Connector,
     ConnectorSkillDefinition,
     OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
+    ServiceCredential, ServiceProvider, Source, SyncContext,
     SyncRequestValidationError, SyncType,
 };
 use serde::Deserialize;
@@ -456,7 +456,7 @@ impl GoogleConnector {
         let service_credential = self.gws_service_credential(credentials);
         let auth = self
             .sync_manager
-            .create_auth(&service_credential, SourceType::GoogleDrive)
+            .create_auth(&service_credential, "google_drive")
             .await?;
         let principal_email = auth
             .oauth_user_email()
@@ -614,7 +614,7 @@ impl GoogleConnector {
         // it from here directly.
         let google_auth = self
             .sync_manager
-            .create_auth(creds, SourceType::GoogleDrive)
+            .create_auth(creds, "google_drive")
             .await?;
         let drive_client = DriveClient::new();
 
@@ -702,7 +702,7 @@ impl GoogleConnector {
 
         let google_auth = self
             .sync_manager
-            .create_auth(creds, SourceType::Gmail)
+            .create_auth(creds, "gmail")
             .await?;
         let gmail = self.sync_manager.gmail_client();
 
@@ -813,7 +813,7 @@ impl GoogleConnector {
             .ok_or_else(|| anyhow!("Missing principal_email in credentials"))?;
         let domain = get_domain_from_credentials(creds)?;
 
-        let auth = create_service_auth(creds, SourceType::GoogleDrive)?;
+        let auth = create_service_auth(creds, "google_drive")?;
         let token = auth.get_access_token(principal_email).await?;
 
         let response = self
@@ -914,7 +914,7 @@ impl GoogleConnector {
                 }
                 let auth = self
                     .sync_manager
-                    .create_auth(creds, SourceType::GoogleDrive)
+                    .create_auth(creds, "google_drive")
                     .await?;
                 let email = auth
                     .oauth_user_email()
@@ -923,7 +923,7 @@ impl GoogleConnector {
                 (auth, email)
             }
             _ => {
-                let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
+                let auth = crate::auth::create_service_auth(creds, "google_drive")?;
                 let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
                 let email = if is_sa_direct {
                     match &google_auth {
@@ -1075,7 +1075,7 @@ impl GoogleConnector {
             .into_response());
         }
 
-        let auth = crate::auth::create_service_auth(creds, SourceType::GoogleDrive)?;
+        let auth = crate::auth::create_service_auth(creds, "google_drive")?;
         let google_auth = crate::auth::GoogleAuth::ServiceAccount(auth);
         let sa_email = match &google_auth {
             crate::auth::GoogleAuth::ServiceAccount(sa) => sa.client_email().to_string(),
@@ -1159,7 +1159,7 @@ impl GoogleConnector {
 
         if !has_service_account_scope(
             creds,
-            SourceType::GoogleDrive,
+            "google_drive",
             GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE,
         ) {
             return Ok(ActionResponse::failure(format!(
@@ -1169,7 +1169,7 @@ impl GoogleConnector {
             .into_response());
         }
 
-        let auth = match create_service_auth(creds, SourceType::GoogleDrive) {
+        let auth = match create_service_auth(creds, "google_drive") {
             Ok(auth) => auth,
             Err(e) => {
                 return Ok(ActionResponse::failure(format!(
@@ -1251,11 +1251,11 @@ impl Connector for GoogleConnector {
         Some("Connect to Google Drive, Docs, Gmail, Google Chat, and more".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
+    fn source_types(&self) -> Vec<String> {
         vec![
-            SourceType::GoogleDrive,
-            SourceType::Gmail,
-            SourceType::GoogleChat,
+            "google_drive".to_string(),
+            "gmail".to_string(),
+            "google_chat".to_string(),
         ]
     }
 
@@ -1284,7 +1284,7 @@ impl Connector for GoogleConnector {
                     "required": ["file_id"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+                source_types: vec!["google_drive".to_string(), "gmail".to_string()],
                 admin_only: false,
                 actor_scoped: false,
                 hidden: false,
@@ -1305,7 +1305,7 @@ impl Connector for GoogleConnector {
                     "required": []
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive, SourceType::GoogleChat],
+                source_types: vec!["google_drive".to_string(), "google_chat".to_string()],
                 admin_only: true,
                 actor_scoped: false,
                 hidden: false,
@@ -1333,7 +1333,7 @@ impl Connector for GoogleConnector {
                     "required": ["schema"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+                source_types: vec!["google_drive".to_string(), "gmail".to_string()],
                 admin_only: false,
                 actor_scoped: false,
                 hidden: false,
@@ -1366,7 +1366,7 @@ impl Connector for GoogleConnector {
                     "required": ["query"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec!["google_drive".to_string()],
                 admin_only: true,
                 actor_scoped: false,
                 hidden: true,
@@ -1392,7 +1392,7 @@ impl Connector for GoogleConnector {
                     "required": ["query"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec!["google_drive".to_string()],
                 admin_only: false,
                 actor_scoped: false,
                 hidden: true,
@@ -1420,7 +1420,7 @@ impl Connector for GoogleConnector {
                     "required": ["auth_mode", "drive_ids"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec!["google_drive".to_string()],
                 admin_only: true,
                 actor_scoped: false,
                 hidden: true,
@@ -1444,7 +1444,7 @@ impl Connector for GoogleConnector {
                     "required": ["auth_mode"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec!["google_drive".to_string()],
                 admin_only: true,
                 actor_scoped: false,
                 hidden: true,
@@ -1500,7 +1500,7 @@ impl Connector for GoogleConnector {
                     "required": ["service", "resource", "method"]
                 }),
                 required_scopes: None,
-                source_types: vec![SourceType::GoogleDrive, SourceType::Gmail],
+                source_types: vec!["google_drive".to_string(), "gmail".to_string()],
                 admin_only: false,
                 actor_scoped: false,
                 hidden: false,
@@ -1517,7 +1517,7 @@ impl Connector for GoogleConnector {
                     "Guidance for using Google Drive, Docs, Sheets, and Slides connector tools."
                         .to_string(),
                 ),
-                source_types: vec![SourceType::GoogleDrive],
+                source_types: vec!["google_drive".to_string()],
                 content: Some(include_str!("../skills/google-drive.md").to_string()),
                 mcp_prompt: None,
             },
@@ -1525,7 +1525,7 @@ impl Connector for GoogleConnector {
                 id: "gmail".to_string(),
                 title: "Gmail Skill".to_string(),
                 description: Some("Guidance for using Gmail connector tools.".to_string()),
-                source_types: vec![SourceType::Gmail],
+                source_types: vec!["gmail".to_string()],
                 content: Some(include_str!("../skills/gmail.md").to_string()),
                 mcp_prompt: None,
             },
@@ -1644,11 +1644,15 @@ impl Connector for GoogleConnector {
                     e
                 ))
             })?;
-        let native_source_type = SourceType::try_from(source.source_type.as_str())
-            .map_err(SyncRequestValidationError::BadRequest)?;
+        if source.integration_type != omni_connector_sdk::IntegrationType::Connector {
+            return Err(SyncRequestValidationError::BadRequest(
+                "Remote MCP sources are not handled by the Google connector".to_string(),
+            ));
+        }
+        let native_source_type = source.source_type.clone();
 
         config
-            .validate(native_source_type, creds.auth_type)
+            .validate(native_source_type.clone(), creds.auth_type)
             .map_err(SyncRequestValidationError::BadRequest)?;
 
         match creds.auth_type {
@@ -1681,7 +1685,7 @@ impl Connector for GoogleConnector {
             _ => {
                 if config.auth_mode == GoogleAuthMode::DomainWideDelegation {
                     // DWD still requires domain + valid service-account creds.
-                    create_service_auth(creds, native_source_type).map_err(|e| {
+                    create_service_auth(creds, native_source_type.clone()).map_err(|e| {
                         SyncRequestValidationError::BadRequest(format!(
                             "Invalid Google service-account credentials: {}",
                             e
@@ -1694,7 +1698,7 @@ impl Connector for GoogleConnector {
                         ))
                     })?;
                 } else {
-                    create_service_auth(creds, native_source_type).map_err(|e| {
+                    create_service_auth(creds, native_source_type.clone()).map_err(|e| {
                         SyncRequestValidationError::BadRequest(format!(
                             "Invalid Google service-account credentials: {}",
                             e
@@ -1708,7 +1712,7 @@ impl Connector for GoogleConnector {
                     })?;
                     if !has_service_account_scope(
                         creds,
-                        native_source_type,
+                        native_source_type.clone(),
                         GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE,
                     ) {
                         return Err(SyncRequestValidationError::BadRequest(format!(

@@ -184,8 +184,6 @@ fn running_omni_image_tags(deployment: &Deployment) -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn version_report_compiles() {
         // Build report tested through integration tests.

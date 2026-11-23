@@ -355,7 +355,7 @@ use omni_connector_sdk::RateLimiter;
 use omni_connector_sdk::SdkClient;
 use omni_connector_sdk::{
     AuthType, ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions,
-    ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
+    ServiceCredential, ServiceProvider, Source, SyncType,
 };
 use serde_json::json;
 
@@ -1074,11 +1074,10 @@ impl SyncManager {
         // mid-sync.
         let existing_state = existing_state.unwrap_or_default();
 
-        let native_source_type = SourceType::try_from(source.source_type.as_str())
-            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let native_source_type = source.source_type.clone();
 
-        let result = match native_source_type {
-            SourceType::GoogleDrive => {
+        let result = match native_source_type.as_str() {
+            "google_drive" => {
                 self.sync_drive_source_internal(
                     source,
                     &config,
@@ -1089,7 +1088,7 @@ impl SyncManager {
                 )
                 .await
             }
-            SourceType::Gmail => {
+            "gmail" => {
                 self.sync_gmail_source_internal(
                     source,
                     service_creds,
@@ -1100,7 +1099,7 @@ impl SyncManager {
                 )
                 .await
             }
-            SourceType::GoogleChat => {
+            "google_chat" => {
                 self.sync_google_chat_source_internal(
                     source,
                     service_creds,
@@ -1116,7 +1115,7 @@ impl SyncManager {
 
         // SA-direct is polling-only: skip webhook registration entirely (it
         // would impersonate the source creator, which SA-direct must never do).
-        if result.is_ok() && native_source_type == SourceType::GoogleDrive && !is_sa_direct {
+        if result.is_ok() && native_source_type == "google_drive" && !is_sa_direct {
             self.ensure_webhook_registered(source_id).await;
         }
 
@@ -2235,8 +2234,7 @@ impl SyncManager {
         ctx: &SyncContext,
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
-        let native_source_type = SourceType::try_from(source.source_type.as_str())
-            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let native_source_type = source.source_type.clone();
         let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
         // Parse filters; will error on malformed config.
@@ -2929,11 +2927,11 @@ impl SyncManager {
         // SA-direct must have been validated at the request boundary; re-validate
         // defensively so a config edited behind the sync path still fails closed.
         config
-            .validate(SourceType::GoogleDrive, service_creds.auth_type)
+            .validate("google_drive", service_creds.auth_type)
             .map_err(anyhow::Error::msg)?;
 
         let service_auth = Arc::new(
-            self.create_auth(service_creds, SourceType::GoogleDrive)
+            self.create_auth(service_creds, "google_drive")
                 .await?,
         );
         let access_token = service_auth.get_self_access_token().await?;
@@ -3639,8 +3637,7 @@ impl SyncManager {
         // Drive parents during scope evaluation.
         self.folder_cache.clear();
 
-        let native_source_type = SourceType::try_from(source.source_type.as_str())
-            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let native_source_type = source.source_type.clone();
 
         // SA-direct mode: index the selected shared drives as the SA itself.
         if matches!(
@@ -4059,8 +4056,7 @@ impl SyncManager {
     ) -> Result<GoogleSyncCheckpoint> {
         let sync_run_id = ctx.sync_run_id();
 
-        let native_source_type = SourceType::try_from(source.source_type.as_str())
-            .map_err(|e| anyhow!("Unsupported source type: {}", e))?;
+        let native_source_type = source.source_type.clone();
         let service_auth = Arc::new(self.create_auth(service_creds, native_source_type).await?);
 
         let (_drive_cutoff_date, gmail_cutoff_date) = self.get_cutoff_date()?;
@@ -4320,7 +4316,7 @@ impl SyncManager {
         ctx: &SyncContext,
     ) -> Result<GoogleSyncCheckpoint> {
         let service_auth = Arc::new(
-            self.create_auth(service_creds, SourceType::GoogleChat)
+            self.create_auth(service_creds, "google_chat")
                 .await?,
         );
         if service_auth.is_oauth() {
@@ -4329,7 +4325,7 @@ impl SyncManager {
             ));
         }
         let drive_auth = Arc::new(
-            self.create_auth(service_creds, SourceType::GoogleDrive)
+            self.create_auth(service_creds, "google_drive")
                 .await?,
         );
 
@@ -5343,7 +5339,7 @@ impl SyncManager {
     pub async fn create_auth(
         &self,
         creds: &ServiceCredential,
-        source_type: SourceType,
+        source_type: impl AsRef<str>,
     ) -> Result<GoogleAuth> {
         match creds.auth_type {
             AuthType::OAuth => {
@@ -5566,7 +5562,7 @@ impl SyncManager {
 
         let service_creds = self.get_service_credentials(source_id).await?;
         let auth = self
-            .create_auth(&service_creds, SourceType::GoogleDrive)
+            .create_auth(&service_creds, "google_drive")
             .await?;
         let user_email = if let Some(oauth_email) = auth.oauth_user_email() {
             oauth_email.to_string()
@@ -5643,7 +5639,7 @@ impl SyncManager {
     ) -> Result<()> {
         let service_creds = self.get_service_credentials(source_id).await?;
         let auth = self
-            .create_auth(&service_creds, SourceType::GoogleDrive)
+            .create_auth(&service_creds, "google_drive")
             .await?;
         let user_email = if let Some(oauth_email) = auth.oauth_user_email() {
             oauth_email.to_string()
@@ -6388,13 +6384,7 @@ impl SyncManager {
         service_creds: &ServiceCredential,
         ctx: &SyncContext,
     ) -> HashSet<String> {
-        let native_source_type = match SourceType::try_from(source.source_type.as_str()) {
-            Ok(source_type) => source_type,
-            Err(e) => {
-                warn!("Skipping group sync for unsupported source type: {}", e);
-                return HashSet::new();
-            }
-        };
+        let native_source_type = source.source_type.clone();
         let service_auth = match self.create_auth(service_creds, native_source_type).await {
             Ok(auth) => auth,
             Err(e) => {
@@ -6460,16 +6450,7 @@ impl SyncManager {
         service_creds: &ServiceCredential,
         ctx: &SyncContext,
     ) -> HashSet<String> {
-        let native_source_type = match SourceType::try_from(source.source_type.as_str()) {
-            Ok(source_type) => source_type,
-            Err(e) => {
-                warn!(
-                    "Skipping SA-direct group sync for unsupported source type: {}",
-                    e
-                );
-                return HashSet::new();
-            }
-        };
+        let native_source_type = source.source_type.clone();
         let service_auth = match self.create_auth(service_creds, native_source_type).await {
             Ok(auth) => auth,
             Err(e) => {

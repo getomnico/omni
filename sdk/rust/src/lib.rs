@@ -27,7 +27,7 @@ pub use shared::models::{
     DocumentPermissions, IntegrationType, McpPromptDefinition, McpResourceDefinition,
     OAuthCredentialFlow, OAuthCredentialValidationRequest, OAuthCredentialValidationResponse,
     OAuthSourceBinding, PersonSyncRecord, SearchOperator, ServiceCredential, ServiceProvider,
-    Source, SourceType, SyncRun, SyncStatus, SyncType,
+    Source, SyncRun, SyncStatus, SyncType,
 };
 pub use shared::rate_limiter::{RateLimiter, RetryableError};
 pub use shared::telemetry;

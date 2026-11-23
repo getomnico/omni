@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use axum::http::StatusCode;
 use omni_connector_sdk::{
     ActionCredentialScope, ActionDefinition, ActionResponse, Connector, ServiceCredential, Source,
-    SourceType, SyncContext, SyncType,
+    SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 
@@ -27,8 +27,8 @@ impl Connector for FileSystemConnector {
         env!("CARGO_PKG_VERSION")
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::LocalFiles, SourceType::FileSystem]
+    fn source_types(&self) -> Vec<String> {
+        vec!["local_files".to_string(), "file_system".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

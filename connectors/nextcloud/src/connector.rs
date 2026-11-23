@@ -2,8 +2,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
-    ActionDefinition, ActionResponse, Connector, ServiceCredential, Source, SourceType,
-    SyncContext, SyncType,
+    ActionDefinition, ActionResponse, Connector, ServiceCredential, Source, SyncContext, SyncType,
 };
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
@@ -101,8 +100,8 @@ impl Connector for NextcloudConnector {
         Some("Index files and documents from a Nextcloud instance via WebDAV".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Nextcloud]
+    fn source_types(&self) -> Vec<String> {
+        vec!["nextcloud".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

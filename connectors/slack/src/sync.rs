@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate};
 use omni_connector_sdk::SyncContext;
 use omni_connector_sdk::{
-    ConnectorEvent, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
+    ConnectorEvent, SdkClient, ServiceCredential, ServiceProvider, Source, SyncType,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -338,7 +338,7 @@ impl SyncManager {
             self.sdk_client.clone(),
             sync_run_id.clone(),
             source_id.to_string(),
-            SourceType::Slack,
+            "slack",
             SyncType::Incremental,
             Arc::new(AtomicBool::new(false)),
         );
@@ -459,7 +459,7 @@ impl SyncManager {
             self.sdk_client.clone(),
             sync_run_id.clone(),
             source_id.to_string(),
-            SourceType::Slack,
+            "slack",
             SyncType::Realtime,
             Arc::new(AtomicBool::new(false)),
         );

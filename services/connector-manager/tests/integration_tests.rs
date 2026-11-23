@@ -10,7 +10,7 @@ use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
     ConnectorManifest, DocumentMetadata, DocumentPermissions, IntegrationType, PersonSyncRecord,
-    ServiceCredential, ServiceProvider, SourceType, SyncStatus, SyncType,
+    ServiceCredential, ServiceProvider, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use time::OffsetDateTime;
@@ -1799,7 +1799,7 @@ async fn person_sync_and_document_extraction_merge_correctly() {
 async fn register_action_manifest(
     fixture: &common::TestFixture,
     connector_id: &str,
-    source_type: SourceType,
+    source_type: &str,
     oauth: Option<serde_json::Value>,
     credential_scope: ActionCredentialScope,
     admin_only: bool,
@@ -1829,7 +1829,7 @@ async fn register_action_manifest(
             mode,
             credential_scope,
             required_scopes: None,
-            source_types: vec![source_type],
+            source_types: vec![source_type.to_string()],
             admin_only,
             hidden: false,
             actor_scoped,
@@ -1920,7 +1920,7 @@ async fn test_action_org_only_connector_uses_org_credential_with_user_id() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         false,
@@ -1975,7 +1975,7 @@ async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred()
     register_action_manifest(
         &fixture,
         "gmail",
-        SourceType::Gmail,
+        "gmail",
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
@@ -2019,7 +2019,7 @@ async fn test_action_org_scope_never_uses_user_credential() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::Org,
         false,
@@ -2061,7 +2061,7 @@ async fn test_action_admin_only_requires_admin_and_uses_org_credential() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         true,
@@ -2122,7 +2122,7 @@ async fn test_action_default_scope_on_oauth_connector_requires_user_oauth() {
     register_action_manifest(
         &fixture,
         "gmail",
-        SourceType::Gmail,
+        "gmail",
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
@@ -2162,7 +2162,7 @@ async fn test_action_user_facing_without_user_id_is_rejected() {
     register_action_manifest(
         &fixture,
         "gmail",
-        SourceType::Gmail,
+        "gmail",
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
@@ -2197,7 +2197,7 @@ async fn test_action_org_credential_write_requires_admin_role() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         false,
@@ -2265,7 +2265,7 @@ async fn test_action_actor_scoped_write_allowed_for_regular_users() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         false,

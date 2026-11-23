@@ -1,6 +1,6 @@
 use crate::client::SdkClient;
 use anyhow::Result;
-use shared::models::{ConnectorEvent, PersonSyncRecord, SourceType, SyncType};
+use shared::models::{ConnectorEvent, PersonSyncRecord, SyncType};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -9,7 +9,7 @@ pub struct SyncContext {
     sdk_client: SdkClient,
     sync_run_id: String,
     source_id: String,
-    source_type: SourceType,
+    source_type: String,
     sync_mode: SyncType,
     is_resume: bool,
     cancelled: Arc<AtomicBool>,
@@ -20,7 +20,7 @@ impl SyncContext {
         sdk_client: SdkClient,
         sync_run_id: String,
         source_id: String,
-        source_type: SourceType,
+        source_type: impl Into<String>,
         sync_mode: SyncType,
         cancelled: Arc<AtomicBool>,
     ) -> Self {
@@ -39,7 +39,7 @@ impl SyncContext {
         sdk_client: SdkClient,
         sync_run_id: String,
         source_id: String,
-        source_type: SourceType,
+        source_type: impl Into<String>,
         sync_mode: SyncType,
         is_resume: bool,
         cancelled: Arc<AtomicBool>,
@@ -48,7 +48,7 @@ impl SyncContext {
             sdk_client,
             sync_run_id,
             source_id,
-            source_type,
+            source_type: source_type.into(),
             sync_mode,
             is_resume,
             cancelled,
@@ -67,8 +67,8 @@ impl SyncContext {
         &self.source_id
     }
 
-    pub fn source_type(&self) -> SourceType {
-        self.source_type
+    pub fn source_type(&self) -> String {
+        self.source_type.clone()
     }
 
     pub fn sync_mode(&self) -> SyncType {

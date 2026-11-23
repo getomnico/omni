@@ -5,7 +5,7 @@ use axum::response::Response;
 use omni_connector_sdk::{
     ActionCredentialScope, ActionDefinition, ActionResponse, Connector, SearchOperator,
     ServiceCredential, Source,
-    SourceType, SyncContext, SyncType,
+    SyncContext, SyncType,
 };
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
@@ -66,8 +66,8 @@ impl Connector for ImapConnector {
         Some("Index emails from any IMAP-compatible mailbox".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Imap]
+    fn source_types(&self) -> Vec<String> {
+        vec!["imap".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

@@ -1,8 +1,7 @@
 use crate::{
     db::error::DatabaseError,
     models::{AttributeFilter, DateFilter, Document},
-    SourceType,
-};
+    };
 use serde_json::Value as JsonValue;
 use sqlx::{FromRow, PgPool};
 use std::collections::HashMap;
@@ -223,7 +222,7 @@ impl DocumentRepository {
         user_email: &str,
         user_groups: &[String],
         count: usize,
-        excluded_source_types: &[SourceType],
+        excluded_source_types: &[&str],
         excluded_document_ids: &[String],
     ) -> Result<Vec<Document>, DatabaseError> {
         let permission_filter = &self.generate_permission_filter(user_email, user_groups);
@@ -254,7 +253,12 @@ impl DocumentRepository {
 
         let documents = sqlx::query_as::<_, Document>(&query)
             .bind(count as i32)
-            .bind(excluded_source_types)
+            .bind(
+                excluded_source_types
+                    .iter()
+                    .map(|source_type| (*source_type).to_string())
+                    .collect::<Vec<_>>(),
+            )
             .bind(excluded_document_ids)
             .fetch_all(&self.pool)
             .await?;
@@ -264,7 +268,7 @@ impl DocumentRepository {
 
     pub async fn fetch_active_source_ids(
         &self,
-        source_types: Option<&[SourceType]>,
+        source_types: Option<&[String]>,
     ) -> Result<Vec<String>, DatabaseError> {
         let source_ids: Vec<String> = if let Some(source_types) = source_types {
             sqlx::query_scalar(
@@ -284,7 +288,7 @@ impl DocumentRepository {
 
     pub async fn fetch_active_sources(&self) -> Result<Vec<(String, String)>, DatabaseError> {
         // source_type is free-form text for remote MCP sources, so decode it as
-        // a string rather than the SourceType enum; callers compare against
+        // a string rather than the String enum; callers compare against
         // requested source types by name.
         let rows: Vec<(String, String)> =
             sqlx::query_as(r#"SELECT id, source_type::text FROM sources WHERE NOT is_deleted"#)

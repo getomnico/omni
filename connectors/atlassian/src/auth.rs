@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use omni_connector_sdk::SourceType;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
@@ -189,7 +188,7 @@ impl AuthManager {
         &self,
         domain: &str,
         sa_token: &str,
-        source_type: Option<&SourceType>,
+        source_type: Option<&str>,
     ) -> Result<AtlassianCredentials> {
         info!("Validating Atlassian credentials for site: {}", domain);
 
@@ -211,8 +210,8 @@ impl AuthManager {
             AtlassianCredentials::new(domain.to_string(), cloud_id, sa_token.to_string());
         let auth_header = creds.get_bearer_auth_header();
 
-        let validate_jira = source_type != Some(&SourceType::Confluence);
-        let validate_confluence = source_type != Some(&SourceType::Jira);
+        let validate_jira = source_type != Some("confluence");
+        let validate_confluence = source_type != Some("jira");
 
         let mut sa_account_id = None;
         if validate_jira {
@@ -304,7 +303,7 @@ impl AuthManager {
     pub async fn ensure_valid_credentials(
         &self,
         creds: &mut AtlassianCredentials,
-        source_type: Option<&SourceType>,
+        source_type: Option<&str>,
     ) -> Result<()> {
         if !creds.is_valid() {
             debug!("Re-validating SA token");

@@ -9,7 +9,7 @@ use omni_connector_sdk::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionResponse, Connector, HttpMcpServer,
     McpCredentials,
     McpServer, OAuthManifestConfig, OAuthScopeSet, OAuthTokenEndpointAuthMethod, SearchOperator,
-    ServiceCredential, Source, SourceType, SyncContext, SyncType,
+    ServiceCredential, Source, SyncContext, SyncType,
 };
 use serde_json::{Value as JsonValue, json};
 use tracing::info;
@@ -124,8 +124,8 @@ impl Connector for AtlassianConnector {
         Some("Connect to Confluence and Jira using an API token".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Confluence, SourceType::Jira]
+    fn source_types(&self) -> Vec<String> {
+        vec!["confluence".to_string(), "jira".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

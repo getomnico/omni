@@ -180,7 +180,7 @@ impl GoogleConnectorTestFixture {
     pub async fn create_test_source(
         &self,
         name: &str,
-        source_type: shared::models::SourceType,
+        source_type: String,
         user_id: &str,
     ) -> Result<String> {
         let source_id = shared::utils::generate_ulid();

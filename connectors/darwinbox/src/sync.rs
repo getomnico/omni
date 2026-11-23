@@ -753,7 +753,7 @@ fn slugify(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omni_connector_sdk::{SdkClient, SourceType, SyncType};
+    use omni_connector_sdk::{SdkClient, SyncType};
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use wiremock::matchers::{method, path};
@@ -824,7 +824,7 @@ mod tests {
             SdkClient::new(&server.uri()),
             "run-1".to_string(),
             "source-1".to_string(),
-            SourceType::Darwinbox,
+            "darwinbox",
             SyncType::Full,
             Arc::new(AtomicBool::new(false)),
         );
@@ -888,7 +888,7 @@ mod tests {
                 SdkClient::new(&server.uri()),
                 "run-1".to_string(),
                 "source-1".to_string(),
-                SourceType::Darwinbox,
+                "darwinbox",
                 SyncType::Full,
                 Arc::new(AtomicBool::new(false)),
             );
@@ -932,7 +932,7 @@ mod tests {
             SdkClient::new(&server.uri()),
             "run-1".to_string(),
             "source-1".to_string(),
-            SourceType::Darwinbox,
+            "darwinbox",
             SyncType::Full,
             Arc::new(AtomicBool::new(false)),
         );
@@ -1038,7 +1038,7 @@ mod tests {
             SdkClient::new(&server.uri()),
             "run-1".to_string(),
             "source-1".to_string(),
-            SourceType::Darwinbox,
+            "darwinbox",
             SyncType::Full,
             Arc::new(AtomicBool::new(false)),
         );
@@ -1158,7 +1158,7 @@ mod tests {
             SdkClient::new(&server.uri()),
             "run-1".to_string(),
             "source-1".to_string(),
-            SourceType::Darwinbox,
+            "darwinbox",
             SyncType::Full,
             Arc::new(AtomicBool::new(false)),
         );
