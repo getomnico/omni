@@ -1401,8 +1401,29 @@ class TestStreamErrorPersistence:
         ]
         assert stream_errors, f"Expected stream_error, got events: {events}"
 
+        finalized_events = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "message_finalized"
+        ]
+        event_types = [event_type for event_type, _data, _sid in events]
+        assert "message_finalized" in event_types
+        assert event_types.index("message_finalized") < event_types.index("stream_error")
+
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         failed = db_msgs[-1]
+        assert finalized_events == [
+            {
+                "id": failed.id,
+                "chat_id": failed.chat_id,
+                "parent_id": failed.parent_id,
+                "message_seq_num": failed.message_seq_num,
+                "message": failed.message,
+                "content_text": None,
+                "error": failed.error,
+                "created_at": failed.created_at.isoformat(),
+            }
+        ]
         assert failed.message["role"] == "assistant"
         assert failed.error == stream_errors[-1], (
             f"Persisted error {failed.error} != stream_error payload "
@@ -1470,6 +1491,20 @@ class TestStreamErrorPersistence:
         assert failed.error["message"] == (
             "Failed to generate response: Connection reset mid-stream"
         )
+        finalized_events = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "message_finalized"
+        ]
+        assert len(finalized_events) == 1
+        finalized = finalized_events[0]
+        assert finalized["id"] == failed.id
+        assert finalized["chat_id"] == failed.chat_id
+        assert finalized["parent_id"] == failed.parent_id
+        assert finalized["message_seq_num"] == failed.message_seq_num
+        assert finalized["message"] == failed.message
+        assert finalized["error"] == failed.error
+        assert finalized["created_at"] == failed.created_at.isoformat()
         text = " ".join(
             b.get("text", "")
             for b in failed.message.get("content", [])
@@ -1651,6 +1686,18 @@ class TestStreamErrorPersistence:
         assert any(
             event_type == "stream_error" for event_type, _d, _sid in replay_events
         ), f"Replay did not deliver terminal, got: {replay_events}"
+        original_finalized = [
+            data
+            for event_type, data, _sid in events
+            if event_type == "message_finalized"
+        ]
+        replay_finalized = [
+            data
+            for event_type, data, _sid in replay_events
+            if event_type == "message_finalized"
+        ]
+        assert len(original_finalized) == 1
+        assert replay_finalized == original_finalized
 
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         error_rows = [m for m in db_msgs if m.error is not None]

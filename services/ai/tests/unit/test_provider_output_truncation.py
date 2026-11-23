@@ -13,6 +13,7 @@ from providers.openai import OpenAIProvider
 from providers.openai_compatible import OpenAICompatibleProvider, REASONING_CONTENT_KEY
 from providers.anthropic import AnthropicProvider
 from providers.types import ProviderError
+from services.usage import UsageContext, UsagePurpose, UsageTracker
 
 pytestmark = pytest.mark.unit
 
@@ -64,6 +65,43 @@ async def test_openai_incomplete_emits_reason_without_usage(reason, expected):
     assert output[-2].usage.output_tokens == 0
     assert output[-1].type == "message_stop"
     assert sum(event.type == "content_block_stop" for event in output) == 1
+
+
+@pytest.mark.asyncio
+async def test_openai_incomplete_without_final_usage_preserves_known_input_tokens():
+    created_response = SimpleNamespace(
+        id="response-1",
+        model="test-model",
+        usage=SimpleNamespace(input_tokens=12, output_tokens=0),
+    )
+    incomplete_response = SimpleNamespace(
+        id="response-1",
+        model="test-model",
+        usage=None,
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+    )
+    events = [
+        SimpleNamespace(type="response.created", response=created_response),
+        SimpleNamespace(type="response.incomplete", response=incomplete_response),
+    ]
+    tracker = UsageTracker(
+        repo=AsyncMock(),
+        ctx=UsageContext(
+            user_id="u",
+            model_id="m",
+            model_name="m",
+            provider_type="test",
+            purpose=UsagePurpose.CHAT,
+        ),
+    )
+
+    output = await _collect(
+        tracker.wrap_stream(_openai_provider(events).stream_response("hi"))
+    )
+
+    assert tracker.input_tokens == 12
+    delta = next(event for event in output if event.type == "message_delta")
+    assert delta.usage.input_tokens in (None, 12)
 
 
 @pytest.mark.asyncio
@@ -232,6 +270,61 @@ async def test_gemini_uses_final_usage_after_an_earlier_usage_chunk():
 
 
 @pytest.mark.asyncio
+async def test_gemini_normal_finish_accepts_delayed_final_usage():
+    final_usage = SimpleNamespace(
+        prompt_token_count=7,
+        cached_content_token_count=1,
+        candidates_token_count=9,
+    )
+    class DelayedUsageStream:
+        def __aiter__(self):
+            async def iterate():
+                yield SimpleNamespace(
+                    candidates=[SimpleNamespace(content=None, finish_reason="STOP")],
+                    usage_metadata=None,
+                )
+                await asyncio.sleep(0.3)
+                yield SimpleNamespace(candidates=[], usage_metadata=final_usage)
+
+            return iterate()
+
+    chunks = DelayedUsageStream()
+    models = SimpleNamespace(generate_content_stream=AsyncMock(return_value=chunks))
+    provider = GeminiProvider.__new__(GeminiProvider)
+    provider.model = "test-model"
+    provider.model_name = "test-model"
+    provider.client = SimpleNamespace(aio=SimpleNamespace(models=models))
+
+    output = [event async for event in provider.stream_response("hi")]
+
+    delta = next(event for event in output if event.type == "message_delta")
+    assert delta.delta.stop_reason == "end_turn"
+    assert delta.usage.input_tokens == 6
+    assert delta.usage.output_tokens == 9
+    assert delta.usage.cache_read_input_tokens == 1
+
+
+@pytest.mark.asyncio
+async def test_gemini_read_timeout_before_terminal_is_not_suppressed():
+    class TimedOutStream:
+        def __aiter__(self):
+            async def iterate():
+                raise TimeoutError("provider read timeout")
+                yield
+
+            return iterate()
+
+    models = SimpleNamespace(generate_content_stream=AsyncMock(return_value=TimedOutStream()))
+    provider = GeminiProvider.__new__(GeminiProvider)
+    provider.model = "test-model"
+    provider.model_name = "test-model"
+    provider.client = SimpleNamespace(aio=SimpleNamespace(models=models))
+
+    with pytest.raises(ProviderError, match="provider read timeout"):
+        await _collect(provider.stream_response("hi"))
+
+
+@pytest.mark.asyncio
 async def test_gemini_terminal_without_usage_has_bounded_drain_and_closes_stream():
     class HangingStream:
         def __init__(self):
@@ -335,6 +428,71 @@ async def test_bedrock_amazon_message_stop_without_metadata_has_bounded_drain():
     assert delta.delta.stop_reason == "max_tokens"
     assert delta.usage.output_tokens == 0
     assert output[-1].type == "message_stop"
+    assert event_stream.closed.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_operation", ["reader", "close"])
+async def test_bedrock_shutdown_does_not_wait_for_blocked_operation_after_deadline(
+    blocked_operation,
+):
+    provider = BedrockProvider.__new__(BedrockProvider)
+    provider.model_id = "amazon.nova-lite-v1:0"
+    provider.model_family = "amazon"
+
+    class BlockingEventStream:
+        def __init__(self):
+            self.release_reader = threading.Event()
+            self.blocked_reader = threading.Event()
+            self.close_entered = threading.Event()
+            self.release_close = threading.Event()
+            self.closed = threading.Event()
+
+        def __iter__(self):
+            def generate():
+                yield {"messageStart": {"role": "assistant"}}
+                yield {"messageStop": {"stopReason": "max_tokens"}}
+                self.blocked_reader.set()
+                self.release_reader.wait()
+
+            return generate()
+
+        def close(self):
+            self.closed.set()
+            self.close_entered.set()
+            if blocked_operation == "close":
+                self.release_close.wait()
+                self.release_reader.set()
+
+    event_stream = BlockingEventStream()
+
+    class Client:
+        def converse_stream(self, **kwargs):
+            return {"stream": event_stream}
+
+    provider.client = Client()
+    task = asyncio.create_task(_collect(provider.stream_response("hi")))
+    completed_promptly = False
+    shutdown_started = False
+    try:
+        observation = (
+            event_stream.blocked_reader
+            if blocked_operation == "reader"
+            else event_stream.close_entered
+        )
+        shutdown_started = await asyncio.to_thread(observation.wait, 0.8)
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.8)
+            completed_promptly = True
+        except TimeoutError:
+            pass
+    finally:
+        event_stream.release_close.set()
+        event_stream.release_reader.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    assert shutdown_started
+    assert completed_promptly
     assert event_stream.closed.is_set()
 
 

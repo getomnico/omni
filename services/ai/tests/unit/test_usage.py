@@ -68,6 +68,87 @@ def _stream_factory(input_tokens: int, output_tokens: int):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_wrap_stream_closes_upstream_on_early_close():
+    tracker = UsageTracker(repo=AsyncMock(), ctx=_ctx())
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            yield RawMessageStartEvent(
+                type="message_start",
+                message=Message(
+                    id="msg",
+                    type="message",
+                    role="assistant",
+                    content=[],
+                    model="m",
+                    usage=Usage(input_tokens=123, output_tokens=4),
+                ),
+            )
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    wrapped = tracker.wrap_stream(upstream())
+    await anext(wrapped)
+    await wrapped.aclose()
+
+    assert closed.is_set()
+    assert (tracker.input_tokens, tracker.output_tokens) == (123, 4)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_preserves_upstream_exception():
+    error = RuntimeError("upstream failed")
+
+    async def upstream():
+        raise error
+        yield  # Keep this an async generator.
+
+    with pytest.raises(RuntimeError) as raised:
+        await anext(UsageTracker(repo=AsyncMock(), ctx=_ctx()).wrap_stream(upstream()))
+
+    assert raised.value is error
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_cancellation_preserves_usage_and_closes_upstream():
+    tracker = UsageTracker(repo=AsyncMock(), ctx=_ctx())
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            yield RawMessageStartEvent(
+                type="message_start",
+                message=Message(
+                    id="msg",
+                    type="message",
+                    role="assistant",
+                    content=[],
+                    model="m",
+                    usage=Usage(input_tokens=321, output_tokens=9),
+                ),
+            )
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    wrapped = tracker.wrap_stream(upstream())
+    await anext(wrapped)
+    pending = asyncio.create_task(anext(wrapped))
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert closed.is_set()
+    assert (tracker.input_tokens, tracker.output_tokens) == (321, 9)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_wrap_stream_captures_input_tokens_from_message_delta():
     """Providers that report input_tokens only on the final message_delta
     must still end up in the tracker's input_tokens field."""

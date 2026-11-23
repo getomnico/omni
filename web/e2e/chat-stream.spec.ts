@@ -694,10 +694,14 @@ test('output-limit stream errors retain partial text and reconcile persisted too
 
         let streamRequests = 0
         let persistedMessageRefreshes = 0
+        let failedMessageSeqNum: number | null = null
         let lastPostedUserMessageId = seeded.userMessageId
         await page.route(`**/api/chat/${seeded.chatId}/messages`, async (route) => {
             if (route.request().method() !== 'POST') {
-                persistedMessageRefreshes += 1
+                if (streamRequests > 0) {
+                    persistedMessageRefreshes += 1
+                    return route.fulfill({ status: 503, body: 'Unexpected post-stream reload' })
+                }
                 return route.fallback()
             }
 
@@ -752,6 +756,7 @@ test('output-limit stream errors retain partial text and reconcile persisted too
                     FROM chat_messages
                     WHERE chat_id = ${seeded!.chatId}
                 `
+                failedMessageSeqNum = sequence.next_seq
                 await tx`
                     INSERT INTO chat_messages (
                         id, chat_id, parent_id, message_seq_num, message, content_text, error
@@ -810,6 +815,19 @@ test('output-limit stream errors retain partial text and reconcile persisted too
                     index: 1,
                     delta: { type: 'input_json_delta', partial_json: '{"query":"cut' },
                 }),
+                `event: message_finalized\ndata: ${JSON.stringify({
+                    id: failedAssistantId,
+                    chat_id: seeded!.chatId,
+                    parent_id: lastPostedUserMessageId,
+                    message_seq_num: failedMessageSeqNum,
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: 'Partial answer before truncation.' }],
+                    },
+                    content_text: 'Partial answer before truncation.',
+                    error: { message: expectedError },
+                    created_at: new Date().toISOString(),
+                })}\n\n`,
                 `event: stream_error\ndata: ${JSON.stringify({ message: expectedError })}\n\n`,
             ].join('')
             await route.fulfill({
@@ -820,14 +838,15 @@ test('output-limit stream errors retain partial text and reconcile persisted too
         })
 
         await page.goto(`/chat/${seeded.chatId}`)
+        await expect(page.getByText('What tools can you use?')).toBeVisible()
         await page.getByRole('main').getByRole('textbox').fill('Generate a long answer')
         await page.keyboard.press('Enter')
 
         await expect(page.getByText('Partial answer before truncation.')).toBeVisible()
         await expect(page.getByText(expectedError)).toBeVisible()
-        await expect.poll(() => persistedMessageRefreshes).toBe(1)
-        await expect(page.getByText(expectedError)).toBeVisible()
         await expect(page.getByText('Searching: missing query')).toHaveCount(0)
+        expect(persistedMessageRefreshes).toBe(0)
+        await expect(page.getByText(expectedError)).toBeVisible()
         await expect(page.locator('.omni-composer-send.rounded-full')).toHaveCount(0)
 
         const input = page.getByRole('main').getByRole('textbox')

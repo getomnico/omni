@@ -1,5 +1,7 @@
 """Unit tests for citation logic."""
 
+import asyncio
+
 import pytest
 from anthropic.types import (
     InputJSONDelta,
@@ -14,6 +16,60 @@ from anthropic.types import (
 )
 
 from services.citations import CitableRef, CitationProcessor, CitationStreamProcessor
+
+
+@pytest.mark.asyncio
+async def test_citation_processor_closes_upstream_on_early_close():
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            yield RawMessageStopEvent(type="message_stop")
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    processed = CitationStreamProcessor({}).process(upstream())
+    await anext(processed)
+    await processed.aclose()
+
+    assert closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_citation_processor_preserves_upstream_exception():
+    error = RuntimeError("upstream failed")
+
+    async def upstream():
+        raise error
+        yield RawMessageStopEvent(type="message_stop")
+
+    with pytest.raises(RuntimeError) as raised:
+        await anext(CitationStreamProcessor({}).process(upstream()))
+
+    assert raised.value is error
+
+
+@pytest.mark.asyncio
+async def test_citation_processor_cancellation_closes_upstream():
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            yield RawMessageStopEvent(type="message_stop")
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    processed = CitationStreamProcessor({}).process(upstream())
+    await anext(processed)
+    pending = asyncio.create_task(anext(processed))
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert closed.is_set()
 
 
 def test_synthetic_citations_end_to_end():
