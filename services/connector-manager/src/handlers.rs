@@ -1034,18 +1034,15 @@ async fn invalidate_native_mcp_catalog(
     manifest.source_capabilities.clear();
     manifest.mcp_catalog_loaded = false;
 
-    let key = format!("connector:manifest:{}", manifest.connector_id);
-    let manifest_json =
-        serde_json::to_string(&manifest).map_err(|e| ApiError::Internal(e.to_string()))?;
-    let mut conn = state
-        .redis_client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
-    let _: () = conn
-        .set_ex(&key, manifest_json, REGISTRATION_TTL_SECONDS)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to invalidate MCP catalog: {}", e)))?;
+    crate::manifest_registry::publish_manifest(
+        &state.db_pool,
+        &state.redis_client,
+        &manifest,
+        REGISTRATION_TTL_SECONDS,
+        true,
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("Failed to invalidate MCP catalog: {}", e)))?;
     Ok(())
 }
 
@@ -2056,18 +2053,15 @@ pub async fn oauth_credential_ready(
         refreshed.source_capabilities.push(group);
         refreshed.mcp_catalog_loaded = !refreshed.source_capabilities.is_empty();
         validate_connector_manifest(&refreshed).map_err(ApiError::BadRequest)?;
-        let key = format!("connector:manifest:{}", refreshed.connector_id);
-        let manifest_json = serde_json::to_string(&refreshed)
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
-        let mut conn = state
-            .redis_client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
-        let _: () = conn
-            .set_ex(&key, manifest_json, REGISTRATION_TTL_SECONDS)
-            .await
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
+        crate::manifest_registry::publish_manifest(
+            &state.db_pool,
+            &state.redis_client,
+            &refreshed,
+            REGISTRATION_TTL_SECONDS,
+            true,
+        )
+        .await
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
         return Ok(Json(json!({
             "status": "completed",
             "catalog_updated": true,
@@ -2125,18 +2119,15 @@ pub async fn oauth_credential_ready(
                 warn!("OAuth credential-ready returned invalid manifest: {}", e);
                 return Ok(Json(json!({"status": "invalid_manifest"})));
             }
-            let manifest_json =
-                serde_json::to_string(&manifest).map_err(|e| ApiError::Internal(e.to_string()))?;
-            let key = format!("connector:manifest:{}", manifest.connector_id);
-            let mut conn = state
-                .redis_client
-                .get_multiplexed_async_connection()
-                .await
-                .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
-            let _: () = conn
-                .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
+            crate::manifest_registry::publish_manifest(
+                &state.db_pool,
+                &state.redis_client,
+                &manifest,
+                REGISTRATION_TTL_SECONDS,
+                true,
+            )
+            .await
+            .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
             info!(
                 "OAuth credential-ready updated manifest for {}",
                 manifest.connector_id
@@ -2700,9 +2691,41 @@ fn validate_connector_manifest_action_policy(manifest: &ConnectorManifest) -> Re
     Ok(())
 }
 
+fn same_manifest_identity(left: &ConnectorManifest, right: &ConnectorManifest) -> bool {
+    left.connector_id == right.connector_id
+        && left.connector_url == right.connector_url
+        && left.integration_type == right.integration_type
+        && left.source_types.iter().collect::<std::collections::HashSet<_>>()
+            == right.source_types.iter().collect::<std::collections::HashSet<_>>()
+}
+
 fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), String> {
     validate_connector_manifest_action_schemas(manifest)?;
-    validate_connector_manifest_action_policy(manifest)
+    validate_connector_manifest_action_policy(manifest)?;
+
+    let mut seen_source_types = std::collections::HashSet::new();
+    for source_type in &manifest.source_types {
+        if !is_valid_source_type_slug(source_type) {
+            return Err(format!(
+                "Connector '{}' has invalid source type slug {:?}",
+                manifest.connector_id, source_type
+            ));
+        }
+        if !seen_source_types.insert(source_type) {
+            return Err(format!(
+                "Connector '{}' declares source type {:?} more than once",
+                manifest.connector_id, source_type
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_source_type_slug(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(b'a'..=b'z'))
+        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-'))
+        && value.len() <= 50
 }
 
 fn manifest_actions<'a>(
@@ -3173,6 +3196,13 @@ pub async fn sdk_register(
     Json(base_manifest): Json<ConnectorManifest>,
 ) -> Result<Json<SdkStatusResponse>, ApiError> {
     let mut manifest = base_manifest;
+    if manifest.integration_type != IntegrationType::Connector
+        || manifest.connector_id.starts_with("remote_mcp:")
+    {
+        return Err(ApiError::BadRequest(
+            "Remote MCP manifests are registered by the gateway, not connector SDKs".to_string(),
+        ));
+    }
     if manifest.connector_id.is_empty() {
         return Err(ApiError::BadRequest(
             "connector_id is required for registration".to_string(),
@@ -3184,6 +3214,7 @@ pub async fn sdk_register(
         ));
     }
     validate_connector_manifest(&manifest).map_err(ApiError::BadRequest)?;
+    let registration_identity = manifest.clone();
 
     // Validate the connector is reachable before accepting registration
     let client = ConnectorClient::new();
@@ -3254,6 +3285,12 @@ pub async fn sdk_register(
         };
     }
     validate_connector_manifest(&manifest).map_err(ApiError::BadRequest)?;
+    if !same_manifest_identity(&registration_identity, &manifest) {
+        return Err(ApiError::BadRequest(
+            "Connector manifest response changed its registration identity or source types"
+                .to_string(),
+        ));
+    }
     let needs_mcp_catalog_recovery = needs_native_mcp_catalog_recovery(&manifest, is_snowflake);
 
     info!(
@@ -3261,20 +3298,25 @@ pub async fn sdk_register(
         connector_id, manifest.source_types, manifest.connector_url
     );
 
-    let manifest_json = serde_json::to_string(&manifest)
-        .map_err(|e| ApiError::Internal(format!("Failed to serialize manifest: {}", e)))?;
-
-    let key = format!("connector:manifest:{}", connector_id);
-
+    crate::manifest_registry::publish_manifest(
+        &state.db_pool,
+        &state.redis_client,
+        &manifest,
+        REGISTRATION_TTL_SECONDS,
+        false,
+    )
+    .await
+    .map_err(|error| match error {
+        crate::manifest_registry::ManifestRegistryError::Invalid(message) => {
+            ApiError::BadRequest(message)
+        }
+        other => ApiError::Internal(other.to_string()),
+    })?;
     let mut conn = state
         .redis_client
         .get_multiplexed_async_connection()
         .await
         .map_err(|e| ApiError::Internal(format!("Redis connection error: {}", e)))?;
-    let _: () = conn
-        .set_ex(&key, &manifest_json, REGISTRATION_TTL_SECONDS)
-        .await
-        .map_err(|e| ApiError::Internal(format!("Failed to store registration: {}", e)))?;
 
     // Aggregate search operators from all registered connectors
     let keys = scan_redis_keys(&mut conn, "connector:manifest:*")
@@ -3357,17 +3399,18 @@ pub async fn get_connector_url_for_source(
     redis_client: &redis::Client,
     source_type: &str,
 ) -> Option<String> {
-    let manifests = get_registered_manifests(redis_client).await;
-    for manifest in manifests {
-        if manifest
-            .source_types
-            .iter()
-            .any(|manifest_source_type| manifest_source_type == source_type)
-        {
-            return Some(manifest.connector_url);
-        }
-    }
-    None
+    let matches: Vec<_> = get_registered_manifests(redis_client)
+        .await
+        .into_iter()
+        .filter(|manifest| {
+            manifest.integration_type == IntegrationType::Connector
+                && manifest
+                    .source_types
+                    .iter()
+                    .any(|registered_type| registered_type == source_type)
+        })
+        .collect();
+    (matches.len() == 1).then(|| matches.into_iter().next().unwrap().connector_url)
 }
 
 /// Look up the sync modes the connector declared for a given source type.
@@ -3376,16 +3419,22 @@ pub async fn get_sync_modes_for_source(
     redis_client: &redis::Client,
     source_type: &str,
 ) -> Vec<SyncType> {
-    for manifest in get_registered_manifests(redis_client).await {
-        if manifest
-            .source_types
-            .iter()
-            .any(|manifest_source_type| manifest_source_type == source_type)
-        {
-            return manifest.sync_modes;
-        }
+    let matches: Vec<_> = get_registered_manifests(redis_client)
+        .await
+        .into_iter()
+        .filter(|manifest| {
+            manifest.integration_type == IntegrationType::Connector
+                && manifest
+                    .source_types
+                    .iter()
+                    .any(|registered_type| registered_type == source_type)
+        })
+        .collect();
+    if matches.len() == 1 {
+        matches.into_iter().next().unwrap().sync_modes
+    } else {
+        Vec::new()
     }
-    Vec::new()
 }
 
 const DEFAULT_DOCLING_PRESET: &str = "balanced";
@@ -5100,6 +5149,16 @@ mod tests {
         let manifest = manifest_with_action_schema(json!({}));
 
         assert!(validate_connector_manifest_action_schemas(&manifest).is_ok());
+    }
+
+    #[test]
+    fn connector_source_type_slugs_are_validated_without_a_builtin_registry() {
+        assert!(is_valid_source_type_slug("acme_docs"));
+        assert!(is_valid_source_type_slug("linear"));
+        assert!(!is_valid_source_type_slug("Acme"));
+        assert!(!is_valid_source_type_slug("bad.slug"));
+        assert!(!is_valid_source_type_slug("-leading"));
+        assert!(!is_valid_source_type_slug(""));
     }
 
     #[test]

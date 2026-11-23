@@ -2301,3 +2301,71 @@ async fn test_action_actor_scoped_write_allowed_for_regular_users() {
         "actor identity must reach the connector for server-side scoping"
     );
 }
+
+#[tokio::test]
+async fn concurrent_manifest_registrations_cannot_claim_the_same_source_type() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let make_manifest = |connector_id: &str, integration_type| ConnectorManifest {
+        name: connector_id.to_string(),
+        display_name: connector_id.to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec![SyncType::Full],
+        connector_id: connector_id.to_string(),
+        connector_url: fixture.mock_connector.base_url.clone(),
+        integration_type,
+        source_types: vec!["shared_registry_test".to_string()],
+        description: None,
+        actions: vec![],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        mcp_catalog_loaded: false,
+        prompts: vec![],
+        skills: vec![],
+        source_capabilities: vec![],
+        resources: vec![],
+        oauth: None,
+    };
+    let native = make_manifest("registry-test-native", IntegrationType::Connector);
+    let remote = make_manifest(
+        "remote_mcp:shared_registry_test",
+        IntegrationType::RemoteMcp,
+    );
+    let (native_result, remote_result) = tokio::join!(
+        omni_connector_manager::manifest_registry::publish_manifest(
+            &fixture.state.db_pool,
+            &fixture.state.redis_client,
+            &native,
+            60,
+            false,
+        ),
+        omni_connector_manager::manifest_registry::publish_manifest(
+            &fixture.state.db_pool,
+            &fixture.state.redis_client,
+            &remote,
+            60,
+            false,
+        ),
+    );
+    let (winner, loser) = match (native_result, remote_result) {
+        (Ok(()), Err(error)) => (&native, error),
+        (Err(error), Ok(())) => (&remote, error),
+        other => panic!("expected one registration conflict, got {other:?}"),
+    };
+    assert!(matches!(
+        loser,
+        omni_connector_manager::manifest_registry::ManifestRegistryError::Invalid(message)
+            if message.contains("already registered")
+    ));
+    omni_connector_manager::manifest_registry::publish_manifest(
+        &fixture.state.db_pool,
+        &fixture.state.redis_client,
+        winner,
+        60,
+        true,
+    )
+    .await
+    .expect("refresh of the winning registration should succeed");
+}
