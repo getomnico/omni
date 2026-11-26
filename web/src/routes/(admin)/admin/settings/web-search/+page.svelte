@@ -65,7 +65,7 @@
             icon: braveIcon,
         },
         keenable: {
-            description: 'Web search from Keenable's own index. Queries are logged on its default data policy.',
+            description: 'Web search from the Keenable index. Queries are logged on its default data policy.',
             icon: globeIcon,
         },
     }
