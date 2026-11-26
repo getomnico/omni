@@ -197,8 +197,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     if (!name || !sourceType || typeof name !== 'string' || typeof sourceType !== 'string') {
         throw error(400, 'Name and sourceType are required')
     }
-    await validateRegisteredSourceType(sourceType)
-
     // SA-direct is Drive-only: reject crafted Gmail/Chat source creation.
     const configAuthMode =
         config && typeof config === 'object' && !Array.isArray(config)
@@ -218,6 +216,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     if (scope === 'org' && user.role !== 'admin') {
         throw error(403, 'Only admins can create org-wide sources')
     }
+    await validateRegisteredSourceType(sourceType)
     const sourcesOfType = await getSourcesByType(sourceType)
 
     if (scope === 'user') {

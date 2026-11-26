@@ -64,17 +64,17 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(404, 'Source not found')
     }
 
+    const isOwner = source.createdBy === locals.user.id
+    if (locals.user.role !== 'admin' && !isOwner) {
+        throw error(403, 'Forbidden')
+    }
+
     const builtInProvider = Object.values(ServiceProvider).includes(provider)
     const customStaticCredential =
         provider === source.sourceType &&
         [AuthType.API_KEY, AuthType.BEARER_TOKEN, AuthType.BASIC_AUTH].includes(authType)
     if (!builtInProvider && !customStaticCredential) {
         throw error(400, 'Invalid provider')
-    }
-
-    const isOwner = source.createdBy === locals.user.id
-    if (locals.user.role !== 'admin' && !isOwner) {
-        throw error(403, 'Forbidden')
     }
 
     // Validate before opening the transaction so a remote connector call does

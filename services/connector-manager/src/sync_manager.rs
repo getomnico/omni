@@ -1,7 +1,8 @@
 use crate::config::ConnectorManagerConfig;
 use crate::connector_client::{ClientError, ConnectorClient};
 use crate::handlers::get_connector_url_for_source;
-use crate::models::{SyncRequest, TriggerType};
+use crate::models::SyncRequest;
+pub use crate::models::TriggerType;
 use dashmap::DashMap;
 use redis::Client as RedisClient;
 use shared::db::error::DatabaseError;
@@ -12,8 +13,8 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
