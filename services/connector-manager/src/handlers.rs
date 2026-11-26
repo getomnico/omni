@@ -30,8 +30,7 @@ use shared::db::repositories::{
 use shared::models::{
     ActionCredentialScope, ActionMode, ActionOrigin, ConnectorSourceCapabilities,
     GlobalConfiguration, IntegrationType, OAuthCredentialValidationResponse, SearchOperator,
-    ServiceCredential, ServiceProvider, Source, SourceScope, SyncRun, SyncStatus,
-    SyncType,
+    ServiceCredential, ServiceProvider, Source, SourceScope, SyncRun, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use shared::utils;
@@ -442,12 +441,15 @@ fn connector_infos_from_manifests(manifests: &[ConnectorManifest]) -> Vec<Connec
     manifests
         .iter()
         .flat_map(|manifest| {
-            manifest.source_types.iter().map(|source_type| ConnectorInfo {
-                source_type: source_type.clone(),
-                url: manifest.connector_url.clone(),
-                healthy: None,
-                manifest: Some(manifest.clone()),
-            })
+            manifest
+                .source_types
+                .iter()
+                .map(|source_type| ConnectorInfo {
+                    source_type: source_type.clone(),
+                    url: manifest.connector_url.clone(),
+                    healthy: None,
+                    manifest: Some(manifest.clone()),
+                })
         })
         .collect()
 }
@@ -488,8 +490,7 @@ fn source_allows_action_origin(
 /// System/background calls have no acting user and may access only org sources;
 /// personal sources require the source owner as the actor.
 fn source_allows_actor(source: &Source, user_id: Option<&str>) -> bool {
-    source.scope == SourceScope::Org
-        || user_id == Some(source.created_by.as_str())
+    source.scope == SourceScope::Org || user_id == Some(source.created_by.as_str())
 }
 
 pub async fn execute_action(
@@ -522,16 +523,13 @@ pub async fn execute_action(
             ));
         }
 
-        // Look up the connector manifest by source_type.
-        let manifest = manifests
-            .iter()
-            .find(|m| m.source_types.contains(&source_type.to_string()))
-            .ok_or_else(|| {
-                ApiError::NotFound(format!(
-                    "Connector not registered for type: {:?}",
-                    source_type
-                ))
-            })?;
+        // Look up the uniquely registered native connector by source_type.
+        let manifest = unique_native_manifest(&manifests, &source_type).ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered uniquely for type: {:?}",
+                source_type
+            ))
+        })?;
 
         let connector_url = manifest.connector_url.clone();
         let action_def = manifest
@@ -676,15 +674,12 @@ pub async fn execute_action(
                 .map_err(|e| ApiError::Internal(e.to_string()));
         }
 
-        let manifest = manifests
-            .iter()
-            .find(|m| m.source_types.contains(&source_type.to_string()))
-            .ok_or_else(|| {
-                ApiError::NotFound(format!(
-                    "Connector not registered for type: {:?}",
-                    source_type
-                ))
-            })?;
+        let manifest = unique_native_manifest(&manifests, &source_type).ok_or_else(|| {
+            ApiError::NotFound(format!(
+                "Connector not registered uniquely for type: {:?}",
+                source_type
+            ))
+        })?;
         let connector_url = manifest.connector_url.clone();
 
         let action_def = action_definition_for_source(&manifest, &db_source, &request.action)
@@ -1077,8 +1072,9 @@ async fn mcp_client_error_to_api_error(
                     .cloned()
                     .and_then(|value| serde_json::from_value(value).ok())
                     .or_else(|| {
-                        credentials
-                            .and_then(|creds| serde_json::from_value(Value::String(creds.provider.clone())).ok())
+                        credentials.and_then(|creds| {
+                            serde_json::from_value(Value::String(creds.provider.clone())).ok()
+                        })
                     })
                     .unwrap_or(ServiceProvider::RemoteMcp);
                 return ApiError::PreconditionFailedJson(needs_user_auth_json(
@@ -1194,10 +1190,13 @@ async fn resolve_credentials_with_policy(
             };
             if let Some(mut user_cred) = user_credential {
                 if require_user_credential {
-                    if user_auth_provider.is_some_and(|provider| user_cred.provider != serde_json::to_value(provider)
-                        .ok()
-                        .and_then(|value| value.as_str().map(String::from))
-                        .unwrap_or_default()) {
+                    if user_auth_provider.is_some_and(|provider| {
+                        user_cred.provider
+                            != serde_json::to_value(provider)
+                                .ok()
+                                .and_then(|value| value.as_str().map(String::from))
+                                .unwrap_or_default()
+                    }) {
                         warn!(
                             "resolve_credentials(source={}, user={}): credential provider mismatch",
                             source_id, uid
@@ -2291,6 +2290,48 @@ pub async fn get_skill(
     info!("Getting skill {}", request.skill_id);
 
     let manifests = get_registered_manifests(&state.redis_client).await;
+    let source = if let Some(source_id) = request.source_id.as_deref() {
+        let source_repo = SourceRepository::new(state.db_pool.pool());
+        let source = source_repo
+            .find_by_id(source_id.to_string())
+            .await
+            .map_err(|e| ApiError::Internal(e.to_string()))?
+            .ok_or_else(|| ApiError::NotFound(format!("Source not found: {source_id}")))?;
+        if !source.is_active || source.is_deleted {
+            return Err(ApiError::BadRequest(format!(
+                "Source is inactive or deleted: {source_id}"
+            )));
+        }
+        if !source_allows_actor(&source, request.user_id.as_deref()) {
+            return Err(ApiError::Unauthorized(
+                "Personal source is owned by another user".to_string(),
+            ));
+        }
+        Some(source)
+    } else {
+        None
+    };
+    let manifests: Vec<_> = if let Some(source) = &source {
+        let matching: Vec<_> = manifests
+            .iter()
+            .filter(|manifest| {
+                manifest.integration_type == source.integration_type
+                    && manifest
+                        .source_types
+                        .iter()
+                        .any(|slug| slug == &source.source_type)
+            })
+            .collect();
+        if matching.len() != 1 {
+            return Err(ApiError::NotFound(format!(
+                "Connector not registered uniquely for type: {:?}",
+                source.source_type
+            )));
+        }
+        vec![(*matching[0]).clone()]
+    } else {
+        manifests
+    };
     for manifest in manifests {
         let source_skill = request.source_id.as_ref().and_then(|source_id| {
             manifest
@@ -2327,29 +2368,12 @@ pub async fn get_skill(
             })));
         }
 
-        let source_id = request.source_id.clone().ok_or_else(|| {
+        let source = source.as_ref().ok_or_else(|| {
             ApiError::BadRequest(format!(
                 "source_id is required to load connector skill: {}",
                 request.skill_id
             ))
         })?;
-        let source_repo = SourceRepository::new(state.db_pool.pool());
-        let source = source_repo
-            .find_by_id(source_id.clone())
-            .await
-            .map_err(|e| ApiError::Internal(e.to_string()))?
-            .ok_or_else(|| ApiError::NotFound(format!("Source not found: {}", source_id)))?;
-        if !source.is_active || source.is_deleted {
-            return Err(ApiError::BadRequest(format!(
-                "Source is inactive or deleted: {}",
-                source_id
-            )));
-        }
-        if !source_allows_actor(&source, request.user_id.as_deref()) {
-            return Err(ApiError::Unauthorized(
-                "Personal source is owned by another user".to_string(),
-            ));
-        }
         let source_type_for_skill = source.source_type.clone();
         if !skill.source_types.is_empty() && !skill.source_types.contains(&source_type_for_skill) {
             return Err(ApiError::NotFound(format!(
@@ -2395,7 +2419,7 @@ pub async fn get_skill(
                 CredentialResolution::NoCredentials => {
                     return Err(ApiError::NotFound(format!(
                         "User credentials not found for source: {}",
-                        source_id
+                        source.id
                     )));
                 }
             };
@@ -2705,8 +2729,14 @@ fn same_manifest_identity(left: &ConnectorManifest, right: &ConnectorManifest) -
     left.connector_id == right.connector_id
         && left.connector_url == right.connector_url
         && left.integration_type == right.integration_type
-        && left.source_types.iter().collect::<std::collections::HashSet<_>>()
-            == right.source_types.iter().collect::<std::collections::HashSet<_>>()
+        && left
+            .source_types
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            == right
+                .source_types
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
 }
 
 fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), String> {
@@ -2734,7 +2764,9 @@ fn validate_connector_manifest(manifest: &ConnectorManifest) -> Result<(), Strin
 fn is_valid_source_type_slug(value: &str) -> bool {
     let mut bytes = value.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z'))
-        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-'))
+        && bytes.all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'_' | b'-')
+        })
         && value.len() <= 50
 }
 
@@ -3404,23 +3436,28 @@ pub async fn get_registered_manifests(redis_client: &redis::Client) -> Vec<Conne
     manifests
 }
 
+fn unique_native_manifest<'a>(
+    manifests: &'a [ConnectorManifest],
+    source_type: &str,
+) -> Option<&'a ConnectorManifest> {
+    let mut matches = manifests.iter().filter(|manifest| {
+        manifest.integration_type == IntegrationType::Connector
+            && manifest
+                .source_types
+                .iter()
+                .any(|registered_type| registered_type == source_type)
+    });
+    let manifest = matches.next()?;
+    matches.next().is_none().then_some(manifest)
+}
+
 /// Look up the connector URL for a given source type from the Redis registry.
 pub async fn get_connector_url_for_source(
     redis_client: &redis::Client,
     source_type: &str,
 ) -> Option<String> {
-    let matches: Vec<_> = get_registered_manifests(redis_client)
-        .await
-        .into_iter()
-        .filter(|manifest| {
-            manifest.integration_type == IntegrationType::Connector
-                && manifest
-                    .source_types
-                    .iter()
-                    .any(|registered_type| registered_type == source_type)
-        })
-        .collect();
-    (matches.len() == 1).then(|| matches.into_iter().next().unwrap().connector_url)
+    unique_native_manifest(&get_registered_manifests(redis_client).await, source_type)
+        .map(|manifest| manifest.connector_url.clone())
 }
 
 /// Look up the sync modes the connector declared for a given source type.
@@ -4954,10 +4991,16 @@ mod tests {
         let connectors = connector_infos_from_manifests(&[manifest.clone()]);
 
         assert_eq!(connectors.len(), manifest.source_types.len());
-        assert!(connectors.iter().all(|connector| connector.healthy.is_none()));
-        assert!(connectors
-            .iter()
-            .all(|connector| connector.manifest.is_some()));
+        assert!(
+            connectors
+                .iter()
+                .all(|connector| connector.healthy.is_none())
+        );
+        assert!(
+            connectors
+                .iter()
+                .all(|connector| connector.manifest.is_some())
+        );
         assert!(connectors.iter().all(|connector| {
             !serde_json::to_value(connector)
                 .unwrap()
@@ -4969,11 +5012,7 @@ mod tests {
 
     #[test]
     fn missing_user_credential_response_contains_salesforce_reconnect_details() {
-        let response = needs_user_auth_json(
-            "source-1",
-            "salesforce",
-            ServiceProvider::Salesforce,
-        );
+        let response = needs_user_auth_json("source-1", "salesforce", ServiceProvider::Salesforce);
         assert_eq!(response["error"], "needs_user_auth");
         assert_eq!(response["source_id"], "source-1");
         assert_eq!(response["source_type"], "salesforce");
@@ -5012,7 +5051,12 @@ mod tests {
     #[test]
     fn action_origin_policy_applies_to_sync_and_no_sync_sources() {
         let cases = [
-            ("unrestricted no-sync", json!({"sync_enabled": false}), true, true),
+            (
+                "unrestricted no-sync",
+                json!({"sync_enabled": false}),
+                true,
+                true,
+            ),
             (
                 "MCP-only no-sync",
                 json!({"sync_enabled": false, "allowed_action_origins": ["mcp"]}),
@@ -5031,7 +5075,12 @@ mod tests {
                 false,
                 false,
             ),
-            ("unrestricted synced", json!({"sync_enabled": true}), true, true),
+            (
+                "unrestricted synced",
+                json!({"sync_enabled": true}),
+                true,
+                true,
+            ),
         ];
 
         for (scenario, config, allows_native, allows_mcp) in cases {
@@ -5417,7 +5466,11 @@ mod tests {
             id: id.to_string(),
             source_id: "source-1".to_string(),
             user_id: None,
-            provider: serde_json::to_value(provider).unwrap().as_str().unwrap().to_string(),
+            provider: serde_json::to_value(provider)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string(),
             auth_type: shared::models::AuthType::ApiKey,
             principal_email: Some("org@example.com".to_string()),
             credentials: json!({}),
