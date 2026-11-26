@@ -268,13 +268,14 @@ export const EMAIL_PROVIDER_LABELS: Record<EmailProviderType, string> = {
     smtp: 'SMTP',
 }
 
-export const WEB_SEARCH_PROVIDER_TYPES = ['exa', 'serper', 'brave'] as const
+export const WEB_SEARCH_PROVIDER_TYPES = ['exa', 'serper', 'brave', 'keenable'] as const
 export type WebSearchProviderType = (typeof WEB_SEARCH_PROVIDER_TYPES)[number]
 
 export const WEB_SEARCH_PROVIDER_LABELS: Record<WebSearchProviderType, string> = {
     exa: 'Exa',
     serper: 'Serper',
     brave: 'Brave Search',
+    keenable: 'Keenable',
 }
 
 export const WEB_FETCH_PROVIDER_TYPES = ['exa', 'firecrawl'] as const
