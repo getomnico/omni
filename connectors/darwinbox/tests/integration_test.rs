@@ -40,7 +40,7 @@ fn test_credential() -> ServiceCredential {
         id: "cred-1".to_string(),
         source_id: "source-1".to_string(),
         user_id: None,
-        provider: ServiceProvider::Darwinbox,
+        provider: "darwinbox".to_string(),
         auth_type: AuthType::BasicAuth,
         principal_email: None,
         credentials: json!({

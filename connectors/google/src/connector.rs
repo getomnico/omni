@@ -440,7 +440,7 @@ impl GoogleConnector {
             id: credentials.id.clone(),
             source_id: credentials.source_id.clone(),
             user_id: credentials.user_id.clone(),
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type: credentials.auth_type,
             principal_email: credentials.principal_email.clone(),
             credentials: credentials.credentials.clone(),
@@ -1628,7 +1628,7 @@ impl Connector for GoogleConnector {
                 "Google sync requires credentials".to_string(),
             ));
         };
-        if creds.provider != ServiceProvider::Google {
+        if creds.provider != "google" {
             return Err(SyncRequestValidationError::BadRequest(format!(
                 "Expected Google credentials, found {:?}",
                 creds.provider
@@ -1827,7 +1827,7 @@ mod tests {
             id: "credential".to_string(),
             source_id: "source".to_string(),
             user_id: Some("user".to_string()),
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type,
             principal_email: Some("admin@example.com".to_string()),
             credentials: json!({"service_account_key": "{}"}),

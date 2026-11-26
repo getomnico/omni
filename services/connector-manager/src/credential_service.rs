@@ -17,14 +17,6 @@ use crate::remote_mcp::gateway::{
 };
 use crate::remote_mcp::oauth::{RemoteMcpOAuthConfig, TokenEndpointAuthMethod};
 
-/// Helper: serialises [`ServiceProvider`] to its JSON/DB string form.
-fn provider_to_string(p: &shared::models::ServiceProvider) -> String {
-    serde_json::to_value(p)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default()
-}
-
 const REFRESH_SKEW_SECONDS: i64 = 300;
 
 /// Errors returned by [`CredentialService`].
@@ -311,7 +303,7 @@ impl CredentialService {
         }
 
         // Resolve provider string for connector-config lookup.
-        let provider_str = provider_to_string(&credential.provider);
+        let provider_str = credential.provider.clone();
         let config_repo = ConnectorConfigRepository::new(self.db_pool.pool().clone());
         let connector_config = config_repo
             .get_by_provider(&provider_str)
@@ -737,14 +729,14 @@ fn string_from(value: &JsonValue, key: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use shared::models::{AuthType, ServiceProvider};
+    use shared::models::AuthType;
 
     fn credential(expires_at: Option<OffsetDateTime>) -> ServiceCredential {
         ServiceCredential {
             id: "cred_1".to_string(),
             source_id: "src_1".to_string(),
             user_id: Some("user_1".to_string()),
-            provider: ServiceProvider::RemoteMcp,
+            provider: "remote_mcp".to_string(),
             auth_type: AuthType::OAuth,
             principal_email: None,
             credentials: json!({"access_token":"old"}),
@@ -984,7 +976,7 @@ mod tests {
             id: "cred_1".to_string(),
             source_id: "src_1".to_string(),
             user_id: Some("user_1".to_string()),
-            provider: ServiceProvider::RemoteMcp,
+            provider: "remote_mcp".to_string(),
             auth_type: AuthType::OAuth,
             principal_email: None,
             credentials: json!({
@@ -1090,7 +1082,7 @@ mod tests {
             id: "cred_1".to_string(),
             source_id: "src_1".to_string(),
             user_id: Some("user_1".to_string()),
-            provider: ServiceProvider::RemoteMcp,
+            provider: "remote_mcp".to_string(),
             auth_type: AuthType::OAuth,
             principal_email: None,
             credentials: json!({

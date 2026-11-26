@@ -178,7 +178,7 @@ async fn seed_atlassian_source(pool: &PgPool, source_type: String) -> Result<()>
         id: TEST_CRED_ID.to_string(),
         source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(),
         user_id: None,
-        provider: ServiceProvider::Atlassian,
+        provider: "atlassian".to_string(),
         auth_type: AuthType::ApiKey,
         principal_email: None,
         credentials: serde_json::json!({"sa_token": TEST_SA_TOKEN}),

@@ -426,7 +426,7 @@ impl SyncManager {
             .await
             .context("Failed to fetch credentials via SDK")?;
 
-        if creds.provider != ServiceProvider::Atlassian {
+        if creds.provider != "atlassian" {
             return Err(anyhow::anyhow!(
                 "Expected Atlassian credentials for source {}, found {:?}",
                 source_id,

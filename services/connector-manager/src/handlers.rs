@@ -590,7 +590,10 @@ pub async fn execute_action(
             id: "transient".to_string(),
             source_id: "transient".to_string(),
             user_id: Some(user_id.clone()),
-            provider: tc.provider,
+            provider: serde_json::to_value(tc.provider)
+                .ok()
+                .and_then(|value| value.as_str().map(String::from))
+                .ok_or_else(|| ApiError::Internal("Invalid credential provider".to_string()))?,
             auth_type: tc.auth_type,
             principal_email: tc.principal_email,
             credentials: tc.credentials,
@@ -1073,7 +1076,10 @@ async fn mcp_client_error_to_api_error(
                     .get("provider")
                     .cloned()
                     .and_then(|value| serde_json::from_value(value).ok())
-                    .or_else(|| credentials.map(|creds| creds.provider))
+                    .or_else(|| {
+                        credentials
+                            .and_then(|creds| serde_json::from_value(Value::String(creds.provider.clone())).ok())
+                    })
                     .unwrap_or(ServiceProvider::RemoteMcp);
                 return ApiError::PreconditionFailedJson(needs_user_auth_json(
                     &source.id,
@@ -1188,7 +1194,10 @@ async fn resolve_credentials_with_policy(
             };
             if let Some(mut user_cred) = user_credential {
                 if require_user_credential {
-                    if user_auth_provider.is_some_and(|provider| user_cred.provider != provider) {
+                    if user_auth_provider.is_some_and(|provider| user_cred.provider != serde_json::to_value(provider)
+                        .ok()
+                        .and_then(|value| value.as_str().map(String::from))
+                        .unwrap_or_default()) {
                         warn!(
                             "resolve_credentials(source={}, user={}): credential provider mismatch",
                             source_id, uid
@@ -1306,7 +1315,8 @@ fn resolve_missing_user_credential(
     match org_credential {
         Some(org) if !supports_user_oauth => CredentialResolution::Resolved(org),
         Some(org) => CredentialResolution::NeedsUserAuth {
-            provider: org.provider,
+            provider: serde_json::from_value(Value::String(org.provider))
+                .unwrap_or(ServiceProvider::RemoteMcp),
         },
         None if supports_user_oauth => user_auth_provider
             .map(|provider| CredentialResolution::NeedsUserAuth { provider })
@@ -5407,7 +5417,7 @@ mod tests {
             id: id.to_string(),
             source_id: "source-1".to_string(),
             user_id: None,
-            provider,
+            provider: serde_json::to_value(provider).unwrap().as_str().unwrap().to_string(),
             auth_type: shared::models::AuthType::ApiKey,
             principal_email: Some("org@example.com".to_string()),
             credentials: json!({}),

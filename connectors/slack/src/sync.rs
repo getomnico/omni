@@ -167,7 +167,7 @@ impl SyncManager {
             source_id, sync_run_id
         );
 
-        if creds.provider != ServiceProvider::Slack {
+        if creds.provider != "slack" {
             return Err(anyhow!(
                 "Expected Slack credentials, found {:?}",
                 creds.provider
@@ -349,7 +349,7 @@ impl SyncManager {
                 .get_credentials(source_id)
                 .await
                 .context("Failed to fetch credentials for realtime sync")?;
-            if creds.provider != ServiceProvider::Slack {
+            if creds.provider != "slack" {
                 return Err(anyhow!(
                     "Expected Slack credentials for source {}, found {:?}",
                     source_id,
@@ -470,7 +470,7 @@ impl SyncManager {
                 .get_credentials(source_id)
                 .await
                 .context("Failed to fetch credentials for realtime sync")?;
-            if creds.provider != ServiceProvider::Slack {
+            if creds.provider != "slack" {
                 return Err(anyhow!(
                     "Expected Slack credentials for source {}, found {:?}",
                     source_id,

@@ -220,7 +220,7 @@ mod tests {
             id: "creds-1".to_string(),
             source_id: "source-1".to_string(),
             user_id: None,
-            provider: ServiceProvider::Slack,
+            provider: "slack".to_string(),
             auth_type: AuthType::BotToken,
             principal_email: None,
             credentials,

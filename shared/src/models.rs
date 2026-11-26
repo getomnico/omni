@@ -623,7 +623,7 @@ pub struct ServiceCredential {
     /// `Some` => per-user credential for an org-wide source (used for write tools by that user).
     /// `None` => org-wide credential (used for sync and reads).
     pub user_id: Option<String>,
-    pub provider: ServiceProvider,
+    pub provider: String,
     pub auth_type: AuthType,
     pub principal_email: Option<String>,
     pub credentials: JsonValue,

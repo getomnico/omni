@@ -1255,7 +1255,7 @@ mod tests {
             id: format!("cred_{}", user_id.unwrap_or("org")),
             source_id: "src_1".to_string(),
             user_id: user_id.map(str::to_owned),
-            provider: ServiceProvider::RemoteMcp,
+            provider: "remote_mcp".to_string(),
             auth_type,
             principal_email: None,
             credentials,

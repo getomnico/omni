@@ -55,10 +55,6 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
         throw error(400, 'Missing required fields')
     }
 
-    if (!Object.values(ServiceProvider).includes(provider)) {
-        throw error(400, 'Invalid provider')
-    }
-
     if (!Object.values(AuthType).includes(authType)) {
         throw error(400, 'Invalid auth type')
     }
@@ -66,6 +62,14 @@ export const POST: RequestHandler = async ({ request, locals, fetch }) => {
     const source = await getSourceById(sourceId)
     if (!source) {
         throw error(404, 'Source not found')
+    }
+
+    const builtInProvider = Object.values(ServiceProvider).includes(provider)
+    const customStaticCredential =
+        provider === source.sourceType &&
+        [AuthType.API_KEY, AuthType.BEARER_TOKEN, AuthType.BASIC_AUTH].includes(authType)
+    if (!builtInProvider && !customStaticCredential) {
+        throw error(400, 'Invalid provider')
     }
 
     const isOwner = source.createdBy === locals.user.id

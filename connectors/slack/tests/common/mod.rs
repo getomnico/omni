@@ -145,7 +145,7 @@ impl SlackConnectorTestFixture {
             id: cred_id,
             source_id: source_id.to_string(),
             user_id: None,
-            provider: shared::models::ServiceProvider::Slack,
+            provider: "slack".to_string(),
             auth_type: shared::models::AuthType::BotToken,
             principal_email: None,
             credentials,

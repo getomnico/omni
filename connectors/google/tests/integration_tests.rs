@@ -450,7 +450,7 @@ mod drive_buffer_budget_tests {
             id: "credential-id".to_string(),
             source_id: SOURCE_ID.to_string(),
             user_id: Some("user-id".to_string()),
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type: AuthType::OAuth,
             principal_email: Some(USER_EMAIL.to_string()),
             credentials: json!({
@@ -956,7 +956,7 @@ mod sa_direct_tests {
             id: "credential-id".to_string(),
             source_id: SA_SOURCE_ID.to_string(),
             user_id: None,
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type: AuthType::Jwt,
             principal_email: None,
             credentials: json!({ "service_account_key": sa_key.to_string() }),

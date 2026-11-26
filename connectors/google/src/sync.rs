@@ -1000,7 +1000,7 @@ impl SyncManager {
 
         let creds =
             credentials.ok_or_else(|| anyhow!("Google sync requires service credentials"))?;
-        if creds.provider != ServiceProvider::Google {
+        if creds.provider != "google" {
             return Err(anyhow!(
                 "Expected Google credentials for source {}, found {:?}",
                 source_id,
@@ -5324,7 +5324,7 @@ impl SyncManager {
             .context("Failed to fetch credentials via SDK")?;
 
         // Verify it's a Google credentials record
-        if creds.provider != ServiceProvider::Google {
+        if creds.provider != "google" {
             return Err(anyhow::anyhow!(
                 "Expected Google credentials for source {}, found {:?}",
                 source_id,
