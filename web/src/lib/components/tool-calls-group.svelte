@@ -2,6 +2,7 @@
     import * as Accordion from '$lib/components/ui/accordion'
     import type { MessageContent, OAuthRequired, ToolMessageContent } from '$lib/types/message'
     import type { ArtifactData } from '$lib/utils/artifacts'
+    import type { TextCitationParam } from '@anthropic-ai/sdk/resources/messages'
     import ToolMessage from './tool-message.svelte'
     import MarkdownMessage from './markdown-message.svelte'
     import OAuthRequiredCard from '$lib/components/oauth-integrations/oauth-required-card.svelte'
@@ -34,6 +35,7 @@
         activeArtifactKey?: string | null
         emphasizeArtifactKey?: string | null
         onOpenArtifact?: (artifact: ArtifactData) => void
+        onCitationActivate?: (citation: TextCitationParam) => void
     }
 
     type OAuthCardEntry = {
@@ -56,6 +58,7 @@
         activeArtifactKey = null,
         emphasizeArtifactKey = null,
         onOpenArtifact,
+        onCitationActivate,
     }: Props = $props()
 
     let workExpanded = $state<string>()
@@ -142,7 +145,8 @@
                     <MarkdownMessage
                         content={stripThinkingContent(item.block.text, 'thinking')}
                         citations={item.block.citations}
-                        {isStreaming} />
+                        {isStreaming}
+                        {onCitationActivate} />
                 </div>
             {:else}
                 <div in:fly={{ y: 4, duration: 300 }}>
@@ -243,7 +247,8 @@
         <MarkdownMessage
             content={stripThinkingContent(block.text, 'thinking')}
             citations={block.citations}
-            {isStreaming} />
+            {isStreaming}
+            {onCitationActivate} />
     </div>
 {/each}
 

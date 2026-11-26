@@ -10,7 +10,6 @@ import redis.asyncio as aioredis
 from pydantic import ValidationError
 from anthropic.types import (
     TextBlockParam,
-    SearchResultBlockParam,
     CitationsConfigParam,
     ToolParam,
 )
@@ -18,6 +17,7 @@ from anthropic.types import (
 from datetime_utils import format_search_date
 from db.models import UserConfiguration
 from models.chat import SearchToolParams
+from providers.anthropic_message_adapter import OmniSearchResultBlockParam
 from tools.searcher_tool import SearcherTool
 from tools.searcher_client import (
     SearcherClient,
@@ -385,11 +385,12 @@ class SearchToolHandler:
             doc_source = doc.url or attr_doc_source or "<unknown>"
 
             content_blocks.append(
-                SearchResultBlockParam(
+                OmniSearchResultBlockParam(
                     type="search_result",
                     title=doc.title,
                     source=doc_source,
                     source_type=source_type,
+                    document_id=doc.id,
                     content=[*metadata_blocks, *doc_content_text_blocks],
                     citations=CitationsConfigParam(enabled=True),
                 )

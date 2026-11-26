@@ -181,7 +181,9 @@ impl SearchEngine {
         // Handle document_id filter for read_document tool
         if let Some(document_id) = &request.document_id {
             info!("Document ID filter detected: {}", document_id);
-            return self.read_document_by_id(document_id, &request).await;
+            return self
+                .read_document_by_id(document_id, &request, &user_groups)
+                .await;
         }
 
         // Parse query for structured operators (from:, in:, before:, etc.)
@@ -704,6 +706,7 @@ impl SearchEngine {
         &self,
         document_id: &str,
         request: &SearchRequest,
+        user_groups: &[String],
     ) -> Result<SearchResponse> {
         let start_time = Instant::now();
         info!("Reading document by ID: {}", document_id);
@@ -713,6 +716,18 @@ impl SearchEngine {
             .find_by_id(document_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Document not found: {}", document_id))?;
+
+        // Full-content and line-range reads return stored text directly, bypassing the
+        // permission-filtered search queries, so access must be checked up front.
+        // Inaccessible documents are reported as missing to avoid leaking their existence.
+        if let Some(email) = request.user_email() {
+            let accessible = doc_repo
+                .filter_accessible_titles(std::slice::from_ref(&doc.id), email, user_groups)
+                .await?;
+            if accessible.is_empty() {
+                return Err(anyhow::anyhow!("Document not found: {}", document_id));
+            }
+        }
 
         // Get actual content size (extracted text, not original file)
         let mut results = if let Some(content_id) = &doc.content_id {

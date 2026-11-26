@@ -13,6 +13,8 @@
         sourceName: string
         /** Location label (e.g. "Pages 3–5", "Document excerpt"). */
         locationLabel?: string | null
+        /** Click handler for non-navigable sources, e.g. to preview the stored document. */
+        onActivate?: (() => void) | null
     }
 
     let {
@@ -22,6 +24,7 @@
         iconHint = null,
         sourceName,
         locationLabel = null,
+        onActivate = null,
     }: Props = $props()
 
     // Remove markdown annotations, reduce consecutive whitespace to a single space, truncate to 80 chars
@@ -118,7 +121,14 @@
                     <span class="truncate">{title}</span>
                 </a>
             {:else}
-                <button {...props} type="button" class={citationChipClass}>
+                <button
+                    {...props}
+                    type="button"
+                    class={citationChipClass}
+                    onclick={(event: MouseEvent) => {
+                        if (typeof props.onclick === 'function') props.onclick(event)
+                        onActivate?.()
+                    }}>
                     {#if iconHint && getIconFromSearchResult(iconHint)}
                         <img
                             src={getIconFromSearchResult(iconHint)}

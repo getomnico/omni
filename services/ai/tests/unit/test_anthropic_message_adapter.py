@@ -13,6 +13,43 @@ def test_build_messages_for_anthropic_api_returns_message_dicts():
     assert isinstance(messages[0], dict)
 
 
+def test_build_messages_for_anthropic_api_strips_internal_search_result_fields():
+    search_result = {
+        "type": "search_result",
+        "title": "Quarterly numbers",
+        "source": "imap:Work / INBOX / 2026-01-01 / Quarterly numbers",
+        "source_type": "imap",
+        "document_id": "01JGF7V3E0Y2R1X8P5Q7W9T4N7",
+        "content": [{"type": "text", "text": "Revenue grew."}],
+        "citations": {"enabled": True},
+    }
+
+    messages = build_messages_for_anthropic_api(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": [search_result],
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert messages[0]["content"][0]["content"] == [
+        {
+            "type": "search_result",
+            "title": "Quarterly numbers",
+            "source": "imap:Work / INBOX / 2026-01-01 / Quarterly numbers",
+            "content": [{"type": "text", "text": "Revenue grew."}],
+            "citations": {"enabled": True},
+        }
+    ]
+
+
 def test_extract_text_document_delimits_and_escapes_title():
     block = {
         "type": "document",

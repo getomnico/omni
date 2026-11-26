@@ -2170,6 +2170,133 @@ async fn test_search_respects_group_permissions() -> Result<()> {
     Ok(())
 }
 
+async fn read_document_status(
+    fixture: &SearcherTestFixture,
+    body: Value,
+) -> Result<(StatusCode, Option<Value>)> {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/search")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))?;
+    let response = fixture.app.clone().oneshot(request).await?;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+    Ok((status, serde_json::from_slice(&bytes).ok()))
+}
+
+#[tokio::test]
+async fn test_read_document_by_id_enforces_permissions() -> Result<()> {
+    let fixture = SearcherTestFixture::new().await?;
+    let pool = fixture.test_env.db_pool.pool();
+
+    // Callers identify users by id + email, matching what omni-web and omni-ai send.
+    let mut user_ids = std::collections::HashMap::new();
+    for email in [
+        "owner@example.com",
+        "member@example.com",
+        "outsider@example.com",
+    ] {
+        let user_id = Ulid::new().to_string();
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash, created_at, updated_at) VALUES ($1, $2, 'hash', NOW(), NOW())",
+        )
+        .bind(&user_id)
+        .bind(email)
+        .execute(pool)
+        .await?;
+        user_ids.insert(email, user_id);
+    }
+
+    let group_repo = GroupRepository::new(pool);
+    let group = group_repo
+        .upsert_group(
+            TEST_SOURCE_ID,
+            "mailbox-team@example.com",
+            Some("Mailbox"),
+            None,
+        )
+        .await?;
+    group_repo
+        .sync_group_members(&group.id, &["member@example.com".into()])
+        .await?;
+
+    let doc_id = insert_group_test_document(
+        pool,
+        "private-mail-1",
+        "Private quarterly numbers",
+        "From: cfo@example.com\nSubject: Private quarterly numbers\n\nConfidential body",
+        DocumentPermissions {
+            public: false,
+            users: vec!["owner@example.com".into()],
+            groups: vec!["mailbox-team@example.com".into()],
+        },
+    )
+    .await;
+
+    for email in ["owner@example.com", "member@example.com"] {
+        let (status, body) = read_document_status(
+            &fixture,
+            json!({
+                "query": "",
+                "document_id": doc_id,
+                "user_id": user_ids[email],
+                "user_email": email,
+            }),
+        )
+        .await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{email} should be able to read the document"
+        );
+        let body = body.expect("successful read should return JSON");
+        assert_eq!(body["results"][0]["match_type"], "full_content");
+        assert!(
+            body["results"][0]["highlights"][0]
+                .as_str()
+                .unwrap()
+                .contains("Confidential body")
+        );
+    }
+
+    let (status, body) = read_document_status(
+        &fixture,
+        json!({
+            "query": "",
+            "document_id": doc_id,
+            "user_id": user_ids["outsider@example.com"],
+            "user_email": "outsider@example.com",
+        }),
+    )
+    .await?;
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "outsider must not read the document, got {body:?}"
+    );
+    assert!(
+        !body
+            .map(|b| b.to_string())
+            .unwrap_or_default()
+            .contains("Confidential body"),
+        "denied read must not leak document content"
+    );
+
+    let (status, _) = read_document_status(
+        &fixture,
+        json!({"query": "", "document_id": doc_id, "admin_access": true}),
+    )
+    .await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "explicit admin access bypasses ACLs"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn test_search_domain_wide_access() -> Result<()> {
     let fixture = SearcherTestFixture::new().await?;

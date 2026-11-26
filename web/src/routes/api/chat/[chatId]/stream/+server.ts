@@ -19,10 +19,11 @@ type TitleEvent = {
 }
 
 /** An Omni extension of the SDK SearchResultBlockParam that includes the
- *  internal source_type field, which the AI service attaches for rendering
- *  but strips before forwarding to external LLM APIs. */
+ *  internal source_type and document_id fields, which the AI service attaches
+ *  for rendering but strips before forwarding to external LLM APIs. */
 type OmniSearchResultBlockParam = SearchResultBlockParam & {
     source_type?: string | null
+    document_id?: string
 }
 
 /** Any content block inside a tool_result's content array. */
@@ -473,6 +474,12 @@ export const GET: RequestHandler = async ({ params, locals, cookies, request, ur
                                                         source: searchResult.source,
                                                         source_type:
                                                             searchResult.source_type ?? null,
+                                                        ...(searchResult.document_id
+                                                            ? {
+                                                                  document_id:
+                                                                      searchResult.document_id,
+                                                              }
+                                                            : {}),
                                                         content: [], // Redact the highlights
                                                     }),
                                                 )
