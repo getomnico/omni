@@ -194,7 +194,11 @@ def create_llm_provider(provider_type: ProviderType | str, **kwargs) -> LLMProvi
         endpoint_url = kwargs.get("endpoint_url")
         if not endpoint_url:
             raise ValueError("endpoint_url is required for Azure AI Foundry provider")
-        return AzureFoundryProvider(endpoint_url, kwargs.get("model", "gpt-4o"))
+        return AzureFoundryProvider(
+            endpoint_url,
+            kwargs.get("model", "gpt-4o"),
+            api_key=kwargs.get("api_key"),
+        )
 
     if pt is ProviderType.VERTEX_AI:
         region = kwargs.get("region")

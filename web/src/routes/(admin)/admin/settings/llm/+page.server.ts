@@ -493,6 +493,7 @@ function buildTestRequest(
             if (!config.apiUrl) return { error: 'Endpoint URL is required for Azure AI Foundry' }
             return {
                 endpoint_url: config.apiUrl,
+                api_key: config.apiKey ?? null,
                 model: modelId,
             }
         case 'openai_compatible':

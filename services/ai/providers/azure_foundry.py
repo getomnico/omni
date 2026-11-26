@@ -3,7 +3,8 @@ Azure AI Foundry Provider.
 
 Supports both Anthropic (Claude) and OpenAI (GPT) models deployed on Azure AI Foundry.
 Auto-detects model family from model ID and delegates to the appropriate provider.
-Uses DefaultAzureCredential for authentication (Managed Identity on Azure VMs).
+Authenticates with the resource's API key when one is configured, and otherwise
+falls back to DefaultAzureCredential (Managed Identity on Azure VMs).
 
 For OpenAI models, uses the v1 API (no dated api-version required):
   https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle
@@ -38,8 +39,9 @@ def _is_anthropic_model(model: str) -> bool:
 class AzureFoundryProvider(LLMProvider):
     """Provider for models deployed on Azure AI Foundry.
 
-    Auto-detects whether to use the Anthropic or OpenAI SDK based on the model ID,
-    and authenticates via Azure Managed Identity (DefaultAzureCredential).
+    Auto-detects whether to use the Anthropic or OpenAI SDK based on the model ID.
+    Authenticates with ``api_key`` when given, otherwise via Azure Managed Identity
+    (DefaultAzureCredential).
     """
 
     provider_type: ClassVar[ProviderType] = ProviderType.AZURE_FOUNDRY
@@ -48,35 +50,17 @@ class AzureFoundryProvider(LLMProvider):
     def supports_citations(self) -> bool:
         return self._delegate.supports_citations
 
-    def __init__(self, endpoint_url: str, model: str):
+    def __init__(self, endpoint_url: str, model: str, api_key: str | None = None):
         self.endpoint_url = endpoint_url.rstrip("/")
         self.model = model
         self.model_name = model
 
-        credential = DefaultAzureCredential()
-
         if _is_anthropic_model(model):
-            token_provider = get_bearer_token_provider(
-                credential, ANTHROPIC_TOKEN_SCOPE
-            )
-            client = AsyncAnthropicFoundry(
-                azure_ad_token_provider=token_provider,
-                base_url=f"{self.endpoint_url}/anthropic/",
-            )
+            client = self._build_anthropic_client(api_key)
             self._delegate = AnthropicProvider(api_key="unused", model=model)
             self._delegate.client = client
         else:
-            sync_token_provider = get_bearer_token_provider(
-                credential, OPENAI_TOKEN_SCOPE
-            )
-
-            async def _async_token_provider() -> str:
-                return await asyncio.to_thread(sync_token_provider)
-
-            client = AsyncOpenAI(
-                api_key=_async_token_provider,
-                base_url=f"{self.endpoint_url}/openai/v1/",
-            )
+            client = self._build_openai_client(api_key)
             self._delegate = OpenAIProvider(api_key="unused", model=model)
             self._delegate.client = client
 
@@ -85,6 +69,31 @@ class AzureFoundryProvider(LLMProvider):
             f"(family={'anthropic' if _is_anthropic_model(model) else 'openai'}, "
             f"endpoint={self.endpoint_url})"
         )
+
+    def _build_anthropic_client(self, api_key: str | None) -> AsyncAnthropicFoundry:
+        base_url = f"{self.endpoint_url}/anthropic/"
+        if api_key:
+            return AsyncAnthropicFoundry(api_key=api_key, base_url=base_url)
+        token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(), ANTHROPIC_TOKEN_SCOPE
+        )
+        return AsyncAnthropicFoundry(
+            azure_ad_token_provider=token_provider, base_url=base_url
+        )
+
+    def _build_openai_client(self, api_key: str | None) -> AsyncOpenAI:
+        base_url = f"{self.endpoint_url}/openai/v1/"
+        if api_key:
+            return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+        sync_token_provider = get_bearer_token_provider(
+            DefaultAzureCredential(), OPENAI_TOKEN_SCOPE
+        )
+
+        async def _async_token_provider() -> str:
+            return await asyncio.to_thread(sync_token_provider)
+
+        return AsyncOpenAI(api_key=_async_token_provider, base_url=base_url)
 
     async def get_context_window_tokens(self) -> ContextWindowInfo:
         return await self._delegate.get_context_window_tokens()

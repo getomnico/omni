@@ -339,10 +339,12 @@
         type === 'anthropic' ||
         type === 'openai' ||
         type === 'gemini' ||
-        type === 'openai_compatible'
+        type === 'openai_compatible' ||
+        type === 'azure_foundry'
     const showApiUrl = (type: ProviderType) =>
         type === 'openai_compatible' || type === 'azure_foundry'
-    const apiKeyOptional = (type: ProviderType) => type === 'openai_compatible'
+    const apiKeyOptional = (type: ProviderType) =>
+        type === 'openai_compatible' || type === 'azure_foundry'
     const showRegion = (type: ProviderType) => type === 'bedrock' || type === 'vertex_ai'
     const showProjectId = (type: ProviderType) => type === 'vertex_ai'
 </script>
@@ -646,8 +648,9 @@
             {#if formState.providerType === 'azure_foundry'}
                 <Alert.Root
                     ><Info class="h-4 w-4" /><Alert.Description
-                        >Authentication uses Azure Managed Identity. Ensure the VM or container has
-                        a managed identity with the Cognitive Services User role assigned.</Alert.Description
+                        >Authenticates with the API key above when provided. Otherwise Azure Managed
+                        Identity is used, so the VM or container needs a managed identity with the
+                        Cognitive Services User role assigned.</Alert.Description
                     ></Alert.Root>
             {/if}
             {#if formState.providerType === 'openai_compatible' || formState.providerType === 'azure_foundry'}
