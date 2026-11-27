@@ -7,6 +7,7 @@ import { ulid } from 'ulid'
 import { logger } from '$lib/server/logger'
 import { IntegrationType, SourceType, DEFAULT_SYNC_INTERVAL_SECONDS } from '$lib/types'
 import { getSourcesByType } from '$lib/server/db/sources'
+import { getConfig } from '$lib/server/config'
 import { isSyncDisabledConfig } from '$lib/utils/sources'
 
 function validateAllowedActionOrigins(value: unknown): string[] | undefined {
@@ -122,6 +123,46 @@ export const GET: RequestHandler = async ({ locals }) => {
     return json(sanitizedSources)
 }
 
+async function validateRegisteredSourceType(sourceType: string): Promise<void> {
+    const { services } = getConfig()
+    let response: Response
+    try {
+        response = await fetch(`${services.connectorManagerUrl}/connectors`)
+    } catch {
+        throw error(503, 'Unable to verify connector registration')
+    }
+    if (!response.ok) throw error(503, 'Unable to verify connector registration')
+    const body: unknown = await response.json().catch(() => null)
+    if (!Array.isArray(body)) throw error(502, 'Invalid connector registry response')
+    const matches = body.filter(
+        (entry): entry is Record<string, unknown> =>
+            typeof entry === 'object' &&
+            entry !== null &&
+            'source_type' in entry &&
+            entry.source_type === sourceType,
+    )
+    if (matches.length !== 1) {
+        throw error(
+            matches.length === 0 ? 400 : 409,
+            matches.length === 0
+                ? `No connector is registered for sourceType ${sourceType}`
+                : `Multiple connectors are registered for sourceType ${sourceType}`,
+        )
+    }
+    const info = matches[0]
+    const manifest = info.manifest
+    if (
+        typeof manifest !== 'object' ||
+        manifest === null ||
+        !('connector_id' in manifest) ||
+        typeof manifest.connector_id !== 'string' ||
+        ('integration_type' in manifest && manifest.integration_type === 'remote_mcp') ||
+        manifest.connector_id.startsWith('remote_mcp:')
+    ) {
+        throw error(400, 'Source type is not owned by a registered connector')
+    }
+}
+
 export const POST: RequestHandler = async ({ request, locals }) => {
     const user = locals.user
     if (!user) {
@@ -153,10 +194,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
         }
     }
 
-    if (!name || !sourceType) {
+    if (!name || !sourceType || typeof name !== 'string' || typeof sourceType !== 'string') {
         throw error(400, 'Name and sourceType are required')
     }
-
     // SA-direct is Drive-only: reject crafted Gmail/Chat source creation.
     const configAuthMode =
         config && typeof config === 'object' && !Array.isArray(config)
@@ -176,6 +216,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
     if (scope === 'org' && user.role !== 'admin') {
         throw error(403, 'Only admins can create org-wide sources')
     }
+    await validateRegisteredSourceType(sourceType)
     const sourcesOfType = await getSourcesByType(sourceType)
 
     if (scope === 'user') {
@@ -233,7 +274,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
                 isActive: requestedIsActive,
                 syncIntervalSeconds: isSyncDisabled
                     ? null
-                    : DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType],
+                    : (DEFAULT_SYNC_INTERVAL_SECONDS[sourceType as SourceType] ?? 3600),
             })
             .returning()
     })

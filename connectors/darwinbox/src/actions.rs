@@ -2,8 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::response::Response;
 use chrono::{Datelike, Utc};
 use omni_connector_sdk::{
-    ActionDefinition, ActionMode, ActionResponse, ServiceCredential, Source, SourceType,
-};
+    ActionDefinition, ActionMode, ActionResponse, ServiceCredential, Source, };
 use serde_json::{Value as JsonValue, json};
 
 use crate::client::{
@@ -369,7 +368,7 @@ pub fn available_action_names() -> Vec<&'static str> {
 }
 
 pub fn action_definitions() -> Vec<ActionDefinition> {
-    let source_types = vec![SourceType::Darwinbox];
+    let source_types = vec!["darwinbox".to_string()];
     let mut definitions = Vec::new();
 
     // Only emit definitions for available actions
@@ -1344,7 +1343,7 @@ fn read(
     name: &str,
     description: &str,
     input_schema: JsonValue,
-    source_types: &[SourceType],
+    source_types: &[String],
 ) -> ActionDefinition {
     action(
         name,
@@ -1365,7 +1364,7 @@ fn write(
     name: &str,
     description: &str,
     input_schema: JsonValue,
-    source_types: &[SourceType],
+    source_types: &[String],
 ) -> ActionDefinition {
     action(
         name,
@@ -1906,7 +1905,7 @@ fn action(
     input_schema: JsonValue,
     mode: ActionMode,
     admin_only: bool,
-    source_types: &[SourceType],
+    source_types: &[String],
     actor_scoped: bool,
 ) -> ActionDefinition {
     ActionDefinition {

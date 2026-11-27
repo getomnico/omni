@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use omni_connector_sdk::RateLimiter;
-use omni_connector_sdk::{RetryableError, ServiceCredential, SourceType};
+use omni_connector_sdk::{RetryableError, ServiceCredential};
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -470,21 +470,21 @@ impl GoogleAuth {
 }
 
 /// Determine the required scopes based on the source type (for service accounts with admin delegation)
-pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
+pub fn get_scopes_for_source_type(source_type: impl AsRef<str>) -> Vec<String> {
     let mut scopes = vec![
         // Admin scopes needed to list users and groups
         GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string(),
         GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE.to_string(),
     ];
 
-    match source_type {
-        SourceType::GoogleDrive => {
+    match source_type.as_ref() {
+        "google_drive" => {
             scopes.push(GOOGLE_DRIVE_READ_SCOPE.to_string());
         }
-        SourceType::Gmail => {
+        "gmail" => {
             scopes.push(GMAIL_READ_SCOPE.to_string());
         }
-        SourceType::GoogleChat => {
+        "google_chat" => {
             scopes.push(GOOGLE_CHAT_SPACES_READ_SCOPE.to_string());
             scopes.push(GOOGLE_CHAT_MEMBERSHIPS_READ_SCOPE.to_string());
             scopes.push(GOOGLE_CHAT_ADMIN_MEMBERSHIPS_READ_SCOPE.to_string());
@@ -500,11 +500,11 @@ pub fn get_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
 }
 
 /// Determine the required OAuth scopes for a source type (no admin directory scope)
-pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> {
-    match source_type {
-        SourceType::GoogleDrive => vec![GOOGLE_DRIVE_READ_SCOPE.to_string()],
-        SourceType::Gmail => vec![GMAIL_READ_SCOPE.to_string()],
-        SourceType::GoogleChat => vec![
+pub fn get_oauth_scopes_for_source_type(source_type: impl AsRef<str>) -> Vec<String> {
+    match source_type.as_ref() {
+        "google_drive" => vec![GOOGLE_DRIVE_READ_SCOPE.to_string()],
+        "gmail" => vec![GMAIL_READ_SCOPE.to_string()],
+        "google_chat" => vec![
             GOOGLE_CHAT_SPACES_READ_SCOPE.to_string(),
             GOOGLE_CHAT_MEMBERSHIPS_READ_SCOPE.to_string(),
             GOOGLE_CHAT_MESSAGES_READ_SCOPE.to_string(),
@@ -519,7 +519,7 @@ pub fn get_oauth_scopes_for_source_type(source_type: SourceType) -> Vec<String> 
 /// Return whether a service-account credential explicitly or implicitly carries a scope.
 pub fn has_service_account_scope(
     creds: &ServiceCredential,
-    source_type: SourceType,
+    source_type: impl AsRef<str>,
     required_scope: &str,
 ) -> bool {
     let scopes = creds
@@ -541,7 +541,7 @@ pub fn has_service_account_scope(
 /// defaults from `get_scopes_for_source_type`.
 pub fn create_service_auth(
     creds: &ServiceCredential,
-    source_type: SourceType,
+    source_type: impl AsRef<str>,
 ) -> Result<ServiceAccountAuth> {
     let service_account_credentials: GoogleServiceAccountCredentials =
         serde_json::from_value(creds.credentials.clone())
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_get_scopes_for_google_drive() {
-        let scopes = get_scopes_for_source_type(SourceType::GoogleDrive);
+        let scopes = get_scopes_for_source_type("google_drive");
 
         assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string()));
         assert!(scopes.contains(&GOOGLE_DRIVE_READ_SCOPE.to_string()));
@@ -745,7 +745,7 @@ mod tests {
 
     #[test]
     fn test_get_scopes_for_gmail() {
-        let scopes = get_scopes_for_source_type(SourceType::Gmail);
+        let scopes = get_scopes_for_source_type("gmail");
 
         assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string()));
         assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_GROUP_READ_SCOPE.to_string()));
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn test_get_scopes_for_other_source_types() {
-        let scopes = get_scopes_for_source_type(SourceType::LocalFiles);
+        let scopes = get_scopes_for_source_type("local_files");
 
         // For other source types, should include both drive and gmail scopes
         assert!(scopes.contains(&GOOGLE_ADMIN_DIRECTORY_USER_READ_SCOPE.to_string()));

@@ -1415,7 +1415,12 @@ async function manifestForFlow(
         return source ? getOAuthConfigForSource(source) : null
     }
     if (flow.type === 'connect_source' && flow.sourceTypes.length > 0) {
-        return getOAuthManifestForSourceType(flow.sourceTypes[0])
+        const configs = await Promise.all(flow.sourceTypes.map(getOAuthManifestForSourceType))
+        const config = configs[0]
+        if (!config || configs.some((candidate) => !candidate || candidate.provider !== provider)) {
+            return null
+        }
+        return config
     }
     return getOAuthManifestForProvider(provider)
 }

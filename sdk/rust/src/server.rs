@@ -20,7 +20,7 @@ use dashmap::DashMap;
 use dashmap::mapref::entry::Entry;
 use serde::de::DeserializeOwned;
 use shared::models::OAuthCredentialValidationRequest;
-use shared::models::{ConnectorSkillDefinition, SourceType, SyncSlotClass, SyncType};
+use shared::models::{ConnectorSkillDefinition, SyncSlotClass, SyncType};
 use shared::telemetry;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -317,9 +317,7 @@ where
                         action.source_types = manifest
                             .source_types
                             .iter()
-                            .filter_map(|source_type| {
-                                SourceType::try_from(source_type.as_str()).ok()
-                            })
+                            .cloned()
                             .collect();
                     }
                     if !manual.contains(&action.name) {
@@ -398,9 +396,10 @@ fn mcp_auth_required_action_response<C: Connector>(
             .as_ref()
             .map(|credentials| credentials.source_id.as_str())
     });
+    let registered_source_types = state.connector.source_types();
     let source_type = source
         .map(|source| source.source_type.as_str())
-        .or_else(|| state.connector.source_types().first().map(|t| t.as_str()));
+        .or_else(|| registered_source_types.first().map(String::as_str));
     let body = mcp_auth_required_body(state.connector.as_ref(), source_id, source_type)?;
     Some(
         (
@@ -422,7 +421,8 @@ fn mcp_auth_required_credentials_response<C: Connector>(
     if !mcp_auth_required(connector, message) {
         return None;
     }
-    let source_type = connector.source_types().first().map(|t| t.as_str());
+    let source_types = connector.source_types();
+    let source_type = source_types.first().map(String::as_str);
     mcp_auth_required_body(connector, credentials.source_id.as_deref(), source_type)
 }
 
@@ -567,15 +567,16 @@ where
         .register_sync(&sync_run_id, request.sync_mode)
         .await;
 
-    let native_source_type = SourceType::try_from(source.source_type.as_str()).map_err(|e| {
-        (
+    if source.integration_type != shared::models::IntegrationType::Connector {
+        return Err((
             StatusCode::BAD_REQUEST,
             Json(SyncResponse::error(format!(
-                "source {} is not a native connector source: {}",
-                source_id, e
+                "source {} is not a native connector source",
+                source_id
             ))),
-        )
-    })?;
+        ));
+    }
+    let native_source_type = source.source_type.clone();
 
     let ctx = SyncContext::new_with_resume(
         state.sdk_client.clone(),

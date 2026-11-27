@@ -66,7 +66,7 @@ mod tests {
             id: id.to_string(),
             source_id: source_id.to_string(),
             user_id: user_id.map(|s| s.to_string()),
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type,
             principal_email: Some("acct@example.com".into()),
             credentials: serde_json::json!({"access_token": "tok"}),

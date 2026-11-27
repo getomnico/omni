@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use omni_connector_sdk::{
-    Connector, SearchOperator, ServiceCredential, Source, SourceType, SyncContext,
+    Connector, SearchOperator, ServiceCredential, Source, SyncContext,
     SyncRequestValidationError, SyncType,
 };
 use serde_json::Value as JsonValue;
@@ -99,8 +99,8 @@ impl Connector for SlackConnector {
         Some("Connect to Slack messages and files".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Slack]
+    fn source_types(&self) -> Vec<String> {
+        vec!["slack".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {
@@ -196,7 +196,8 @@ mod tests {
         Source {
             id: "source-1".to_string(),
             name: "Slack".to_string(),
-            source_type: SourceType::Slack,
+            source_type: "slack".to_string(),
+            integration_type: shared::models::IntegrationType::Connector,
             config: json!({}),
             is_active: true,
             is_deleted: false,
@@ -219,7 +220,7 @@ mod tests {
             id: "creds-1".to_string(),
             source_id: "source-1".to_string(),
             user_id: None,
-            provider: ServiceProvider::Slack,
+            provider: "slack".to_string(),
             auth_type: AuthType::BotToken,
             principal_email: None,
             credentials,

@@ -325,16 +325,15 @@ impl RemoteMcpGateway {
     }
 
     async fn publish_manifest(&self, manifest: &ConnectorManifest) -> Result<(), GatewayError> {
-        let manifest_json = serde_json::to_string(manifest)?;
-        let mut conn = self.redis_client.get_multiplexed_async_connection().await?;
-        let _: () = conn
-            .set_ex(
-                manifest_key(&manifest.source_types[0]),
-                manifest_json,
-                REMOTE_MCP_MANIFEST_TTL_SECONDS,
-            )
-            .await?;
-        Ok(())
+        crate::manifest_registry::publish_manifest(
+            &self.db_pool,
+            &self.redis_client,
+            manifest,
+            REMOTE_MCP_MANIFEST_TTL_SECONDS,
+            true,
+        )
+        .await
+        .map_err(|error| GatewayError::Protocol(error.to_string()))
     }
 
     async fn initialize_session(
@@ -1256,7 +1255,7 @@ mod tests {
             id: format!("cred_{}", user_id.unwrap_or("org")),
             source_id: "src_1".to_string(),
             user_id: user_id.map(str::to_owned),
-            provider: ServiceProvider::RemoteMcp,
+            provider: "remote_mcp".to_string(),
             auth_type,
             principal_email: None,
             credentials,

@@ -4,7 +4,6 @@ use chrono::{Datelike, LocalResult, NaiveDate, TimeZone};
 use chrono_tz::Tz;
 use regex::Regex;
 use serde_json::Value as JsonValue;
-use shared::SourceType;
 use shared::db::repositories::PersonRepository;
 use shared::models::UserConfiguration;
 use shared::models::{AttributeFilter, DateFilter};
@@ -27,8 +26,7 @@ impl PersonLookup for PersonRepository {
 pub struct ParsedQuery {
     pub cleaned_query: String,
     pub attribute_filters: HashMap<String, AttributeFilter>,
-    pub source_types: Vec<SourceType>,
-    pub boosted_source_types: Vec<SourceType>,
+    pub source_types: Vec<String>,
     pub content_types: Vec<String>,
     pub date_filter: Option<DateFilter>,
     /// Strict author filter from explicit `by:` operator
@@ -74,9 +72,6 @@ async fn parse_with_now(
     // Phase 3: Extract natural language patterns (from/by/in)
     remaining = extract_natural_patterns(&remaining, &mut result, person_lookup).await;
 
-    // Phase 4: Check if any word is a known source alias
-    remaining = extract_source_word(&remaining, &mut result);
-
     // Clean up extra whitespace
     result.cleaned_query = remaining.split_whitespace().collect::<Vec<_>>().join(" ");
 
@@ -110,6 +105,9 @@ async fn extract_operators(
         .collect();
 
     for (full_match, operator, value) in matches {
+        if operator == "in" && !valid_source_type_slug(&value) {
+            continue;
+        }
         remaining = remaining.replacen(&full_match, "", 1);
 
         match operator.as_str() {
@@ -118,8 +116,8 @@ async fn extract_operators(
                 result.person_filters.push(value);
             }
             "in" => {
-                if let Some(source) = resolve_source_alias(&value) {
-                    result.source_types.push(source);
+                if valid_source_type_slug(&value) {
+                    result.source_types.push(value.to_ascii_lowercase());
                 }
             }
             "type" => {
@@ -294,68 +292,15 @@ async fn extract_natural_patterns(
         }
     }
 
-    // "in <source>" — only match known source aliases
-    let in_re = Regex::new(r"(?i)\bin\s+(\w+)\b").unwrap();
-    if let Some(cap) = in_re.captures(&remaining) {
-        let value = cap[1].to_string();
-        if let Some(source) = resolve_source_alias(&value) {
-            result.source_types.push(source);
-            remaining = remaining.replacen(cap.get(0).unwrap().as_str(), "", 1);
-        }
-    }
-
     remaining
 }
 
-fn extract_source_word(query: &str, result: &mut ParsedQuery) -> String {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    let words: Vec<&str> = trimmed.split_whitespace().collect();
-    if words.len() < 2 {
-        return trimmed.to_string();
-    }
-    for (i, word) in words.iter().enumerate() {
-        if let Some(source) = resolve_source_alias(word) {
-            result.boosted_source_types.push(source);
-            let remaining: Vec<&str> = words
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .map(|(_, w)| *w)
-                .collect();
-            return remaining.join(" ");
-        }
-    }
-    trimmed.to_string()
-}
-
-fn resolve_source_alias(alias: &str) -> Option<SourceType> {
-    match alias.to_lowercase().as_str() {
-        "drive" | "gdrive" | "google_drive" => Some(SourceType::GoogleDrive),
-        "gmail" | "email" | "mail" => Some(SourceType::Gmail),
-        "google_chat" | "gchat" | "chat" => Some(SourceType::GoogleChat),
-        "google_ads" | "googleads" | "ads" => Some(SourceType::GoogleAds),
-        "slack" => Some(SourceType::Slack),
-        "confluence" | "wiki" => Some(SourceType::Confluence),
-        "jira" => Some(SourceType::Jira),
-        "github" | "gh" => Some(SourceType::Github),
-        "notion" => Some(SourceType::Notion),
-        "onedrive" | "one_drive" => Some(SourceType::OneDrive),
-        "sharepoint" | "share_point" => Some(SourceType::SharePoint),
-        "outlook" => Some(SourceType::Outlook),
-        "hubspot" => Some(SourceType::Hubspot),
-        "fireflies" => Some(SourceType::Fireflies),
-        "clickup" | "click_up" => Some(SourceType::Clickup),
-        "paperless" | "paperless_ngx" => Some(SourceType::PaperlessNgx),
-        "web" | "website" => Some(SourceType::Web),
-        "darwinbox" => Some(SourceType::Darwinbox),
-        "salesforce" | "sf" => Some(SourceType::Salesforce),
-        "snowflake" | "sfdata" => Some(SourceType::Snowflake),
-        "zendesk" => Some(SourceType::Zendesk),
-        _ => None,
-    }
+fn valid_source_type_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
 fn apply_type_filter(value: &str, content_types: &mut Vec<String>) {
@@ -614,23 +559,22 @@ mod tests {
     fn test_in_operator() {
         let parsed = test_parse("in:drive meeting notes");
         assert_eq!(parsed.cleaned_query, "meeting notes");
-        assert_eq!(parsed.source_types, vec![SourceType::GoogleDrive]);
+        assert_eq!(parsed.source_types, vec!["drive".to_string()]);
     }
 
     #[test]
-    fn test_in_operator_gmail_aliases() {
-        for alias in &["gmail", "email", "mail"] {
-            let parsed = test_parse(&format!("in:{} invoice", alias));
-            assert_eq!(parsed.source_types, vec![SourceType::Gmail]);
-        }
+    fn test_in_operator_accepts_custom_source_types() {
+        let parsed = test_parse("in:acme_docs invoice");
+        assert_eq!(parsed.cleaned_query, "invoice");
+        assert_eq!(parsed.source_types, vec!["acme_docs".to_string()]);
     }
 
     #[test]
-    fn test_in_operator_google_ads_aliases() {
-        for alias in &["google_ads", "googleads", "ads"] {
-            let parsed = test_parse(&format!("in:{} campaign", alias));
+    fn test_in_operator_uses_exact_customizable_slug() {
+        for slug in &["google_ads", "googleads", "ads"] {
+            let parsed = test_parse(&format!("in:{} campaign", slug));
             assert_eq!(parsed.cleaned_query, "campaign");
-            assert_eq!(parsed.source_types, vec![SourceType::GoogleAds]);
+            assert_eq!(parsed.source_types, vec![slug.to_string()]);
         }
     }
 
@@ -638,18 +582,18 @@ mod tests {
     fn test_in_operator_darwinbox_alias() {
         let parsed = test_parse("in:darwinbox leave policy");
         assert_eq!(parsed.cleaned_query, "leave policy");
-        assert_eq!(parsed.source_types, vec![SourceType::Darwinbox]);
+        assert_eq!(parsed.source_types, vec!["darwinbox".to_string()]);
     }
 
     #[test]
     fn test_in_operator_salesforce_alias() {
         let parsed = test_parse("in:salesforce open opportunities");
         assert_eq!(parsed.cleaned_query, "open opportunities");
-        assert_eq!(parsed.source_types, vec![SourceType::Salesforce]);
+        assert_eq!(parsed.source_types, vec!["salesforce".to_string()]);
 
         let parsed = test_parse("in:sf cases");
         assert_eq!(parsed.cleaned_query, "cases");
-        assert_eq!(parsed.source_types, vec![SourceType::Salesforce]);
+        assert_eq!(parsed.source_types, vec!["sf".to_string()]);
     }
 
     #[test]
@@ -848,10 +792,10 @@ mod tests {
     }
 
     #[test]
-    fn test_natural_language_in_source() {
+    fn test_natural_language_in_source_remains_free_text() {
         let parsed = test_parse("in slack standup");
-        assert_eq!(parsed.cleaned_query, "standup");
-        assert_eq!(parsed.source_types, vec![SourceType::Slack]);
+        assert_eq!(parsed.cleaned_query, "in slack standup");
+        assert!(parsed.source_types.is_empty());
     }
 
     #[test]
@@ -862,17 +806,16 @@ mod tests {
     }
 
     #[test]
-    fn test_source_word_extraction() {
+    fn test_source_words_remain_free_text() {
         let parsed = test_parse("standup slack");
-        assert_eq!(parsed.cleaned_query, "standup");
+        assert_eq!(parsed.cleaned_query, "standup slack");
         assert!(parsed.source_types.is_empty());
-        assert_eq!(parsed.boosted_source_types, vec![SourceType::Slack]);
     }
 
     #[test]
-    fn test_source_word_alone_not_extracted() {
-        let parsed = test_parse("slack");
-        assert_eq!(parsed.cleaned_query, "slack");
+    fn test_unknown_source_operator_is_not_applied() {
+        let parsed = test_parse("in:bad.slug invoice");
+        assert_eq!(parsed.cleaned_query, "in:bad.slug invoice");
         assert!(parsed.source_types.is_empty());
     }
 
@@ -912,56 +855,9 @@ mod tests {
     fn test_combined_operators() {
         let parsed = test_parse("in:slack from:sarah status:done standup");
         assert_eq!(parsed.cleaned_query, "standup");
-        assert_eq!(parsed.source_types, vec![SourceType::Slack]);
+        assert_eq!(parsed.source_types, vec!["slack".to_string()]);
         assert!(parsed.attribute_filters.contains_key("sender"));
         assert!(parsed.attribute_filters.contains_key("status"));
-    }
-
-    #[test]
-    fn test_source_alias_resolution() {
-        let cases = vec![
-            ("drive", SourceType::GoogleDrive),
-            ("gdrive", SourceType::GoogleDrive),
-            ("google_drive", SourceType::GoogleDrive),
-            ("gmail", SourceType::Gmail),
-            ("email", SourceType::Gmail),
-            ("mail", SourceType::Gmail),
-            ("google_ads", SourceType::GoogleAds),
-            ("googleads", SourceType::GoogleAds),
-            ("ads", SourceType::GoogleAds),
-            ("slack", SourceType::Slack),
-            ("confluence", SourceType::Confluence),
-            ("wiki", SourceType::Confluence),
-            ("jira", SourceType::Jira),
-            ("github", SourceType::Github),
-            ("gh", SourceType::Github),
-            ("notion", SourceType::Notion),
-            ("onedrive", SourceType::OneDrive),
-            ("sharepoint", SourceType::SharePoint),
-            ("outlook", SourceType::Outlook),
-            ("hubspot", SourceType::Hubspot),
-            ("fireflies", SourceType::Fireflies),
-            ("clickup", SourceType::Clickup),
-            ("click_up", SourceType::Clickup),
-            ("paperless", SourceType::PaperlessNgx),
-            ("paperless_ngx", SourceType::PaperlessNgx),
-            ("web", SourceType::Web),
-            ("website", SourceType::Web),
-        ];
-
-        for (alias, expected) in cases {
-            assert_eq!(
-                resolve_source_alias(alias),
-                Some(expected),
-                "Failed for alias: {}",
-                alias
-            );
-        }
-    }
-
-    #[test]
-    fn test_unknown_source_alias() {
-        assert_eq!(resolve_source_alias("unknown"), None);
     }
 
     #[test]
@@ -1005,7 +901,7 @@ mod tests {
     fn test_case_insensitivity() {
         let parsed = test_parse("FROM:sarah IN:Drive report");
         assert!(parsed.attribute_filters.contains_key("sender"));
-        assert_eq!(parsed.source_types, vec![SourceType::GoogleDrive]);
+        assert_eq!(parsed.source_types, vec!["drive".to_string()]);
     }
 
     #[test]
@@ -1065,7 +961,7 @@ mod tests {
         let parsed =
             test_parse_with_registry("in:slack type:pdf before:2024-01-01 report", &registry);
         assert_eq!(parsed.cleaned_query, "report");
-        assert_eq!(parsed.source_types, vec![SourceType::Slack]);
+        assert_eq!(parsed.source_types, vec!["slack".to_string()]);
         assert_eq!(parsed.content_types, vec!["pdf".to_string()]);
         assert!(parsed.date_filter.is_some());
     }

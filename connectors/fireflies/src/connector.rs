@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use omni_connector_sdk::{Connector, ServiceCredential, Source, SourceType, SyncContext, SyncType};
+use omni_connector_sdk::{Connector, ServiceCredential, Source, SyncContext, SyncType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -57,8 +57,8 @@ impl Connector for FirefliesConnector {
         Some("Index meeting transcripts from Fireflies.ai".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Fireflies]
+    fn source_types(&self) -> Vec<String> {
+        vec!["fireflies".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

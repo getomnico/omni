@@ -203,7 +203,7 @@ mod drive_buffer_budget_tests {
         routing::{get, post, put},
     };
     use omni_connector_sdk::{
-        AuthType, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType, SyncContext,
+        AuthType, SdkClient, ServiceCredential, ServiceProvider, Source, SyncContext,
         SyncType,
     };
     use omni_google_connector::{admin::AdminClient, sync::SyncManager};
@@ -426,7 +426,7 @@ mod drive_buffer_budget_tests {
         Source {
             id: SOURCE_ID.to_string(),
             name: "Google Drive Budget Test".to_string(),
-            source_type: SourceType::GoogleDrive.to_string(),
+            source_type: "google_drive".to_string(),
             integration_type: shared::models::IntegrationType::Connector,
             config: json!({}),
             is_active: true,
@@ -450,7 +450,7 @@ mod drive_buffer_budget_tests {
             id: "credential-id".to_string(),
             source_id: SOURCE_ID.to_string(),
             user_id: Some("user-id".to_string()),
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type: AuthType::OAuth,
             principal_email: Some(USER_EMAIL.to_string()),
             credentials: json!({
@@ -489,7 +489,7 @@ mod drive_buffer_budget_tests {
             sdk_client,
             SYNC_RUN_ID.to_string(),
             SOURCE_ID.to_string(),
-            SourceType::GoogleDrive,
+            "google_drive",
             SyncType::Full,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
@@ -544,8 +544,7 @@ mod sa_direct_tests {
         routing::{get, post, put},
     };
     use omni_connector_sdk::{
-        AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType,
-        SyncContext, SyncType,
+        AuthType, Connector, SdkClient, ServiceCredential, ServiceProvider, Source, SyncContext, SyncType,
     };
     use omni_google_connector::{
         admin::AdminClient, models::GoogleSyncCheckpoint, sync::SyncManager,
@@ -910,7 +909,7 @@ mod sa_direct_tests {
         Source {
             id: SA_SOURCE_ID.to_string(),
             name: "Google Drive SA Direct".to_string(),
-            source_type: SourceType::GoogleDrive.to_string(),
+            source_type: "google_drive".to_string(),
             integration_type: shared::models::IntegrationType::Connector,
             config: json!({
                 "auth_mode": "service_account_direct",
@@ -957,7 +956,7 @@ mod sa_direct_tests {
             id: "credential-id".to_string(),
             source_id: SA_SOURCE_ID.to_string(),
             user_id: None,
-            provider: ServiceProvider::Google,
+            provider: "google".to_string(),
             auth_type: AuthType::Jwt,
             principal_email: None,
             credentials: json!({ "service_account_key": sa_key.to_string() }),
@@ -988,7 +987,7 @@ mod sa_direct_tests {
             sdk_client,
             SA_SYNC_RUN_ID.to_string(),
             SA_SOURCE_ID.to_string(),
-            SourceType::GoogleDrive,
+            "google_drive",
             sync_type,
             Arc::new(AtomicBool::new(false)),
         );
@@ -1012,7 +1011,7 @@ mod sa_direct_tests {
             sdk_client,
             SA_SYNC_RUN_ID.to_string(),
             SA_SOURCE_ID.to_string(),
-            SourceType::GoogleDrive,
+            "google_drive",
             sync_type,
             Arc::new(AtomicBool::new(false)),
         );

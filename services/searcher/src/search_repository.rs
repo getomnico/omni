@@ -4,8 +4,7 @@ use shared::{
     db::error::DatabaseError,
     db::repositories::document,
     models::{AttributeFilter, ChunkResult, DateFilter, Document, Facet, FacetValue},
-    SourceType,
-};
+    };
 use sqlx::{postgres::PgRow, FromRow, PgPool, Row};
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
@@ -505,7 +504,7 @@ impl SearchDocumentRepository {
     pub async fn find_similar_with_filters(
         &self,
         embedding: Vec<f32>,
-        source_types: Option<&[SourceType]>,
+        source_types: Option<&[String]>,
         content_types: Option<&[String]>,
         limit: i64,
         offset: i64,

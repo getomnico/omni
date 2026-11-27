@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use axum::response::Response;
 use omni_connector_sdk::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionResponse, Connector, SearchOperator,
-    ServiceCredential, Source, SourceType, SyncContext, SyncType,
+    ServiceCredential, Source, SyncContext, SyncType,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -71,8 +71,8 @@ impl Connector for ZendeskConnector {
         Some("Index Zendesk Support tickets and Help Center articles".to_string())
     }
 
-    fn source_types(&self) -> Vec<SourceType> {
-        vec![SourceType::Zendesk]
+    fn source_types(&self) -> Vec<String> {
+        vec!["zendesk".to_string()]
     }
 
     fn sync_modes(&self) -> Vec<SyncType> {

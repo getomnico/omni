@@ -8,7 +8,7 @@ use axum::{http::StatusCode, routing, Router};
 use axum_test::{TestServer, TestServerConfig};
 use common::{GetSourceBehavior, MockConnectorManager, SyncBehavior, TestConnector};
 use omni_connector_sdk::{
-    create_router, Connector, ServiceCredential, Source, SourceType, SyncContext,
+    create_router, Connector, ServiceCredential, Source, SyncContext,
 };
 use serde_json::{json, Value as JsonValue};
 use tokio::sync::Notify;
@@ -553,8 +553,8 @@ async fn t14_action_success_returns_200() -> Result<()> {
         fn version(&self) -> &'static str {
             "0.0.1"
         }
-        fn source_types(&self) -> Vec<SourceType> {
-            vec![SourceType::Web]
+        fn source_types(&self) -> Vec<String> {
+            vec!["web".to_string()]
         }
         fn requires_credentials(&self) -> bool {
             false
@@ -635,8 +635,8 @@ async fn t15_action_exception_returns_500() -> Result<()> {
         fn version(&self) -> &'static str {
             "0.0.1"
         }
-        fn source_types(&self) -> Vec<SourceType> {
-            vec![SourceType::Web]
+        fn source_types(&self) -> Vec<String> {
+            vec!["web".to_string()]
         }
         fn requires_credentials(&self) -> bool {
             false
@@ -728,8 +728,8 @@ async fn t16_native_action_wins_over_mcp_tool_with_same_name() -> Result<()> {
             "0.0.0"
         }
 
-        fn source_types(&self) -> Vec<SourceType> {
-            vec![SourceType::Web]
+        fn source_types(&self) -> Vec<String> {
+            vec!["web".to_string()]
         }
 
         fn requires_credentials(&self) -> bool {

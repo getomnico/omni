@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use omni_connector_manager::{
+    remote_mcp::gateway::RemoteMcpGateway,
     AppState as CMAppState, config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager,
 };
@@ -86,12 +87,16 @@ impl WebConnectorTestFixture {
         // Create connector-manager app state
         let cm_state = CMAppState {
             db_pool: test_env.db_pool.clone(),
-            redis_client,
+            redis_client: redis_client.clone(),
             extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 cm_config.extraction_concurrency,
             )),
             config: cm_config,
             sync_manager: cm_sync_manager,
+            remote_mcp_gateway: Arc::new(RemoteMcpGateway::new(
+                test_env.db_pool.clone(),
+                redis_client.clone(),
+            )?),
             content_storage,
         };
 
@@ -176,7 +181,7 @@ impl WebConnectorTestFixture {
         )
         .bind(&source_id)
         .bind(name)
-        .bind(shared::models::SourceType::Web)
+        .bind("web")
         .bind(true)
         .bind(user_id)
         .bind(serde_json::json!({"root_url": root_url, "max_depth": 2, "max_pages": 100}))

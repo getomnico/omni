@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use shared::models::{Source, SourceType, SyncRun, SyncType};
+use shared::models::{Source, SyncRun, SyncType};
 use time::OffsetDateTime;
 
 pub use shared::models::{
@@ -146,7 +146,7 @@ pub struct ExecuteActionRequest {
     pub params: JsonValue,
     /// Source type hint, required when `transient_credentials` are provided.
     #[serde(default)]
-    pub source_type: Option<SourceType>,
+    pub source_type: Option<String>,
     /// Inline credentials for setup/discovery actions. When present, the request
     /// is handled in **transient mode**: `source_id` and DB credentials are
     /// not used, and `source_type` must identify the connector.
@@ -173,7 +173,7 @@ pub struct SdkSourceSyncConfigResponse {
     pub credentials: JsonValue,
     pub connector_state: Option<JsonValue>,
     pub checkpoint: Option<JsonValue>,
-    pub source_type: SourceType,
+    pub source_type: String,
     pub user_filter_mode: shared::models::UserFilterMode,
     pub user_whitelist: Option<JsonValue>,
     pub user_blacklist: Option<JsonValue>,

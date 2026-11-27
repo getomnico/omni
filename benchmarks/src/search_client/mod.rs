@@ -2,7 +2,6 @@ use anyhow::Result;
 use omni_searcher::models::{SearchMode, SearchRequest, SearchResponse};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use shared::SourceType;
 use std::time::Duration;
 use tracing::{debug, error};
 
@@ -100,6 +99,7 @@ pub fn create_search_request(query: String, search_mode: SearchMode) -> SearchRe
         document_content_end_line: None,
         date_filter: None,
         person_filters: None,
+        admin_access: false,
     }
 }
 
@@ -113,7 +113,7 @@ pub fn with_offset(mut request: SearchRequest, offset: i64) -> SearchRequest {
     request
 }
 
-pub fn with_sources(mut request: SearchRequest, sources: Vec<SourceType>) -> SearchRequest {
+pub fn with_sources(mut request: SearchRequest, sources: Vec<String>) -> SearchRequest {
     request.source_types = Some(sources);
     request
 }
@@ -137,14 +137,14 @@ mod tests {
         let request = create_search_request("test query".to_string(), SearchMode::Hybrid);
         let request = with_limit(request, 10);
         let request = with_offset(request, 0);
-        let request = with_sources(request, vec![SourceType::GoogleDrive]);
+        let request = with_sources(request, vec!["google_drive".to_string()]);
         let request = with_facets(request, true);
 
         assert_eq!(request.query, "test query");
         assert_eq!(request.mode, Some(SearchMode::Hybrid));
         assert_eq!(request.limit, Some(10));
         assert_eq!(request.offset, Some(0));
-        assert_eq!(request.source_types, Some(vec![SourceType::GoogleDrive]));
+        assert_eq!(request.source_types, Some(vec!["google_drive".to_string()]));
         assert_eq!(request.include_facets, Some(true));
     }
 }

@@ -7,8 +7,7 @@ use redis::AsyncCommands;
 use redis::Client as RedisClient;
 use shared::utils::safe_str_slice;
 use shared::{
-    AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage, SourceType,
-};
+    AIClient, DatabasePool, DocumentRepository, GroupRepository, ObjectStorage, };
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -23,7 +22,7 @@ const MAX_RETRIES: usize = 5;
 /// like "Git repository object storage documentation"). They are excluded from the
 /// random document selection; per-document SKIP handling in the generator still
 /// filters technical content out of the remaining sources.
-const SUGGESTION_EXCLUDED_SOURCE_TYPES: &[SourceType] = &[SourceType::Github];
+const SUGGESTION_EXCLUDED_SOURCE_TYPES: &[&str] = &["github"];
 const QUESTION_PROMPT_TEMPLATE: &str = r#"You are helping generate example search queries for a workplace search tool that indexes a company's documents, emails, and files. The result is shown as a clickable "Try asking" suggestion on the home screen, so it must read like something a real employee would naturally ask.
 
 You are given an excerpt from ONE indexed document. Based on the topic it covers, write ONE natural question that a colleague might ask to find this kind of information.

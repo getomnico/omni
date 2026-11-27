@@ -50,6 +50,7 @@ struct MockState {
     sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
     action_requests: Arc<Mutex<Vec<RecordedActionRequest>>>,
+    registration_manifest: Arc<Mutex<Option<JsonValue>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
     active_syncs: Arc<Mutex<HashSet<String>>>,
@@ -65,6 +66,7 @@ pub struct MockConnector {
     pub sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     pub cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
     action_requests: Arc<Mutex<Vec<RecordedActionRequest>>>,
+    registration_manifest: Arc<Mutex<Option<JsonValue>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
     active_syncs: Arc<Mutex<HashSet<String>>>,
@@ -80,6 +82,7 @@ impl MockConnector {
             Arc::new(Mutex::new(Vec::new()));
         let action_requests: Arc<Mutex<Vec<RecordedActionRequest>>> =
             Arc::new(Mutex::new(Vec::new()));
+        let registration_manifest = Arc::new(Mutex::new(None));
         let sync_response_status = Arc::new(Mutex::new(StatusCode::OK));
         let sync_response_body = Arc::new(Mutex::new(json!({"status": "accepted"})));
         let active_syncs = Arc::new(Mutex::new(HashSet::new()));
@@ -95,6 +98,7 @@ impl MockConnector {
             sync_requests.clone(),
             cancel_requests.clone(),
             action_requests.clone(),
+            registration_manifest.clone(),
             sync_response_status.clone(),
             sync_response_body.clone(),
             active_syncs.clone(),
@@ -109,6 +113,7 @@ impl MockConnector {
             sync_requests,
             cancel_requests,
             action_requests,
+            registration_manifest,
             sync_response_status,
             sync_response_body,
             active_syncs,
@@ -160,6 +165,7 @@ impl MockConnector {
             self.sync_requests.clone(),
             self.cancel_requests.clone(),
             self.action_requests.clone(),
+            self.registration_manifest.clone(),
             self.sync_response_status.clone(),
             self.sync_response_body.clone(),
             self.active_syncs.clone(),
@@ -169,6 +175,10 @@ impl MockConnector {
         *self.shutdown_tx.lock().unwrap() = Some(shutdown_tx);
         sleep(Duration::from_millis(50)).await;
         Ok(())
+    }
+
+    pub fn set_manifest(&self, manifest: JsonValue) {
+        *self.registration_manifest.lock().unwrap() = Some(manifest);
     }
 
     pub fn set_sync_response(&self, status: StatusCode, body: JsonValue) {
@@ -200,6 +210,7 @@ fn spawn_server(
     sync_requests: Arc<Mutex<Vec<RecordedSyncRequest>>>,
     cancel_requests: Arc<Mutex<Vec<RecordedCancelRequest>>>,
     action_requests: Arc<Mutex<Vec<RecordedActionRequest>>>,
+    registration_manifest: Arc<Mutex<Option<JsonValue>>>,
     sync_response_status: Arc<Mutex<StatusCode>>,
     sync_response_body: Arc<Mutex<JsonValue>>,
     active_syncs: Arc<Mutex<HashSet<String>>>,
@@ -209,6 +220,7 @@ fn spawn_server(
         sync_requests,
         cancel_requests,
         action_requests,
+        registration_manifest,
         sync_response_status,
         sync_response_body,
         active_syncs,
@@ -217,17 +229,7 @@ fn spawn_server(
 
     let app = Router::new()
         .route("/health", get(health))
-        .route(
-            "/manifest",
-            get(|| async {
-                Json(json!({
-                    "name": "mock-connector",
-                    "version": "1.0.0",
-                    "sync_modes": ["full", "incremental"],
-                    "actions": []
-                }))
-            }),
-        )
+        .route("/manifest", get(handle_manifest))
         .route("/sync", post(handle_sync))
         .route("/sync/:sync_run_id", get(handle_sync_status))
         .route("/cancel", post(handle_cancel))
@@ -245,6 +247,24 @@ fn spawn_server(
 
 async fn health() -> StatusCode {
     StatusCode::OK
+}
+
+async fn handle_manifest(State(state): State<MockState>) -> Json<JsonValue> {
+    Json(
+        state
+            .registration_manifest
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| {
+                json!({
+                    "name": "mock-connector",
+                    "version": "1.0.0",
+                    "sync_modes": ["full", "incremental"],
+                    "actions": []
+                })
+            }),
+    )
 }
 
 async fn handle_sync(

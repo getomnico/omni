@@ -654,14 +654,14 @@ struct SlotHealth {
 mod tests {
     use super::*;
     use serde_json::json;
-    use shared::models::{IntegrationType, SourceScope, SourceType, UserFilterMode};
+    use shared::models::{IntegrationType, SourceScope, UserFilterMode};
 
     fn source(id: &str, interval_seconds: Option<i32>) -> Source {
         let now = OffsetDateTime::now_utc();
         Source {
             id: id.to_string(),
             name: format!("source-{id}"),
-            source_type: SourceType::LocalFiles.to_string(),
+            source_type: "local_files".to_string(),
             integration_type: IntegrationType::Connector,
             config: json!({}),
             is_active: true,

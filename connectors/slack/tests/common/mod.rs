@@ -1,5 +1,6 @@
 use anyhow::Result;
 use omni_connector_manager::{
+    remote_mcp::gateway::RemoteMcpGateway,
     AppState as CMAppState, config::ConnectorManagerConfig, create_app as create_cm_app,
     sync_manager::SyncManager as CMSyncManager,
 };
@@ -61,12 +62,16 @@ impl SlackConnectorTestFixture {
 
         let cm_state = CMAppState {
             db_pool: test_env.db_pool.clone(),
-            redis_client,
+            redis_client: redis_client.clone(),
             extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 cm_config.extraction_concurrency,
             )),
             config: cm_config,
             sync_manager: cm_sync_manager,
+            remote_mcp_gateway: Arc::new(RemoteMcpGateway::new(
+                test_env.db_pool.clone(),
+                redis_client.clone(),
+            )?),
             content_storage,
         };
 
@@ -120,7 +125,7 @@ impl SlackConnectorTestFixture {
         )
         .bind(&source_id)
         .bind(name)
-        .bind(shared::models::SourceType::Slack)
+        .bind("slack")
         .bind(true)
         .bind(user_id)
         .bind(serde_json::json!({}))
@@ -140,7 +145,7 @@ impl SlackConnectorTestFixture {
             id: cred_id,
             source_id: source_id.to_string(),
             user_id: None,
-            provider: shared::models::ServiceProvider::Slack,
+            provider: "slack".to_string(),
             auth_type: shared::models::AuthType::BotToken,
             principal_email: None,
             credentials,

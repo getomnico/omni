@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use omni_connector_sdk::{
-    AuthType, ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions, SourceType,
-};
+    AuthType, ConnectorEvent, DocumentAttributes, DocumentMetadata, DocumentPermissions, };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::types::time::OffsetDateTime;
@@ -112,7 +111,7 @@ impl GoogleSourceConfig {
     /// - `DomainWideDelegation` keeps the existing permissive behavior.
     pub fn validate(
         &self,
-        source_type: SourceType,
+        source_type: impl AsRef<str>,
         credential_auth_type: AuthType,
     ) -> Result<(), String> {
         match self.index_scope {
@@ -127,10 +126,11 @@ impl GoogleSourceConfig {
             GoogleIndexScope::All | GoogleIndexScope::Selected => {}
         }
 
+        let source_type = source_type.as_ref();
         match self.auth_mode {
             GoogleAuthMode::DomainWideDelegation => {
                 if credential_auth_type != AuthType::OAuth
-                    && source_type == SourceType::GoogleDrive
+                    && source_type == "google_drive"
                     && self
                         .folder_path_filters
                         .iter()
@@ -150,10 +150,10 @@ impl GoogleSourceConfig {
                             .to_string(),
                     );
                 }
-                if source_type != SourceType::GoogleDrive {
+                if source_type != "google_drive" {
                     return Err(format!(
                         "service_account_direct is supported only for Google Drive, not {}",
-                        source_type.as_str()
+                        source_type
                     ));
                 }
                 if self.folder_path_filters.is_empty() {
@@ -2517,7 +2517,7 @@ mod tests {
         .unwrap();
         assert!(
             pending
-                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .validate("google_drive", AuthType::OAuth)
                 .is_err()
         );
 
@@ -2527,7 +2527,7 @@ mod tests {
         .unwrap();
         assert!(
             selected
-                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .validate("google_drive", AuthType::OAuth)
                 .is_err()
         );
 
@@ -2536,7 +2536,7 @@ mod tests {
         }))
         .unwrap();
         assert!(
-            all.validate(SourceType::GoogleDrive, AuthType::OAuth)
+            all.validate("google_drive", AuthType::OAuth)
                 .is_ok()
         );
     }
@@ -2572,22 +2572,22 @@ mod tests {
         };
         assert!(
             valid
-                .validate(SourceType::GoogleDrive, AuthType::Jwt)
+                .validate("google_drive", AuthType::Jwt)
                 .is_ok()
         );
 
         // Reject OAuth creds.
         assert!(
             valid
-                .validate(SourceType::GoogleDrive, AuthType::OAuth)
+                .validate("google_drive", AuthType::OAuth)
                 .is_err()
         );
 
         // Reject non-Drive source types.
-        assert!(valid.validate(SourceType::Gmail, AuthType::Jwt).is_err());
+        assert!(valid.validate("gmail", AuthType::Jwt).is_err());
         assert!(
             valid
-                .validate(SourceType::GoogleChat, AuthType::Jwt)
+                .validate("google_chat", AuthType::Jwt)
                 .is_err()
         );
 
@@ -2599,7 +2599,7 @@ mod tests {
         };
         assert!(
             empty
-                .validate(SourceType::GoogleDrive, AuthType::Jwt)
+                .validate("google_drive", AuthType::Jwt)
                 .is_err()
         );
 
@@ -2618,7 +2618,7 @@ mod tests {
         };
         assert!(
             mixed
-                .validate(SourceType::GoogleDrive, AuthType::Jwt)
+                .validate("google_drive", AuthType::Jwt)
                 .is_err()
         );
 
@@ -2628,7 +2628,7 @@ mod tests {
             folder_path_filters: vec![],
             ..Default::default()
         };
-        assert!(dwd.validate(SourceType::Gmail, AuthType::Jwt).is_ok());
+        assert!(dwd.validate("gmail", AuthType::Jwt).is_ok());
     }
 
     #[test]

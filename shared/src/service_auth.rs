@@ -258,14 +258,14 @@ impl ServiceAuth for BotTokenAuth {
 
 /// Factory function to create appropriate auth implementation
 pub fn create_service_auth(creds: &ServiceCredential) -> Result<Box<dyn ServiceAuth>> {
-    match (creds.provider, creds.auth_type) {
-        (ServiceProvider::Google, AuthType::Jwt) => {
+    match (creds.provider.as_str(), creds.auth_type) {
+        ("google", AuthType::Jwt) => {
             Ok(Box::new(GoogleServiceAuth::from_credentials(creds)?))
         }
-        (ServiceProvider::Atlassian, AuthType::ApiKey) => {
+        ("atlassian", AuthType::ApiKey) => {
             Ok(Box::new(ApiKeyAuth::from_credentials(creds)?))
         }
-        (ServiceProvider::Slack, AuthType::BotToken) => {
+        ("slack", AuthType::BotToken) => {
             Ok(Box::new(BotTokenAuth::from_credentials(creds)?))
         }
         _ => Err(anyhow!(
@@ -283,7 +283,7 @@ mod tests {
     use sqlx::types::time::OffsetDateTime;
 
     fn make_credentials(
-        provider: ServiceProvider,
+        provider: &str,
         auth_type: AuthType,
         principal_email: Option<&str>,
         credentials: serde_json::Value,
@@ -293,7 +293,7 @@ mod tests {
             id: "test-id".to_string(),
             source_id: "test-source".to_string(),
             user_id: None,
-            provider,
+            provider: provider.to_string(),
             auth_type,
             principal_email: principal_email.map(String::from),
             credentials,
@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn test_api_key_auth_from_credentials_valid() {
         let creds = make_credentials(
-            ServiceProvider::Atlassian,
+            "atlassian",
             AuthType::ApiKey,
             Some("admin@corp.com"),
             json!({"api_key": "secret123"}),
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn test_api_key_auth_from_credentials_missing_email() {
         let creds = make_credentials(
-            ServiceProvider::Atlassian,
+            "atlassian",
             AuthType::ApiKey,
             None,
             json!({"api_key": "secret123"}),
@@ -354,7 +354,7 @@ mod tests {
     #[test]
     fn test_api_key_auth_from_credentials_missing_key() {
         let creds = make_credentials(
-            ServiceProvider::Atlassian,
+            "atlassian",
             AuthType::ApiKey,
             Some("admin@corp.com"),
             json!({}),
@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn test_bot_token_from_credentials_valid() {
         let creds = make_credentials(
-            ServiceProvider::Slack,
+            "slack",
             AuthType::BotToken,
             None,
             json!({"bot_token": "xoxb-slack-token"}),
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn test_bot_token_from_credentials_missing_token() {
         let creds = make_credentials(
-            ServiceProvider::Slack,
+            "slack",
             AuthType::BotToken,
             None,
             json!({}),
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn test_create_service_auth_atlassian_api_key() {
         let creds = make_credentials(
-            ServiceProvider::Atlassian,
+            "atlassian",
             AuthType::ApiKey,
             Some("admin@corp.com"),
             json!({"api_key": "key123"}),
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn test_create_service_auth_slack_bot_token() {
         let creds = make_credentials(
-            ServiceProvider::Slack,
+            "slack",
             AuthType::BotToken,
             None,
             json!({"bot_token": "xoxb-token"}),
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn test_create_service_auth_unsupported_combination() {
         let creds = make_credentials(
-            ServiceProvider::Slack,
+            "slack",
             AuthType::ApiKey,
             None,
             json!({}),

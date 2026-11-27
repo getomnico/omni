@@ -8,7 +8,7 @@ use omni_connector_manager::{
 };
 use redis::{AsyncCommands, Client as RedisClient};
 use shared::ObjectStorage;
-use shared::models::{ConnectorManifest, IntegrationType, SourceType, SyncType};
+use shared::models::{ConnectorManifest, IntegrationType, SyncType};
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
 use std::sync::Arc;
@@ -72,7 +72,7 @@ pub async fn setup_test_fixture() -> Result<TestFixture> {
     // Register mock connector manifests in Redis so the manager can find them
     let mut redis_conn = redis_client.get_multiplexed_async_connection().await?;
     for (source_type, connector_id) in [
-        (SourceType::LocalFiles.to_string(), "filesystem"),
+        ("local_files".to_string(), "filesystem"),
         ("darwinbox".to_string(), "darwinbox"),
     ] {
         let manifest = ConnectorManifest {

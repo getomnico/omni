@@ -3,6 +3,7 @@ pub mod connector_client;
 pub mod credential_service;
 pub mod handlers;
 pub mod models;
+pub mod manifest_registry;
 pub mod remote_mcp;
 pub mod scheduler;
 pub mod source_cleanup;

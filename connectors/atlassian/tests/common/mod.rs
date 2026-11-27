@@ -2,14 +2,15 @@ pub mod mock_atlassian;
 
 use anyhow::Result;
 use mock_atlassian::MockAtlassianApi;
-use omni_connector_manager::{AppState, config::ConnectorManagerConfig, create_app};
+use omni_connector_manager::{
+    AppState, config::ConnectorManagerConfig, create_app, remote_mcp::gateway::RemoteMcpGateway,
+};
 use omni_connector_sdk::SdkClient;
 use redis::AsyncCommands;
 use shared::ObjectStorage;
 use shared::db::repositories::service_credentials::ServiceCredentialsRepo;
 use shared::models::{
-    AuthType, ConnectorManifest, IntegrationType, ServiceCredential, ServiceProvider, SourceType,
-    SyncType,
+    AuthType, ConnectorManifest, IntegrationType, ServiceCredential, ServiceProvider, SyncType,
 };
 use shared::storage::postgres::PostgresStorage;
 use shared::test_environment::TestEnvironment;
@@ -32,7 +33,7 @@ pub struct TestFixture {
     _server_handle: tokio::task::JoinHandle<()>,
 }
 
-pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> {
+pub async fn setup_test_fixture(source_type: String) -> Result<TestFixture> {
     // TODO: Audit that the environment access only happens in single-threaded code.
     unsafe {
         std::env::set_var(
@@ -84,8 +85,8 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
         connector_url: "http://127.0.0.1:1".to_string(),
         integration_type: IntegrationType::Connector,
         source_types: vec![
-            SourceType::Confluence.to_string(),
-            SourceType::Jira.to_string(),
+            "confluence".to_string(),
+            "jira".to_string(),
         ],
         description: None,
         actions: vec![],
@@ -115,10 +116,14 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
 
     let app_state = AppState {
         db_pool: test_env.db_pool.clone(),
-        redis_client,
+        redis_client: redis_client.clone(),
         extraction_semaphore: Arc::new(tokio::sync::Semaphore::new(config.extraction_concurrency)),
         config,
         sync_manager,
+        remote_mcp_gateway: Arc::new(RemoteMcpGateway::new(
+            test_env.db_pool.clone(),
+            redis_client.clone(),
+        )?),
         content_storage,
     };
 
@@ -148,10 +153,10 @@ pub async fn setup_test_fixture(source_type: SourceType) -> Result<TestFixture> 
     })
 }
 
-async fn seed_atlassian_source(pool: &PgPool, source_type: SourceType) -> Result<()> {
-    let source_type_str = match source_type {
-        SourceType::Confluence => "confluence",
-        SourceType::Jira => "jira",
+async fn seed_atlassian_source(pool: &PgPool, source_type: String) -> Result<()> {
+    let source_type_str = match source_type.as_str() {
+        "confluence" => "confluence",
+        "jira" => "jira",
         _ => return Err(anyhow::anyhow!("Unsupported source type for test")),
     };
 
@@ -173,7 +178,7 @@ async fn seed_atlassian_source(pool: &PgPool, source_type: SourceType) -> Result
         id: TEST_CRED_ID.to_string(),
         source_id: "01JGF7V3E0Y2R1X8P5Q7W9T4N7".to_string(),
         user_id: None,
-        provider: ServiceProvider::Atlassian,
+        provider: "atlassian".to_string(),
         auth_type: AuthType::ApiKey,
         principal_email: None,
         credentials: serde_json::json!({"sa_token": TEST_SA_TOKEN}),

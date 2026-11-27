@@ -10,7 +10,7 @@ use shared::db::repositories::{ServiceCredentialsRepo, SyncRunRepository};
 use shared::models::{
     ActionCredentialScope, ActionDefinition, ActionMode, ActionOrigin, AuthType, ConnectorEvent,
     ConnectorManifest, DocumentMetadata, DocumentPermissions, IntegrationType, PersonSyncRecord,
-    ServiceCredential, ServiceProvider, SourceType, SyncStatus, SyncType,
+    ServiceCredential, ServiceProvider, SyncStatus, SyncType,
 };
 use shared::queue::EventQueue;
 use time::OffsetDateTime;
@@ -1799,7 +1799,7 @@ async fn person_sync_and_document_extraction_merge_correctly() {
 async fn register_action_manifest(
     fixture: &common::TestFixture,
     connector_id: &str,
-    source_type: SourceType,
+    source_type: &str,
     oauth: Option<serde_json::Value>,
     credential_scope: ActionCredentialScope,
     admin_only: bool,
@@ -1829,7 +1829,7 @@ async fn register_action_manifest(
             mode,
             credential_scope,
             required_scopes: None,
-            source_types: vec![source_type],
+            source_types: vec![source_type.to_string()],
             admin_only,
             hidden: false,
             actor_scoped,
@@ -1866,7 +1866,7 @@ async fn seed_org_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
         id: id.clone(),
         source_id: source_id.to_string(),
         user_id: None,
-        provider: ServiceProvider::Darwinbox,
+        provider: "darwinbox".to_string(),
         auth_type: AuthType::ApiKey,
         principal_email: Some("org@example.com".to_string()),
         credentials: json!({"token": "org-token"}),
@@ -1890,7 +1890,7 @@ async fn seed_user_credential(pool: &sqlx::PgPool, source_id: &str) -> String {
         id: id.clone(),
         source_id: source_id.to_string(),
         user_id: Some("01JGF7V3E0Y2R1X8P5Q7W9T4N6".to_string()),
-        provider: ServiceProvider::Darwinbox,
+        provider: "darwinbox".to_string(),
         auth_type: AuthType::ApiKey,
         principal_email: Some("user@example.com".to_string()),
         credentials: json!({"token": "user-token"}),
@@ -1920,7 +1920,7 @@ async fn test_action_org_only_connector_uses_org_credential_with_user_id() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         false,
@@ -1975,7 +1975,7 @@ async fn test_action_oauth_connector_requires_user_oauth_without_per_user_cred()
     register_action_manifest(
         &fixture,
         "gmail",
-        SourceType::Gmail,
+        "gmail",
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
@@ -2019,7 +2019,7 @@ async fn test_action_org_scope_never_uses_user_credential() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::Org,
         false,
@@ -2061,7 +2061,7 @@ async fn test_action_admin_only_requires_admin_and_uses_org_credential() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         true,
@@ -2122,7 +2122,7 @@ async fn test_action_default_scope_on_oauth_connector_requires_user_oauth() {
     register_action_manifest(
         &fixture,
         "gmail",
-        SourceType::Gmail,
+        "gmail",
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
@@ -2162,7 +2162,7 @@ async fn test_action_user_facing_without_user_id_is_rejected() {
     register_action_manifest(
         &fixture,
         "gmail",
-        SourceType::Gmail,
+        "gmail",
         Some(json!({"provider": "google"})),
         ActionCredentialScope::User,
         false,
@@ -2197,7 +2197,7 @@ async fn test_action_org_credential_write_requires_admin_role() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         false,
@@ -2265,7 +2265,7 @@ async fn test_action_actor_scoped_write_allowed_for_regular_users() {
     register_action_manifest(
         &fixture,
         "darwinbox",
-        SourceType::Darwinbox,
+        "darwinbox",
         None,
         ActionCredentialScope::User,
         false,
@@ -2300,4 +2300,72 @@ async fn test_action_actor_scoped_write_allowed_for_regular_users() {
         Some("test@example.com"),
         "actor identity must reach the connector for server-side scoping"
     );
+}
+
+#[tokio::test]
+async fn concurrent_manifest_registrations_cannot_claim_the_same_source_type() {
+    let fixture = common::setup_test_fixture().await.unwrap();
+    let make_manifest = |connector_id: &str, integration_type| ConnectorManifest {
+        name: connector_id.to_string(),
+        display_name: connector_id.to_string(),
+        version: "1.0.0".to_string(),
+        sync_modes: vec![SyncType::Full],
+        connector_id: connector_id.to_string(),
+        connector_url: fixture.mock_connector.base_url.clone(),
+        integration_type,
+        source_types: vec!["shared_registry_test".to_string()],
+        description: None,
+        actions: vec![],
+        search_operators: vec![],
+        read_only: false,
+        extra_schema: None,
+        attributes_schema: None,
+        mcp_enabled: false,
+        mcp_catalog_loaded: false,
+        prompts: vec![],
+        skills: vec![],
+        source_capabilities: vec![],
+        resources: vec![],
+        oauth: None,
+    };
+    let native = make_manifest("registry-test-native", IntegrationType::Connector);
+    let remote = make_manifest(
+        "remote_mcp:shared_registry_test",
+        IntegrationType::RemoteMcp,
+    );
+    let (native_result, remote_result) = tokio::join!(
+        omni_connector_manager::manifest_registry::publish_manifest(
+            &fixture.state.db_pool,
+            &fixture.state.redis_client,
+            &native,
+            60,
+            false,
+        ),
+        omni_connector_manager::manifest_registry::publish_manifest(
+            &fixture.state.db_pool,
+            &fixture.state.redis_client,
+            &remote,
+            60,
+            false,
+        ),
+    );
+    let (winner, loser) = match (native_result, remote_result) {
+        (Ok(()), Err(error)) => (&native, error),
+        (Err(error), Ok(())) => (&remote, error),
+        other => panic!("expected one registration conflict, got {other:?}"),
+    };
+    assert!(matches!(
+        loser,
+        omni_connector_manager::manifest_registry::ManifestRegistryError::Invalid(message)
+            if message.contains("already registered")
+    ));
+    omni_connector_manager::manifest_registry::publish_manifest(
+        &fixture.state.db_pool,
+        &fixture.state.redis_client,
+        winner,
+        60,
+        true,
+    )
+    .await
+    .expect("refresh of the winning registration should succeed");
 }

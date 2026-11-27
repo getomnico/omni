@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, NaiveDate};
 use omni_connector_sdk::SyncContext;
 use omni_connector_sdk::{
-    ConnectorEvent, SdkClient, ServiceCredential, ServiceProvider, Source, SourceType, SyncType,
+    ConnectorEvent, SdkClient, ServiceCredential, ServiceProvider, Source, SyncType,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -167,7 +167,7 @@ impl SyncManager {
             source_id, sync_run_id
         );
 
-        if creds.provider != ServiceProvider::Slack {
+        if creds.provider != "slack" {
             return Err(anyhow!(
                 "Expected Slack credentials, found {:?}",
                 creds.provider
@@ -338,7 +338,7 @@ impl SyncManager {
             self.sdk_client.clone(),
             sync_run_id.clone(),
             source_id.to_string(),
-            SourceType::Slack,
+            "slack",
             SyncType::Incremental,
             Arc::new(AtomicBool::new(false)),
         );
@@ -349,7 +349,7 @@ impl SyncManager {
                 .get_credentials(source_id)
                 .await
                 .context("Failed to fetch credentials for realtime sync")?;
-            if creds.provider != ServiceProvider::Slack {
+            if creds.provider != "slack" {
                 return Err(anyhow!(
                     "Expected Slack credentials for source {}, found {:?}",
                     source_id,
@@ -459,7 +459,7 @@ impl SyncManager {
             self.sdk_client.clone(),
             sync_run_id.clone(),
             source_id.to_string(),
-            SourceType::Slack,
+            "slack",
             SyncType::Realtime,
             Arc::new(AtomicBool::new(false)),
         );
@@ -470,7 +470,7 @@ impl SyncManager {
                 .get_credentials(source_id)
                 .await
                 .context("Failed to fetch credentials for realtime sync")?;
-            if creds.provider != ServiceProvider::Slack {
+            if creds.provider != "slack" {
                 return Err(anyhow!(
                     "Expected Slack credentials for source {}, found {:?}",
                     source_id,

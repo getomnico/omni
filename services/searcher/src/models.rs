@@ -1,6 +1,5 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use shared::{
-    SourceType,
     models::{AttributeFilter, DateFilter, Document, Facet, UserConfiguration},
 };
 use std::collections::HashMap;
@@ -23,7 +22,7 @@ where
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SearchRequest {
     pub query: String,
-    pub source_types: Option<Vec<SourceType>>,
+    pub source_types: Option<Vec<String>>,
     pub content_types: Option<Vec<String>>,
     /// Attribute filters for filtering by document attributes.
     /// Keys are attribute names, values are AttributeFilter specifications.

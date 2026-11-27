@@ -154,8 +154,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
         const sourceTypes = sourceTypesParam.split(',').filter(Boolean)
         if (sourceTypes.length === 0) throw error(400, 'source_types must not be empty')
 
-        const config = await getOAuthManifestForSourceType(sourceTypes[0])
-        if (!config) {
+        const configs = await Promise.all(sourceTypes.map(getOAuthManifestForSourceType))
+        const config = configs[0]
+        if (!config || configs.some((candidate) => !candidate || candidate.provider !== config.provider)) {
             throw error(501, `OAuth not implemented for source_type=${sourceTypes[0]}`)
         }
         if (!(await isProviderConfigured(config.provider, config))) {

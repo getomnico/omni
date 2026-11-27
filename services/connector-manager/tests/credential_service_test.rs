@@ -127,7 +127,7 @@ fn make_creds(
         id: id.to_string(),
         source_id: source_id.to_string(),
         user_id: user_id.map(String::from),
-        provider: ServiceProvider::Google,
+        provider: "google".to_string(),
         auth_type,
         principal_email: Some("test@example.com".into()),
         credentials,

@@ -6,7 +6,6 @@ use crate::query_parser;
 use crate::search_repository::SearchDocumentRepository;
 use anyhow::Result;
 use redis::{AsyncCommands, Client as RedisClient};
-use shared::SourceType;
 use shared::db::repositories::{
     DocumentRepository, EmbeddingRepository, GroupRepository, PersonRepository, SourceRepository,
 };
@@ -197,7 +196,6 @@ impl SearchEngine {
         info!("Parsed query: {:?}", parsed);
         let has_parsed_filters = !parsed.attribute_filters.is_empty()
             || !parsed.source_types.is_empty()
-            || !parsed.boosted_source_types.is_empty()
             || !parsed.content_types.is_empty()
             || parsed.date_filter.is_some()
             || !parsed.person_filters.is_empty()
@@ -359,28 +357,6 @@ impl SearchEngine {
         let (search_result, facets) = tokio::join!(search_future, unfiltered_facets_future);
         let (mut results, total_count) = search_result?;
 
-        // Apply source boost for implicit source words (e.g. "standup slack")
-        if !parsed.boosted_source_types.is_empty() {
-            let boosted_source_ids: Vec<String> = all_sources
-                .iter()
-                .filter(|(_, st)| {
-                    parsed
-                        .boosted_source_types
-                        .iter()
-                        .any(|t| t.as_str() == st.as_str())
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            if !boosted_source_ids.is_empty() {
-                const SOURCE_BOOST_MULTIPLIER: f32 = 1.5;
-                for result in &mut results {
-                    if boosted_source_ids.contains(&result.document.source_id) {
-                        result.score *= SOURCE_BOOST_MULTIPLIER;
-                    }
-                }
-            }
-        }
-
         // Apply person boost for natural language patterns (e.g. "emails from john")
         if !parsed.person_boosts.is_empty() {
             const PERSON_BOOST_MULTIPLIER: f32 = 2.0;
@@ -405,7 +381,7 @@ impl SearchEngine {
         }
 
         // Re-sort if any boosts were applied
-        if !parsed.boosted_source_types.is_empty() || !parsed.person_boosts.is_empty() {
+        if !parsed.person_boosts.is_empty() {
             results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
         }
 
@@ -1462,13 +1438,6 @@ impl SearchEngine {
     }
 }
 
-fn source_type_to_string(st: &SourceType) -> String {
-    serde_json::to_value(st)
-        .ok()
-        .and_then(|v| v.as_str().map(String::from))
-        .unwrap_or_default()
-}
-
 fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
     let mut filters = Vec::new();
 
@@ -1479,7 +1448,7 @@ fn build_active_filters(request: &SearchRequest) -> Vec<Facet> {
                 values: source_types
                     .iter()
                     .map(|st| FacetValue {
-                        value: source_type_to_string(st),
+                        value: st.clone(),
                         count: None,
                     })
                     .collect(),
