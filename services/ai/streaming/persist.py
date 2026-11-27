@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterable
 from enum import Enum
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -21,10 +20,21 @@ from anthropic.types import (
     ToolUseBlockParam,
 )
 
+from db.models import ChatMessage, ChatMessageError
 from db.tool_approvals import ToolApproval
 from providers import LLMProviderStreamError, ProviderError
 
 logger = logging.getLogger(__name__)
+
+
+class OutputLimitError(Exception):
+    message = (
+        "The response reached the model’s output limit and was cut short. "
+        "Ask it to continue or request a shorter answer."
+    )
+
+    def __init__(self) -> None:
+        super().__init__(self.message)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +90,30 @@ class StreamErrorEvent(TypedDict):
     statusCode: NotRequired[int | None]
 
 
+class MessageFinalizedEvent(TypedDict):
+    id: str
+    chat_id: str
+    parent_id: str | None
+    message_seq_num: int
+    message: dict[str, Any]
+    content_text: str | None
+    error: ChatMessageError | None
+    created_at: str
+
+
+def message_finalized_event(message: ChatMessage) -> MessageFinalizedEvent:
+    return {
+        "id": message.id,
+        "chat_id": message.chat_id,
+        "parent_id": message.parent_id,
+        "message_seq_num": message.message_seq_num,
+        "message": message.message,
+        "content_text": message.content_text,
+        "error": message.error,
+        "created_at": message.created_at.isoformat(),
+    }
+
+
 class OAuthRequiredEvent(TypedDict):
     approval_id: str
     tool_call_id: str
@@ -109,6 +143,8 @@ class ApprovalRequiredEvent(ApprovalRequiredEventItem):
 
 
 def _chat_error_message(exc: Exception) -> str:
+    if isinstance(exc, OutputLimitError):
+        return exc.message
     if isinstance(exc, ProviderError) and exc.message:
         return f"Failed to generate response: {exc.message}"
     if isinstance(exc, LLMProviderStreamError) and exc.message:
@@ -442,14 +478,17 @@ async def persist_and_transform(
                     # content plus the error, so it is never deleted by the
                     # generator-end cleanup below.
                     if partial is not None:
-                        await messages_repo.finalize_error(
+                        finalized = await messages_repo.finalize_error(
                             current_assistant_message_id, partial, error
                         )
                     else:
-                        await messages_repo.update_error(
+                        finalized = await messages_repo.update_error(
                             current_assistant_message_id, error
                         )
                     current_assistant_message_id = None
+                    yield sse_event(
+                        "message_finalized", message_finalized_event(finalized)
+                    )
                 else:
                     # The run failed before any message_start (e.g. during
                     # conversation prep): persist the failed turn as a new
@@ -465,6 +504,9 @@ async def persist_and_transform(
                     )
                     parent_id = created.id
                     yield f"event: message_id\ndata: {created.id}\n\n"
+                    yield sse_event(
+                        "message_finalized", message_finalized_event(created)
+                    )
             except Exception as e:
                 logger.error(
                     f"Failed to persist stream error for chat {chat_id}: {e}",

@@ -6,14 +6,39 @@ Uses the OpenAI SDK with a custom base_url, giving us full tool/function-calling
 support without provider-specific glue.
 """
 
+import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any, ClassVar, cast
 from urllib.parse import urlsplit
 
 import httpx
+from anthropic.types import (
+    DocumentBlockParam,
+    ImageBlockParam,
+    InputJSONDelta,
+    Message,
+    MessageDeltaUsage,
+    MessageParam,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawContentBlockStopEvent,
+    RawMessageDeltaEvent,
+    RawMessageStartEvent,
+    RawMessageStopEvent,
+    TextBlock,
+    TextBlockParam,
+    TextDelta,
+    ToolParam,
+    ToolResultBlockParam,
+    ToolUseBlock,
+    ToolUseBlockParam,
+    Usage,
+)
+from anthropic.types.message_stream_event import MessageStreamEvent
+from anthropic.types.raw_message_delta_event import Delta
 from openai import APIStatusError, AsyncOpenAI
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
@@ -33,33 +58,14 @@ from openai.types.chat.chat_completion_content_part_text_param import (
     ChatCompletionContentPartTextParam,
 )
 from openai.types.chat.chat_completion_message_tool_call_param import Function
-from anthropic.types import (
-    DocumentBlockParam,
-    ImageBlockParam,
-    Message,
-    MessageDeltaUsage,
-    MessageParam,
-    TextBlockParam,
-    ToolParam,
-    ToolResultBlockParam,
-    ToolUseBlockParam,
-    Usage,
-    RawMessageStartEvent,
-    RawMessageDeltaEvent,
-    RawContentBlockStartEvent,
-    RawContentBlockDeltaEvent,
-    RawContentBlockStopEvent,
-    RawMessageStopEvent,
-    ToolUseBlock,
-    TextBlock,
-    TextDelta,
-    InputJSONDelta,
-)
-from anthropic.types.message_stream_event import MessageStreamEvent
-from anthropic.types.raw_message_delta_event import Delta
 
 from . import LLMProvider, LLMProviderEmptyResponseError, TokenUsage
 from .anthropic_message_adapter import extract_text_document
+from .stream_utils import (
+    FINAL_USAGE_DRAIN_SECONDS,
+    bounded_cleanup,
+    next_stream_item,
+)
 from .types import ProviderError, ProviderType
 
 
@@ -516,6 +522,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     provider_type: ClassVar[ProviderType] = ProviderType.OPENAI_COMPATIBLE
     PERSISTED_BLOCK_EXTRAS = ASSISTANT_MESSAGE_PASSTHROUGH_KEYS
+    _FINAL_USAGE_TIMEOUT_SECONDS = FINAL_USAGE_DRAIN_SECONDS
 
     def __init__(
         self, base_url: str, api_key: str | None = None, model: str = "default"
@@ -613,8 +620,9 @@ class OpenAICompatibleProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         """Stream response, yielding Anthropic-compatible MessageStreamEvents."""
+        stream = None
         try:
             active_model = model or self.model
             openai_messages = _convert_messages_to_openai(
@@ -668,15 +676,33 @@ class OpenAICompatibleProvider(LLMProvider):
 
             stream_input_tokens = 0
             stream_output_tokens = 0
+            stream_usage_received = False
+            stop_reason = "end_turn"
+            terminal_signal_received = False
+            terminal_deadline: float | None = None
             reasoning_content_parts: list[str] = []
 
             chunk: ChatCompletionChunk
-            async for chunk in stream:
+            iterator = stream.__aiter__()
+            while True:
+                try:
+                    chunk = await next_stream_item(iterator, deadline=terminal_deadline)
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    if terminal_deadline is not None:
+                        break
+                    raise
                 # Usage-only chunk (no choices) arrives at end of stream
                 if chunk.usage:
+                    stream_usage_received = True
                     stream_input_tokens = chunk.usage.prompt_tokens or 0
                     stream_output_tokens = chunk.usage.completion_tokens or 0
 
+                if terminal_signal_received:
+                    if chunk.usage is not None:
+                        break
+                    continue
                 if not chunk.choices:
                     continue
 
@@ -755,9 +781,20 @@ class OpenAICompatibleProvider(LLMProvider):
                             )
 
                 # Handle finish_reason
-                if chunk.choices[0].finish_reason is not None:
-                    # Continue through the provider's final usage-only chunk.
-                    continue
+                finish_reason = chunk.choices[0].finish_reason
+                if finish_reason is not None:
+                    terminal_signal_received = True
+                    if finish_reason == "length":
+                        terminal_deadline = (
+                            asyncio.get_running_loop().time()
+                            + self._FINAL_USAGE_TIMEOUT_SECONDS
+                        )
+                    if finish_reason == "length":
+                        stop_reason = "max_tokens"
+                    elif finish_reason == "tool_calls":
+                        stop_reason = "tool_use"
+                    if chunk.usage is not None:
+                        break
 
             # Close any open blocks
             if text_started:
@@ -790,15 +827,14 @@ class OpenAICompatibleProvider(LLMProvider):
                     index=reasoning_block_index,
                 )
 
-            if stream_input_tokens or stream_output_tokens:
-                yield RawMessageDeltaEvent(
-                    type="message_delta",
-                    delta=Delta(stop_reason="end_turn"),
-                    usage=MessageDeltaUsage(
-                        input_tokens=stream_input_tokens,
-                        output_tokens=stream_output_tokens,
-                    ),
-                )
+            yield RawMessageDeltaEvent(
+                type="message_delta",
+                delta=Delta(stop_reason=stop_reason),
+                usage=MessageDeltaUsage(
+                    input_tokens=(stream_input_tokens if stream_usage_received else None),
+                    output_tokens=stream_output_tokens,
+                ),
+            )
 
             yield RawMessageStopEvent(type="message_stop")
 
@@ -815,6 +851,10 @@ class OpenAICompatibleProvider(LLMProvider):
                 cause=e,
                 is_context_overflow=_openai_compat_context_overflow(e),
             ) from e
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if close_stream is not None:
+                await bounded_cleanup(close_stream())
 
     async def generate_response(
         self,

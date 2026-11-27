@@ -56,6 +56,7 @@
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
     import type { ArtifactData } from '$lib/utils/artifacts'
     import { collectPanelArtifacts } from '$lib/utils/artifacts'
+    import { parseFinalizedAssistantMessage } from '$lib/utils/chat-messages'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
     import { artifactPaneState } from '$lib/stores/artifact-pane.svelte'
@@ -144,6 +145,7 @@
         // opened the EventSource from page.state.stream; closing it here cancels
         // the browser request before the stream can start.
         if (!keepActiveStream) {
+            streamRunCounter += 1
             if (eventSource) {
                 eventSource.close()
                 eventSource = null
@@ -2120,13 +2122,52 @@
                 void resumePendingSteeringAfterTerminal(chatId)
             })
 
+            let finalizedAssistantMessageId: string | null = null
+            const handleMessageFinalized = (event: Event) => {
+                if (!isCurrentStream() || !(event instanceof MessageEvent)) return
+                try {
+                    const finalizedMessage = parseFinalizedAssistantMessage(JSON.parse(event.data))
+                    if (finalizedMessage.chatId !== chatId) {
+                        throw new Error('Finalized assistant message belongs to another chat')
+                    }
+                    const existingIndex = chatMessages.findIndex(
+                        (message) => message.id === finalizedMessage.id,
+                    )
+                    if (existingIndex === -1) {
+                        chatMessages = [...chatMessages, finalizedMessage]
+                        selectBranch(finalizedMessage.parentId, finalizedMessage.id)
+                    } else {
+                        chatMessages = chatMessages.map((message) =>
+                            message.id === finalizedMessage.id ? finalizedMessage : message,
+                        )
+                    }
+                    finalizedAssistantMessageId = finalizedMessage.id
+                    activeStreamingMessageId = null
+                    error = null
+                    errorDetail = null
+                    updateScrollState()
+                    requestAnimationFrame(() => recalcBottomPadding())
+                } catch (err) {
+                    console.error('Failed to parse finalized assistant message:', err)
+                }
+            }
+            eventSource.addEventListener('message_finalized', handleMessageFinalized)
+
             const handleStreamError = (event: Event) => {
                 if (!isCurrentStream()) return
                 streamCompleted = true
                 if (event instanceof MessageEvent) {
                     const streamError = streamErrorMessage(event as MessageEvent<string>)
-                    error = streamError.message
-                    errorDetail = streamError.detail
+                    const finalizedMessage = finalizedAssistantMessageId
+                        ? chatMessages.find((message) => message.id === finalizedAssistantMessageId)
+                        : undefined
+                    if (finalizedMessage?.error) {
+                        error = null
+                        errorDetail = null
+                    } else {
+                        error = streamError.message
+                        errorDetail = streamError.detail
+                    }
                 } else {
                     error = 'Failed to generate response. Please try again.'
                     errorDetail = null
@@ -2141,7 +2182,9 @@
                 eventSource = null
                 activeStreamChatId = null
                 clearReconnectState()
-                void resumePendingSteeringAfterTerminal(chatId)
+                if (streamRunId === streamRunCounter && data.chat.id === chatId) {
+                    void resumePendingSteeringAfterTerminal(chatId)
+                }
             }
 
             const handleConnectionError = () => {
@@ -2370,7 +2413,9 @@
                     setTimeout(() => void handleSubmit(clientMessageId), 150)
                 } else {
                     void resumeActiveStreamIfNeeded()
-                    toast.info('The previous response is still in progress. Reconnecting to it now.')
+                    toast.info(
+                        'The previous response is still in progress. Reconnecting to it now.',
+                    )
                 }
             } else {
                 console.error('Failed to send message to chat session')

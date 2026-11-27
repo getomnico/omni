@@ -604,6 +604,7 @@ class ChatMessage:
     created_at: datetime
     parent_id: str | None = None
     error: ChatMessageError | None = None
+    content_text: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "ChatMessage":
@@ -621,6 +622,7 @@ class ChatMessage:
             created_at=row["created_at"],
             parent_id=row.get("parent_id"),
             error=error,
+            content_text=row.get("content_text"),
         )
 
     def to_dict(self) -> dict:

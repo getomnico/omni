@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable
 from dataclasses import dataclass
 from typing import cast
 
-from anthropic import MessageStreamEvent
 from anthropic.types import (
     ContentBlockParam,
     MessageParam,
@@ -25,6 +24,7 @@ from anthropic.types import (
     ToolResultBlockParam,
     ToolUseBlockParam,
 )
+from anthropic.types.message_stream_event import MessageStreamEvent
 
 from config import (
     AGENT_MAX_ITERATIONS,
@@ -47,6 +47,7 @@ from services.usage import UsageContext, UsagePurpose, UsageTracker
 from streaming.persist import (
     EndOfStreamReason,
     OAuthRequiredEvent,
+    OutputLimitError,
     approval_required_event,
     end_of_stream,
     oauth_event,
@@ -72,6 +73,16 @@ from tools import (
 from tools.turn_builder import build_turn_tools
 
 logger = logging.getLogger(__name__)
+
+
+async def _close_active_stream(
+    stream: AsyncGenerator[MessageStreamEvent | CompactionStart | CompactionEnd, None],
+) -> None:
+    try:
+        await stream.aclose()
+    except Exception:
+        logger.warning("Failed to close active chat stream", exc_info=True)
+
 
 _EMPTY_RESPONSE_RECOVERY_PROMPT = (
     "Continue the original request. If the last result discovered or loaded a tool, "
@@ -107,7 +118,7 @@ async def event_stream_with_context_retry(
     summarizer_context_window_tokens: int,
     model_record_id: str | None = None,
     model_name: str | None = None,
-) -> AsyncIterator[MessageStreamEvent | CompactionStart | CompactionEnd]:
+) -> AsyncGenerator[MessageStreamEvent | CompactionStart | CompactionEnd, None]:
     """Stream events from the LLM provider with one automatic compaction retry
     on context-overflow errors.
 
@@ -145,10 +156,11 @@ async def event_stream_with_context_retry(
             system_prompt=provider_system_prompt,
             model=model_name or llm_provider.model_name,
         )
-        processed_stream = tracker.wrap_stream(raw_stream)
+        tracked_stream = tracker.wrap_stream(raw_stream)
+        processed_stream = tracked_stream
         if citable_index:
             processed_stream = CitationStreamProcessor(citable_index).process(
-                processed_stream
+                tracked_stream
             )
 
         emitted_event = False
@@ -179,10 +191,10 @@ async def event_stream_with_context_retry(
                 continue
             raise
         finally:
-            # The agent loop (stream_generator) stops consuming this generator
-            # at message_stop instead of exhausting it, so save() must run in
-            # `finally`: an early close unwinds the generator through here and
-            # would otherwise drop the captured usage on every turn.
+            try:
+                await processed_stream.aclose()
+            except Exception:
+                logger.warning("Failed to close processed provider stream", exc_info=True)
             tracker.save()
         return
 
@@ -771,6 +783,9 @@ async def stream_generator(
     formerly defined inside ``stream_chat``.  All closure-captured locals are
     now explicit parameters.
     """
+    active_stream: AsyncGenerator[
+        MessageStreamEvent | CompactionStart | CompactionEnd, None
+    ] | None = None
     try:
         conversation_messages = messages.copy()
         content_blocks: list[TextBlockParam | ToolUseBlockParam] = []
@@ -1018,9 +1033,11 @@ async def stream_generator(
                     model_record_id=model_record_id,
                     model_name=model_name,
                 )
+                active_stream = stream
 
                 event_index = 0
                 message_stop_received = False
+                output_limit_reached = False
                 pending_message_sses: list[str] = []
                 message_stream_started = False
                 cancelled = False
@@ -1194,6 +1211,9 @@ async def stream_generator(
 
                     elif event.type == "citation":
                         logger.info(f"Citation received: {event.citation}")
+                    elif event.type == "message_delta":
+                        if event.delta.stop_reason == "max_tokens":
+                            output_limit_reached = True
                     elif event.type == "message_stop":
                         logger.info("Message stop received.")
                         message_stop_received = True
@@ -1224,8 +1244,11 @@ async def stream_generator(
                         logger.debug("Yielding event to client: %s", event_json)
                         yield event_sse
 
-                    if message_stop_received:
+                    if message_stop_received or output_limit_reached:
                         break
+
+                await stream.aclose()
+                active_stream = None
 
                 # ----- Per-iteration post-processing --------------------------------
                 if cancelled:
@@ -1234,6 +1257,31 @@ async def stream_generator(
                         conversation_messages.append(assistant_message)
                         yield f"event: save_message\ndata: {json.dumps(assistant_message)}\n\n"
                     break
+
+                if output_limit_reached:
+                    partial = partial_assistant_message(
+                        [
+                            block
+                            for block in content_blocks
+                            if (
+                                block["type"] == "text"
+                                and str(block.get("text", "")).strip()
+                            )
+                            or (
+                                block["type"] == "thinking"
+                                and bool(block.get("signature"))
+                            )
+                        ]
+                    )
+                    error = OutputLimitError()
+                    persisted_partial = partial or {
+                        "role": "assistant", "content": []
+                    }
+                    if partial is not None:
+                        conversation_messages.append(partial)
+                    yield save_error_sse(error, partial_message=persisted_partial)
+                    yield stream_error_sse(error)
+                    return
 
                 tool_calls = [b for b in content_blocks if b["type"] == "tool_use"]
                 has_text = any(
@@ -1601,6 +1649,8 @@ async def stream_generator(
         yield end_of_stream(EndOfStreamReason.COMPLETED, message="Stream ended")
 
     except asyncio.CancelledError:
+        if active_stream is not None:
+            await _close_active_stream(active_stream)
         logger.info(f"Stream cancelled for chat {chat_id}")
         if not content_blocks_finalized:
             partial = partial_assistant_message(content_blocks)
@@ -1608,7 +1658,13 @@ async def stream_generator(
                 conversation_messages.append(partial)
                 yield f"event: save_message\ndata: {json.dumps(partial)}\n\n"
         raise
+    except GeneratorExit:
+        if active_stream is not None:
+            await _close_active_stream(active_stream)
+        raise
     except Exception as e:
+        if active_stream is not None:
+            await _close_active_stream(active_stream)
         logger.error(f"Failed to generate AI response with tools: {e}", exc_info=True)
         partial = None
         if not content_blocks_finalized:

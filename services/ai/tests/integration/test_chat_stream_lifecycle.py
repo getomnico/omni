@@ -20,10 +20,23 @@ import asyncio
 import contextlib
 import json
 import time
+from typing import cast
 from unittest.mock import AsyncMock
 
 import asyncpg
 import pytest
+from anthropic.types import (
+    InputJSONDelta,
+    RawContentBlockDeltaEvent,
+    RawContentBlockStartEvent,
+    RawMessageDeltaEvent,
+    TextBlock,
+    TextDelta,
+    ThinkingBlock,
+    ThinkingDelta,
+    ToolUseBlock,
+)
+from anthropic.types.raw_message_delta_event import Delta
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from ulid import ULID
@@ -39,6 +52,7 @@ from db.tool_approvals import (
 from routers import chat_router
 from services.compaction import ConversationCompactor
 from state import AppState
+from streaming.generate import unanswered_tool_calls
 from streaming.run import (
     SteeringQueueEntry,
     acknowledge_steering_message,
@@ -53,6 +67,7 @@ from tests.helpers import (
     GatedRecordingLLM,
     assert_sse_wire,
     collect_sse_events,
+    message_start_event,
     stream_sse,
 )
 from tools import SearchResponse, SearchResult, ToolRegistry, ToolResult
@@ -1191,6 +1206,160 @@ class TestLockAndHeartbeat:
 
 
 # =============================================================================
+# Output-limit termination
+# =============================================================================
+
+
+class TestOutputLimitTermination:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content_kind", ["text", "tool_json", "thinking"])
+    async def test_max_tokens_persists_error_and_closes_provider_stream(
+        self, content_kind, seeded_chat, redis_client, redis_keys, monkeypatch, db_pool
+    ):
+        chat_id, _user_id, model_id = seeded_chat
+        expected_error = (
+            "The response reached the model’s output limit and was cut short. "
+            "Ask it to continue or request a shorter answer."
+        )
+
+        class TruncatedLLM(GatedRecordingLLM):
+            def __init__(self):
+                super().__init__([], model_id)
+                self.closed_streams = 0
+
+            async def stream_response(self, **kwargs):
+                self.calls.append({"messages": kwargs["messages"]})
+                try:
+                    yield message_start_event()
+                    if content_kind == "text":
+                        yield RawContentBlockStartEvent(
+                            type="content_block_start",
+                            index=0,
+                            content_block=TextBlock(type="text", text=""),
+                        )
+                        yield RawContentBlockDeltaEvent(
+                            type="content_block_delta",
+                            index=0,
+                            delta=TextDelta(type="text_delta", text="Partial answer"),
+                        )
+                    elif content_kind == "tool_json":
+                        yield RawContentBlockStartEvent(
+                            type="content_block_start",
+                            index=0,
+                            content_block=ToolUseBlock(
+                                type="tool_use",
+                                id="toolu_truncated",
+                                name="gmail__send_email",
+                                input={},
+                            ),
+                        )
+                        yield RawContentBlockDeltaEvent(
+                            type="content_block_delta",
+                            index=0,
+                            delta=InputJSONDelta(
+                                type="input_json_delta", partial_json='{"to":'
+                            ),
+                        )
+                    else:
+                        yield RawContentBlockStartEvent(
+                            type="content_block_start",
+                            index=0,
+                            content_block=ThinkingBlock(
+                                type="thinking", thinking="", signature="signed"
+                            ),
+                        )
+                        yield RawContentBlockDeltaEvent(
+                            type="content_block_delta",
+                            index=0,
+                            delta=ThinkingDelta(
+                                type="thinking_delta", thinking="Private reasoning"
+                            ),
+                        )
+                    # Deliberately omit usage and message_stop, then hang until
+                    # closed: max_tokens must be terminal without waiting on either.
+                    yield RawMessageDeltaEvent.model_construct(
+                        type="message_delta",
+                        delta=Delta(stop_reason="max_tokens", stop_sequence=None),
+                        usage=None,
+                    )
+                    await asyncio.Event().wait()
+                finally:
+                    self.closed_streams += 1
+
+        llm = TruncatedLLM()
+        handler = ScriptedActionHandler(
+            requires_approval=False,
+            results=[ToolResult(content=[{"type": "text", "text": "sent"}])],
+        )
+        _install_scripted_registry(monkeypatch, handler)
+        app = _build_chat_app(llm, redis_client, model_id)
+        async with _client(app) as client:
+            events = await collect_sse_events(client, chat_id, timeout=5)
+            assert [e[0] for e in events][-1] == "stream_error"
+            error_payload = json.loads(events[-1][1])
+            assert error_payload == {"message": expected_error}
+            lock_deadline = time.monotonic() + 5
+            while await redis_client.exists(run_lock_key(chat_id)) and time.monotonic() < lock_deadline:
+                await asyncio.sleep(0.01)
+            assert await redis_client.exists(run_lock_key(chat_id)) == 0
+
+            # Replaying returns the persisted terminal result without rerunning.
+            replay = await collect_sse_events(
+                client, chat_id, headers={"Last-Event-ID": "0"}, timeout=5
+            )
+            assert sum(event_type == "stream_error" for event_type, _, _ in replay) == 1
+
+        assert len(llm.calls) == 1, "Output truncation triggered an automatic retry"
+        assert llm.closed_streams == 1, "Provider stream was not closed promptly"
+
+        usage_row = None
+        deadline = time.monotonic() + 5
+        while usage_row is None and time.monotonic() < deadline:
+            async with db_pool.acquire() as conn:
+                usage_row = await conn.fetchrow(
+                    "SELECT input_tokens, output_tokens FROM model_usage WHERE chat_id = $1",
+                    chat_id,
+                )
+            if usage_row is None:
+                await asyncio.sleep(0.05)
+        assert usage_row is not None, "Usage was not saved when the provider stream closed"
+        assert usage_row["input_tokens"] == 10
+
+        path = await MessagesRepository().get_active_path(chat_id)
+        assert len(path) == 2
+        failed = path[-1]
+        assert failed.error == error_payload
+        assert failed.message["role"] == "assistant"
+        assert unanswered_tool_calls(
+            [cast(dict, message.message) for message in path]
+        ) == []
+        blocks = failed.message["content"]
+        assert not any(block.get("type") == "tool_use" for block in blocks)
+        if content_kind == "text":
+            assert [b["text"] for b in blocks if b.get("type") == "text"] == [
+                "Partial answer"
+            ]
+        elif content_kind == "tool_json":
+            assert blocks == []
+            assert handler.executions == []
+        else:
+            assert any(
+                block.get("type") == "thinking"
+                and block.get("signature") == "signed"
+                for block in blocks
+            )
+
+        await MessagesRepository().create(
+            chat_id, {"role": "user", "content": "Continue safely"}, parent_id=failed.id
+        )
+        async with _client(app) as client:
+            await collect_sse_events(client, chat_id, timeout=5)
+        assert len(llm.calls) == 2
+        next_history = llm.calls[1]["messages"]
+        assert unanswered_tool_calls(next_history) == []
+
+
+# =============================================================================
 # Stream error persistence
 # =============================================================================
 
@@ -1232,8 +1401,29 @@ class TestStreamErrorPersistence:
         ]
         assert stream_errors, f"Expected stream_error, got events: {events}"
 
+        finalized_events = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "message_finalized"
+        ]
+        event_types = [event_type for event_type, _data, _sid in events]
+        assert "message_finalized" in event_types
+        assert event_types.index("message_finalized") < event_types.index("stream_error")
+
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         failed = db_msgs[-1]
+        assert finalized_events == [
+            {
+                "id": failed.id,
+                "chat_id": failed.chat_id,
+                "parent_id": failed.parent_id,
+                "message_seq_num": failed.message_seq_num,
+                "message": failed.message,
+                "content_text": None,
+                "error": failed.error,
+                "created_at": failed.created_at.isoformat(),
+            }
+        ]
         assert failed.message["role"] == "assistant"
         assert failed.error == stream_errors[-1], (
             f"Persisted error {failed.error} != stream_error payload "
@@ -1301,6 +1491,21 @@ class TestStreamErrorPersistence:
         assert failed.error["message"] == (
             "Failed to generate response: Connection reset mid-stream"
         )
+        finalized_events = [
+            json.loads(data)
+            for event_type, data, _sid in events
+            if event_type == "message_finalized"
+        ]
+        assert len(finalized_events) == 1
+        finalized = finalized_events[0]
+        assert finalized["id"] == failed.id
+        assert finalized["chat_id"] == failed.chat_id
+        assert finalized["parent_id"] == failed.parent_id
+        assert finalized["message_seq_num"] == failed.message_seq_num
+        assert finalized["message"] == failed.message
+        assert finalized["content_text"] == "Partial answer"
+        assert finalized["error"] == failed.error
+        assert finalized["created_at"] == failed.created_at.isoformat()
         text = " ".join(
             b.get("text", "")
             for b in failed.message.get("content", [])
@@ -1482,6 +1687,18 @@ class TestStreamErrorPersistence:
         assert any(
             event_type == "stream_error" for event_type, _d, _sid in replay_events
         ), f"Replay did not deliver terminal, got: {replay_events}"
+        original_finalized = [
+            data
+            for event_type, data, _sid in events
+            if event_type == "message_finalized"
+        ]
+        replay_finalized = [
+            data
+            for event_type, data, _sid in replay_events
+            if event_type == "message_finalized"
+        ]
+        assert len(original_finalized) == 1
+        assert replay_finalized == original_finalized
 
         db_msgs = await MessagesRepository().get_active_path(chat_id)
         error_rows = [m for m in db_msgs if m.error is not None]

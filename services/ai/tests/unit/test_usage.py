@@ -16,7 +16,6 @@ from anthropic.types import (
 from anthropic.types.message_stream_event import MessageStreamEvent
 from anthropic.types.raw_message_delta_event import Delta
 
-from providers import TokenUsage
 from providers.azure_foundry import AzureFoundryProvider
 from providers.openai import OpenAIProvider
 from services.usage import UsageContext, UsagePurpose, UsageTracker
@@ -64,6 +63,109 @@ def _stream_factory(input_tokens: int, output_tokens: int):
         yield RawMessageStopEvent(type="message_stop")
 
     return stream
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_closes_upstream_on_early_close():
+    tracker = UsageTracker(repo=AsyncMock(), ctx=_ctx())
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            yield RawMessageStartEvent(
+                type="message_start",
+                message=Message(
+                    id="msg",
+                    type="message",
+                    role="assistant",
+                    content=[],
+                    model="m",
+                    usage=Usage(input_tokens=123, output_tokens=4),
+                ),
+            )
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    wrapped = tracker.wrap_stream(upstream())
+    await anext(wrapped)
+    await wrapped.aclose()
+
+    assert closed.is_set()
+    assert (tracker.input_tokens, tracker.output_tokens) == (123, 4)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_preserves_upstream_exception():
+    error = RuntimeError("upstream failed")
+
+    async def upstream():
+        raise error
+        yield  # Keep this an async generator.
+
+    with pytest.raises(RuntimeError) as raised:
+        await anext(UsageTracker(repo=AsyncMock(), ctx=_ctx()).wrap_stream(upstream()))
+
+    assert raised.value is error
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_preserves_iteration_error_when_close_also_fails(caplog):
+    iteration_error = RuntimeError("provider failed")
+
+    class BrokenStream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise iteration_error
+
+        async def aclose(self):
+            raise RuntimeError("close failed")
+
+    with pytest.raises(RuntimeError) as raised:
+        await anext(UsageTracker(repo=AsyncMock(), ctx=_ctx()).wrap_stream(BrokenStream()))
+
+    assert raised.value is iteration_error
+    assert "Failed to close async stream after iteration failed" in caplog.text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_wrap_stream_cancellation_preserves_usage_and_closes_upstream():
+    tracker = UsageTracker(repo=AsyncMock(), ctx=_ctx())
+    closed = asyncio.Event()
+
+    async def upstream():
+        try:
+            yield RawMessageStartEvent(
+                type="message_start",
+                message=Message(
+                    id="msg",
+                    type="message",
+                    role="assistant",
+                    content=[],
+                    model="m",
+                    usage=Usage(input_tokens=321, output_tokens=9),
+                ),
+            )
+            await asyncio.Future()
+        finally:
+            closed.set()
+
+    wrapped = tracker.wrap_stream(upstream())
+    await anext(wrapped)
+    pending = asyncio.create_task(anext(wrapped))
+    await asyncio.sleep(0)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert closed.is_set()
+    assert (tracker.input_tokens, tracker.output_tokens) == (321, 9)
 
 
 @pytest.mark.unit

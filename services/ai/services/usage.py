@@ -2,13 +2,14 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from enum import StrEnum
 
 from anthropic.types.message_stream_event import MessageStreamEvent
 
 from db.usage import UsageRepository
+from utils.async_iterators import ClosableAsyncIterator, close_async_iterator
 
 logger = logging.getLogger(__name__)
 
@@ -50,35 +51,34 @@ class UsageTracker:
         self.cache_creation_tokens = 0
 
     async def wrap_stream(
-        self, stream: AsyncIterator[MessageStreamEvent]
-    ) -> AsyncIterator[MessageStreamEvent]:
-        async for event in stream:
-            if event.type == "message_start":
-                usage = event.message.usage
-                self.input_tokens = usage.input_tokens
-                self.output_tokens = usage.output_tokens
-                self.cache_read_tokens = (
-                    getattr(usage, "cache_read_input_tokens", 0) or 0
-                )
-                self.cache_creation_tokens = (
-                    getattr(usage, "cache_creation_input_tokens", 0) or 0
-                )
-            elif event.type == "message_delta":
-                usage = getattr(event, "usage", None)
-                if usage:
-                    # Providers that only learn input_tokens at stream end emit them
-                    # on the final message_delta. Overwrite when present; last delta wins.
-                    input_tokens = getattr(usage, "input_tokens", None)
-                    if input_tokens is not None:
-                        self.input_tokens = input_tokens
+        self, stream: ClosableAsyncIterator[MessageStreamEvent]
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
+        async with close_async_iterator(stream) as input_stream:
+            async for event in input_stream:
+                if event.type == "message_start":
+                    usage = event.message.usage
+                    self.input_tokens = usage.input_tokens
                     self.output_tokens = usage.output_tokens
-                    cache_read = getattr(usage, "cache_read_input_tokens", None)
-                    if cache_read is not None:
-                        self.cache_read_tokens = cache_read
-                    cache_creation = getattr(usage, "cache_creation_input_tokens", None)
-                    if cache_creation is not None:
-                        self.cache_creation_tokens = cache_creation
-            yield event
+                    self.cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+                    self.cache_creation_tokens = (
+                        getattr(usage, "cache_creation_input_tokens", 0) or 0
+                    )
+                elif event.type == "message_delta":
+                    usage = getattr(event, "usage", None)
+                    if usage:
+                        # Providers that only learn input_tokens at stream end emit them
+                        # on the final message_delta. Overwrite when present; last delta wins.
+                        input_tokens = getattr(usage, "input_tokens", None)
+                        if input_tokens is not None:
+                            self.input_tokens = input_tokens
+                        self.output_tokens = usage.output_tokens
+                        cache_read = getattr(usage, "cache_read_input_tokens", None)
+                        if cache_read is not None:
+                            self.cache_read_tokens = cache_read
+                        cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+                        if cache_creation is not None:
+                            self.cache_creation_tokens = cache_creation
+                yield event
 
     def save(self) -> None:
         """Fire-and-forget: persist usage record without blocking the caller."""

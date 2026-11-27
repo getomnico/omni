@@ -12,10 +12,11 @@ For OpenAI models, uses the v1 API (no dated api-version required):
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
-from anthropic import AsyncAnthropicFoundry, MessageStreamEvent
+from anthropic import AsyncAnthropicFoundry
+from anthropic.types.message_stream_event import MessageStreamEvent
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from openai import AsyncOpenAI
 
@@ -107,7 +108,7 @@ class AzureFoundryProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         try:
             async for event in self._delegate.stream_response(
                 prompt=prompt,

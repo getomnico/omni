@@ -3,11 +3,12 @@ LLM Provider abstraction layer for supporting multiple AI providers.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
-from anthropic import MessageStreamEvent
+from anthropic.types.message_stream_event import MessageStreamEvent
+
+from utils.async_iterators import ClosableAsyncIterator
 
 from .types import ProviderError, ProviderType
 
@@ -89,7 +90,7 @@ class LLMProvider(ABC):
         return False
 
     @abstractmethod
-    async def stream_response(
+    def stream_response(
         self,
         prompt: str,
         max_tokens: int | None = None,
@@ -98,7 +99,7 @@ class LLMProvider(ABC):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> ClosableAsyncIterator[MessageStreamEvent]:
         """Stream a response from the LLM provider. Returns Anthropic MessageStreamEvent objects.
 
         Args:

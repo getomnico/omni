@@ -7,10 +7,11 @@ Uses Application Default Credentials (ADC) for authentication — no API key nee
 """
 
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
-from anthropic import AsyncAnthropicVertex, MessageStreamEvent
+from anthropic import AsyncAnthropicVertex
+from anthropic.types.message_stream_event import MessageStreamEvent
 from google import genai
 
 from . import ContextWindowInfo, LLMProvider, TokenUsage
@@ -73,7 +74,7 @@ class VertexAIProvider(LLMProvider):
         system_prompt: str | None = None,
         *,
         model: str | None = None,
-    ) -> AsyncIterator[MessageStreamEvent]:
+    ) -> AsyncGenerator[MessageStreamEvent, None]:
         try:
             async for event in self._delegate.stream_response(
                 prompt=prompt,
